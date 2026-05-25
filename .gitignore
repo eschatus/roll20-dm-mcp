@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 data/
+.claude/settings.json
 .claude/settings.local.json
 *.log
 *.png
