@@ -21,19 +21,19 @@ function writeResult(nonce, data, error) {
 }
 
 // --- Globals ---
-var CHAT_BUFFER = [];
-var CHAT_BUFFER_MAX = 100;
-var DM_INBOX = [];
-var DM_INBOX_MAX = 50;
-var ROUND_NUMBER = 0;
-var ROUND_FIRST_TOKEN_ID = null;
-var TURN_HOOK_ENABLED = false;
+const CHAT_BUFFER = [];
+const CHAT_BUFFER_MAX = 100;
+let DM_INBOX = [];
+const DM_INBOX_MAX = 50;
+let ROUND_NUMBER = 0;
+let ROUND_FIRST_TOKEN_ID = null;
+let TURN_HOOK_ENABLED = false;
 
 // --- Helpers ---
 
 // Epithet word banks for disambiguating duplicate-named tokens at initiative roll time.
 // Matched by substring against the token name (case-insensitive).
-var MONSTER_EPITHETS = {
+const MONSTER_EPITHETS = {
   goblin:    ["Sniveling","Savage","One-Eyed","Stinking","Cowardly","Bold","Gap-Toothed"],
   hobgoblin: ["Scarred","Disciplined","Ruthless","Iron-Fisted","Veteran","Grim"],
   bugbear:   ["Hulking","Sneaking","Slavering","Brutal","Heavy-Handed"],
@@ -58,7 +58,7 @@ var MONSTER_EPITHETS = {
   troll:     ["Regenerating","Stinking","Ancient","Howling","Massive"],
   ogre:      ["Bellowing","Stupid","Hungry","Scarred","Club-Fisted"],
 };
-var GENERIC_EPITHETS = [
+const GENERIC_EPITHETS = [
   "Wrathful","Skulking","Wretched","Ravenous","Frenzied","Ancient","Withered",
   "Relentless","Cunning","Desperate","Scarred","Hungry","Pale","Lurking","Maddened",
   "Bloodied","Howling","Silent","Swift","Hollow-Eyed","Twisted","Gaunt",
@@ -68,12 +68,12 @@ var GENERIC_EPITHETS = [
 // Path points are relative to the bounding box top-left corner.
 // The bounding box is width=height=2*radiusPx, so center of circle = (radiusPx, radiusPx).
 function makeCirclePath(radiusPx) {
-  var r = radiusPx;
-  var pts = [];
-  for (var i = 0; i <= 36; i++) {
-    var angle = (i / 36) * 2 * Math.PI;
-    var x = r + r * Math.cos(angle);
-    var y = r + r * Math.sin(angle);
+  let r = radiusPx;
+  let pts = [];
+  for (let i = 0; i <= 36; i++) {
+    let angle = (i / 36) * 2 * Math.PI;
+    let x = r + r * Math.cos(angle);
+    let y = r + r * Math.sin(angle);
     pts.push([i === 0 ? "M" : "L", Math.round(x * 100) / 100, Math.round(y * 100) / 100]);
   }
   pts.push(["Z"]);
@@ -81,15 +81,15 @@ function makeCirclePath(radiusPx) {
 }
 
 function getMonsterEpithets(tokenName) {
-  var lower = tokenName.toLowerCase();
-  var keys = Object.keys(MONSTER_EPITHETS);
-  for (var i = 0; i < keys.length; i++) {
+  let lower = tokenName.toLowerCase();
+  let keys = Object.keys(MONSTER_EPITHETS);
+  for (let i = 0; i < keys.length; i++) {
     if (lower.indexOf(keys[i]) !== -1) return MONSTER_EPITHETS[keys[i]];
   }
   return GENERIC_EPITHETS;
 }
 
-var CONDITION_MARKERS = {
+const CONDITION_MARKERS = {
   dead:          "Unconscious::4444317",
   unconscious:   "Unconscious::4444317",
   wounded:       "Wounded::4444333",
@@ -110,8 +110,8 @@ var CONDITION_MARKERS = {
 };
 
 function setConditionAttr(charId, conditionSet) {
-  var condStr = Array.from(conditionSet).join(",");
-  var existing = findObjs({ _type: "attribute", _characterid: charId, name: "active_conditions" });
+  let condStr = Array.from(conditionSet).join(",");
+  let existing = findObjs({ _type: "attribute", _characterid: charId, name: "active_conditions" });
   if (existing.length > 0) {
     existing[0].set("current", condStr);
   } else {
@@ -124,52 +124,52 @@ function setConditionAttr(charId, conditionSet) {
 function runBatchOp(action, args) {
   switch (action) {
     case "setTokenBar": {
-      var t = getObj("graphic", args.tokenId);
+      let t = getObj("graphic", args.tokenId);
       if (!t) throw new Error("Token not found: " + args.tokenId);
-      var p = { bar1_value: args.value };
+      let p = { bar1_value: args.value };
       if (args.max !== undefined) p.bar1_max = args.max;
       t.set(p);
       return { ok: true };
     }
     case "setTokenProps": {
-      var t = getObj("graphic", args.tokenId);
+      let t = getObj("graphic", args.tokenId);
       if (!t) throw new Error("Token not found: " + args.tokenId);
       t.set(args.props || {});
       return { ok: true };
     }
     case "toggleCondition": {
-      var t = getObj("graphic", args.tokenId);
+      let t = getObj("graphic", args.tokenId);
       if (!t) throw new Error("Token not found: " + args.tokenId);
-      var cond = (args.condition || "").toLowerCase();
-      var marker = CONDITION_MARKERS[cond] || cond;
-      var ms = new Set((t.get("statusmarkers") || "").split(",").filter(Boolean));
+      let cond = (args.condition || "").toLowerCase();
+      let marker = CONDITION_MARKERS[cond] || cond;
+      let ms = new Set((t.get("statusmarkers") || "").split(",").filter(Boolean));
       if (args.active) ms.add(marker); else ms.delete(marker);
       t.set("statusmarkers", Array.from(ms).join(","));
       if (args.charId) {
-        var existing = findObjs({ _type: "attribute", _characterid: args.charId, name: "active_conditions" });
-        var condList = existing.length > 0 ? (existing[0].get("current") || "").split(",").filter(Boolean) : [];
-        var cs = new Set(condList);
+        let existing = findObjs({ _type: "attribute", _characterid: args.charId, name: "active_conditions" });
+        let condList = existing.length > 0 ? (existing[0].get("current") || "").split(",").filter(Boolean) : [];
+        let cs = new Set(condList);
         if (args.active) cs.add(cond); else cs.delete(cond);
         setConditionAttr(args.charId, cs);
       }
       return { ok: true, marker: marker };
     }
     case "syncConditionsToToken": {
-      var t = getObj("graphic", args.tokenId);
+      let t = getObj("graphic", args.tokenId);
       if (!t) throw new Error("Token not found: " + args.tokenId);
-      var activeSet = new Set((args.conditions || []).map(function(c) { return c.toLowerCase(); }));
-      var markerSet = new Set((t.get("statusmarkers") || "").split(",").filter(Boolean));
-      var allKnown = new Set();
+      let activeSet = new Set((args.conditions || []).map(function(c) { return c.toLowerCase(); }));
+      let markerSet = new Set((t.get("statusmarkers") || "").split(",").filter(Boolean));
+      let allKnown = new Set();
       Object.keys(CONDITION_MARKERS).forEach(function(c) {
-        var tag = CONDITION_MARKERS[c];
+        let tag = CONDITION_MARKERS[c];
         allKnown.add(tag);
-        var dn = tag.split("::")[0];
+        let dn = tag.split("::")[0];
         allKnown.add(dn);
         allKnown.add(dn.toLowerCase());
       });
       allKnown.forEach(function(m) { markerSet.delete(m); });
       activeSet.forEach(function(c) {
-        var m = CONDITION_MARKERS[c];
+        let m = CONDITION_MARKERS[c];
         if (m) markerSet.add(m);
       });
       t.set("statusmarkers", Array.from(markerSet).join(","));
@@ -177,7 +177,7 @@ function runBatchOp(action, args) {
       return { ok: true, conditions: Array.from(activeSet) };
     }
     case "getTokenById": {
-      var t = getObj("graphic", args.tokenId);
+      let t = getObj("graphic", args.tokenId);
       if (!t) return null;
       return {
         id: t.id, name: t.get("name"),
@@ -214,9 +214,9 @@ on("chat:message", function (msg) {
 
   // Player turn preloading / queries via !dm
   if (msg.type === "api" && msg.content && msg.content.startsWith("!dm ")) {
-    var dmText = msg.content.slice(4).trim();
+    let dmText = msg.content.slice(4).trim();
     if (dmText) {
-      var isQuery = /^(what|who|how|is|am|are|do|does|can|did|\?)/i.test(dmText) || dmText.endsWith("?");
+      let isQuery = /^(what|who|how|is|am|are|do|does|can|did|\?)/i.test(dmText) || dmText.endsWith("?");
       DM_INBOX.push({
         who: msg.who || "",
         playerid: msg.playerid || "",
@@ -226,7 +226,7 @@ on("chat:message", function (msg) {
       });
       if (DM_INBOX.length > DM_INBOX_MAX) DM_INBOX.shift();
       sendChat("Initiative", "/desc 🎲 **" + (msg.who || "Someone") + "** has set their mind to an action.");
-      var ackVerb = isQuery ? "Got your question — I'll answer shortly." : "Got it — I'll have this ready for your turn.";
+      let ackVerb = isQuery ? "Got your question — I'll answer shortly." : "Got it — I'll have this ready for your turn.";
       sendChat("GM-AI-Bridge", "/w " + (msg.who || "gm") + " " + ackVerb + " (" + dmText + ")", null, { noarchive: true });
     }
     return;
@@ -372,7 +372,7 @@ on("chat:message", function (msg) {
 
       case "getWalls": {
         // Read pathv2 DL barrier objects (Latest VTT Engine / UDL) from a page.
-        var walls = findObjs({ _type: "pathv2", _pageid: args.pageId, layer: "walls" });
+        let walls = findObjs({ _type: "pathv2", _pageid: args.pageId, layer: "walls" });
         writeResult(nonce, walls.map(function(w) {
           return {
             id: w.id,
@@ -388,10 +388,10 @@ on("chat:message", function (msg) {
 
       case "debugPage": {
         // Enumerate what types of objects exist on a page — helps diagnose object storage.
-        var types = ["path", "pathv2", "graphic", "wall", "text", "door", "window"];
-        var summary = {};
+        let types = ["path", "pathv2", "graphic", "wall", "text", "door", "window"];
+        let summary = {};
         types.forEach(function(t) {
-          var objs = findObjs({ _type: t, _pageid: args.pageId });
+          let objs = findObjs({ _type: t, _pageid: args.pageId });
           summary[t] = { count: objs.length };
           if (objs.length && objs.length <= 5) {
             summary[t].sample = objs.slice(0, 3).map(function(o) {
@@ -407,10 +407,10 @@ on("chat:message", function (msg) {
         // Create path objects on the walls layer with a custom stroke color.
         // path objects respect stroke color in the DL editor; pathv2 does not.
         // Each wall: { x1, y1, x2, y2, stroke? } in page pixel coordinates.
-        var wallResults = (args.walls || []).map(function(w) {
-          var minX = Math.min(w.x1, w.x2);
-          var minY = Math.min(w.y1, w.y2);
-          var wallObj = createObj("path", {
+        let wallResults = (args.walls || []).map(function(w) {
+          let minX = Math.min(w.x1, w.x2);
+          let minY = Math.min(w.y1, w.y2);
+          let wallObj = createObj("path", {
             pageid: args.pageId,
             layer: "walls",
             path: JSON.stringify([["M", w.x1 - minX, w.y1 - minY], ["L", w.x2 - minX, w.y2 - minY]]),
@@ -435,8 +435,8 @@ on("chat:message", function (msg) {
       case "createDLDoors": {
         // Create native Roll20 DL door objects. Coordinates in page pixels; y is negated for Roll20.
         // Each door: { x, y, x0, y0, x1, y1, color? } — x/y center, x0/y0 and x1/y1 endpoints (pre-negated).
-        var doorResults = (args.doors || []).map(function(d) {
-          var obj = createObj("door", {
+        let doorResults = (args.doors || []).map(function(d) {
+          let obj = createObj("door", {
             pageid: args.pageId,
             x: d.x,
             y: d.y,
@@ -453,8 +453,8 @@ on("chat:message", function (msg) {
 
       case "createDLWindows": {
         // Create native Roll20 DL window objects. Same coordinate convention as createDLDoors.
-        var windowResults = (args.windows || []).map(function(w) {
-          var obj = createObj("window", {
+        let windowResults = (args.windows || []).map(function(w) {
+          let obj = createObj("window", {
             pageid: args.pageId,
             x: w.x,
             y: w.y,
@@ -525,11 +525,11 @@ on("chat:message", function (msg) {
 
       case "getPaths": {
         // Read back all path/graphic objects from a page. If layer is omitted, returns all layers.
-        var query = { _pageid: args.pageId };
+        let query = { _pageid: args.pageId };
         if (args.layer) query.layer = args.layer;
-        var paths = findObjs(Object.assign({ _type: "path" }, query));
-        var graphics = args.includeGraphics ? findObjs(Object.assign({ _type: "graphic" }, query)) : [];
-        var results = paths.map(function(p) {
+        let paths = findObjs(Object.assign({ _type: "path" }, query));
+        let graphics = args.includeGraphics ? findObjs(Object.assign({ _type: "graphic" }, query)) : [];
+        let results = paths.map(function(p) {
           return {
             type: "path",
             id: p.id,
@@ -563,9 +563,9 @@ on("chat:message", function (msg) {
         // door/window objects use pageid (not _pageid) and inverted y-axis.
         // y values from Roll20 are negative; negate them to get normal page coords.
         function mapOpening(obj, type) {
-          var path = obj.get("path") || {};
-          var h0 = path.handle0 || {};
-          var h1 = path.handle1 || {};
+          let path = obj.get("path") || {};
+          let h0 = path.handle0 || {};
+          let h1 = path.handle1 || {};
           return {
             id: obj.id,
             type: type,
@@ -579,8 +579,8 @@ on("chat:message", function (msg) {
             isSecret: obj.get("isSecret"),
           };
         }
-        var doors = findObjs({ _type: "door", pageid: args.pageId });
-        var windows = findObjs({ _type: "window", pageid: args.pageId });
+        let doors = findObjs({ _type: "door", pageid: args.pageId });
+        let windows = findObjs({ _type: "window", pageid: args.pageId });
         writeResult(nonce, {
           doors: doors.map(function(d) { return mapOpening(d, "door"); }),
           windows: windows.map(function(w) { return mapOpening(w, "window"); }),
@@ -629,15 +629,15 @@ on("chat:message", function (msg) {
         // Coordinates use top-left-relative convention (UVTT importer style):
         // path points are relative to bounding box min corner, always positive.
         // left/top = center of bounding box = minX+width/2, minY+height/2.
-        var layerTests = [
+        let layerTests = [
           { layer: "map",        stroke: "#FF0000", path: '[["M",0,0],["L",2170,2940]]',    left: 1085, top: 1470, width: 2170, height: 2940 },
           { layer: "objects",    stroke: "#00FF00", path: '[["M",2170,0],["L",0,2940]]',    left: 1085, top: 1470, width: 2170, height: 2940 },
           { layer: "foreground", stroke: "#FF00FF", path: '[["M",0,0],["L",2170,0]]',       left: 1085, top:  980, width: 2170, height: 0 },
           { layer: "gmlayer",    stroke: "#0000FF", path: '[["M",0,0],["L",2170,0]]',       left: 1085, top: 1470, width: 2170, height: 0 },
           { layer: "walls",      stroke: "#FF8800", path: '[["M",0,0],["L",0,2940]]',       left: 1085, top: 1470, width: 0,    height: 2940 },
         ];
-        var results = layerTests.map(function(t) {
-          var obj = createObj("path", {
+        let results = layerTests.map(function(t) {
+          let obj = createObj("path", {
             pageid: args.pageId,
             layer: t.layer,
             path: t.path,
@@ -662,7 +662,7 @@ on("chat:message", function (msg) {
       case "runUVTT": {
         // Create a carrier graphic on gmlayer with UVTT JSON in its gmnotes,
         // then trigger the UniversalVTTImporter mod via !uvtt --ids.
-        var uvttGraphic = createObj("graphic", {
+        let uvttGraphic = createObj("graphic", {
           _pageid: args.pageId,
           layer: "gmlayer",
           name: "uvtt-data-carrier",
@@ -675,13 +675,13 @@ on("chat:message", function (msg) {
         });
         if (!uvttGraphic) throw new Error("Failed to create carrier graphic for UVTT import");
 
-        var uvttJson = typeof args.uvttData === "string"
+        let uvttJson = typeof args.uvttData === "string"
           ? args.uvttData
           : JSON.stringify(args.uvttData);
         uvttGraphic.set("gmnotes", uvttJson);
 
-        var extraArgs = args.noObjects ? " --no-objects" : "";
-        var uvttCmd = "!uvtt --ids " + uvttGraphic.id + extraArgs;
+        let extraArgs = args.noObjects ? " --no-objects" : "";
+        let uvttCmd = "!uvtt --ids " + uvttGraphic.id + extraArgs;
         sendChat("API", uvttCmd);
 
         writeResult(nonce, {
@@ -695,18 +695,18 @@ on("chat:message", function (msg) {
       case "createPolylines": {
         // Create one path object per polyline from an ordered list of absolute-pixel points.
         // Each polyline: { points: [[x,y], ...], stroke?, stroke_width?, closed?, layer? }
-        var polylineResults = (args.polylines || []).map(function(pl) {
-          var pts = pl.points || [];
+        let polylineResults = (args.polylines || []).map(function(pl) {
+          let pts = pl.points || [];
           if (pts.length < 2) return { error: "Need at least 2 points" };
-          var minX = Math.min.apply(null, pts.map(function(p) { return p[0]; }));
-          var minY = Math.min.apply(null, pts.map(function(p) { return p[1]; }));
-          var maxX = Math.max.apply(null, pts.map(function(p) { return p[0]; }));
-          var maxY = Math.max.apply(null, pts.map(function(p) { return p[1]; }));
-          var pathCmds = pts.map(function(p, i) {
+          let minX = Math.min.apply(null, pts.map(function(p) { return p[0]; }));
+          let minY = Math.min.apply(null, pts.map(function(p) { return p[1]; }));
+          let maxX = Math.max.apply(null, pts.map(function(p) { return p[0]; }));
+          let maxY = Math.max.apply(null, pts.map(function(p) { return p[1]; }));
+          let pathCmds = pts.map(function(p, i) {
             return [i === 0 ? "M" : "L", p[0] - minX, p[1] - minY];
           });
           if (pl.closed) pathCmds.push(["Z"]);
-          var pathObj = createObj("path", {
+          let pathObj = createObj("path", {
             pageid: args.pageId,
             layer: pl.layer || args.layer || "walls",
             path: JSON.stringify(pathCmds),
@@ -730,7 +730,7 @@ on("chat:message", function (msg) {
 
       case "clearDLOpenings": {
         // Remove all native door and window DL objects from a page.
-        var removed = 0;
+        let removed = 0;
         findObjs({ _type: "door", pageid: args.pageId }).forEach(function(o) { o.remove(); removed++; });
         findObjs({ _type: "window", pageid: args.pageId }).forEach(function(o) { o.remove(); removed++; });
         writeResult(nonce, { removed: removed });
@@ -738,7 +738,7 @@ on("chat:message", function (msg) {
       }
 
       case "getTurnOrder": {
-        var rawOrder = Campaign().get("turnorder");
+        let rawOrder = Campaign().get("turnorder");
         writeResult(nonce, rawOrder ? JSON.parse(rawOrder) : []);
         break;
       }
@@ -754,48 +754,48 @@ on("chat:message", function (msg) {
         // If args.rollPublic is true, tokens with a linked character sheet get a gothic public announcement.
         // Duplicate-named tokens are renamed with a random epithet (e.g. "Goblin the Savage") so they
         // are distinguishable both on the map and in the turn tracker.
-        var initAttrNames = ["initiative_bonus", "npc_initiative", "dex_mod", "dexterity_mod"];
-        var rollPublic = !!args.rollPublic;
+        let initAttrNames = ["initiative_bonus", "npc_initiative", "dex_mod", "dexterity_mod"];
+        let rollPublic = !!args.rollPublic;
 
         // Pass 1: count names to detect duplicates
-        var nameCounts = {};
+        let nameCounts = {};
         (args.tokenIds || []).forEach(function(tokenId) {
-          var token = getObj("graphic", tokenId);
+          let token = getObj("graphic", tokenId);
           if (!token) return;
-          var n = token.get("name");
+          let n = token.get("name");
           nameCounts[n] = (nameCounts[n] || 0) + 1;
         });
 
         // Pass 2: rename duplicates with epithets drawn from monster-type word banks
-        var usedEpithets = {};
+        let usedEpithets = {};
         (args.tokenIds || []).forEach(function(tokenId) {
-          var token = getObj("graphic", tokenId);
+          let token = getObj("graphic", tokenId);
           if (!token) return;
-          var baseName = token.get("name");
+          let baseName = token.get("name");
           if ((nameCounts[baseName] || 0) <= 1) return;
           if (!usedEpithets[baseName]) usedEpithets[baseName] = [];
-          var pool = getMonsterEpithets(baseName);
-          var available = pool.filter(function(e) { return usedEpithets[baseName].indexOf(e) === -1; });
+          let pool = getMonsterEpithets(baseName);
+          let available = pool.filter(function(e) { return usedEpithets[baseName].indexOf(e) === -1; });
           if (!available.length) available = pool;
-          var chosen = available[Math.floor(Math.random() * available.length)];
+          let chosen = available[Math.floor(Math.random() * available.length)];
           usedEpithets[baseName].push(chosen);
           token.set("name", baseName + "\nthe " + chosen);
         });
 
         // Pass 3: gather init bonuses (synchronous), then roll via Roll20's real dice engine
-        var rollNonce = nonce;
-        var tokenData = [];
+        let rollNonce = nonce;
+        let tokenData = [];
         (args.tokenIds || []).forEach(function(tokenId) {
-          var token = getObj("graphic", tokenId);
+          let token = getObj("graphic", tokenId);
           if (!token) { tokenData.push({ tokenId: tokenId, error: "Token not found" }); return; }
 
-          var initBonus = 0;
-          var charId = token.get("represents");
+          let initBonus = 0;
+          let charId = token.get("represents");
           if (charId) {
-            for (var i = 0; i < initAttrNames.length; i++) {
-              var attrs = findObjs({ _type: "attribute", _characterid: charId, name: initAttrNames[i] });
+            for (let i = 0; i < initAttrNames.length; i++) {
+              let attrs = findObjs({ _type: "attribute", _characterid: charId, name: initAttrNames[i] });
               if (attrs.length > 0) {
-                var val = parseInt(attrs[0].get("current"));
+                let val = parseInt(attrs[0].get("current"));
                 if (!isNaN(val)) { initBonus = val; break; }
               }
             }
@@ -803,25 +803,25 @@ on("chat:message", function (msg) {
           tokenData.push({ tokenId: tokenId, name: token.get("name"), initBonus: initBonus, charId: charId || "" });
         });
 
-        var validTokens = tokenData.filter(function(t) { return !t.error; });
+        let validTokens = tokenData.filter(function(t) { return !t.error; });
         if (!validTokens.length) { writeResult(rollNonce, tokenData); break; }
 
         // Build one inline roll expression per token: "Name: [[1d20+bonus]]"
-        var msgParts = validTokens.map(function(t) {
-          var sign = t.initBonus >= 0 ? "+" : "";
+        let msgParts = validTokens.map(function(t) {
+          let sign = t.initBonus >= 0 ? "+" : "";
           return t.name + ": [[1d20" + (t.initBonus !== 0 ? sign + t.initBonus : "") + "]]";
         });
 
         sendChat("GM-AI-Bridge", msgParts.join(" | "), function(ops) {
-          var inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
+          let inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
 
-          var rollResults = validTokens.map(function(t, i) {
-            var roll = inlinerolls[i];
-            var d20 = 1, total = 1 + t.initBonus;
+          let rollResults = validTokens.map(function(t, i) {
+            let roll = inlinerolls[i];
+            let d20 = 1, total = 1 + t.initBonus;
             if (roll) {
               total = roll.results.total;
               // First roll group is the d20
-              var firstGroup = roll.results.rolls && roll.results.rolls[0];
+              let firstGroup = roll.results.rolls && roll.results.rolls[0];
               if (firstGroup && firstGroup.type === "R" && firstGroup.results && firstGroup.results[0]) {
                 d20 = firstGroup.results[0].v;
               } else {
@@ -833,21 +833,21 @@ on("chat:message", function (msg) {
 
           // Announce public entries via gothic HTML card
           if (rollPublic) {
-            var publicEntries = rollResults.filter(function(r) {
+            let publicEntries = rollResults.filter(function(r) {
               return validTokens.some(function(t) { return t.tokenId === r.tokenId && t.charId; });
             });
             if (publicEntries.length > 0) {
               publicEntries.sort(function(a, b) { return b.total - a.total; });
-              var rows = publicEntries.map(function(e, idx) {
-                var icon = idx === 0 ? "👑" : "🩸";
-                var sign = e.initBonus >= 0 ? "+" : "";
-                var detail = "<span style='color:#6b4040;font-size:0.82em;'> d20(" + e.d20 + ")" + sign + e.initBonus + "</span>";
+              let rows = publicEntries.map(function(e, idx) {
+                let icon = idx === 0 ? "👑" : "🩸";
+                let sign = e.initBonus >= 0 ? "+" : "";
+                let detail = "<span style='color:#6b4040;font-size:0.82em;'> d20(" + e.d20 + ")" + sign + e.initBonus + "</span>";
                 return "<tr>"
                   + "<td style='padding:3px 8px;color:#d4a0a0;font-family:Palatino Linotype,Palatino,serif;'>" + icon + " " + e.name + "</td>"
                   + "<td style='padding:3px 8px;color:#ff5555;font-weight:bold;text-align:right;font-family:Palatino Linotype,Palatino,serif;'>" + e.total + detail + "</td>"
                   + "</tr>";
               }).join("");
-              var html = "<div style='background:#080204;border:1px solid #5a0000;padding:6px 10px;'>"
+              let html = "<div style='background:#080204;border:1px solid #5a0000;padding:6px 10px;'>"
                 + "<div style='color:#660000;text-align:center;letter-spacing:3px;font-size:0.85em;'>▾ ▼ ▾ ▼ ▾ ▼ ▾</div>"
                 + "<div style='color:#cc4444;text-align:center;font-size:1.05em;margin:4px 0;font-family:Palatino Linotype,Palatino,serif;'>🪶 𝔗𝔥𝔢 𝔇𝔢𝔞𝔡'𝔰 𝔇𝔯𝔞𝔴 🪶</div>"
                 + "<table style='width:100%;border-collapse:collapse;margin:4px 0;'>" + rows + "</table>"
@@ -863,15 +863,15 @@ on("chat:message", function (msg) {
       }
 
       case "advanceTurn": {
-        var order = Campaign().get("turnorder");
+        let order = Campaign().get("turnorder");
         if (!order) { writeResult(nonce, { ok: false, note: "Turn order is empty" }); break; }
-        var entries = JSON.parse(order);
+        let entries = JSON.parse(order);
         if (entries.length === 0) { writeResult(nonce, { ok: false, note: "Turn order is empty" }); break; }
         // Rotate: move first entry to end
         entries.push(entries.shift());
         Campaign().set("turnorder", JSON.stringify(entries));
-        var current = entries[0];
-        var currentToken = current.id ? getObj("graphic", current.id) : null;
+        let current = entries[0];
+        let currentToken = current.id ? getObj("graphic", current.id) : null;
         writeResult(nonce, {
           ok: true,
           current: {
@@ -885,7 +885,7 @@ on("chat:message", function (msg) {
       }
 
       case "getTokenById": {
-        var token = getObj("graphic", args.tokenId);
+        let token = getObj("graphic", args.tokenId);
         if (!token) { writeResult(nonce, null); break; }
         writeResult(nonce, {
           id: token.id,
@@ -922,7 +922,7 @@ on("chat:message", function (msg) {
       }
 
       case "setTokenProps": {
-        var token = getObj("graphic", args.tokenId);
+        let token = getObj("graphic", args.tokenId);
         if (!token) throw new Error("Token not found: " + args.tokenId);
         token.set(args.props || {});
         writeResult(nonce, { ok: true });
@@ -930,13 +930,13 @@ on("chat:message", function (msg) {
       }
 
       case "getRecentChat": {
-        var n = Math.min(args.limit || 50, CHAT_BUFFER.length);
+        let n = Math.min(args.limit || 50, CHAT_BUFFER.length);
         writeResult(nonce, CHAT_BUFFER.slice(-n));
         break;
       }
 
       case "getDmInbox": {
-        var inboxEntries = args.type
+        let inboxEntries = args.type
           ? DM_INBOX.filter(function(e) { return e.type === args.type; })
           : DM_INBOX.slice();
         writeResult(nonce, inboxEntries);
@@ -961,26 +961,26 @@ on("chat:message", function (msg) {
       }
 
       case "findTokensInRange": {
-        var centerToken = getObj("graphic", args.centerTokenId);
+        let centerToken = getObj("graphic", args.centerTokenId);
         if (!centerToken) throw new Error("Center token not found: " + args.centerTokenId);
-        var pageId = args.pageId || centerToken.get("_pageid");
-        var page = getObj("page", pageId);
+        let pageId = args.pageId || centerToken.get("_pageid");
+        let page = getObj("page", pageId);
         if (!page) throw new Error("Page not found: " + pageId);
-        var scaleNumber = page.get("scale_number") || 5;
-        var pixelsPerFoot = 70 / scaleNumber;
-        var cx = centerToken.get("left");
-        var cy = centerToken.get("top");
-        var radiusFeet = args.radiusFeet || 15;
-        var radiusPx = radiusFeet * pixelsPerFoot;
-        var allTokens = findObjs({ _type: "graphic", _pageid: pageId });
-        var rangeResults = [];
+        let scaleNumber = page.get("scale_number") || 5;
+        let pixelsPerFoot = 70 / scaleNumber;
+        let cx = centerToken.get("left");
+        let cy = centerToken.get("top");
+        let radiusFeet = args.radiusFeet || 15;
+        let radiusPx = radiusFeet * pixelsPerFoot;
+        let allTokens = findObjs({ _type: "graphic", _pageid: pageId });
+        let rangeResults = [];
         allTokens.forEach(function(t) {
           if (t.id === args.centerTokenId) return;
           if (args.layerFilter && t.get("layer") !== args.layerFilter) return;
-          var dx = t.get("left") - cx;
-          var dy = t.get("top") - cy;
-          var distPx = Math.sqrt(dx * dx + dy * dy);
-          var distFeet = distPx / pixelsPerFoot;
+          let dx = t.get("left") - cx;
+          let dy = t.get("top") - cy;
+          let distPx = Math.sqrt(dx * dx + dy * dy);
+          let distFeet = distPx / pixelsPerFoot;
           if (distFeet <= radiusFeet) {
             rangeResults.push({
               id: t.id,
@@ -1014,26 +1014,26 @@ on("chat:message", function (msg) {
         // Write attributes to a Roll20 character sheet (charId = the `represents` field from the token).
         // args.attributes values can be plain scalars (sets current only) or { current, max } objects.
         // NOTE: findObjs uses _characterid (underscore), but createObj requires characterid (no underscore).
-        var charId = args.charId;
-        var attributes = args.attributes || {};
-        var updated = [], created = [], failed = [];
+        let charId = args.charId;
+        let attributes = args.attributes || {};
+        let updated = [], created = [], failed = [];
         Object.keys(attributes).forEach(function(attrName) {
-          var val = attributes[attrName];
-          var isObj = typeof val === "object" && val !== null;
-          var currentVal = isObj ? val.current : val;
-          var maxVal = isObj ? val.max : undefined;
-          var existing = findObjs({ _type: "attribute", _characterid: charId, name: attrName });
+          let val = attributes[attrName];
+          let isObj = typeof val === "object" && val !== null;
+          let currentVal = isObj ? val.current : val;
+          let maxVal = isObj ? val.max : undefined;
+          let existing = findObjs({ _type: "attribute", _characterid: charId, name: attrName });
           if (existing.length > 0) {
-            var updates = {};
+            let updates = {};
             if (currentVal !== undefined) updates.current = currentVal;
             if (maxVal !== undefined) updates.max = maxVal;
             existing[0].set(updates);
             updated.push(attrName);
           } else {
-            var createArgs = { characterid: charId, name: attrName };
+            let createArgs = { characterid: charId, name: attrName };
             if (currentVal !== undefined) createArgs.current = currentVal;
             if (maxVal !== undefined) createArgs.max = maxVal;
-            var obj = createObj("attribute", createArgs);
+            let obj = createObj("attribute", createArgs);
             if (obj) { created.push(attrName); } else { failed.push(attrName); }
           }
         });
@@ -1043,12 +1043,12 @@ on("chat:message", function (msg) {
 
       case "getCharacterAttributes": {
         // Read attributes from a Roll20 character sheet. Pass names[] to filter.
-        var charId = args.charId;
-        var nameFilter = args.names;
-        var attrs = findObjs({ _type: "attribute", _characterid: charId });
-        var result = {};
+        let charId = args.charId;
+        let nameFilter = args.names;
+        let attrs = findObjs({ _type: "attribute", _characterid: charId });
+        let result = {};
         attrs.forEach(function(a) {
-          var attrName = a.get("name");
+          let attrName = a.get("name");
           if (!nameFilter || nameFilter.indexOf(attrName) !== -1) {
             result[attrName] = { current: a.get("current"), max: a.get("max") };
           }
@@ -1060,24 +1060,24 @@ on("chat:message", function (msg) {
       case "syncConditionsToToken": {
         // Set all status markers on a token and store active_conditions on the character.
         // args.tokenId, args.charId (optional), args.conditions: string[]
-        var token = getObj("graphic", args.tokenId);
+        let token = getObj("graphic", args.tokenId);
         if (!token) throw new Error("Token not found: " + args.tokenId);
-        var activeSet = new Set((args.conditions || []).map(function(c) { return c.toLowerCase(); }));
-        var markerSet = new Set((token.get("statusmarkers") || "").split(",").filter(Boolean));
+        let activeSet = new Set((args.conditions || []).map(function(c) { return c.toLowerCase(); }));
+        let markerSet = new Set((token.get("statusmarkers") || "").split(",").filter(Boolean));
         // Build set of all known marker strings in every format (Name::id, Name, name)
         // so stale plain-name versions left from prior attempts get cleaned up.
-        var allKnown = new Set();
+        let allKnown = new Set();
         Object.keys(CONDITION_MARKERS).forEach(function(condition) {
-          var tag = CONDITION_MARKERS[condition];
+          let tag = CONDITION_MARKERS[condition];
           allKnown.add(tag);
-          var displayName = tag.split("::")[0];
+          let displayName = tag.split("::")[0];
           allKnown.add(displayName);
           allKnown.add(displayName.toLowerCase());
         });
         allKnown.forEach(function(m) { markerSet.delete(m); });
         // Re-add only active conditions with correct Name::id tags
         activeSet.forEach(function(condition) {
-          var marker = CONDITION_MARKERS[condition];
+          let marker = CONDITION_MARKERS[condition];
           if (marker) markerSet.add(marker);
         });
         token.set("statusmarkers", Array.from(markerSet).join(","));
@@ -1089,17 +1089,17 @@ on("chat:message", function (msg) {
       case "toggleCondition": {
         // Toggle a single condition on a token sticker and character attribute.
         // args.tokenId, args.charId (optional), args.condition: string, args.active: boolean
-        var token = getObj("graphic", args.tokenId);
+        let token = getObj("graphic", args.tokenId);
         if (!token) throw new Error("Token not found: " + args.tokenId);
-        var condition = (args.condition || "").toLowerCase();
-        var marker = CONDITION_MARKERS[condition] || condition;
-        var markerSet = new Set((token.get("statusmarkers") || "").split(",").filter(Boolean));
+        let condition = (args.condition || "").toLowerCase();
+        let marker = CONDITION_MARKERS[condition] || condition;
+        let markerSet = new Set((token.get("statusmarkers") || "").split(",").filter(Boolean));
         if (args.active) markerSet.add(marker); else markerSet.delete(marker);
         token.set("statusmarkers", Array.from(markerSet).join(","));
         if (args.charId) {
-          var existing = findObjs({ _type: "attribute", _characterid: args.charId, name: "active_conditions" });
-          var condList = existing.length > 0 ? (existing[0].get("current") || "").split(",").filter(Boolean) : [];
-          var condSet = new Set(condList);
+          let existing = findObjs({ _type: "attribute", _characterid: args.charId, name: "active_conditions" });
+          let condList = existing.length > 0 ? (existing[0].get("current") || "").split(",").filter(Boolean) : [];
+          let condSet = new Set(condList);
           if (args.active) condSet.add(condition); else condSet.delete(condition);
           setConditionAttr(args.charId, condSet);
         }
@@ -1108,8 +1108,8 @@ on("chat:message", function (msg) {
       }
 
       case "getTokenMarkers": {
-        var raw = Campaign().get("token_markers");
-        var markers = typeof raw === "string" ? JSON.parse(raw) : (raw || []);
+        let raw = Campaign().get("token_markers");
+        let markers = typeof raw === "string" ? JSON.parse(raw) : (raw || []);
         writeResult(nonce, markers.map(function(m) {
           return { id: m.id, name: m.name, tag: m.tag };
         }));
@@ -1120,22 +1120,22 @@ on("chat:message", function (msg) {
         // Roll one or more dice formulas using Roll20's real dice engine via sendChat inline rolls.
         // Each item: { label, formula }  e.g. { label: "Fireball save — Goblin", formula: "1d20+2" }
         // Results appear in Roll20 chat (noarchive by default so they don't clutter the log).
-        var rollNonce = nonce;
-        var items = args.items || [];
+        let rollNonce = nonce;
+        let items = args.items || [];
         if (!items.length) { writeResult(rollNonce, []); break; }
 
-        var speaker = args.speakAs || "GM-AI-Bridge";
-        var noarchive = args.silent === true; // default visible; pass silent:true to hide from chat
-        var msgParts = items.map(function(item) {
+        let speaker = args.speakAs || "GM-AI-Bridge";
+        let noarchive = args.silent === true; // default visible; pass silent:true to hide from chat
+        let msgParts = items.map(function(item) {
           return (item.label ? item.label + ": " : "") + "[[" + item.formula + "]]";
         });
 
         sendChat(speaker, msgParts.join(" | "), function(ops) {
-          var inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
-          var results = items.map(function(item, i) {
-            var roll = inlinerolls[i];
+          let inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
+          let results = items.map(function(item, i) {
+            let roll = inlinerolls[i];
             if (!roll) return { label: item.label || "", formula: item.formula, total: 0, dice: [], error: "no roll" };
-            var dice = [];
+            let dice = [];
             (roll.results.rolls || []).forEach(function(r) {
               if (r.type === "R") (r.results || []).forEach(function(d) { dice.push(d.v); });
             });
@@ -1154,18 +1154,18 @@ on("chat:message", function (msg) {
       case "sendNarration": {
         // Send styled narrative text to Roll20 chat, visible to all players.
         // style: "narration" (default) | "combat" | "dramatic" | "ambient"
-        var narText = args.text || "";
-        var narStyle = args.style || "narration";
-        var narSpeaker = args.speakAs || "The Dark Powers";
+        let narText = args.text || "";
+        let narStyle = args.style || "narration";
+        let narSpeaker = args.speakAs || "The Dark Powers";
 
-        var styles = {
+        let styles = {
           narration: "font-family:Georgia,serif;font-style:italic;color:#e8c97e;border:1px solid #7a3030;border-left-width:3px;padding:7px 12px;background:#1c0808;line-height:1.65;border-radius:2px;",
           combat:    "font-family:Georgia,serif;font-weight:bold;color:#f08080;border:1px solid #8b0000;border-left-width:3px;padding:7px 12px;background:#200a0a;line-height:1.65;border-radius:2px;",
           dramatic:  "font-family:Georgia,serif;font-weight:bold;font-style:italic;color:#e8c040;text-align:center;border:1px solid #8b6914;border-top-width:2px;border-bottom-width:2px;padding:10px 14px;background:#1a1100;letter-spacing:0.5px;line-height:1.7;border-radius:2px;",
           ambient:   "font-family:Georgia,serif;font-style:italic;color:#a8c890;border:1px solid #4a6a3a;border-left-width:3px;padding:7px 12px;background:#080f08;line-height:1.65;border-radius:2px;",
         };
-        var styleStr = styles[narStyle] || styles.narration;
-        var html = "<div style='" + styleStr + "'>" + narText + "</div>";
+        let styleStr = styles[narStyle] || styles.narration;
+        let html = "<div style='" + styleStr + "'>" + narText + "</div>";
         sendChat(narSpeaker, html, null, {});
         writeResult(nonce, { ok: true });
         break;
@@ -1175,12 +1175,12 @@ on("chat:message", function (msg) {
         // Execute N sync operations in a single relay round-trip.
         // Each op: { id?, action, args? }
         // Returns: [{ id, ok, data?, error? }]
-        var batchOps = args.ops || [];
-        var batchResults = [];
+        let batchOps = args.ops || [];
+        let batchResults = [];
         batchOps.forEach(function(op) {
-          var opId = (op.id != null) ? op.id : batchResults.length;
+          let opId = (op.id != null) ? op.id : batchResults.length;
           try {
-            var data = runBatchOp(op.action, op.args || {});
+            let data = runBatchOp(op.action, op.args || {});
             batchResults.push({ id: opId, ok: true, data: data });
           } catch(e) {
             batchResults.push({ id: opId, ok: false, error: String(e) });
@@ -1199,20 +1199,20 @@ on("chat:message", function (msg) {
         // Draw a named zone (circle or rect) on the "objects" layer.
         // Metadata stored in gmnotes so it survives relay restarts.
         // centerX/centerY in page pixels; radiusFeet converted via page scale.
-        var zonePage = getObj("page", args.pageId);
+        let zonePage = getObj("page", args.pageId);
         if (!zonePage) throw new Error("Page not found: " + args.pageId);
-        var zoneScale = args.scaleNumber || zonePage.get("scale_number") || 5;
-        var zoneRadiusPx = (args.radiusFeet || 15) * (70 / zoneScale);
-        var zoneCx = args.centerX || 0;
-        var zoneCy = args.centerY || 0;
-        var zoneColor = args.color || "#aa00ff";
-        var zoneName = "ZONE: " + (args.name || "Zone");
+        let zoneScale = args.scaleNumber || zonePage.get("scale_number") || 5;
+        let zoneRadiusPx = (args.radiusFeet || 15) * (70 / zoneScale);
+        let zoneCx = args.centerX || 0;
+        let zoneCy = args.centerY || 0;
+        let zoneColor = args.color || "#aa00ff";
+        let zoneName = "ZONE: " + (args.name || "Zone");
 
-        var zonePath, zoneWidth, zoneHeight;
+        let zonePath, zoneWidth, zoneHeight;
         if ((args.shape || "circle") === "rect") {
           // Rectangle: width/height passed directly in feet, converted to pixels
-          var halfW = (args.widthFeet || args.radiusFeet || 15) * (70 / zoneScale) / 2;
-          var halfH = (args.heightFeet || args.radiusFeet || 15) * (70 / zoneScale) / 2;
+          let halfW = (args.widthFeet || args.radiusFeet || 15) * (70 / zoneScale) / 2;
+          let halfH = (args.heightFeet || args.radiusFeet || 15) * (70 / zoneScale) / 2;
           zoneWidth = halfW * 2;
           zoneHeight = halfH * 2;
           zonePath = JSON.stringify([["M",0,0],["L",zoneWidth,0],["L",zoneWidth,zoneHeight],["L",0,zoneHeight],["Z"]]);
@@ -1222,7 +1222,7 @@ on("chat:message", function (msg) {
           zoneHeight = zoneRadiusPx * 2;
         }
 
-        var zoneObj = createObj("path", {
+        let zoneObj = createObj("path", {
           pageid: args.pageId,
           layer: "map",
           path: zonePath,
@@ -1256,12 +1256,12 @@ on("chat:message", function (msg) {
 
       case "clearZone": {
         if (args.zoneId) {
-          var zo = getObj("path", args.zoneId);
+          let zo = getObj("path", args.zoneId);
           if (zo) zo.remove();
           writeResult(nonce, { removed: zo ? 1 : 0 });
         } else if (args.name) {
-          var prefix = "ZONE: " + args.name;
-          var found = findObjs({ _type: "path", _pageid: args.pageId }).filter(function(p) {
+          let prefix = "ZONE: " + args.name;
+          let found = findObjs({ _type: "path", _pageid: args.pageId }).filter(function(p) {
             return p.get("name") === prefix;
           });
           found.forEach(function(p) { p.remove(); });
@@ -1274,7 +1274,7 @@ on("chat:message", function (msg) {
 
       case "removeObject": {
         // Remove any Roll20 object by id. Tries graphic, then path.
-        var roObj = getObj(args.objectType || "graphic", args.objectId);
+        let roObj = getObj(args.objectType || "graphic", args.objectId);
         if (!roObj && (!args.objectType || args.objectType === "graphic")) roObj = getObj("path", args.objectId);
         if (!roObj) throw new Error("Object not found: " + args.objectId);
         roObj.remove();
@@ -1283,11 +1283,11 @@ on("chat:message", function (msg) {
       }
 
       case "listZones": {
-        var allPaths = findObjs({ _type: "path", _pageid: args.pageId });
-        var zones = allPaths.filter(function(p) {
+        let allPaths = findObjs({ _type: "path", _pageid: args.pageId });
+        let zones = allPaths.filter(function(p) {
           return (p.get("name") || "").startsWith("ZONE: ");
         }).map(function(p) {
-          var meta = {};
+          let meta = {};
           try { meta = JSON.parse(p.get("gmnotes") || "{}"); } catch(e) {}
           return {
             id: p.id,
@@ -1303,24 +1303,24 @@ on("chat:message", function (msg) {
 
       case "findTokensInZone": {
         // Load zone metadata from gmnotes, then check all tokens for containment.
-        var zoneGraphic = getObj("path", args.zoneId);
+        let zoneGraphic = getObj("path", args.zoneId);
         if (!zoneGraphic) throw new Error("Zone not found: " + args.zoneId);
-        var zoneMeta = {};
+        let zoneMeta = {};
         try { zoneMeta = JSON.parse(zoneGraphic.get("gmnotes") || "{}"); } catch(e) {}
-        var zCx = zoneMeta.centerX != null ? zoneMeta.centerX : zoneGraphic.get("left");
-        var zCy = zoneMeta.centerY != null ? zoneMeta.centerY : zoneGraphic.get("top");
-        var zRadFeet = zoneMeta.radiusFeet || 15;
-        var zPage = getObj("page", args.pageId || zoneGraphic.get("_pageid"));
+        let zCx = zoneMeta.centerX != null ? zoneMeta.centerX : zoneGraphic.get("left");
+        let zCy = zoneMeta.centerY != null ? zoneMeta.centerY : zoneGraphic.get("top");
+        let zRadFeet = zoneMeta.radiusFeet || 15;
+        let zPage = getObj("page", args.pageId || zoneGraphic.get("_pageid"));
         if (!zPage) throw new Error("Page not found");
-        var zScale = zPage.get("scale_number") || 5;
-        var zPxPerFoot = 70 / zScale;
-        var zRadPx = zRadFeet * zPxPerFoot;
-        var zTokens = findObjs({ _type: "graphic", _pageid: zPage.id });
-        var inZone = [];
+        let zScale = zPage.get("scale_number") || 5;
+        let zPxPerFoot = 70 / zScale;
+        let zRadPx = zRadFeet * zPxPerFoot;
+        let zTokens = findObjs({ _type: "graphic", _pageid: zPage.id });
+        let inZone = [];
         zTokens.forEach(function(t) {
-          var dx = t.get("left") - zCx;
-          var dy = t.get("top") - zCy;
-          var distPx = Math.sqrt(dx * dx + dy * dy);
+          let dx = t.get("left") - zCx;
+          let dy = t.get("top") - zCy;
+          let distPx = Math.sqrt(dx * dx + dy * dy);
           if (distPx <= zRadPx) {
             inZone.push({
               id: t.id,
@@ -1347,7 +1347,7 @@ on("chat:message", function (msg) {
 
 // Build a reverse map from marker tag → condition name (for statusmarkers → condition names).
 function buildMarkerToCondition() {
-  var map = {};
+  let map = {};
   Object.keys(CONDITION_MARKERS).forEach(function(cond) {
     map[CONDITION_MARKERS[cond]] = cond;
   });
@@ -1357,21 +1357,21 @@ function buildMarkerToCondition() {
 // Read combatant status for a turn order entry. Returns a display string.
 function combatantStatusLine(entry) {
   if (!entry || !entry.id) return null;
-  var t = getObj("graphic", entry.id);
+  let t = getObj("graphic", entry.id);
   if (!t) return null;
-  var name = t.get("name") || "?";
-  var hp = t.get("bar1_value");
-  var maxHp = t.get("bar1_max");
-  var markerMap = buildMarkerToCondition();
-  var markers = (t.get("statusmarkers") || "").split(",").filter(Boolean);
-  var conditions = markers.map(function(m) { return markerMap[m]; }).filter(Boolean);
+  let name = t.get("name") || "?";
+  let hp = t.get("bar1_value");
+  let maxHp = t.get("bar1_max");
+  let markerMap = buildMarkerToCondition();
+  let markers = (t.get("statusmarkers") || "").split(",").filter(Boolean);
+  let conditions = markers.map(function(m) { return markerMap[m]; }).filter(Boolean);
   // De-duplicate (dead/unconscious share a marker)
-  var condSet = {};
+  let condSet = {};
   conditions.forEach(function(c) { condSet[c] = true; });
-  var condStr = Object.keys(condSet).join(", ") || "—";
-  var bar = "";
+  let condStr = Object.keys(condSet).join(", ") || "—";
+  let bar = "";
   if (maxHp) {
-    var filled = Math.round((hp / maxHp) * 10);
+    let filled = Math.round((hp / maxHp) * 10);
     bar = "█".repeat(Math.max(0, filled)) + "░".repeat(Math.max(0, 10 - filled)) + " ";
   }
   return "<b>" + name + "</b> " + bar + "— " + condStr;
@@ -1380,21 +1380,21 @@ function combatantStatusLine(entry) {
 on("change:campaign:turnorder", function(obj, prev) {
   if (!TURN_HOOK_ENABLED) return;
 
-  var rawNew = obj.get("turnorder");
-  var rawOld = prev ? prev["turnorder"] : null;
+  let rawNew = obj.get("turnorder");
+  let rawOld = prev ? prev["turnorder"] : null;
   if (!rawNew) return;
 
-  var newOrder;
+  let newOrder;
   try { newOrder = JSON.parse(rawNew); } catch(e) { return; }
   if (!newOrder || newOrder.length === 0) return;
 
-  var newFirst = newOrder[0];
+  let newFirst = newOrder[0];
   if (!newFirst || !newFirst.id) return;
 
   // Detect actual turn advancement (first entry changed)
-  var oldFirstId = null;
+  let oldFirstId = null;
   if (rawOld) {
-    try { var oldOrder = JSON.parse(rawOld); oldFirstId = (oldOrder[0] || {}).id || null; } catch(e) {}
+    try { let oldOrder = JSON.parse(rawOld); oldFirstId = (oldOrder[0] || {}).id || null; } catch(e) {}
   }
   if (oldFirstId === newFirst.id) return;
 
@@ -1404,8 +1404,8 @@ on("change:campaign:turnorder", function(obj, prev) {
     ROUND_NUMBER = 1;
   } else if (newFirst.id === ROUND_FIRST_TOKEN_ID) {
     // Cycled back — end of round, post summary then increment
-    var summaryLines = newOrder.map(function(e) { return combatantStatusLine(e); }).filter(Boolean);
-    var summaryHtml = "<div style='background:#080204;border:1px solid #3a0000;padding:6px 10px;'>"
+    let summaryLines = newOrder.map(function(e) { return combatantStatusLine(e); }).filter(Boolean);
+    let summaryHtml = "<div style='background:#080204;border:1px solid #3a0000;padding:6px 10px;'>"
       + "<div style='color:#cc4444;font-family:\"Palatino Linotype\",Palatino,serif;text-align:center;font-size:1em;margin-bottom:4px;'>⚔ Round " + ROUND_NUMBER + " Complete</div>"
       + summaryLines.map(function(r) {
           return "<div style='color:#d4a0a0;font-family:\"Palatino Linotype\",Palatino,serif;font-size:0.9em;padding:1px 4px;'>" + r + "</div>";
@@ -1416,22 +1416,22 @@ on("change:campaign:turnorder", function(obj, prev) {
   }
 
   // Post turn announcement
-  var token = getObj("graphic", newFirst.id);
-  var name = token ? token.get("name") : (newFirst.custom || "?");
-  var hp = token ? token.get("bar1_value") : null;
-  var maxHp = token ? token.get("bar1_max") : null;
-  var markerMap = buildMarkerToCondition();
-  var markers = token ? (token.get("statusmarkers") || "").split(",").filter(Boolean) : [];
-  var condSet = {};
-  markers.forEach(function(m) { var c = markerMap[m]; if (c) condSet[c] = true; });
-  var conditions = Object.keys(condSet);
+  let token = getObj("graphic", newFirst.id);
+  let name = token ? token.get("name") : (newFirst.custom || "?");
+  let hp = token ? token.get("bar1_value") : null;
+  let maxHp = token ? token.get("bar1_max") : null;
+  let markerMap = buildMarkerToCondition();
+  let markers = token ? (token.get("statusmarkers") || "").split(",").filter(Boolean) : [];
+  let condSet = {};
+  markers.forEach(function(m) { let c = markerMap[m]; if (c) condSet[c] = true; });
+  let conditions = Object.keys(condSet);
 
   // Check DM_INBOX for a preloaded intent from this token's controller
-  var pendingIntent = null;
+  let pendingIntent = null;
   if (token) {
-    var controlled = token.get("controlledby") || "";
-    var controllerIds = controlled.split(",").map(function(s){ return s.trim(); }).filter(Boolean);
-    for (var di = 0; di < DM_INBOX.length; di++) {
+    let controlled = token.get("controlledby") || "";
+    let controllerIds = controlled.split(",").map(function(s){ return s.trim(); }).filter(Boolean);
+    for (let di = 0; di < DM_INBOX.length; di++) {
       if (DM_INBOX[di].type === "intent" && controllerIds.indexOf(DM_INBOX[di].playerid) !== -1) {
         pendingIntent = DM_INBOX[di];
         DM_INBOX.splice(di, 1);
@@ -1440,20 +1440,20 @@ on("change:campaign:turnorder", function(obj, prev) {
     }
   }
 
-  var hpLine = "";
+  let hpLine = "";
   if (maxHp) {
-    var filled = Math.round((hp / maxHp) * 10);
-    var bar = "█".repeat(Math.max(0, filled)) + "░".repeat(Math.max(0, 10 - filled));
+    let filled = Math.round((hp / maxHp) * 10);
+    let bar = "█".repeat(Math.max(0, filled)) + "░".repeat(Math.max(0, 10 - filled));
     hpLine = "<div style='color:#d4a0a0;font-size:0.85em;font-family:monospace;'>" + bar + "</div>";
   }
-  var condLine = conditions.length > 0
+  let condLine = conditions.length > 0
     ? "<div style='color:#bb8888;font-size:0.85em;'>Conditions: " + conditions.join(", ") + "</div>"
     : "";
-  var intentLine = pendingIntent
+  let intentLine = pendingIntent
     ? "<div style='color:#aaddaa;font-size:0.85em;margin-top:4px;'>📋 " + pendingIntent.who + " intends: " + pendingIntent.content + "</div>"
     : "";
 
-  var html = "<div style='background:#080204;border-left:3px solid #cc4444;padding:5px 10px;'>"
+  let html = "<div style='background:#080204;border-left:3px solid #cc4444;padding:5px 10px;'>"
     + "<div style='color:#cc4444;font-family:\"Palatino Linotype\",Palatino,serif;font-size:1em;'>🩸 <b>" + name + "</b> — Round " + ROUND_NUMBER + "</div>"
     + hpLine + condLine + intentLine
     + "</div>";
