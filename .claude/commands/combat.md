@@ -11,6 +11,7 @@ Run these in order, reporting briefly after each:
 3. **Learn the players** — You do not know who plays which character yet. Ask the players (or DM) to briefly introduce themselves: player name, character name, and a one-line description of who they are. This gives you the mapping you need and a little flavor. Save these mappings for the session — they'll matter when the DM narrates ("Ryan's character takes 12 damage").
 4. **Enable the turn hook** — call `set_turn_hook enabled=true reset=true`. This will post turn announcements and round summaries to Roll20 chat automatically.
 5. **Roll initiative** — call `roll_initiative npcOnly=false clearFirst=true`. Duplicate NPC names will be automatically disambiguated with epithets. Report the full order.
+6. **Start the player inbox loop** — run `/loop 30s` with the prompt: "Call `get_dm_inbox`. For each `query` entry: look up the relevant token/conditions and reply with `whisper_player`. For each `intent` entry: note it for the DM (intents auto-appear in the turn announcement, so only surface them here if no turn hook is running). After responding, call `clear_dm_inbox playerName=<name>` for each player you answered." This lets players use `!dm <text>` in Roll20 chat to preload their turns or ask questions.
 
 ## Once combat is running
 

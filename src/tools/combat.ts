@@ -881,4 +881,37 @@ export function registerCombatTools(server: McpServer): void {
       };
     }
   );
+
+  server.tool(
+    "get_dm_inbox",
+    "Read player !dm messages — intents queued for upcoming turns, or queries needing answers. Intents are auto-consumed by the turn hook when the player's turn arrives; queries stay until answered.",
+    { type: z.enum(["intent", "query"]).optional().describe("Filter by type. Omit to get all.") },
+    async ({ type }) => {
+      const entries = await roll20.relayCommand({ action: "getDmInbox", type });
+      return { content: [{ type: "text", text: JSON.stringify(entries, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "clear_dm_inbox",
+    "Clear processed !dm entries from the queue. Use after answering player queries.",
+    { playerName: z.string().optional().describe("Clear only this player's entries. Omit to flush all.") },
+    async ({ playerName }) => {
+      const result = await roll20.relayCommand({ action: "clearDmInbox", playerName });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }
+  );
+
+  server.tool(
+    "whisper_player",
+    "Whisper a message to a player by their Roll20 display name. Use to answer !dm queries.",
+    {
+      playerName: z.string().describe("Roll20 display name of the player to whisper"),
+      message: z.string().describe("Message content"),
+    },
+    async ({ playerName, message }) => {
+      const result = await roll20.relayCommand({ action: "whisperPlayer", playerName, message });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }
+  );
 }

@@ -23,6 +23,8 @@ function writeResult(nonce, data, error) {
 // --- Globals ---
 var CHAT_BUFFER = [];
 var CHAT_BUFFER_MAX = 100;
+var DM_INBOX = [];
+var DM_INBOX_MAX = 50;
 var ROUND_NUMBER = 0;
 var ROUND_FIRST_TOKEN_ID = null;
 var TURN_HOOK_ENABLED = false;
@@ -208,6 +210,26 @@ on("chat:message", function (msg) {
       timestamp: Date.now(),
     });
     if (CHAT_BUFFER.length > CHAT_BUFFER_MAX) CHAT_BUFFER.shift();
+  }
+
+  // Player turn preloading / queries via !dm
+  if (msg.type === "api" && msg.content && msg.content.startsWith("!dm ")) {
+    var dmText = msg.content.slice(4).trim();
+    if (dmText) {
+      var isQuery = /^(what|who|how|is|am|are|do|does|can|did|\?)/i.test(dmText) || dmText.endsWith("?");
+      DM_INBOX.push({
+        who: msg.who || "",
+        playerid: msg.playerid || "",
+        content: dmText,
+        type: isQuery ? "query" : "intent",
+        timestamp: Date.now(),
+      });
+      if (DM_INBOX.length > DM_INBOX_MAX) DM_INBOX.shift();
+      sendChat("Initiative", "/desc 🎲 **" + (msg.who || "Someone") + "** has set their mind to an action.");
+      var ackVerb = isQuery ? "Got your question — I'll answer shortly." : "Got it — I'll have this ready for your turn.";
+      sendChat("GM-AI-Bridge", "/w " + (msg.who || "gm") + " " + ackVerb + " (" + dmText + ")", null, { noarchive: true });
+    }
+    return;
   }
 
   if (msg.type !== "api") return;
@@ -913,6 +935,31 @@ on("chat:message", function (msg) {
         break;
       }
 
+      case "getDmInbox": {
+        var inboxEntries = args.type
+          ? DM_INBOX.filter(function(e) { return e.type === args.type; })
+          : DM_INBOX.slice();
+        writeResult(nonce, inboxEntries);
+        break;
+      }
+
+      case "clearDmInbox": {
+        if (args.playerName) {
+          DM_INBOX = DM_INBOX.filter(function(e) { return e.who !== args.playerName; });
+        } else {
+          DM_INBOX = [];
+        }
+        writeResult(nonce, { ok: true });
+        break;
+      }
+
+      case "whisperPlayer": {
+        if (!args.playerName || !args.message) throw new Error("whisperPlayer requires playerName and message");
+        sendChat("GM-AI-Bridge", "/w " + args.playerName + " " + args.message, null, { noarchive: true });
+        writeResult(nonce, { ok: true });
+        break;
+      }
+
       case "findTokensInRange": {
         var centerToken = getObj("graphic", args.centerTokenId);
         if (!centerToken) throw new Error("Center token not found: " + args.centerTokenId);
@@ -1379,6 +1426,20 @@ on("change:campaign:turnorder", function(obj, prev) {
   markers.forEach(function(m) { var c = markerMap[m]; if (c) condSet[c] = true; });
   var conditions = Object.keys(condSet);
 
+  // Check DM_INBOX for a preloaded intent from this token's controller
+  var pendingIntent = null;
+  if (token) {
+    var controlled = token.get("controlledby") || "";
+    var controllerIds = controlled.split(",").map(function(s){ return s.trim(); }).filter(Boolean);
+    for (var di = 0; di < DM_INBOX.length; di++) {
+      if (DM_INBOX[di].type === "intent" && controllerIds.indexOf(DM_INBOX[di].playerid) !== -1) {
+        pendingIntent = DM_INBOX[di];
+        DM_INBOX.splice(di, 1);
+        break;
+      }
+    }
+  }
+
   var hpLine = "";
   if (maxHp) {
     var filled = Math.round((hp / maxHp) * 10);
@@ -1388,10 +1449,13 @@ on("change:campaign:turnorder", function(obj, prev) {
   var condLine = conditions.length > 0
     ? "<div style='color:#bb8888;font-size:0.85em;'>Conditions: " + conditions.join(", ") + "</div>"
     : "";
+  var intentLine = pendingIntent
+    ? "<div style='color:#aaddaa;font-size:0.85em;margin-top:4px;'>📋 " + pendingIntent.who + " intends: " + pendingIntent.content + "</div>"
+    : "";
 
   var html = "<div style='background:#080204;border-left:3px solid #cc4444;padding:5px 10px;'>"
     + "<div style='color:#cc4444;font-family:\"Palatino Linotype\",Palatino,serif;font-size:1em;'>🩸 <b>" + name + "</b> — Round " + ROUND_NUMBER + "</div>"
-    + hpLine + condLine
+    + hpLine + condLine + intentLine
     + "</div>";
   sendChat("Initiative", html, null, { noarchive: false });
 });
