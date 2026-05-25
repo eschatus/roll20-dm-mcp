@@ -4,6 +4,8 @@ dist/
 data/
 .claude/settings.json
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.json
 *.log
 *.png
 *.jpg
