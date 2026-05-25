@@ -1,0 +1,197 @@
+/*
+ * ╔══════════════════════════════════════════════════════════╗
+ * ║         CURSE OF STRAHD — Dark Cathedral Theme          ║
+ * ║              Roll20 Custom CSS — Campaign Settings       ║
+ * ╚══════════════════════════════════════════════════════════╝
+ *
+ * Apply via: Campaign Settings → Custom CSS → paste entire file
+ *
+ * BRIDGE SUPPRESSION
+ * ------------------
+ * !ai-relay commands  → collapsed to a 2px red hairline, expand on hover
+ * AIBRIDGE_RESULT whispers → hidden entirely (GM-only anyway)
+ */
+
+/* ── Bridge suppression ──────────────────────────────────────────
+   !ai-relay commands are type "api" — Roll20 never shows those to
+   anyone, so no CSS needed for them.
+
+   Responses are whispered with noarchive:true and display:none on
+   the payload div. They won't persist in the chat log, and even the
+   transient wrapper bubble is killed here with :has().
+   ─────────────────────────────────────────────────────────────── */
+.message.whisper:has(div[style*="display:none"]) {
+  display: none !important;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════
+   GOTHIC BASE
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Chat log */
+#textchat #log {
+  background:
+    radial-gradient(ellipse at top, #120508 0%, #080204 70%),
+    #080204;
+  border-top: 1px solid #5a0000;
+}
+
+/* All messages */
+#textchat .message {
+  border-bottom: 1px solid rgba(90, 0, 0, 0.18);
+  padding: 5px 10px;
+  font-family: 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+  color: #c4b09a;
+  line-height: 1.45;
+}
+
+/* ── Speaker names ───────────────────────────────────────────── */
+#textchat .message .by {
+  color: #cc2200;
+  font-variant: small-caps;
+  font-weight: bold;
+  letter-spacing: 0.1em;
+  text-shadow: 0 0 10px rgba(200, 0, 0, 0.35);
+  display: block;
+  margin-bottom: 2px;
+}
+
+/* ── Regular speech ──────────────────────────────────────────── */
+#textchat .message.general {
+  background: rgba(10, 3, 5, 0.55);
+}
+
+/* ── Whispers — blood-chamber red ───────────────────────────── */
+#textchat .message.whisper {
+  background: rgba(35, 4, 10, 0.75);
+  border-left: 2px solid #7a0020;
+  font-style: italic;
+  color: #d4a0a0;
+}
+
+/* ── Emotes ──────────────────────────────────────────────────── */
+#textchat .message.emote {
+  color: #8a7060;
+  font-style: italic;
+  background: rgba(10, 5, 5, 0.4);
+}
+
+/* ── Inline dice results ─────────────────────────────────────── */
+#textchat .inlinerollresult {
+  background: #150406 !important;
+  border: 1px solid #8b0000 !important;
+  color: #ff5555 !important;
+  border-radius: 2px !important;
+  padding: 1px 4px !important;
+  font-family: 'Courier New', monospace !important;
+  box-shadow: inset 0 0 4px rgba(180, 0, 0, 0.25);
+}
+#textchat .inlinerollresult.fullfail {
+  border-color: #4a0000 !important;
+  color: #884444 !important;
+}
+#textchat .inlinerollresult.fullcrit {
+  border-color: #ff2200 !important;
+  color: #ff8866 !important;
+  box-shadow: 0 0 6px rgba(255, 34, 0, 0.5) !important;
+}
+
+/* ── Roll template header ────────────────────────────────────── */
+.sheet-rolltemplate-default .sheet-template-header,
+.sheet-rolltemplate-npcaction .sheet-template-header,
+.sheet-rolltemplate-spell .sheet-template-header {
+  background: linear-gradient(90deg, #220508 0%, #140305 100%) !important;
+  border-bottom: 1px solid #8b0000 !important;
+  color: #dd5544 !important;
+  font-variant: small-caps !important;
+  letter-spacing: 0.12em !important;
+  font-family: 'Palatino Linotype', Palatino, serif !important;
+}
+.sheet-rolltemplate-default .sheet-template-content,
+.sheet-rolltemplate-npcaction .sheet-template-content,
+.sheet-rolltemplate-spell .sheet-template-content {
+  background: #0e0305 !important;
+  border: 1px solid #3a0010 !important;
+  color: #c4a898 !important;
+}
+
+/* ── Chat input ──────────────────────────────────────────────── */
+#textchat #chat-input {
+  background: #080204;
+  border-top: 1px solid #4a0000;
+}
+#textchat #chat-input textarea {
+  background: #0c0305 !important;
+  color: #c4b09a !important;
+  border: 1px solid #2a1018 !important;
+  font-family: 'Palatino Linotype', Palatino, serif !important;
+  caret-color: #cc2200;
+}
+#textchat #chat-input textarea:focus {
+  border-color: #8b0000 !important;
+  box-shadow: 0 0 8px rgba(139, 0, 0, 0.3) !important;
+  outline: none !important;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════
+   INITIATIVE TRACKER — The Count's Reckoning
+   ═══════════════════════════════════════════════════════════════ */
+
+#initiativewindow {
+  background: #080204 !important;
+  border: 1px solid #5a0000 !important;
+  color: #c4b09a !important;
+  font-family: 'Palatino Linotype', Palatino, serif !important;
+}
+
+/* Tracker heading / controls */
+#initiativewindow .controls {
+  background: linear-gradient(90deg, #150408, #0a0204) !important;
+  border-bottom: 1px solid #5a0000 !important;
+  color: #cc4444 !important;
+  font-variant: small-caps;
+  letter-spacing: 0.1em;
+}
+
+/* Each turn entry */
+#initiativewindow .turnorder li {
+  border-bottom: 1px solid rgba(90, 0, 0, 0.25) !important;
+  color: #c4b09a !important;
+  transition: background 0.2s ease;
+}
+
+/* Active / first combatant */
+#initiativewindow .turnorder li:first-child {
+  background: rgba(110, 0, 20, 0.35) !important;
+  border-left: 3px solid #cc0000 !important;
+  color: #ff7766 !important;
+  font-weight: bold;
+  text-shadow: 0 0 8px rgba(200, 0, 0, 0.5);
+}
+
+/* Hover on entries */
+#initiativewindow .turnorder li:hover {
+  background: rgba(80, 10, 15, 0.5) !important;
+}
+
+/* Initiative score bubble */
+#initiativewindow .turnorder .pr {
+  color: #cc4444 !important;
+  font-weight: bold;
+  font-variant: small-caps;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════
+   SCROLLBAR — thin blood-red rails
+   ═══════════════════════════════════════════════════════════════ */
+
+#textchat #log::-webkit-scrollbar { width: 4px; }
+#textchat #log::-webkit-scrollbar-track { background: #080204; }
+#textchat #log::-webkit-scrollbar-thumb {
+  background: #5a0000;
+  border-radius: 2px;
+}
+#textchat #log::-webkit-scrollbar-thumb:hover { background: #8b0000; }

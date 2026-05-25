@@ -1,0 +1,29 @@
+{
+  "name": "roll20-dm-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Roll20 DM automation + D&D Beyond combat sync",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.98.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "dotenv": "^17.4.2",
+    "playwright": "^1.60.0",
+    "sharp": "^0.34.5",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "@types/sharp": "^0.31.1",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3"
+  }
+}

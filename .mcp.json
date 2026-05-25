@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "roll20-dm": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "E:\\personalProjects\\roll20-dm-mcp\\dist\\index-combat.js"
+      ],
+      "cwd": "E:\\personalProjects\\roll20-dm-mcp"
+    },
+    "roll20-dm-maps": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "E:\\personalProjects\\roll20-dm-mcp\\dist\\index-maps.js"
+      ],
+      "cwd": "E:\\personalProjects\\roll20-dm-mcp"
+    },
+    "image-analysis": {
+      "type": "stdio",
+      "command": "E:\\personalProjects\\image-analysis-mcp\\.venv\\Scripts\\python.exe",
+      "args": [
+        "E:\\personalProjects\\image-analysis-mcp\\server.py"
+      ],
+      "cwd": "E:\\personalProjects\\image-analysis-mcp"
+    }
+  }
+}
