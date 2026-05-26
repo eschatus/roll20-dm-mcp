@@ -460,25 +460,6 @@ function parseJson<T>(text: string, context: string): T {
   }
 }
 
-// Parse "A1" → [col=0, row=0], "B3" → [1, 2], etc.
-function cellToColRow(cell: string): [number, number] | null {
-  const m = cell.match(/^([A-Z]+)(\d+)$/);
-  if (!m) return null;
-  let col = 0;
-  for (const ch of m[1]) col = col * 26 + (ch.charCodeAt(0) - 64);
-  return [col - 1, parseInt(m[2]) - 1];
-}
-
-function roomBbox(cells: string[]): { minCol: number; maxCol: number; minRow: number; maxRow: number } {
-  const coords = cells.map(cellToColRow).filter(Boolean) as [number, number][];
-  if (!coords.length) return { minCol: 0, maxCol: 0, minRow: 0, maxRow: 0 };
-  return {
-    minCol: Math.min(...coords.map((c) => c[0])),
-    maxCol: Math.max(...coords.map((c) => c[0])),
-    minRow: Math.min(...coords.map((c) => c[1])),
-    maxRow: Math.max(...coords.map((c) => c[1])),
-  };
-}
 
 // Pass 1: compute grid from pixel autocorrelation, then ask vision only for room layout.
 async function discoverGridAndRooms(info: ImageInfo): Promise<{ grid: GridInfo; rooms: Room[]; overlaidBuffer: Buffer }> {
