@@ -2,8 +2,6 @@ import { Page } from "playwright";
 import { getPage } from "./browser.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
 
-const RELAY_ATTR_CMD = "GM_AI_Bridge_cmd";
-const RELAY_ATTR_RESULT = "GM_AI_Bridge_result";
 const RELAY_POLL_MS = 100;
 const RELAY_TIMEOUT_MS = 30_000;
 

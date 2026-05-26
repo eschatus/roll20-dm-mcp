@@ -239,8 +239,6 @@ async function drawCandidateOverlay(buffer: Buffer, widthPx: number, heightPx: n
 //
 async function detectGridByAutocorrelation(
   buffer: Buffer,
-  widthPx: number,
-  heightPx: number,
   knownGridSizePx = 70,
 ): Promise<{ gridSizePx: number; gridOffsetX: number; gridOffsetY: number; cols: number; rows: number }> {
   const { data, info } = await sharp(buffer).grayscale().raw().toBuffer({ resolveWithObject: true });
@@ -461,43 +459,6 @@ function parseJson<T>(text: string, context: string): T {
 }
 
 
-// Pass 1: compute grid from pixel autocorrelation, then ask vision only for room layout.
-async function discoverGridAndRooms(info: ImageInfo): Promise<{ grid: GridInfo; rooms: Room[]; overlaidBuffer: Buffer }> {
-  // Grid detection via signal processing — no vision model involved.
-  const grid = await detectGridByAutocorrelation(info.buffer, info.widthPx, info.heightPx);
-
-  // Draw the overlay with the computed grid so the model sees labeled cells.
-  const overlaidBuffer = await drawGridOverlay(info.buffer, info.widthPx, info.heightPx, grid);
-
-  // Ask vision model to identify rooms only — grid dimensions are provided as ground truth.
-  const prompt = `This battlemap has a yellow grid overlay. Grid cell size: ${grid.gridSizePx}px. Grid starts at pixel (${grid.gridOffsetX}, ${grid.gridOffsetY}).
-Columns A–${colLabel(grid.cols - 1)} left-to-right (A is leftmost), rows 1–${grid.rows} top-to-bottom (1 is topmost).
-
-List ALL distinct enclosed spaces inside the building. Return ONLY JSON (no markdown):
-{
-  "rooms": [
-    {
-      "name": "<short descriptive label>",
-      "cells": ["A1","B1","A2","B2"],
-      "function": "<inferred purpose>",
-      "hasEntrance": <true if any gap, door, arch, or passage connects this space to any adjacent space>,
-      "isDeadSpace": <true ONLY for clearly exterior space outside all building walls>
-    }
-  ]
-}
-
-Rules:
-- Include EVERY enclosed interior space — small corridors, alcoves, and sub-rooms from interior partition walls all count.
-- If an interior partition divides a larger area into two parts, those are TWO separate rooms.
-- cells: list every grid cell the room occupies using the labeled column letters and row numbers.
-- isDeadSpace: true ONLY for space outside the outermost building walls.`;
-
-  const text = await callVision(overlaidBuffer, "image/png", prompt, 3000);
-  const raw = parseJson<{ rooms?: Room[] }>(text, "Pass 1 (rooms)");
-
-  return { grid, rooms: raw.rooms ?? [], overlaidBuffer };
-}
-
 // Pass 2: directly trace all walls from the grid-overlaid image.
 // No pre-determined room list — the model identifies spatial regions itself via sideA/sideB labels.
 // This avoids the "missed sub-room" failure mode where room detection merges distinct spaces.
@@ -620,7 +581,7 @@ export async function analyzeImageTwoPass(
   rooms: Room[];
   validation: { isolatedRooms: string[]; notes: string };
 }> {
-  const grid = await detectGridByAutocorrelation(info.buffer, info.widthPx, info.heightPx, knownGridSizePx);
+  const grid = await detectGridByAutocorrelation(info.buffer, knownGridSizePx);
   let overlaidBuffer = await drawGridOverlay(info.buffer, info.widthPx, info.heightPx, grid);
   if (houghCandidates && houghCandidates.length > 0) {
     overlaidBuffer = await drawCandidateOverlay(overlaidBuffer, info.widthPx, info.heightPx, houghCandidates);
