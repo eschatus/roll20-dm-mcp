@@ -308,6 +308,20 @@ export async function listCampaigns(): Promise<{ id: string; name: string }[]> {
   });
 }
 
+export interface DdbMonsterAbility {
+  name: string;
+  description: string;
+}
+
+export interface DdbMonsterSpeed {
+  walk?: number;
+  fly?: number;
+  swim?: number;
+  burrow?: number;
+  climb?: number;
+  canHover?: boolean;
+}
+
 export interface DdbMonster {
   id: number;
   name: string;
@@ -316,6 +330,17 @@ export interface DdbMonster {
   challengeRating: string;
   largeAvatarUrl: string | null;
   stats?: Array<{ id: number; value: number | null }>;  // id 1-6: STR DEX CON INT WIS CHA
+  speed?: DdbMonsterSpeed;
+  alignment?: string;
+  size?: string;
+  specialTraits?: DdbMonsterAbility[];
+  actions?: DdbMonsterAbility[];
+  reactions?: DdbMonsterAbility[];
+  legendaryActions?: DdbMonsterAbility[];
+  bonusActions?: DdbMonsterAbility[];
+  damageImmunities?: string[];
+  damageResistances?: string[];
+  conditionImmunities?: string[];
 }
 
 export async function getMonster(nameOrId: string | number): Promise<DdbMonster> {
@@ -337,6 +362,44 @@ export function getMonsterAbilityScores(monster: DdbMonster): Record<string, num
     if (ability && stat.value != null) scores[ability] = stat.value;
   }
   return scores;
+}
+
+export function getMonsterAbilities(monster: DdbMonster): string {
+  const lines: string[] = [];
+
+  if (monster.speed) {
+    const parts: string[] = [];
+    if (monster.speed.walk) parts.push(`${monster.speed.walk}ft walk`);
+    if (monster.speed.fly) parts.push(`${monster.speed.fly}ft fly${monster.speed.canHover ? " (hover)" : ""}`);
+    if (monster.speed.swim) parts.push(`${monster.speed.swim}ft swim`);
+    if (monster.speed.burrow) parts.push(`${monster.speed.burrow}ft burrow`);
+    if (monster.speed.climb) parts.push(`${monster.speed.climb}ft climb`);
+    if (parts.length > 0) lines.push(`Speed: ${parts.join(", ")}`);
+  }
+
+  if (monster.alignment) lines.push(`Alignment: ${monster.alignment}`);
+
+  const formatAbilities = (label: string, items: DdbMonsterAbility[] | undefined) => {
+    if (!items || items.length === 0) return;
+    lines.push(`${label}:`);
+    for (const item of items) {
+      lines.push(`  ${item.name}: ${item.description}`);
+    }
+  };
+
+  formatAbilities("Special Traits", monster.specialTraits);
+  formatAbilities("Actions", monster.actions);
+  formatAbilities("Bonus Actions", monster.bonusActions);
+  formatAbilities("Reactions", monster.reactions);
+  formatAbilities("Legendary Actions", monster.legendaryActions);
+
+  const resistances: string[] = [];
+  if (monster.damageImmunities?.length) resistances.push(`Immune: ${monster.damageImmunities.join(", ")}`);
+  if (monster.damageResistances?.length) resistances.push(`Resistant: ${monster.damageResistances.join(", ")}`);
+  if (monster.conditionImmunities?.length) resistances.push(`Condition immune: ${monster.conditionImmunities.join(", ")}`);
+  if (resistances.length > 0) lines.push(resistances.join("  "));
+
+  return lines.join("\n");
 }
 
 const CONDITION_IDS: Record<string, number> = {

@@ -93,16 +93,34 @@ function awarenessRadius(wisScore: number, requestedRadius: number): number {
 
 // ─── DDB Monster Stats Cache ─────────────────────────────────────────────────
 
-// Keyed by lowercased token name. Avoids repeated DDB calls for same monster type.
-const monsterStatsCache = new Map<string, { intelligence: number; wisdom: number }>();
+interface MonsterData {
+  strength: number;
+  dexterity: number;
+  constitution: number;
+  intelligence: number;
+  wisdom: number;
+  charisma: number;
+  abilitySummary: string;  // pre-formatted for prompt injection
+}
 
-async function resolveMonsterScores(name: string): Promise<{ intelligence: number; wisdom: number } | null> {
+// Keyed by lowercased token name. Avoids repeated DDB calls for same monster type.
+const monsterStatsCache = new Map<string, MonsterData>();
+
+async function resolveMonsterData(name: string): Promise<MonsterData | null> {
   const key = name.toLowerCase();
   if (monsterStatsCache.has(key)) return monsterStatsCache.get(key)!;
   try {
     const monster = await ddb.getMonster(name);
     const scores = ddb.getMonsterAbilityScores(monster);
-    const result = { intelligence: scores.intelligence ?? 10, wisdom: scores.wisdom ?? 10 };
+    const result: MonsterData = {
+      strength: scores.strength ?? 10,
+      dexterity: scores.dexterity ?? 10,
+      constitution: scores.constitution ?? 10,
+      intelligence: scores.intelligence ?? 10,
+      wisdom: scores.wisdom ?? 10,
+      charisma: scores.charisma ?? 10,
+      abilitySummary: ddb.getMonsterAbilities(monster),
+    };
     monsterStatsCache.set(key, result);
     return result;
   } catch {
@@ -134,16 +152,48 @@ const anthropic = new Anthropic({
   defaultHeaders: { "anthropic-beta": "prompt-caching-2024-07-31" },
 });
 
-const TACTICS_SYSTEM_PROMPT = `You are the tactical AI for a D&D 5e dungeon master's monsters and NPCs. Your job is to recommend the best action sequence for a creature's turn based on its intelligence tier.
+const TACTICS_SYSTEM_PROMPT = `You are the tactical AI for a D&D 5e dungeon master. Your job is to recommend the best action sequence for a creature's turn. Recommendations must reflect how this specific creature actually behaves — not generic "smart monster" advice.
 
-Rules you must follow:
-- Recommend exactly one Action, one Bonus Action (if available), and a Movement plan.
-- Apply D&D 5e action economy correctly. Note available reactions if relevant.
-- Scale your reasoning to the creature's intelligence: feral/dim creatures act on instinct; average creatures fight reasonably; sharp/brilliant/mastermind creatures use positioning, focus fire, and resource management.
-- Be concise and immediately actionable. No rulebook citations.
-- Never break character or reference game mechanics meta-textually.
+═══ SURVIVAL ═══
+Every creature wants to survive. Flee when HP drops to 40% or below unless the creature is (a) undead, a construct, or a fanatic, or (b) intelligent enough to know it will be hunted down if it flees.
+Wisdom governs when the creature recognizes danger: Wis ≤ 7 may wait too long to flee; Wis 8–11 knows to flee but picks bad moments; Wis 12+ recognizes a losing fight early.
 
-Output format: Lead with the action itself, then one or two sentences of reasoning. For cascade tiers, structure your response clearly under the heading provided.`;
+═══ INTELLIGENCE ═══
+Int ≤ 7: One modus operandi. Uses its feature effectively but cannot adapt when it stops working.
+Int 8–11: Unsophisticated. Can tell when things go wrong and adjust slightly.
+Int 12+: Plans and coordinates with allies. Picks the right attack for the situation.
+Int 14+: Accurately reads enemy weaknesses and targets accordingly.
+
+═══ WISDOM ═══
+Wis ≤ 7: Indiscriminate target selection.
+Wis 8–11: Knows to flee but does not choose targets carefully.
+Wis 12+: Chooses targets carefully; may attempt parley if clearly outmatched.
+Wis 14+: Only fights when it believes it will win, or when it has no other option.
+
+═══ PHYSICAL ABILITY FIGHTING STYLES ═══
+Low STR: Compensate with numbers. Scatter if outnumbered below 3:1 ratio.
+Low CON: Attack from hiding. Avoid taking hits at all costs.
+Low DEX: Needs a compensatory advantage before engaging.
+High STR + High CON + Low DEX: Welcome the close-quarters slugfest.
+High STR + Low CON + High DEX: Stealth approach, go for high-damage opening strike.
+Low STR + High DEX + High CON: Scrappy — harass and outlast.
+Low STR + High DEX + Low CON: Stay at range, snipe.
+All physical abilities low: Avoid combat, lay traps, flee if cornered.
+
+═══ ACTION ECONOMY ═══
+Always maximize movement + action + bonus action + reaction.
+A feature that grants advantage (or imposes disadvantage) is worth ~±4 on a d20. A creature that has such a feature will always prefer to set it up first — it may even forgo attacking to position for advantage.
+Features requiring saving throws are preferred over attack rolls: the presumption is success; the burden is on the defender to avoid. Features that deal damage even on a save are especially valuable.
+Low-STR mobs need 3:1 numerical advantage; smarter creatures account for armor and behavior.
+
+═══ ALIGNMENT ═══
+Evil creatures are aggressive and lethal. Lawful creatures may capture rather than kill (especially lawful good). Good creatures default to friendly unless territorial or provoked. Nearly all creatures are territorial.
+
+═══ ABILITIES ═══
+The [ABILITIES] section in the context lists this creature's actual special traits, actions, and resistances. Use these. If a feature gives the creature advantage on attacks (e.g. Pack Tactics), the creature will always try to set that up. If a feature requires a saving throw, prefer it over a basic attack.
+
+═══ OUTPUT ═══
+Lead with the action. One or two sentences of reasoning maximum. Be concise and immediately actionable. No rulebook citations. Never break character or reference game mechanics meta-textually. For cascade tiers, structure clearly under the heading provided.`;
 
 async function callAI(
   model: string,
@@ -193,22 +243,39 @@ function formatConditions(statusmarkers: string): string {
 
 function buildBaseContext(
   token: TokenData,
-  intScore: number,
-  wisScore: number,
+  monsterData: MonsterData,
   tierLabel: string,
   nearby: NearbyToken[],
   config: TierConfig,
   state: TacticalState,
+  currentHpPct: number,
   notes?: string,
 ): string {
+  const { strength: strScore, dexterity: dexScore, constitution: conScore,
+          intelligence: intScore, wisdom: wisScore, charisma: chaScore } = monsterData;
   const hp = formatHP(Number(token.bar1_value), Number(token.bar1_max));
   const conditions = formatConditions(token.statusmarkers);
 
-  const lines: string[] = [
+  const lines: string[] = [];
+
+  if (currentHpPct <= 0.4) {
+    const pct = Math.round(currentHpPct * 100);
+    lines.push(
+      "[SURVIVAL ALERT]",
+      `  HP is at ${pct}% — below the 40% survival threshold. Unless this creature is undead/construct/fanatic or knows it will be hunted if it flees, it should be trying to Disengage and flee.`,
+      "",
+    );
+  }
+
+  if (monsterData.abilitySummary) {
+    lines.push("[ABILITIES]", monsterData.abilitySummary, "");
+  }
+
+  lines.push(
     "[CREATURE]",
     `Name: ${token.name}  HP: ${hp}  Conditions: ${conditions}`,
-    `Intelligence: ${intScore}  Wisdom: ${wisScore}  Tier: ${tierLabel}`,
-  ];
+    `STR ${strScore} / DEX ${dexScore} / CON ${conScore} / INT ${intScore} / WIS ${wisScore} / CHA ${chaScore}  Tier: ${tierLabel}`,
+  );
 
   const enemies = nearby.filter(t => t.controlledby !== "").slice(0, config.maxNearbyTokens);
   const allies = config.includeAllies ? nearby.filter(t => t.controlledby === "" && t.id !== token.id) : [];
@@ -411,38 +478,62 @@ async function internalPlanToken(
   const token = await roll20.relayCommand<TokenData>({ action: "getTokenById", tokenId });
   if (!token) throw new Error(`Token not found: ${tokenId}`);
 
+  // Start with override values (0 = not yet resolved)
+  let strScore = 0, dexScore = 0, conScore = 0;
   let intScore = intOverride ?? 0;
   let wisScore = wisOverride ?? 0;
+  let chaScore = 0;
+  let abilitySummary = "";
 
   // 1. Roll20 character sheet attributes (linked tokens)
-  if ((intOverride === undefined || wisOverride === undefined) && token.represents) {
+  if (token.represents) {
     const attrs = await roll20.relayCommand<Record<string, { current: unknown; max: unknown }>>({
       action: "getCharacterAttributes",
       charId: token.represents,
-      names: ["npc_intelligence", "npc_wisdom", "intelligence", "wisdom"],
+      names: ["npc_strength", "npc_dexterity", "npc_constitution",
+              "npc_intelligence", "npc_wisdom", "npc_charisma",
+              "strength", "dexterity", "constitution",
+              "intelligence", "wisdom", "charisma"],
     });
-    if (intOverride === undefined) {
-      const raw = attrs?.npc_intelligence?.current ?? attrs?.intelligence?.current;
-      if (raw !== undefined && raw !== null) intScore = Number(raw);
-    }
-    if (wisOverride === undefined) {
-      const raw = attrs?.npc_wisdom?.current ?? attrs?.wisdom?.current;
-      if (raw !== undefined && raw !== null) wisScore = Number(raw);
+    const readAttr = (npcKey: string, pcKey: string): number => {
+      const raw = attrs?.[npcKey]?.current ?? attrs?.[pcKey]?.current;
+      return (raw !== undefined && raw !== null) ? Number(raw) : 0;
+    };
+    strScore = readAttr("npc_strength", "strength");
+    dexScore = readAttr("npc_dexterity", "dexterity");
+    conScore = readAttr("npc_constitution", "constitution");
+    if (intOverride === undefined) intScore = readAttr("npc_intelligence", "intelligence");
+    if (wisOverride === undefined) wisScore = readAttr("npc_wisdom", "wisdom");
+    chaScore = readAttr("npc_charisma", "charisma");
+  }
+
+  // 2. DDB monster compendium lookup (fills gaps — especially unlinked tokens)
+  if (strScore === 0 || intScore === 0 || wisScore === 0) {
+    const ddbData = await resolveMonsterData(token.name);
+    if (ddbData) {
+      if (strScore === 0) strScore = ddbData.strength;
+      if (dexScore === 0) dexScore = ddbData.dexterity;
+      if (conScore === 0) conScore = ddbData.constitution;
+      if (intScore === 0 && intOverride === undefined) intScore = ddbData.intelligence;
+      if (wisScore === 0 && wisOverride === undefined) wisScore = ddbData.wisdom;
+      if (chaScore === 0) chaScore = ddbData.charisma;
+      abilitySummary = ddbData.abilitySummary;
     }
   }
 
-  // 2. DDB monster compendium lookup (unlinked tokens — lookup by token name)
-  if (intScore === 0 || wisScore === 0) {
-    const ddbScores = await resolveMonsterScores(token.name);
-    if (ddbScores) {
-      if (intScore === 0) intScore = ddbScores.intelligence;
-      if (wisScore === 0) wisScore = ddbScores.wisdom;
-    }
-  }
-
-  // 3. Default fallback
+  // 3. Defaults
+  if (strScore === 0) strScore = 10;
+  if (dexScore === 0) dexScore = 10;
+  if (conScore === 0) conScore = 10;
   if (intScore === 0) intScore = 8;
   if (wisScore === 0) wisScore = 8;
+  if (chaScore === 0) chaScore = 10;
+
+  const monsterData: MonsterData = {
+    strength: strScore, dexterity: dexScore, constitution: conScore,
+    intelligence: intScore, wisdom: wisScore, charisma: chaScore,
+    abilitySummary,
+  };
 
   const config = resolveTier(intScore, wisScore);
   const scanRadius = awarenessRadius(wisScore, radiusFeet);
@@ -460,7 +551,7 @@ async function internalPlanToken(
   const maxHp = Number(token.bar1_max);
   const currentHpPct = maxHp > 0 ? currentHp / maxHp : 1;
 
-  const baseContext = buildBaseContext(token, intScore, wisScore, config.label, nearby, config, state, notes);
+  const baseContext = buildBaseContext(token, monsterData, config.label, nearby, config, state, currentHpPct, notes);
 
   let shortTermPlan = "";
   let mediumTermPlan: string | undefined;
