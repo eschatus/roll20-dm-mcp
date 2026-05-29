@@ -26,7 +26,6 @@ const CHAT_BUFFER_MAX = 100;
 let DM_INBOX = [];
 const DM_INBOX_MAX = 50;
 let ROUND_NUMBER = 0;
-let ROUND_FIRST_TOKEN_ID = null;
 let TURN_HOOK_ENABLED = false;
 let MOB_PLANS = {};  // tokenId → { html: string }, consumed at each mob's turn start
 
@@ -1019,13 +1018,13 @@ on("chat:message", function (msg) {
 
       case "setTurnHook": {
         TURN_HOOK_ENABLED = !!args.enabled;
-        if (args.reset) { ROUND_NUMBER = 0; ROUND_FIRST_TOKEN_ID = null; }
+        if (args.reset) { ROUND_NUMBER = 0; }
         writeResult(nonce, { ok: true, enabled: TURN_HOOK_ENABLED, round: ROUND_NUMBER });
         break;
       }
 
       case "getTurnHookState": {
-        writeResult(nonce, { enabled: TURN_HOOK_ENABLED, round: ROUND_NUMBER, firstTokenId: ROUND_FIRST_TOKEN_ID });
+        writeResult(nonce, { enabled: TURN_HOOK_ENABLED, round: ROUND_NUMBER });
         break;
       }
 
@@ -1435,17 +1434,24 @@ on("change:campaign:turnorder", function(obj, prev) {
 
   // Detect actual turn advancement (first entry changed)
   let oldFirstId = null;
+  let oldFirstPr = null;
   if (rawOld) {
-    try { let oldOrder = JSON.parse(rawOld); oldFirstId = (oldOrder[0] || {}).id || null; } catch(e) {}
+    try {
+      let oldOrder = JSON.parse(rawOld);
+      oldFirstId = (oldOrder[0] || {}).id || null;
+      oldFirstPr = oldOrder[0] ? Number(oldOrder[0].pr) : null;
+    } catch(e) {}
   }
   if (oldFirstId === newFirst.id) return;
 
-  // Track round start token
-  if (!ROUND_FIRST_TOKEN_ID) {
-    ROUND_FIRST_TOKEN_ID = newFirst.id;
+  let currentPr = Number(newFirst.pr);
+
+  // Round detection: initiative wrapped when current pr > the pr of the token that just finished.
+  // No token-ID tracking — works correctly regardless of late joiners, rerolls, or deaths.
+  if (ROUND_NUMBER === 0) {
     ROUND_NUMBER = 1;
-  } else if (newFirst.id === ROUND_FIRST_TOKEN_ID) {
-    // Cycled back — end of round, post summary then increment
+  } else if (oldFirstPr !== null && currentPr > oldFirstPr) {
+    // Wrapped — end of previous round, start of new
     let summaryLines = newOrder.map(function(e) { return combatantStatusLine(e); }).filter(Boolean);
     let summaryHtml = "<div style='background:#080204;border:1px solid #3a0000;padding:6px 10px;'>"
       + "<div style='color:#cc4444;font-family:\"Palatino Linotype\",Palatino,serif;text-align:center;font-size:1em;margin-bottom:4px;'>⚔ Round " + ROUND_NUMBER + " Complete</div>"
