@@ -333,6 +333,7 @@ export function registerCombatTools(server: McpServer): void {
 
       const finalOrder = [...existing, ...newEntries].sort((a, b) => Number(b.pr) - Number(a.pr));
       await roll20.relayCommand({ action: "setTurnOrder", entries: finalOrder });
+      await roll20.relayCommand({ action: "setTurnHook", enabled: true, reset: true });
 
       return {
         content: [{
