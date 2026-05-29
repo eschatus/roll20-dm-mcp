@@ -1,8 +1,55 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import Anthropic from "@anthropic-ai/sdk";
+import * as fs from "fs";
+import * as path from "path";
+import { fileURLToPath } from "url";
 import * as roll20 from "../bridge/roll20.js";
 import * as ddb from "../bridge/dndbeyond.js";
+
+// ─── Doctrine Index (Ammann book) ────────────────────────────────────────────
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DOCTRINE_PATH = path.resolve(__dirname, "../../data/tactics/monster-tactics-index.json");
+
+let doctrineIndex: Record<string, string> = {};
+try {
+  doctrineIndex = JSON.parse(fs.readFileSync(DOCTRINE_PATH, "utf-8"));
+} catch {
+  // not available — doctrine lookups will silently return nothing
+}
+
+function lookupDoctrine(creatureName: string): string | undefined {
+  const n = creatureName.toLowerCase().trim();
+  if (doctrineIndex[n]) return doctrineIndex[n];
+
+  // Try plural/singular forms
+  const forms = [n + "s", n + "es", n + "ies"];
+  if (n.endsWith("y")) forms.push(n.slice(0, -1) + "ies");
+  if (n.endsWith("es")) forms.push(n.slice(0, -2));
+  if (n.endsWith("s")) forms.push(n.slice(0, -1));
+  for (const f of forms) {
+    if (doctrineIndex[f]) return doctrineIndex[f];
+  }
+
+  // Multi-word: try last-word pluralization, then recurse on first word
+  const words = n.split(" ");
+  if (words.length > 1) {
+    const lastPlural = [...words.slice(0, -1), words[words.length - 1] + "s"].join(" ");
+    if (doctrineIndex[lastPlural]) return doctrineIndex[lastPlural];
+    const lastEs = [...words.slice(0, -1), words[words.length - 1] + "es"].join(" ");
+    if (doctrineIndex[lastEs]) return doctrineIndex[lastEs];
+    // Fall back to first word
+    return lookupDoctrine(words[0]);
+  }
+
+  // Substring: any key that contains this name
+  for (const [k, v] of Object.entries(doctrineIndex)) {
+    if (k.includes(n)) return v;
+  }
+
+  return undefined;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -251,6 +298,7 @@ function buildBaseContext(
   state: TacticalState,
   currentHpPct: number,
   notes?: string,
+  doctrineName?: string,
 ): string {
   const { strength: strScore, dexterity: dexScore, constitution: conScore,
           intelligence: intScore, wisdom: wisScore, charisma: chaScore } = monsterData;
@@ -270,6 +318,13 @@ function buildBaseContext(
 
   if (monsterData.abilitySummary) {
     lines.push("[ABILITIES]", monsterData.abilitySummary, "");
+  }
+
+  const doctrine = lookupDoctrine(doctrineName ?? token.name);
+  if (doctrine) {
+    // Truncate to ~1200 chars to keep context tight
+    const snippet = doctrine.length > 1200 ? doctrine.slice(0, 1200) + "…" : doctrine;
+    lines.push("[TACTICAL DOCTRINE]", snippet, "");
   }
 
   lines.push(
@@ -588,7 +643,7 @@ async function internalPlanToken(
   const maxHp = Number(token.bar1_max);
   const currentHpPct = maxHp > 0 ? currentHp / maxHp : 1;
 
-  const baseContext = buildBaseContext(token, monsterData, config.label, nearby, config, state, currentHpPct, notes);
+  const baseContext = buildBaseContext(token, monsterData, config.label, nearby, config, state, currentHpPct, notes, token.name);
 
   let shortTermPlan = "";
   let mediumTermPlan: string | undefined;
