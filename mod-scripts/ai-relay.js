@@ -918,6 +918,7 @@ on("chat:message", function (msg) {
           tint_color: token.get("tint_color"),
           light_radius: token.get("light_radius"),
           light_dimradius: token.get("light_dimradius"),
+          gmnotes: token.get("gmnotes") || "",
         });
         break;
       }
@@ -1072,6 +1073,29 @@ on("chat:message", function (msg) {
           }
         });
         writeResult(nonce, result);
+        break;
+      }
+
+      case "getRepeatingSection": {
+        // Returns all rows of a repeating section from a character sheet.
+        // args.charId, args.section (e.g. "npcaction")
+        // Result: { [rowId]: { [fieldName]: value } }
+        if (!args.charId || !args.section) throw new Error("getRepeatingSection requires charId and section");
+        let repAttrs = findObjs({ _type: "attribute", _characterid: args.charId });
+        let prefix = "repeating_" + args.section + "_";
+        let rows = {};
+        repAttrs.forEach(function(a) {
+          let name = a.get("name");
+          if (name.indexOf(prefix) !== 0) return;
+          let rest = name.slice(prefix.length);
+          let sep = rest.indexOf("_");
+          if (sep === -1) return;
+          let rowId = rest.slice(0, sep);
+          let field = rest.slice(sep + 1);
+          if (!rows[rowId]) rows[rowId] = {};
+          rows[rowId][field] = a.get("current");
+        });
+        writeResult(nonce, rows);
         break;
       }
 

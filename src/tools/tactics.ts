@@ -33,6 +33,7 @@ interface TokenData {
   top: number;
   layer: string;
   controlledby: string;
+  gmnotes: string;
 }
 
 interface NearbyToken {
@@ -478,62 +479,98 @@ async function internalPlanToken(
   const token = await roll20.relayCommand<TokenData>({ action: "getTokenById", tokenId });
   if (!token) throw new Error(`Token not found: ${tokenId}`);
 
-  // Start with override values (0 = not yet resolved)
-  let strScore = 0, dexScore = 0, conScore = 0;
-  let intScore = intOverride ?? 0;
-  let wisScore = wisOverride ?? 0;
-  let chaScore = 0;
-  let abilitySummary = "";
+  const TACDATA = "TACDATA:";
 
-  // 1. Roll20 character sheet attributes (linked tokens)
-  if (token.represents) {
-    const attrs = await roll20.relayCommand<Record<string, { current: unknown; max: unknown }>>({
-      action: "getCharacterAttributes",
-      charId: token.represents,
-      names: ["npc_strength", "npc_dexterity", "npc_constitution",
-              "npc_intelligence", "npc_wisdom", "npc_charisma",
-              "strength", "dexterity", "constitution",
-              "intelligence", "wisdom", "charisma"],
-    });
-    const readAttr = (npcKey: string, pcKey: string): number => {
-      const raw = attrs?.[npcKey]?.current ?? attrs?.[pcKey]?.current;
-      return (raw !== undefined && raw !== null) ? Number(raw) : 0;
-    };
-    strScore = readAttr("npc_strength", "strength");
-    dexScore = readAttr("npc_dexterity", "dexterity");
-    conScore = readAttr("npc_constitution", "constitution");
-    if (intOverride === undefined) intScore = readAttr("npc_intelligence", "intelligence");
-    if (wisOverride === undefined) wisScore = readAttr("npc_wisdom", "wisdom");
-    chaScore = readAttr("npc_charisma", "charisma");
+  // 1. Check gmnotes for cached tactical data (persists across MCP restarts)
+  let monsterData: MonsterData | null = null;
+  if (token.gmnotes?.startsWith(TACDATA)) {
+    try { monsterData = JSON.parse(token.gmnotes.slice(TACDATA.length)); } catch { /* stale */ }
   }
 
-  // 2. DDB monster compendium lookup (fills gaps — especially unlinked tokens)
-  if (strScore === 0 || intScore === 0 || wisScore === 0) {
-    const ddbData = await resolveMonsterData(token.name);
-    if (ddbData) {
-      if (strScore === 0) strScore = ddbData.strength;
-      if (dexScore === 0) dexScore = ddbData.dexterity;
-      if (conScore === 0) conScore = ddbData.constitution;
-      if (intScore === 0 && intOverride === undefined) intScore = ddbData.intelligence;
-      if (wisScore === 0 && wisOverride === undefined) wisScore = ddbData.wisdom;
-      if (chaScore === 0) chaScore = ddbData.charisma;
-      abilitySummary = ddbData.abilitySummary;
+  if (!monsterData) {
+    let strScore = 0, dexScore = 0, conScore = 0;
+    let intScore = intOverride ?? 0;
+    let wisScore = wisOverride ?? 0;
+    let chaScore = 0;
+    let abilitySummary = "";
+    let wroteFromSheet = false;
+
+    // 2. Character sheet (linked tokens)
+    if (token.represents) {
+      const attrs = await roll20.relayCommand<Record<string, { current: unknown }>>({
+        action: "getCharacterAttributes",
+        charId: token.represents,
+        names: ["npc_strength", "npc_dexterity", "npc_constitution",
+                "npc_intelligence", "npc_wisdom", "npc_charisma",
+                "strength", "dexterity", "constitution",
+                "intelligence", "wisdom", "charisma"],
+      });
+      const readAttr = (npc: string, pc: string): number => {
+        const raw = attrs?.[npc]?.current ?? attrs?.[pc]?.current;
+        return (raw !== undefined && raw !== null) ? Number(raw) : 0;
+      };
+      strScore = readAttr("npc_strength", "strength");
+      dexScore = readAttr("npc_dexterity", "dexterity");
+      conScore = readAttr("npc_constitution", "constitution");
+      if (intOverride === undefined) intScore = readAttr("npc_intelligence", "intelligence");
+      if (wisOverride === undefined) wisScore = readAttr("npc_wisdom", "wisdom");
+      chaScore = readAttr("npc_charisma", "charisma");
+
+      // Read NPC actions repeating section — if populated, the sheet is our source of truth
+      const actionRows = await roll20.relayCommand<Record<string, Record<string, string>>>({
+        action: "getRepeatingSection",
+        charId: token.represents,
+        section: "npcaction",
+      }) ?? {};
+      const actionLines = Object.values(actionRows)
+        .filter(r => r.name)
+        .map(r => {
+          const desc = r.description || r.desc || "";
+          return `  ${r.name}${desc ? `: ${desc.slice(0, 300)}` : ""}`;
+        });
+      if (actionLines.length > 0) {
+        abilitySummary = `Actions:\n${actionLines.join("\n")}`;
+        wroteFromSheet = true;
+      }
+    }
+
+    // 3. DDB compendium fallback — if char sheet had no actions (or no sheet at all)
+    if (!wroteFromSheet) {
+      const ddbData = await resolveMonsterData(token.name);
+      if (ddbData) {
+        if (strScore === 0) strScore = ddbData.strength;
+        if (dexScore === 0) dexScore = ddbData.dexterity;
+        if (conScore === 0) conScore = ddbData.constitution;
+        if (intScore === 0 && intOverride === undefined) intScore = ddbData.intelligence;
+        if (wisScore === 0 && wisOverride === undefined) wisScore = ddbData.wisdom;
+        if (chaScore === 0) chaScore = ddbData.charisma;
+        abilitySummary = ddbData.abilitySummary;
+      }
+    }
+
+    // 4. Defaults
+    if (strScore === 0) strScore = 10;
+    if (dexScore === 0) dexScore = 10;
+    if (conScore === 0) conScore = 10;
+    if (intScore === 0) intScore = 8;
+    if (wisScore === 0) wisScore = 8;
+    if (chaScore === 0) chaScore = 10;
+
+    monsterData = { strength: strScore, dexterity: dexScore, constitution: conScore,
+                    intelligence: intScore, wisdom: wisScore, charisma: chaScore, abilitySummary };
+
+    // Persist to token gmnotes — only if gmnotes is empty or already ours
+    if (!token.gmnotes || token.gmnotes.startsWith(TACDATA)) {
+      await roll20.relayCommand({
+        action: "setTokenProps",
+        tokenId,
+        props: { gmnotes: TACDATA + JSON.stringify(monsterData) },
+      });
     }
   }
 
-  // 3. Defaults
-  if (strScore === 0) strScore = 10;
-  if (dexScore === 0) dexScore = 10;
-  if (conScore === 0) conScore = 10;
-  if (intScore === 0) intScore = 8;
-  if (wisScore === 0) wisScore = 8;
-  if (chaScore === 0) chaScore = 10;
-
-  const monsterData: MonsterData = {
-    strength: strScore, dexterity: dexScore, constitution: conScore,
-    intelligence: intScore, wisdom: wisScore, charisma: chaScore,
-    abilitySummary,
-  };
+  const intScore = intOverride ?? monsterData.intelligence;
+  const wisScore = wisOverride ?? monsterData.wisdom;
 
   const config = resolveTier(intScore, wisScore);
   const scanRadius = awarenessRadius(wisScore, radiusFeet);
