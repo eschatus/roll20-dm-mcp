@@ -6,6 +6,7 @@ import { registerCampaignTools } from "./tools/campaigns.js";
 import { registerCombatTools } from "./tools/combat.js";
 import { registerDdbTools } from "./tools/ddb.js";
 import { registerVisionTools } from "./tools/vision.js";
+import { registerTacticsTools } from "./tools/tactics.js";
 
 const server = new McpServer({
   name: "roll20-dm",
@@ -16,6 +17,7 @@ registerCampaignTools(server);
 registerCombatTools(server);
 registerDdbTools(server);
 registerVisionTools(server);
+registerTacticsTools(server);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

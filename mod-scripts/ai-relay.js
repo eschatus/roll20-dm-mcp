@@ -28,6 +28,7 @@ const DM_INBOX_MAX = 50;
 let ROUND_NUMBER = 0;
 let ROUND_FIRST_TOKEN_ID = null;
 let TURN_HOOK_ENABLED = false;
+let MOB_PLANS = {};  // tokenId → { html: string }, consumed at each mob's turn start
 
 // --- Helpers ---
 
@@ -953,6 +954,23 @@ on("chat:message", function (msg) {
         break;
       }
 
+      case "setMobPlan": {
+        if (!args.tokenId) throw new Error("setMobPlan requires tokenId");
+        if (args.html) {
+          MOB_PLANS[args.tokenId] = { html: args.html };
+        } else {
+          delete MOB_PLANS[args.tokenId];
+        }
+        writeResult(nonce, { ok: true });
+        break;
+      }
+
+      case "clearMobPlans": {
+        MOB_PLANS = {};
+        writeResult(nonce, { ok: true });
+        break;
+      }
+
       case "whisperPlayer": {
         if (!args.playerName || !args.message) throw new Error("whisperPlayer requires playerName and message");
         sendChat("GM-AI-Bridge", "/w " + args.playerName + " " + args.message, null, { noarchive: true });
@@ -1440,6 +1458,10 @@ on("change:campaign:turnorder", function(obj, prev) {
     }
   }
 
+  // Consume any stored mob tactical plan for this token
+  let mobPlan = MOB_PLANS[newFirst.id] || null;
+  if (mobPlan) { delete MOB_PLANS[newFirst.id]; }
+
   let hpLine = "";
   if (maxHp) {
     let filled = Math.round((hp / maxHp) * 10);
@@ -1458,6 +1480,10 @@ on("change:campaign:turnorder", function(obj, prev) {
     + hpLine + condLine + intentLine
     + "</div>";
   sendChat("Initiative", html, null, { noarchive: false });
+
+  if (mobPlan) {
+    sendChat("GM-AI-Bridge", "/w gm " + mobPlan.html, null, { noarchive: true });
+  }
 });
 
 log("[GM_AI_Bridge] Relay script loaded. Ready for !ai-relay commands.");

@@ -315,6 +315,7 @@ export interface DdbMonster {
   armorClass: number;
   challengeRating: string;
   largeAvatarUrl: string | null;
+  stats?: Array<{ id: number; value: number | null }>;  // id 1-6: STR DEX CON INT WIS CHA
 }
 
 export async function getMonster(nameOrId: string | number): Promise<DdbMonster> {
@@ -327,6 +328,15 @@ export async function getMonster(nameOrId: string | number): Promise<DdbMonster>
   const monster = Array.isArray(data.data) ? data.data[0] : data.data;
   if (!monster) throw new Error(`Monster not found: ${nameOrId}`);
   return monster;
+}
+
+export function getMonsterAbilityScores(monster: DdbMonster): Record<string, number> {
+  const scores: Record<string, number> = { strength:10, dexterity:10, constitution:10, intelligence:10, wisdom:10, charisma:10 };
+  for (const stat of (monster.stats ?? [])) {
+    const ability = ABILITY_IDS[stat.id];
+    if (ability && stat.value != null) scores[ability] = stat.value;
+  }
+  return scores;
 }
 
 const CONDITION_IDS: Record<string, number> = {
