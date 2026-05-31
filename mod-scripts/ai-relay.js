@@ -779,7 +779,7 @@ on("chat:message", function (msg) {
           if (!available.length) available = pool;
           let chosen = available[Math.floor(Math.random() * available.length)];
           usedEpithets[baseName].push(chosen);
-          token.set("name", baseName + "\nthe " + chosen);
+          token.set({ name: baseName + " the " + chosen, tooltip: baseName + " the " + chosen, showname: true, showplayers_name: true });
         });
 
         // Pass 3: gather init bonuses (synchronous), then roll via Roll20's real dice engine
@@ -841,9 +841,10 @@ on("chat:message", function (msg) {
               let rows = publicEntries.map(function(e, idx) {
                 let icon = idx === 0 ? "👑" : "🩸";
                 let sign = e.initBonus >= 0 ? "+" : "";
+                let displayName = e.name || "";
                 let detail = "<span style='color:#6b4040;font-size:0.82em;'> d20(" + e.d20 + ")" + sign + e.initBonus + "</span>";
                 return "<tr>"
-                  + "<td style='padding:3px 8px;color:#d4a0a0;font-family:Palatino Linotype,Palatino,serif;'>" + icon + " " + e.name + "</td>"
+                  + "<td style='padding:3px 8px;color:#d4a0a0;font-family:Palatino Linotype,Palatino,serif;'>" + icon + " " + displayName + "</td>"
                   + "<td style='padding:3px 8px;color:#ff5555;font-weight:bold;text-align:right;font-family:Palatino Linotype,Palatino,serif;'>" + e.total + detail + "</td>"
                   + "</tr>";
               }).join("");
@@ -1078,7 +1079,7 @@ on("chat:message", function (msg) {
       case "getRepeatingSection": {
         // Returns all rows of a repeating section from a character sheet.
         // args.charId, args.section (e.g. "npcaction")
-        // Result: { [rowId]: { [fieldName]: value } }
+        // Result: { [rowId]: { [fieldName]: value } }  (macro-syntax values skipped)
         if (!args.charId || !args.section) throw new Error("getRepeatingSection requires charId and section");
         let repAttrs = findObjs({ _type: "attribute", _characterid: args.charId });
         let prefix = "repeating_" + args.section + "_";
@@ -1091,8 +1092,11 @@ on("chat:message", function (msg) {
           if (sep === -1) return;
           let rowId = rest.slice(0, sep);
           let field = rest.slice(sep + 1);
+          let val = String(a.get("current") || "");
+          // Skip Roll20 macro syntax — sendChat would try to resolve @{...} and error
+          if (val.indexOf("@{") !== -1) return;
           if (!rows[rowId]) rows[rowId] = {};
-          rows[rowId][field] = a.get("current");
+          rows[rowId][field] = val;
         });
         writeResult(nonce, rows);
         break;

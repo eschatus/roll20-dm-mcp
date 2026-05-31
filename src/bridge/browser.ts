@@ -13,19 +13,55 @@ const LOGIN_URLS: Record<Site, string> = {
   ddb: "https://www.dndbeyond.com/login",
 };
 
+// Port used for CDP reattachment across server restarts and multi-server setups.
+const DEBUG_PORT = parseInt(process.env.BROWSER_DEBUG_PORT ?? "9222", 10);
+
 // Cache the in-flight promise so concurrent callers await the same launch,
 // rather than each racing to call launchPersistentContext with the same profile dir.
 let _contextPromise: Promise<BrowserContext> | null = null;
+
+async function tryConnectCDP(timeoutMs: number): Promise<BrowserContext | null> {
+  try {
+    const browser = await chromium.connectOverCDP(`http://localhost:${DEBUG_PORT}`, { timeout: timeoutMs });
+    return browser.contexts()[0] ?? await browser.newContext();
+  } catch {
+    return null;
+  }
+}
 
 async function getContext(): Promise<BrowserContext> {
   if (!_contextPromise) {
     const userDataDir = path.resolve(
       process.env.BROWSER_USER_DATA_DIR ?? "./data/browser-session"
     );
-    _contextPromise = chromium.launchPersistentContext(userDataDir, {
-      headless: false,
-      args: ["--disable-blink-features=AutomationControlled"],
-    });
+    _contextPromise = (async () => {
+      // Fast path: attach to a browser that's already running (handles MCP server restarts
+      // and multi-server setups where another process already owns the profile dir).
+      const cdpCtx = await tryConnectCDP(2_000);
+      if (cdpCtx) return cdpCtx;
+
+      // No existing browser — launch a fresh persistent context with the debug port
+      // enabled so future server attaches can reuse it via CDP.
+      try {
+        return await chromium.launchPersistentContext(userDataDir, {
+          headless: false,
+          args: [
+            "--disable-blink-features=AutomationControlled",
+            `--remote-debugging-port=${DEBUG_PORT}`,
+          ],
+        });
+      } catch {
+        // Profile is locked — another server process won the race to launch.
+        // Wait for it to finish opening, then connect via CDP.
+        await new Promise(r => setTimeout(r, 3_500));
+        const retryCtx = await tryConnectCDP(8_000);
+        if (retryCtx) return retryCtx;
+        throw new Error(
+          `Browser profile locked and CDP on port ${DEBUG_PORT} unavailable. ` +
+          `Close all windows using ${userDataDir} and restart.`
+        );
+      }
+    })();
     _contextPromise.catch(() => { _contextPromise = null; });
   }
   return _contextPromise;

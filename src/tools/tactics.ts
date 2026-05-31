@@ -135,8 +135,8 @@ function resolveTier(intScore: number, wisScore: number): TierConfig {
 
 function awarenessRadius(wisScore: number, requestedRadius: number): number {
   const wisMod = Math.floor((wisScore - 10) / 2);
-  const computed = 30 + wisMod * 10;
-  return Math.max(10, Math.min(requestedRadius, Math.max(computed, 10)));
+  const computed = 60 + wisMod * 15;
+  return Math.max(15, Math.min(requestedRadius, Math.max(computed, 15)));
 }
 
 // ─── DDB Monster Stats Cache ─────────────────────────────────────────────────
@@ -241,7 +241,10 @@ Evil creatures are aggressive and lethal. Lawful creatures may capture rather th
 The [ABILITIES] section in the context lists this creature's actual special traits, actions, and resistances. Use these. If a feature gives the creature advantage on attacks (e.g. Pack Tactics), the creature will always try to set that up. If a feature requires a saving throw, prefer it over a basic attack.
 
 ═══ OUTPUT ═══
-Lead with the action. One or two sentences of reasoning maximum. Be concise and immediately actionable. No rulebook citations. Never break character or reference game mechanics meta-textually. For cascade tiers, structure clearly under the heading provided.`;
+One line, no newlines. Use this exact format:
+**Move:** [5 words] · **Action:** [attack and target] · **BA:** [bonus action or omit] · **Note:** [one phrase if unusual, else omit]
+
+Bold labels, · separator. No newlines anywhere. No prose. Under 40 words.`;
 
 async function callAI(
   model: string,
@@ -280,6 +283,14 @@ function formatHP(current: number, max: number): string {
   const pct = max > 0 ? Math.round((current / max) * 100) : 0;
   const label = pct > 75 ? "healthy" : pct > 50 ? "bloodied" : pct > 25 ? "badly wounded" : "critical";
   return `${current}/${max} HP (${label})`;
+}
+
+function rangeBand(feet: number): string {
+  if (feet <= 5)   return `adjacent (${Math.round(feet)}ft)`;
+  if (feet <= 30)  return `near (${Math.round(feet)}ft)`;
+  if (feet <= 60)  return `mid (${Math.round(feet)}ft)`;
+  if (feet <= 120) return `far (${Math.round(feet)}ft)`;
+  return `distant (${Math.round(feet)}ft)`;
 }
 
 function formatConditions(statusmarkers: string): string {
@@ -334,21 +345,23 @@ function buildBaseContext(
   );
 
   const enemies = nearby.filter(t => t.controlledby !== "").slice(0, config.maxNearbyTokens);
-  const allies = config.includeAllies ? nearby.filter(t => t.controlledby === "" && t.id !== token.id) : [];
+  // Always show nearby allies (capped tighter for low-Int tiers); higher tiers get full picture.
+  const allyLimit = config.includeAllies ? config.maxNearbyTokens : 3;
+  const allies = nearby.filter(t => t.controlledby === "" && t.id !== token.id).slice(0, allyLimit);
 
-  if (enemies.length > 0 || allies.length > 0) {
-    lines.push("", "[BATTLEFIELD]");
+  lines.push("", "[BATTLEFIELD]");
+  if (enemies.length === 0 && allies.length === 0) {
+    lines.push("  No tokens detected in range.");
+  } else {
     for (const e of enemies) {
-      lines.push(`  Enemy — ${e.name}: ${formatHP(e.bar1_value, e.bar1_max)}, ${e.distanceFeet}ft away, conditions: ${formatConditions("")}`);
+      lines.push(`  Enemy — ${e.name}: ${formatHP(e.bar1_value, e.bar1_max)}, ${rangeBand(e.distanceFeet)}`);
     }
     if (allies.length > 0) {
       lines.push("  Allies:");
-      for (const a of allies.slice(0, config.maxNearbyTokens)) {
-        lines.push(`    ${a.name}: ${formatHP(a.bar1_value, a.bar1_max)}, ${a.distanceFeet}ft away`);
+      for (const a of allies) {
+        lines.push(`    ${a.name}: ${formatHP(a.bar1_value, a.bar1_max)}, ${rangeBand(a.distanceFeet)}`);
       }
     }
-  } else {
-    lines.push("", "[BATTLEFIELD]", "  No tokens detected in range.");
   }
 
   const recentEntries = state.entries.slice(0, config.memoryEntries);
@@ -430,6 +443,11 @@ async function planFullCascade(
 type StageLabel = "short" | "medium" | "long";
 type OnStage = (stage: StageLabel, content: string) => Promise<void>;
 
+// Escape characters that would break Roll20's &{template:default} parser.
+function tmplEsc(s: string): string {
+  return s.replace(/\n/g, " · ").replace(/\}\}/g, "]").replace(/\{\{/g, "[");
+}
+
 function buildStageCard(
   tokenName: string,
   stage: StageLabel,
@@ -438,24 +456,13 @@ function buildStageCard(
   wisScore: number,
   tier: number,
   tierLabel: string,
-  nearbyCount: number,
+  _nearbyCount: number,
 ): string {
-  const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
-
-  const STAGE_META: Record<StageLabel, { icon: string; label: string; accent: string; bodyColor: string }> = {
-    short:  { icon: "&#x26A1;", label: "This Turn",       accent: "#cc9944", bodyColor: "#d4b0e0" },
-    medium: { icon: "&#x1F4C5;", label: "Next 2-3 Rounds", accent: "#7799bb", bodyColor: "#b09ac0" },
-    long:   { icon: "&#x1F3AF;", label: "Strategic Goal",  accent: "#aa6622", bodyColor: "#a088b0" },
-  };
-  const { icon, label, accent, bodyColor } = STAGE_META[stage];
-
-  let html = `<div style='background:#0a0208;border:1px solid #2a0a3a;border-radius:3px;padding:5px 10px;font-family:"Palatino Linotype",Palatino,serif;'>`;
-  html += `<div style='color:#bb88cc;font-size:0.9em;margin-bottom:2px;'><b>${tokenName}</b> <span style='color:#6a4a7a;font-size:0.85em;'>Tier ${tier} (${tierLabel}) &middot; Int ${intScore}/Wis ${wisScore} &middot; ${nearbyCount} in range</span></div>`;
-  html += `<div style='color:${bodyColor};font-size:0.88em;border-left:2px solid #6a2a8a;padding-left:8px;'>`;
-  html += `<div style='color:${accent};font-size:0.78em;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;'>${icon} ${label}</div>`;
-  html += escape(content);
-  html += `</div></div>`;
-  return html;
+  const STAGE_ICONS:  Record<StageLabel, string> = { short: "⚡", medium: "📅", long: "🎯" };
+  const STAGE_LABELS: Record<StageLabel, string> = { short: "This Turn", medium: "Next 2-3 Rounds", long: "Strategic Goal" };
+  const header = tmplEsc(`${tokenName} — ${tierLabel} · Int ${intScore}/Wis ${wisScore}`);
+  const body   = tmplEsc(content);
+  return `&{template:default} {{name=🧠 ${header}}} {{${STAGE_ICONS[stage]} ${STAGE_LABELS[stage]}=${body}}}`;
 }
 
 function buildWhisperCard(
@@ -464,38 +471,16 @@ function buildWhisperCard(
   tierLabel: string,
   intScore: number,
   wisScore: number,
-  nearbyCount: number,
+  _nearbyCount: number,
   shortTermPlan: string,
   mediumTermPlan?: string,
   longTermGoal?: string,
 ): string {
-  const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
-
-  let html = `<div style='background:#0a0208;border:1px solid #2a0a3a;border-radius:3px;padding:6px 10px;font-family:"Palatino Linotype",Palatino,serif;'>`;
-  html += `<div style='color:#bb88cc;font-size:1em;margin-bottom:4px;'><b>&#x1F9E0; ${tokenName}</b> &mdash; Tier ${tier} <span style='color:#8855aa;'>(${tierLabel})</span></div>`;
-  html += `<div style='color:#6a4a7a;font-size:0.78em;margin-bottom:6px;'>Int ${intScore} / Wis ${wisScore} &middot; ${nearbyCount} token${nearbyCount !== 1 ? "s" : ""} in range</div>`;
-
-  html += `<div style='color:#d4b0e0;font-size:0.88em;border-left:2px solid #6a2a8a;padding-left:8px;margin-bottom:4px;'>`;
-  html += `<div style='color:#cc9944;font-size:0.8em;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;'>&#x26A1; This Turn</div>`;
-  html += escape(shortTermPlan);
-  html += `</div>`;
-
-  if (mediumTermPlan) {
-    html += `<div style='color:#b09ac0;font-size:0.85em;border-left:2px solid #4a1a6a;padding-left:8px;margin-top:6px;margin-bottom:4px;'>`;
-    html += `<div style='color:#7799bb;font-size:0.8em;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;'>&#x1F4C5; Next 2-3 Rounds</div>`;
-    html += escape(mediumTermPlan);
-    html += `</div>`;
-  }
-
-  if (longTermGoal) {
-    html += `<div style='color:#a088b0;font-size:0.82em;border-left:2px solid #3a0a5a;padding-left:8px;margin-top:6px;'>`;
-    html += `<div style='color:#aa6622;font-size:0.8em;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;'>&#x1F3AF; Strategic Goal</div>`;
-    html += escape(longTermGoal);
-    html += `</div>`;
-  }
-
-  html += `</div>`;
-  return html;
+  const header = tmplEsc(`${tokenName} — ${tierLabel} · Int ${intScore}/Wis ${wisScore}`);
+  let out = `&{template:default} {{name=🧠 ${header}}} {{⚡ This Turn=${tmplEsc(shortTermPlan)}}}`;
+  if (mediumTermPlan) out += ` {{📅 2-3 Rounds=${tmplEsc(mediumTermPlan)}}}`;
+  if (longTermGoal)   out += ` {{🎯 Goal=${tmplEsc(longTermGoal)}}}`;
+  return out;
 }
 
 // ─── Core Planner (shared by plan_tactics and plan_all_tactics) ───────────────
@@ -507,6 +492,7 @@ interface PlanOptions {
   notes?: string;
   forceReplan?: boolean;
   postToChat?: boolean;
+  debug?: boolean;
 }
 
 interface PlanResult {
@@ -522,6 +508,7 @@ interface PlanResult {
   longTermGoal?: string;
   whispered: boolean;
   error?: string;
+  debug?: { baseContext: string; prompt: string; rawResponse: string };
 }
 
 async function internalPlanToken(
@@ -529,7 +516,7 @@ async function internalPlanToken(
   activePage: string,
   opts: PlanOptions,
 ): Promise<PlanResult> {
-  const { intOverride, wisOverride, radiusFeet = 60, notes, forceReplan = false, postToChat = true } = opts;
+  const { intOverride, wisOverride, radiusFeet = 60, notes, forceReplan = false, postToChat = true, debug = false } = opts;
 
   const token = await roll20.relayCommand<TokenData>({ action: "getTokenById", tokenId });
   if (!token) throw new Error(`Token not found: ${tokenId}`);
@@ -635,7 +622,7 @@ async function internalPlanToken(
     centerTokenId: tokenId,
     radiusFeet: scanRadius,
     pageId: activePage,
-    layerFilter: "tokens",
+    layerFilter: "objects",
   }) ?? [];
 
   const state = getOrCreateState(tokenId, token.name, intScore, wisScore);
@@ -648,13 +635,17 @@ async function internalPlanToken(
   let shortTermPlan = "";
   let mediumTermPlan: string | undefined;
   let longTermGoal: string | undefined;
+  let debugPrompt = "";
 
   if (config.cascade === "none") {
+    debugPrompt = `${baseContext}\n\n[TASK]\nIt is ${token.name}'s turn. What should it do right now?`;
     ({ shortTermPlan } = await planSingle(config, baseContext, token.name));
   } else if (config.cascade === "medium") {
+    debugPrompt = baseContext;
     ({ shortTermPlan, mediumTermPlan } = await planMediumCascade(baseContext, token.name, state));
     state.mediumTermPlan = mediumTermPlan;
   } else {
+    debugPrompt = baseContext;
     ({ shortTermPlan, mediumTermPlan, longTermGoal } = await planFullCascade(baseContext, token.name, state, forceReplan, currentHpPct));
     state.mediumTermPlan = mediumTermPlan;
     state.longTermGoal = longTermGoal;
@@ -669,7 +660,7 @@ async function internalPlanToken(
     await roll20.relayCommand({ action: "setMobPlan", tokenId, html: card });
   }
 
-  return {
+  const result: PlanResult = {
     tokenId,
     tokenName: token.name,
     tier: config.tier,
@@ -682,6 +673,16 @@ async function internalPlanToken(
     longTermGoal,
     whispered: postToChat,
   };
+
+  if (debug) {
+    result.debug = {
+      baseContext,
+      prompt: debugPrompt,
+      rawResponse: [shortTermPlan, mediumTermPlan, longTermGoal].filter(Boolean).join("\n\n---\n\n"),
+    };
+  }
+
+  return result;
 }
 
 // ─── Tool Registration ────────────────────────────────────────────────────────
@@ -699,10 +700,11 @@ export function registerTacticsTools(server: McpServer): void {
       notes: z.string().optional().describe("Optional DM hint injected into the prompt, e.g. 'enemy cleric is concentrating on Bless'"),
       forceReplan: z.boolean().default(false).describe("Force regeneration of the long-term strategic goal even if one is stored"),
       postToChat: z.boolean().default(true).describe("Whisper the plan to GM in Roll20 chat"),
+      debug: z.boolean().default(false).describe("Return raw context, full prompt, and raw model response in the result"),
     },
-    async ({ tokenId, intScore: intOverride, wisScore: wisOverride, radiusFeet, pageId, notes, forceReplan, postToChat }) => {
+    async ({ tokenId, intScore: intOverride, wisScore: wisOverride, radiusFeet, pageId, notes, forceReplan, postToChat, debug }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
-      const result = await internalPlanToken(tokenId, activePage, { intOverride, wisOverride, radiusFeet, notes, forceReplan, postToChat });
+      const result = await internalPlanToken(tokenId, activePage, { intOverride, wisOverride, radiusFeet, notes, forceReplan, postToChat, debug });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
   );
@@ -729,7 +731,7 @@ export function registerTacticsTools(server: McpServer): void {
       const allTokens = await roll20.relayCommand<TokenData[]>({ action: "getTokens", pageId: activePage }) ?? [];
       const mobs = allTokens.filter(t =>
         !t.controlledby &&
-        t.layer === "tokens" &&
+        t.layer === "objects" &&
         Number(t.bar1_max) > 0
       );
 

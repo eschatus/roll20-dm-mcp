@@ -2,21 +2,83 @@ import { Page } from "playwright";
 import { getPage } from "./browser.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
 
-const RELAY_POLL_MS = 100;
 const RELAY_TIMEOUT_MS = 30_000;
 
 let _editorPage: Page | null = null;
 let _loadedCampaignId: string | null = null;
 
+// Pending relay Promises keyed by nonce, resolved by __aibridge_push__ from the page's MutationObserver.
+const pendingRelays = new Map<number, { resolve: (d: unknown) => void; reject: (e: Error) => void }>();
+// Tracks which Page instances have had exposeFunction registered (survives navigations on the same Page).
+const _exposeFunctionPages = new WeakSet<Page>();
+
+// Injected once per navigation. Sets up a MutationObserver on #textchat that calls
+// window.__aibridge_push__(nonceStr, jsonStr) the instant a result node appears —
+// eliminates the 100ms polling loop entirely.
+const OBSERVER_SCRIPT = `(function() {
+  var chat = document.querySelector("#textchat");
+  if (!chat || window.__aibridge_observer_installed__) return;
+  window.__aibridge_observer_installed__ = true;
+  var MARKER = "AIBRIDGE_RESULT:";
+  var seen = new Set();
+  function scanNode(node) {
+    var text = node.textContent || "";
+    var pos = text.indexOf(MARKER);
+    while (pos !== -1) {
+      var start = pos + MARKER.length;
+      if (text[start] === "{") {
+        var depth = 0, inStr = false, esc = false;
+        for (var i = start; i < text.length; i++) {
+          var c = text[i];
+          if (esc) { esc = false; continue; }
+          if (inStr) { if (c === "\\\\") esc = true; else if (c === '"') inStr = false; continue; }
+          if (c === '"') { inStr = true; continue; }
+          if (c === "{") depth++;
+          if (c === "}" && --depth === 0) {
+            var json = text.slice(start, i + 1);
+            try {
+              var obj = JSON.parse(json);
+              var key = String(obj.nonce);
+              if (!seen.has(key)) { seen.add(key); window.__aibridge_push__(key, json); }
+            } catch(e) {}
+            break;
+          }
+        }
+      }
+      pos = text.indexOf(MARKER, pos + 1);
+    }
+  }
+  new MutationObserver(function(ms) {
+    ms.forEach(function(m) { m.addedNodes.forEach(scanNode); });
+  }).observe(chat, { childList: true, subtree: true });
+})()`;
+
 async function getEditorPage(): Promise<Page> {
   const { roll20CampaignId } = getActiveCampaign();
 
-  // Re-navigate if campaign has changed since the page was loaded
   if (_editorPage && _loadedCampaignId === roll20CampaignId) return _editorPage;
 
   const page = _editorPage ?? (await getPage("roll20"));
+
+  // Register exposeFunction once per Page object — persists across navigations.
+  if (!_exposeFunctionPages.has(page)) {
+    _exposeFunctionPages.add(page);
+    // Clear stale pending relays when the page navigates away.
+    page.on("load", () => pendingRelays.clear());
+    await page.exposeFunction("__aibridge_push__", (nonceStr: string, jsonStr: string) => {
+      const nonce = parseInt(nonceStr, 10);
+      const pending = pendingRelays.get(nonce);
+      if (!pending) return;
+      pendingRelays.delete(nonce);
+      try {
+        const parsed = JSON.parse(jsonStr);
+        if (parsed.error) pending.reject(new Error("Relay error: " + parsed.error));
+        else pending.resolve(parsed.data);
+      } catch (e) { pending.reject(e as Error); }
+    });
+  }
+
   const url = `https://app.roll20.net/editor/setcampaign/${roll20CampaignId}/`;
-  // "domcontentloaded" fires quickly; "load" can hang forever on Roll20's WebSocket connections.
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15_000 });
   await page.waitForFunction(
     () => typeof (window as any).Campaign !== "undefined" &&
@@ -24,6 +86,9 @@ async function getEditorPage(): Promise<Page> {
     undefined,
     { timeout: 15_000, polling: 500 }
   );
+
+  // Inject push-receive observer (re-injected after every navigation; guard prevents double-install).
+  await page.evaluate(OBSERVER_SCRIPT);
 
   _editorPage = page;
   _loadedCampaignId = roll20CampaignId;
@@ -41,14 +106,20 @@ export async function evaluateWithArgs<T>(fn: (args: unknown) => T, args: unknow
   return page.evaluate(fn as any, args);
 }
 
-async function relayCommandOnce<T>(page: Awaited<ReturnType<typeof getEditorPage>>, cmd: Record<string, unknown>, nonce: number): Promise<T | null> {
-  const payload = JSON.stringify({ ...cmd, nonce });
+// Direct Backbone reads — served from window.Campaign without touching the serial queue or chat.
+// Only properties confirmed readable from page context belong here.
+const BACKBONE_READS: Record<string, () => unknown> = {
+  getTurnOrder: () => {
+    const raw = (window as any).Campaign.get("turnorder");
+    return raw ? JSON.parse(raw) : [];
+  },
+};
 
+async function sendToChat(page: Page, payload: string): Promise<void> {
   await page.evaluate(() => {
     const chatTab = document.querySelector<HTMLElement>("a[href='#textchat']");
     chatTab?.click();
   });
-
   const chatInput = await page.waitForSelector("#textchat-input textarea", { state: "attached", timeout: 15_000 });
   await chatInput.fill("!ai-relay " + payload);
   await page.evaluate(() => {
@@ -56,68 +127,34 @@ async function relayCommandOnce<T>(page: Awaited<ReturnType<typeof getEditorPage
     ta?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, keyCode: 13, which: 13 }));
   });
   await chatInput.press("Enter");
+}
 
-  const deadline = Date.now() + RELAY_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, RELAY_POLL_MS));
+async function relayCommandOnce<T>(page: Page, cmd: Record<string, unknown>, nonce: number): Promise<T | null> {
+  const payload = JSON.stringify({ ...cmd, nonce });
 
-    const result = await page.evaluate((searchNonce: number) => {
-      function extractBalancedJson(text: string, start: number): string | null {
-        let depth = 0, inStr = false, esc = false;
-        for (let i = start; i < text.length; i++) {
-          const c = text[i];
-          if (esc) { esc = false; continue; }
-          if (inStr) { if (c === "\\") esc = true; else if (c === '"') inStr = false; continue; }
-          if (c === '"') { inStr = true; continue; }
-          if (c === "{") depth++;
-          if (c === "}") { if (--depth === 0) return text.slice(start, i + 1); }
-        }
-        return null;
-      }
+  // Register before sending — avoids a race where the result arrives before we're listening.
+  const resultPromise = new Promise<T | null>((resolve, reject) => {
+    const timer = setTimeout(() => { pendingRelays.delete(nonce); resolve(null); }, RELAY_TIMEOUT_MS);
+    pendingRelays.set(nonce, {
+      resolve: (data) => { clearTimeout(timer); resolve(data as T); },
+      reject: (err)  => { clearTimeout(timer); reject(err); },
+    });
+  });
 
-      const marker = "AIBRIDGE_RESULT:";
-      const candidates: string[] = [];
-      document.querySelectorAll(".message .content, .message.whisper, .message.api").forEach((el) => {
-        candidates.push(el.textContent ?? "");
-      });
-      candidates.push((document.querySelector("#textchat") ?? document.body).textContent ?? "");
-
-      for (const text of candidates) {
-        let pos = text.indexOf(marker);
-        while (pos !== -1) {
-          const jsonStart = pos + marker.length;
-          if (text[jsonStart] === "{") {
-            const jsonStr = extractBalancedJson(text, jsonStart);
-            if (jsonStr) {
-              try {
-                const parsed = JSON.parse(jsonStr);
-                if (parsed.nonce === searchNonce) return jsonStr;
-              } catch { /* malformed */ }
-            }
-          }
-          pos = text.indexOf(marker, pos + 1);
-        }
-      }
-      return null;
-    }, nonce);
-
-    if (result) {
-      const parsed = JSON.parse(result as string) as { nonce: number; data?: T; error?: string };
-      if (parsed.nonce === nonce) {
-        if (parsed.error) throw new Error(`Relay error: ${parsed.error}`);
-        return parsed.data as T;
-      }
-    }
-  }
-  return null;
+  await sendToChat(page, payload);
+  return resultPromise;
 }
 
 // Serial queue — concurrent callers wait their turn so they never race for the chat input.
 let _relayQueue: Promise<unknown> = Promise.resolve();
 
-// Mod relay: write a JSON command to the GM_AI_Bridge attribute and wait for result.
-// Retries once after a short delay to handle the Roll20 API sandbox restart window.
 export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
+  // Short-circuit read-only commands that can be served directly from Backbone models.
+  const reader = BACKBONE_READS[cmd.action as string];
+  if (reader) {
+    return getEditorPage().then(page => page.evaluate(reader as () => T));
+  }
+
   const queued = _relayQueue.then(() => _relayCommandRaw<T>(cmd));
   _relayQueue = queued.catch(() => {});
   return queued;
