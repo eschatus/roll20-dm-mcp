@@ -7,6 +7,9 @@
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
 function writeResult(nonce, data, error) {
+  // Remember this nonce's outcome so a replayed (same-nonce) command echoes it
+  // instead of re-running a mutating action. recordNonceResult is hoisted.
+  recordNonceResult(nonce, error ? undefined : data, error ? String(error) : undefined);
   const payload = error
     ? JSON.stringify({ nonce, error: String(error) })
     : JSON.stringify({ nonce, data });
@@ -18,6 +21,48 @@ function writeResult(nonce, data, error) {
     null,
     { noarchive: true }
   );
+}
+
+// HTML-escape any player-derived string before interpolating it into sendChat HTML.
+// Prevents player-authored who/content/intent text from injecting markup into our cards.
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// True iff the message sender is a GM. Uses playerIsGM when present (it is in the
+// Roll20 Mod API), else falls back to comparing against the campaign GM list.
+function senderIsGM(playerId) {
+  if (!playerId) return false;
+  if (typeof playerIsGM === "function") {
+    try { return playerIsGM(playerId); } catch (e) { /* fall through */ }
+  }
+  try {
+    var gms = (Campaign().get("_gms") || "").split(",").filter(Boolean);
+    return gms.indexOf(playerId) !== -1;
+  } catch (e) { return false; }
+}
+
+// Idempotency cache for mutating writes. On a relay timeout the TS side cannot
+// safely resend a write (it would double-apply), but a *same-nonce* resend that
+// reaches the sandbox after the original processed must be a no-op that simply
+// re-emits the original result. We remember the last N processed nonces and the
+// result we wrote for each, and replay it instead of re-running the action.
+var PROCESSED_NONCES = {};
+var PROCESSED_ORDER = [];
+var PROCESSED_MAX = 64;
+function recordNonceResult(nonce, data, error) {
+  if (nonce == null) return;
+  var key = String(nonce);
+  if (!(key in PROCESSED_NONCES)) PROCESSED_ORDER.push(key);
+  PROCESSED_NONCES[key] = { data: data, error: error };
+  while (PROCESSED_ORDER.length > PROCESSED_MAX) {
+    delete PROCESSED_NONCES[PROCESSED_ORDER.shift()];
+  }
 }
 
 // --- Globals ---
@@ -300,15 +345,41 @@ function runBatchOp(action, args) {
       return { ok: true, conditions: Array.from(activeSet) };
     }
     case "getTokenById": {
+      // Single source of truth — the rich token shape. The main-switch case
+      // delegates here so there is exactly one implementation.
       let t = getObj("graphic", args.tokenId);
       if (!t) return null;
       return {
-        id: t.id, name: t.get("name"),
-        bar1_value: t.get("bar1_value"), bar1_max: t.get("bar1_max"),
-        statusmarkers: t.get("statusmarkers"),
-        left: t.get("left"), top: t.get("top"),
-        represents: t.get("represents"), controlledby: t.get("controlledby"),
+        id: t.id,
+        name: t.get("name"),
+        represents: t.get("represents") || "",
         layer: t.get("layer"),
+        controlledby: t.get("controlledby") || "",
+        left: t.get("left"),
+        top: t.get("top"),
+        width: t.get("width"),
+        height: t.get("height"),
+        rotation: t.get("rotation"),
+        imgsrc: t.get("imgsrc"),
+        statusmarkers: t.get("statusmarkers") || "",
+        bar1_value: t.get("bar1_value"),
+        bar1_max: t.get("bar1_max"),
+        bar2_value: t.get("bar2_value"),
+        bar2_max: t.get("bar2_max"),
+        bar3_value: t.get("bar3_value"),
+        bar3_max: t.get("bar3_max"),
+        aura1_radius: t.get("aura1_radius"),
+        aura1_color: t.get("aura1_color"),
+        aura1_square: t.get("aura1_square"),
+        showplayers_aura1: t.get("showplayers_aura1"),
+        aura2_radius: t.get("aura2_radius"),
+        aura2_color: t.get("aura2_color"),
+        aura2_square: t.get("aura2_square"),
+        showplayers_aura2: t.get("showplayers_aura2"),
+        tint_color: t.get("tint_color"),
+        light_radius: t.get("light_radius"),
+        light_dimradius: t.get("light_dimradius"),
+        gmnotes: t.get("gmnotes") || "",
       };
     }
     case "setTurnOrder": {
@@ -350,7 +421,7 @@ function runBatchOp(action, args) {
       return { id: ch.id };
     }
     default:
-      throw new Error("batchExec: unsupported action '" + action + "'. Supported: setTokenBar, setTokenProps, toggleCondition, syncConditionsToToken, getTokenById, setTurnOrder");
+      throw new Error("batchExec: unsupported action '" + action + "'. Supported: setTokenBar, setTokenProps, toggleCondition, syncConditionsToToken, getTokenById, setTurnOrder, createHandout, createCharacter");
   }
 }
 
@@ -394,6 +465,13 @@ on("chat:message", function (msg) {
 
   if (!msg.content.startsWith("!ai-relay ")) return;
 
+  // GM-only: the relay grants full campaign-mutation power, so only accept it
+  // from a GM. Any other api-capable player is silently rejected.
+  if (!senderIsGM(msg.playerid)) {
+    log("[GM_AI_Bridge] rejected !ai-relay from non-GM playerid=" + (msg.playerid || "?"));
+    return;
+  }
+
   let cmd;
   try {
     cmd = JSON.parse(msg.content.slice("!ai-relay ".length));
@@ -405,6 +483,15 @@ on("chat:message", function (msg) {
   const senderPlayerId = msg.playerid || "";
 
   log("[GM_AI_Bridge] action=" + action + " nonce=" + nonce);
+
+  // Idempotent replay: if we've already processed this exact nonce, echo the
+  // stored result instead of re-running the action (a re-send of a mutating
+  // write must not double-apply).
+  if (nonce != null && Object.prototype.hasOwnProperty.call(PROCESSED_NONCES, String(nonce))) {
+    let prior = PROCESSED_NONCES[String(nonce)];
+    writeResult(nonce, prior.data, prior.error);
+    return;
+  }
 
   try {
     switch (action) {
@@ -944,6 +1031,48 @@ on("chat:message", function (msg) {
         break;
       }
 
+      case "mergeTurnOrder": {
+        // Atomic upsert into the live turn order — read, merge, write in ONE
+        // sandbox tick so it never clobbers entries (e.g. player initiatives)
+        // added between a read and a write. Each entry is matched by `id`:
+        // replace in place if that id already exists, else append. Custom rows
+        // (id "-1") have no stable identity, so they are always inserted, never
+        // matched. After merging we sort pr-descending (Roll20's convention),
+        // keeping custom "-1" rows in their inserted relative order.
+        let rawTO = Campaign().get("turnorder");
+        let merged;
+        try { merged = rawTO ? JSON.parse(rawTO) : []; } catch (e) { merged = []; }
+        if (!Array.isArray(merged)) merged = [];
+        let incoming = args.entries || [];
+        incoming.forEach(function (entry) {
+          if (!entry || typeof entry !== "object") return;
+          let id = entry.id;
+          if (id != null && String(id) !== "-1") {
+            let idx = -1;
+            for (let i = 0; i < merged.length; i++) {
+              if (merged[i] && String(merged[i].id) === String(id)) { idx = i; break; }
+            }
+            if (idx !== -1) { merged[idx] = entry; return; }
+          }
+          merged.push(entry);
+        });
+        // Stable pr-descending sort. Math, not lexical, so "10" sorts above "9".
+        merged = merged
+          .map(function (e, i) { return { e: e, i: i }; })
+          .sort(function (a, b) {
+            let pa = Number(a.e && a.e.pr);
+            let pb = Number(b.e && b.e.pr);
+            if (isNaN(pa)) pa = -Infinity;
+            if (isNaN(pb)) pb = -Infinity;
+            if (pb !== pa) return pb - pa;
+            return a.i - b.i; // preserve original order on ties
+          })
+          .map(function (x) { return x.e; });
+        Campaign().set("turnorder", JSON.stringify(merged));
+        writeResult(nonce, { ok: true, turnorder: merged });
+        break;
+      }
+
       case "rollInitiativeForTokens": {
         // Roll d20 + initiative bonus for each token. Tries common 5e attribute names.
         // If args.rollPublic is true, tokens with a linked character sheet get a gothic public announcement.
@@ -1036,7 +1165,7 @@ on("chat:message", function (msg) {
               let rows = publicEntries.map(function(e, idx) {
                 let icon = idx === 0 ? "👑" : "🩸";
                 let sign = e.initBonus >= 0 ? "+" : "";
-                let displayName = e.name || "";
+                let displayName = esc(e.name || "");
                 let detail = "<span style='color:#6b4040;font-size:0.82em;'> d20(" + e.d20 + ")" + sign + e.initBonus + "</span>";
                 return "<tr>"
                   + "<td style='padding:3px 8px;color:#d4a0a0;font-family:Palatino Linotype,Palatino,serif;'>" + icon + " " + displayName + "</td>"
@@ -1081,51 +1210,14 @@ on("chat:message", function (msg) {
       }
 
       case "getTokenById": {
-        let token = getObj("graphic", args.tokenId);
-        if (!token) { writeResult(nonce, null); break; }
-        writeResult(nonce, {
-          id: token.id,
-          name: token.get("name"),
-          represents: token.get("represents") || "",
-          layer: token.get("layer"),
-          controlledby: token.get("controlledby") || "",
-          left: token.get("left"),
-          top: token.get("top"),
-          width: token.get("width"),
-          height: token.get("height"),
-          rotation: token.get("rotation"),
-          imgsrc: token.get("imgsrc"),
-          statusmarkers: token.get("statusmarkers") || "",
-          bar1_value: token.get("bar1_value"),
-          bar1_max: token.get("bar1_max"),
-          bar2_value: token.get("bar2_value"),
-          bar2_max: token.get("bar2_max"),
-          bar3_value: token.get("bar3_value"),
-          bar3_max: token.get("bar3_max"),
-          aura1_radius: token.get("aura1_radius"),
-          aura1_color: token.get("aura1_color"),
-          aura1_square: token.get("aura1_square"),
-          showplayers_aura1: token.get("showplayers_aura1"),
-          aura2_radius: token.get("aura2_radius"),
-          aura2_color: token.get("aura2_color"),
-          aura2_square: token.get("aura2_square"),
-          showplayers_aura2: token.get("showplayers_aura2"),
-          tint_color: token.get("tint_color"),
-          light_radius: token.get("light_radius"),
-          light_dimradius: token.get("light_dimradius"),
-          gmnotes: token.get("gmnotes") || "",
-        });
+        // Single implementation lives in runBatchOp (rich token shape).
+        writeResult(nonce, runBatchOp("getTokenById", args));
         break;
       }
 
       case "setTokenProps": {
-        let token = getObj("graphic", args.tokenId);
-        if (!token) throw new Error("Token not found: " + args.tokenId);
-        let props = normProps(args);
-        let keys = Object.keys(props);
-        if (keys.length === 0) throw new Error("setTokenProps: no properties to set — pass props:{...} (or top-level fields)");
-        token.set(props);
-        writeResult(nonce, { ok: true, set: keys });
+        // Single implementation lives in runBatchOp.
+        writeResult(nonce, runBatchOp("setTokenProps", args));
         break;
       }
 
@@ -1629,43 +1721,17 @@ on("chat:message", function (msg) {
       }
 
       case "createHandout": {
+        // Single implementation lives in runBatchOp.
         // Full-page journal handout. notes = player-visible HTML, gmnotes = GM-only.
         // inplayerjournals "all" shares with players. avatar = Roll20 CDN url.
-        let h = createObj("handout", {
-          name: args.name || "Handout",
-          inplayerjournals: args.inplayerjournals || "",
-          controlledby: args.controlledby || "",
-          archived: false,
-        });
-        if (!h) throw new Error("createObj('handout') returned undefined");
-        if (args.notes !== undefined) h.set("notes", args.notes);
-        if (args.gmnotes !== undefined) h.set("gmnotes", args.gmnotes);
-        if (args.avatar) h.set("avatar", args.avatar);
-        writeResult(nonce, { id: h.id });
+        writeResult(nonce, runBatchOp("createHandout", args));
         break;
       }
 
       case "createCharacter": {
+        // Single implementation lives in runBatchOp.
         // Bestiary stub: a character entry (draggable token). attributes = [{name,current,max}].
-        let ch = createObj("character", {
-          name: args.name || "Creature",
-          inplayerjournals: args.inplayerjournals || "",
-          controlledby: args.controlledby || "",
-          archived: false,
-        });
-        if (!ch) throw new Error("createObj('character') returned undefined");
-        if (args.bio !== undefined) ch.set("bio", args.bio);
-        if (args.gmnotes !== undefined) ch.set("gmnotes", args.gmnotes);
-        if (args.avatar) ch.set("avatar", args.avatar);
-        (args.attributes || []).forEach(function(a) {
-          createObj("attribute", {
-            characterid: ch.id,
-            name: a.name,
-            current: a.current != null ? a.current : "",
-            max: a.max != null ? a.max : "",
-          });
-        });
-        writeResult(nonce, { id: ch.id });
+        writeResult(nonce, runBatchOp("createCharacter", args));
         break;
       }
 
@@ -1706,7 +1772,7 @@ function combatantStatusLine(entry) {
     let filled = Math.round((hp / maxHp) * 10);
     bar = "█".repeat(Math.max(0, filled)) + "░".repeat(Math.max(0, 10 - filled)) + " ";
   }
-  return "<b>" + name + "</b> " + bar + "— " + condStr;
+  return "<b>" + esc(name) + "</b> " + bar + "— " + condStr;
 }
 
 on("change:campaign:turnorder", function(obj, prev) {
@@ -1795,11 +1861,11 @@ on("change:campaign:turnorder", function(obj, prev) {
     ? "<div style='color:#bb8888;font-size:0.85em;'>Conditions: " + conditions.join(", ") + "</div>"
     : "";
   let intentLine = pendingIntent
-    ? "<div style='color:#aaddaa;font-size:0.85em;margin-top:4px;'>📋 " + pendingIntent.who + " intends: " + pendingIntent.content + "</div>"
+    ? "<div style='color:#aaddaa;font-size:0.85em;margin-top:4px;'>📋 " + esc(pendingIntent.who) + " intends: " + esc(pendingIntent.content) + "</div>"
     : "";
 
   let html = "<div style='background:#080204;border-left:3px solid #cc4444;padding:5px 10px;'>"
-    + "<div style='color:#cc4444;font-family:\"Palatino Linotype\",Palatino,serif;font-size:1em;'>🩸 <b>" + name + "</b> — Round " + bs.round + "</div>"
+    + "<div style='color:#cc4444;font-family:\"Palatino Linotype\",Palatino,serif;font-size:1em;'>🩸 <b>" + esc(name) + "</b> — Round " + bs.round + "</div>"
     + hpLine + condLine + intentLine
     + "</div>";
   sendChat("Initiative", html, null, { noarchive: false });

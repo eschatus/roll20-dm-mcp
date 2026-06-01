@@ -4,6 +4,24 @@ import { getActiveCampaign } from "../registry/campaigns.js";
 
 const RELAY_TIMEOUT_MS = 30_000;
 
+// Strictly-increasing nonce. Seeded from Date.now() so it stays unique across
+// server restarts; ++ guarantees no two in-process commands ever collide.
+let _nonce = Date.now();
+const newNonce = () => ++_nonce;
+
+// Read-only actions are safe to silently auto-retry on timeout (re-running them
+// has no side effects). Everything else is a mutating write: re-sending a write
+// with a fresh nonce can double-apply damage / duplicate tokens / double-advance
+// the turn. Writes are made idempotent in the sandbox (last-nonce echo), but the
+// TS side still must NOT null-retry them with a *new* nonce.
+const READONLY_ACTIONS = new Set<string>([
+  "getTokens", "getSelection", "getTokenById", "getWalls", "debugPage",
+  "getPaths", "getDoors", "listPages", "getTurnOrder", "getRecentChat",
+  "getDmInbox", "getTurnHookState", "getCharacterAttributes", "getRepeatingSection",
+  "getTokenMarkers", "getCustomStates", "listZones", "findTokensInZone",
+  "findTokensInRange", "getJournalFolder", "ping",
+]);
+
 let _editorPage: Page | null = null;
 let _loadedCampaignId: string | null = null;
 
@@ -163,13 +181,27 @@ export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
 async function _relayCommandRaw<T>(cmd: Record<string, unknown>): Promise<T> {
   const page = await getEditorPage();
 
-  const nonce = Date.now();
+  const nonce = newNonce();
   const result = await relayCommandOnce<T>(page, cmd, nonce);
   if (result !== null) return result;
 
-  // First attempt timed out — relay may have been restarting. Wait and retry with a fresh nonce.
+  const isReadOnly = READONLY_ACTIONS.has(cmd.action as string);
+  if (!isReadOnly) {
+    // Mutating write that timed out — re-sending with a fresh nonce risks a
+    // double-apply (the original may still land in the sandbox). Reject instead
+    // of blindly retrying. (Sandbox-side last-nonce echo makes a *same-nonce*
+    // resend idempotent, but we don't have a safe channel to resend the same
+    // nonce after our listener was torn down, so we fail loud.)
+    const chatDump = await page.evaluate(() => {
+      const el = document.querySelector("#textchat") ?? document.body;
+      return el.textContent?.slice(-800) ?? "(empty)";
+    });
+    throw new Error(`Relay timeout after ${RELAY_TIMEOUT_MS}ms for mutating action '${cmd.action}' — not auto-retried to avoid double-apply. Verify state before resending.\nChat tail: ${chatDump}`);
+  }
+
+  // Read-only action — safe to retry. Relay may have been restarting; wait and retry with a fresh nonce.
   await new Promise((r) => setTimeout(r, 4_000));
-  const retryNonce = Date.now();
+  const retryNonce = newNonce();
   const retryResult = await relayCommandOnce<T>(page, cmd, retryNonce);
   if (retryResult !== null) return retryResult;
 
