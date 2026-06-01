@@ -76,8 +76,9 @@ export const CONFIG = {
     // reads
     "list_tokens", "get_token", "get_turn_order", "find_tokens_in_range",
     "get_recent_chat", "get_dm_inbox",
-    // state changes — two clean primitives: HP and conditions
-    "update_token_hp",   // hit points only
+    // state changes — clean primitives: HP (single + batch) and conditions
+    "update_token_hp",   // hit points, one token
+    "update_hp_many",    // hit points, many tokens in ONE call (AoE — no iteration)
     "set_token_marker",  // conditions (sticker + tracked state)
     "set_token_props",   // position / aura / visual
     // combat flow

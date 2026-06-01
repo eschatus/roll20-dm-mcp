@@ -38,6 +38,8 @@ function localPrompt(roster: string): string {
 
 # TOOLS — two state primitives, one job each
 - HIT POINTS → update_token_hp (damage / heal / setHp). NOT for conditions.
+- ALWAYS target by characterName (the name on the map). NEVER invent a tokenId — there is no "skeleton1"; pass characterName:"Skeleton the Armored".
+- AREA EFFECT (multiple targets) → update_hp_many in ONE call (nameMatch or names[]). NEVER call update_token_hp in a loop, and NEVER claim something happened without calling the tool.
 - CONDITIONS → set_token_marker (condition name + active true/false). Sets sticker AND state. e.g. poisoned, prone, dead, frightened, stunned.
 - Reads: list_tokens, get_token, get_turn_order, find_tokens_in_range, get_recent_chat.
 - Flow: roll_initiative, advance_turn, roll_dice. Areas: create_zone/clear_zone.
@@ -50,8 +52,16 @@ DM: "who's hurt?"
 🩸 Thorne — bloodied, poisoned
 
 DM: "goblin 2 takes 7"
-(call update_token_hp tokenId=… damage=7) → reply:
+(call update_token_hp characterName="Goblin 2" damage=7) → reply:
 Goblin 2: 7 dmg → 4/15, bloodied.
+
+DM: "fireball, 40 to every skeleton"
+(ONE call: update_hp_many nameMatch="skeleton" damage=40 — never loop one-by-one) → reply:
+🔥 skeletons scorched.
+
+DM: "the party heals 8"
+(ONE call: update_hp_many names=["Brie Mossfrond","Thorne","Daever Tympania","Dacorath Applebough","Eldrán Silvershadow"] heal=8) → reply:
+✨ party +8.
 
 DM: "mark thorne prone"
 (call set_token_marker condition=prone active=true) → reply:

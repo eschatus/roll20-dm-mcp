@@ -34,6 +34,18 @@ function toRoll20Marker(condition: string): string {
 // fuzzy-match against token names on the current page (case-insensitive, substring
 // either direction, whitespace-trimmed). Shared by the HP + condition primitives so
 // they accept names consistently (the agent never sees raw token IDs).
+// Cheap existence check against the current page's token list — avoids the 30s
+// relay hang when getTokenById is handed a nonexistent/hallucinated id.
+async function tokenIdExists(id: string): Promise<boolean> {
+  try {
+    const pageId = await roll20.getCurrentPageId();
+    const tokens = await roll20.relayCommand<{ id: string }[]>({ action: "getTokens", pageId });
+    return tokens.some((t) => t.id === id);
+  } catch {
+    return false;
+  }
+}
+
 async function resolveTokenByName(name: string): Promise<string | undefined> {
   const entry = registry.lookup(name);
   if (entry?.roll20TokenId) return entry.roll20TokenId;
@@ -653,8 +665,8 @@ export function registerCombatTools(server: McpServer): void {
     "update_token_hp",
     "The HIT POINTS primitive. Apply damage, healing, or set HP on any Roll20 token by ID (no character sheet/DDB needed). Reads bar1, computes, writes back. For CONDITIONS (poisoned, prone, dead, etc.) use set_token_marker instead — not this. (The condition args here are legacy/bulk-only.)",
     {
-      characterName: z.string().optional().describe("Token/character name, e.g. 'Brie Mossfrond' or 'Goblin 2'. Resolved to a token on the current page. Use this OR tokenId."),
-      tokenId: z.string().optional().describe("Roll20 token ID (overrides characterName)"),
+      characterName: z.string().optional().describe("USE THIS. The token/character name exactly as it appears on the map, e.g. 'Brie Mossfrond', 'Skeleton the Armored'. Resolved to the token automatically."),
+      tokenId: z.string().optional().describe("Internal Roll20 ID only. Do NOT invent or guess this — if you don't have a real ID from a prior tool result, use characterName instead."),
       damage: z.number().int().min(0).optional().describe("Subtract this much from current HP (clamps at 0)"),
       heal: z.number().int().min(0).optional().describe("Add this much to current HP (clamps at bar1_max)"),
       setHp: z.number().int().min(0).optional().describe("Set HP to this exact value regardless of current"),
@@ -663,7 +675,16 @@ export function registerCombatTools(server: McpServer): void {
       replaceConditions: z.array(z.string()).optional().describe("Legacy/bulk: replace ALL conditions. Prefer set_token_marker."),
     },
     async ({ characterName, tokenId, damage, heal, setHp, addConditions, removeConditions, replaceConditions }) => {
-      const resolvedTokenId = tokenId ?? (characterName ? await resolveTokenByName(characterName) : undefined);
+      // If a raw tokenId was supplied (not name-resolved), validate it against the
+      // page list FIRST — getTokenById on a bogus/hallucinated id hangs the relay
+      // for 30s instead of failing fast (the 7B invented "skeleton1" and froze a turn).
+      let resolvedTokenId = tokenId;
+      if (resolvedTokenId && !(await tokenIdExists(resolvedTokenId))) {
+        const byName = characterName ? await resolveTokenByName(characterName) : undefined;
+        if (!byName) throw new Error(`No such token id '${tokenId}'. Use characterName instead of guessing an id.`);
+        resolvedTokenId = byName;
+      }
+      if (!resolvedTokenId && characterName) resolvedTokenId = await resolveTokenByName(characterName);
       if (!resolvedTokenId) throw new Error("Provide characterName or tokenId");
       type TokenData = { bar1_value: number; bar1_max: number; name: string };
       const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId: resolvedTokenId });
@@ -706,6 +727,52 @@ export function registerCombatTools(server: McpServer): void {
       return {
         content: [{ type: "text", text: `${token.name}: ${delta} HP → ${hpStr}${condNote}` }],
       };
+    }
+  );
+
+  // Batch HP — ONE call hits many tokens, so the (weak-at-iteration) local model
+  // never has to loop. Either list explicit names, or use nameMatch to hit every
+  // token whose name contains a substring (e.g. "skeleton" → all skeletons).
+  server.tool(
+    "update_hp_many",
+    "Apply the SAME damage or healing to MANY tokens in one call — use this for area effects ('40 to all the skeletons', 'whole party heals 8'). Either pass names[] (explicit list) OR nameMatch (a substring that selects every token whose name contains it, case-insensitive). Do NOT call update_token_hp repeatedly for an AoE — use this once.",
+    {
+      names: z.array(z.string()).optional().describe("Explicit token names, e.g. ['Skeleton the Armored','Skeleton the Cursed']"),
+      nameMatch: z.string().optional().describe("Substring selecting all matching tokens, e.g. 'skeleton' hits every skeleton on the page"),
+      damage: z.number().int().min(0).optional(),
+      heal: z.number().int().min(0).optional(),
+    },
+    async ({ names, nameMatch, damage, heal }) => {
+      if (damage === undefined && heal === undefined) throw new Error("Provide damage or heal");
+      const pageId = await roll20.getCurrentPageId();
+      type Tk = { id: string; name: string; bar1_value: number; bar1_max: number };
+      const tokens = await roll20.relayCommand<Tk[]>({ action: "getTokens", pageId });
+
+      let targets: Tk[] = [];
+      if (nameMatch) {
+        const m = nameMatch.trim().toLowerCase();
+        targets = tokens.filter((t) => (t.name || "").toLowerCase().includes(m));
+      }
+      if (names?.length) {
+        for (const want of names) {
+          const w = want.trim().toLowerCase();
+          const hit = tokens.find((t) => (t.name || "").trim().toLowerCase() === w)
+                   ?? tokens.find((t) => (t.name || "").toLowerCase().includes(w));
+          if (hit && !targets.some((x) => x.id === hit.id)) targets.push(hit);
+        }
+      }
+      if (!targets.length) throw new Error(`No tokens matched ${nameMatch ? `'${nameMatch}'` : (names || []).join(", ")}`);
+
+      const lines: string[] = [];
+      const ops = targets.map((t) => {
+        const cur = Number(t.bar1_value) || 0, max = Number(t.bar1_max) || 0;
+        const nv = damage !== undefined ? Math.max(0, cur - damage) : (max ? Math.min(max, cur + heal!) : cur + heal!);
+        lines.push(`${(t.name || "").split("\n")[0].trim()}: ${nv}${max ? "/" + max : ""}`);
+        return { action: "setTokenBar", args: { tokenId: t.id, value: nv, max: max || undefined } };
+      });
+      await roll20.relayCommand({ action: "batchExec", ops });
+      const verb = damage !== undefined ? `−${damage}` : `+${heal}`;
+      return { content: [{ type: "text", text: `${verb} to ${targets.length}: ${lines.join(" · ")}` }] };
     }
   );
 

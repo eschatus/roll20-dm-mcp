@@ -91,8 +91,11 @@ export class DmAgent {
       this.llm.repair();
       this.llm.pushUser(transcript);
 
+      const turnStart = Date.now();
       for (let step = 0; step < 12; step++) {
+        const t0 = Date.now();
         const turn = await this.llm.run();
+        console.error(`[agent] step ${step} gen ${Date.now() - t0}ms (text:${turn.text.length} tools:${turn.toolCalls.length})`);
         if (turn.text) cb.onText(turn.text);
 
         // Truncated mid-thought without a tool call → nudge and continue, so it
@@ -101,7 +104,7 @@ export class DmAgent {
           this.llm.pushContinue("Continue — keep narration brief and call the tools now to carry out the plan.");
           continue;
         }
-        if (turn.toolCalls.length === 0) return;
+        if (turn.toolCalls.length === 0) { console.error(`[agent] turn DONE ${Date.now() - turnStart}ms, ${step + 1} steps`); return; }
 
         const results: { id: string; name: string; content: string }[] = [];
         for (const call of turn.toolCalls) {
