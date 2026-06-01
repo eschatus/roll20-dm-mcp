@@ -12,7 +12,7 @@ import * as fs from "fs";
 import * as dotenv from "dotenv";
 import { CONFIG } from "./config";
 import { PttHook } from "./ptt";
-import { WhisperSidecar } from "./stt";
+import { startStt, SttEngine } from "./stt";
 import { McpRoll20 } from "./mcp";
 import { DmAgent } from "./agent";
 import { buildRoster } from "./roster";
@@ -23,9 +23,20 @@ import { loadSettings, saveSettings, AppSettings } from "./settings";
 dotenv.config({ path: path.join(__dirname, "..", "..", ".env") });
 dotenv.config({ path: path.join(__dirname, "..", ".env") }); // optional HUD-local override
 
+// Trim the HUD's own Chromium footprint. The gem/ledger are plain CSS + a little
+// canvas waveform — they don't need GPU compositing, and the GPU is precious
+// (shared with Whisper + the local LLM). Disabling GPU here drops a whole GPU
+// process and its VRAM. Override with DMW_HUD_GPU=1 to re-enable.
+if (process.env.DMW_HUD_GPU !== "1") {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+}
+app.commandLine.appendSwitch("js-flags", "--max-old-space-size=256");
+app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
+
 let gem: BrowserWindow | null = null;
 const ptt = new PttHook();
-const whisper = new WhisperSidecar();
+let stt: SttEngine | null = null; // resolved by startStt() (walks the fallback chain)
 const mcp = new McpRoll20();
 const agent = new DmAgent(mcp);
 
@@ -155,9 +166,10 @@ function wireClipHandler() {
     const wavPath = path.join(CONFIG.tmpDir, `clip-${Date.now()}.wav`);
     fs.writeFileSync(wavPath, Buffer.from(buf));
     try {
+      if (!stt) throw new Error("STT not ready");
       const vocab = buildVocabPrompt(campaignData, rosterNames);
       const t0 = Date.now();
-      const result = await whisper.transcribe(wavPath, vocab);
+      const result = await stt.transcribe(wavPath, vocab);
       const text = result.text.trim();
       console.error(`[stt] ${Date.now() - t0}ms → "${text.slice(0, 80)}"${text ? "" : " (EMPTY)"}`);
       if (mode === "expanded") {
@@ -187,8 +199,9 @@ function wireClipHandler() {
     const wavPath = path.join(CONFIG.tmpDir, `partial-${Date.now()}.wav`);
     try {
       fs.writeFileSync(wavPath, Buffer.from(buf));
+      if (!stt) throw new Error("STT not ready");
       const vocab = buildVocabPrompt(campaignData, rosterNames);
-      const result = await whisper.transcribe(wavPath, vocab);
+      const result = await stt.transcribe(wavPath, vocab);
       return { ok: true, text: result.text };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -292,7 +305,7 @@ function wireWizard() {
 
   ipcMain.on("quit-app", () => {
     ptt.stop();
-    whisper.stop();
+    stt?.stop();
     mcp.close().catch(() => {});
     app.quit();
   });
@@ -320,7 +333,18 @@ async function refreshRoster() {
   try {
     const { text, names } = await buildRoster(mcp);
     rosterNames = names;
-    agent.setRoster(text);
+    // Fold the campaign's nickname aliases + notes into the roster block so the
+    // agent can resolve "Ryan"/"Diver"→character and has party context. (These
+    // were previously only used for STT vocab biasing, never shown to the model.)
+    let block = text;
+    if (campaignData.nicknames?.length) {
+      block += "\n\nAliases (say → means):\n" +
+        campaignData.nicknames.map((n) => `- ${n.nickname} → ${n.target}`).join("\n");
+    }
+    if (campaignData.notes?.trim()) {
+      block += "\n\nCampaign notes:\n" + campaignData.notes.trim();
+    }
+    agent.setRoster(block);
     send("agent", { kind: "info", text: `roster: ${names.length} names` });
   } catch (err) {
     send("agent", { kind: "error", text: "roster build failed: " + (err as Error).message });
@@ -345,12 +369,14 @@ app.whenReady().then(async () => {
   campaignData = loadCampaignData(activeSlug);
   settings = loadSettings();
 
-  whisper.on("log", (m: string) => process.stderr.write("[whisper] " + m));
-  whisper.on("ready", () => send("agent", { kind: "info", text: "scrying gem attuned" }));
-  whisper.on("exit", (code: number) => send("agent", { kind: "error", text: `whisper exited (${code})` }));
-
-  // Start STT + MCP in parallel; neither blocks the gem from showing.
-  whisper.start().catch((err) => send("agent", { kind: "error", text: "whisper: " + (err as Error).message }));
+  // Start STT (walks the fallback chain) + MCP in parallel; neither blocks the gem.
+  startStt((m) => process.stderr.write(m))
+    .then((engine) => {
+      stt = engine;
+      stt.on("exit", (code: number) => send("agent", { kind: "error", text: `STT exited (${code})` }));
+      send("agent", { kind: "info", text: `scrying gem attuned (${engine.name})` });
+    })
+    .catch((err) => send("agent", { kind: "error", text: "STT failed: " + (err as Error).message }));
 
   try {
     const tools = await mcp.connect();
@@ -366,7 +392,7 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => {
   ptt.stop();
-  whisper.stop();
+  stt?.stop();
   mcp.close().catch(() => {});
   app.quit();
 });

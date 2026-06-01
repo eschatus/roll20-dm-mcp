@@ -1,39 +1,41 @@
-// Whisper sidecar manager. Spawns whisper_server.py once (model stays resident),
-// then exposes transcribe(wavPath, initialPrompt) over its newline-JSON protocol.
+// faster-whisper engine — drives the Python sidecar (whisper_server.py). The same
+// class serves any model size / compute type, so falling back to a smaller/cheaper
+// model is just different constructor args (no new code).
 
 import { spawn, ChildProcessWithoutNullStreams } from "child_process";
 import * as readline from "readline";
 import { EventEmitter } from "events";
-import { CONFIG } from "./config";
+import { SttEngine, TranscriptResult } from "./engine";
 
-export interface TranscriptResult {
-  text: string;
-  avg_logprob: number;
-  no_speech_prob: number;
-  low_confidence: boolean;
-  language: string;
-  duration: number;
+export interface FasterWhisperOpts {
+  python: string;
+  script: string;
+  model: string;       // e.g. "large-v3-turbo", "medium", "small"
+  device: string;      // "cuda" | "cpu"
+  computeType: string; // "float16" | "int8" | "int8_float16"
 }
 
-export class WhisperSidecar extends EventEmitter {
+export class FasterWhisperEngine extends EventEmitter implements SttEngine {
+  readonly name: string;
   private proc: ChildProcessWithoutNullStreams | null = null;
   private ready = false;
   private reqId = 0;
   private pending = new Map<string, { resolve: (r: TranscriptResult) => void; reject: (e: Error) => void }>();
 
+  constructor(private opts: FasterWhisperOpts) {
+    super();
+    this.name = `faster-whisper:${opts.model}/${opts.computeType}`;
+  }
+
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const { python, script, model, device, computeType } = CONFIG.stt;
+      const { python, script, model, device, computeType } = this.opts;
       this.proc = spawn(python, [
-        script,
-        "--model", model,
-        "--device", device,
-        "--compute-type", computeType,
+        script, "--model", model, "--device", device, "--compute-type", computeType,
       ], { windowsHide: true });
 
       const rl = readline.createInterface({ input: this.proc.stdout });
       rl.on("line", (line) => this.onLine(line, resolve));
-
       this.proc.stderr.on("data", (d) => this.emit("log", String(d)));
       this.proc.on("exit", (code) => {
         this.ready = false;
@@ -43,13 +45,12 @@ export class WhisperSidecar extends EventEmitter {
       });
       this.proc.on("error", reject);
 
-      // Cold start can take ~20s (download) — generous timeout.
       setTimeout(() => { if (!this.ready) reject(new Error("whisper sidecar did not become ready in 120s")); }, 120_000);
     });
   }
 
   private onLine(line: string, onReady: () => void) {
-    let msg: any;
+    let msg: { fatal?: string; ready?: boolean; id?: string | number; error?: string } & Partial<TranscriptResult>;
     try { msg = JSON.parse(line); } catch { return; }
     if (msg.fatal) { this.emit("log", "FATAL: " + msg.fatal); return; }
     if (msg.ready) { this.ready = true; this.emit("ready", msg); onReady(); return; }

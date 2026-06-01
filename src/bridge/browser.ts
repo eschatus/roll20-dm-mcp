@@ -29,6 +29,33 @@ async function tryConnectCDP(timeoutMs: number): Promise<BrowserContext | null> 
   }
 }
 
+// Hide the automation browser to the taskbar by default (DMW_BROWSER_HIDE=0 keeps
+// it visible). It still runs/renders normally — just out of the way. We can restore
+// it when a manual login is needed so the GM is never locked out.
+const HIDE_BROWSER = process.env.DMW_BROWSER_HIDE !== "0";
+
+// Drive the OS window state via CDP Browser.setWindowBounds (windowState:
+// "minimized" | "normal"). Playwright has no window-state API, so we reach the
+// raw CDP session through the page's context.
+async function setBrowserWindowState(page: Page, state: "minimized" | "normal"): Promise<void> {
+  try {
+    const session = await page.context().newCDPSession(page);
+    const { windowId } = await session.send("Browser.getWindowForTarget");
+    await session.send("Browser.setWindowBounds", { windowId, bounds: { windowState: state } });
+    await session.detach().catch(() => {});
+  } catch {
+    // Best effort — never let window chrome block the relay.
+  }
+}
+
+// Bring the browser back so the GM can complete a manual login, then it can be
+// re-minimized by the caller.
+export async function restoreBrowserWindow(): Promise<void> {
+  const ctx = await getContext();
+  const page = ctx.pages()[0];
+  if (page) await setBrowserWindowState(page, "normal");
+}
+
 async function getContext(): Promise<BrowserContext> {
   if (!_contextPromise) {
     const userDataDir = path.resolve(
@@ -43,13 +70,49 @@ async function getContext(): Promise<BrowserContext> {
       // No existing browser — launch a fresh persistent context with the debug port
       // enabled so future server attaches can reuse it via CDP.
       try {
-        return await chromium.launchPersistentContext(userDataDir, {
+        // Window + viewport size. Smaller = less to rasterize (memory/GPU) and a
+        // less obtrusive window. Roll20 still works at a modest size; bump via
+        // DMW_BROWSER_W/H if a tool needs more of the map visible at once.
+        const winW = Number(process.env.DMW_BROWSER_W) || 1280;
+        const winH = Number(process.env.DMW_BROWSER_H) || 800;
+        const launched = await chromium.launchPersistentContext(userDataDir, {
           headless: false,
+          viewport: { width: winW, height: winH },
           args: [
             "--disable-blink-features=AutomationControlled",
             `--remote-debugging-port=${DEBUG_PORT}`,
+            // Set the actual OS window size/position so it isn't a giant window.
+            `--window-size=${winW},${winH}`,
+            `--window-position=${process.env.DMW_BROWSER_X || 40},${process.env.DMW_BROWSER_Y || 40}`,
+            // --- Footprint reduction ---
+            // Roll20's map canvas needs WebGL, so we keep GPU on but cap and trim
+            // everything around it. Override with DMW_BROWSER_LIGHT=0 to disable.
+            ...(process.env.DMW_BROWSER_LIGHT === "0" ? [] : [
+              // memory: cap the JS heap and tile/raster memory the VTT can hog
+              "--js-flags=--max-old-space-size=512",
+              "--force-gpu-mem-available-mb=512",
+              "--disable-dev-shm-usage",
+              // trim subsystems we never use in an automated VTT tab
+              "--disable-extensions",
+              "--disable-component-update",
+              "--disable-background-networking",
+              "--disable-sync",
+              "--disable-translate",
+              "--mute-audio",
+              "--metrics-recording-only",
+              "--no-first-run",
+              // don't throttle/zero out the tab when it's not focused (we drive it
+              // in the background), but do let renderer back the framebuffer off
+              "--disable-features=CalculateNativeWinOcclusion,MediaRouter",
+            ]),
           ],
         });
+        // Tuck the window to the taskbar on a fresh launch (it still renders).
+        if (HIDE_BROWSER) {
+          const p0 = launched.pages()[0] ?? await launched.newPage();
+          await setBrowserWindowState(p0, "minimized");
+        }
+        return launched;
       } catch {
         // Profile is locked — another server process won the race to launch.
         // Wait for it to finish opening, then connect via CDP.
@@ -95,6 +158,7 @@ async function waitForManualAuth(page: Page, site: Site, timeoutMs = 15_000): Pr
 }
 
 async function loginRoll20(page: Page): Promise<void> {
+  if (HIDE_BROWSER) await setBrowserWindowState(page, "normal"); // un-minimize so the GM can log in
   await page.goto(LOGIN_URLS.roll20, { waitUntil: "domcontentloaded", timeout: 15_000 });
   console.error("[roll20-dm] Roll20 login required — complete login in the Chromium browser window, then this will continue automatically.");
   await page.waitForURL(
@@ -104,6 +168,7 @@ async function loginRoll20(page: Page): Promise<void> {
 }
 
 async function loginDdb(page: Page): Promise<void> {
+  if (HIDE_BROWSER) await setBrowserWindowState(page, "normal"); // un-minimize so the GM can log in
   console.error("[roll20-dm] DnD Beyond login required — complete login in the Chromium browser window, then this will continue automatically.");
   await page.goto(LOGIN_URLS.ddb, { waitUntil: "commit", timeout: 15_000 }).catch(() => {});
   await waitForManualAuth(page, "ddb", 120_000);

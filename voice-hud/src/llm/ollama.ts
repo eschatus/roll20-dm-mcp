@@ -49,7 +49,13 @@ export class OllamaProvider implements LLMProvider {
       model: this.model,
       messages: this.history,
       tools: this.tools.length ? this.tools : undefined,
-      max_tokens: 4096,
+      max_tokens: 1024,
+      // Ollama's OpenAI endpoint defaults num_ctx to 2048 — too small once tools +
+      // system prompt are in. Raise it so the conversation isn't silently truncated
+      // (which makes a small model "forget" the system prompt mid-combat).
+      // Passed through as an Ollama option via the extra body.
+      // @ts-expect-error non-standard Ollama passthrough
+      options: { num_ctx: 8192 },
     });
     const msg = res.choices[0].message;
     this.history.push(msg);

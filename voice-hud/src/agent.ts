@@ -57,21 +57,26 @@ export class DmAgent {
   setRoster(roster: string) {
     this.roster = roster;
     // Roster lands at start() if not yet begun; otherwise refresh the live prompt.
-    if (this.started) this.llm.setSystem(buildSystemPrompt(this.roster));
+    if (this.started) this.llm.setSystem(buildSystemPrompt(this.roster, this.providerName));
   }
   reset() { this.llm.reset(); this.started = false; this.busy = false; }
   isBusy() { return this.busy; }
 
   private ensureStarted(): void {
     if (this.started) return;
-    const tools: ToolSpec[] = this.mcp.getTools().map((t) => ({
-      name: t.name,
-      description: t.description,
-      parameters: (t.inputSchema && Object.keys(t.inputSchema).length
-        ? t.inputSchema
-        : { type: "object", properties: {} }) as Record<string, unknown>,
-    }));
-    this.llm.start(buildSystemPrompt(this.roster), tools);
+    // Local (small) models choke on the full 60-tool schema (~9.9k tokens), so
+    // filter to the live-combat allow-list. Cloud Claude gets everything.
+    const allow = this.providerName === "ollama" ? new Set(CONFIG.localToolAllowlist) : null;
+    const tools: ToolSpec[] = this.mcp.getTools()
+      .filter((t) => !allow || allow.has(t.name))
+      .map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: (t.inputSchema && Object.keys(t.inputSchema).length
+          ? t.inputSchema
+          : { type: "object", properties: {} }) as Record<string, unknown>,
+      }));
+    this.llm.start(buildSystemPrompt(this.roster, this.providerName), tools);
     this.started = true;
   }
 

@@ -27,14 +27,23 @@ export async function buildRoster(mcp: McpRoll20): Promise<{ entries: RosterEntr
 
   const ddbNames = ddb.map((c) => (c.name || c.characterName || "").trim()).filter(Boolean);
 
-  // Player-controlled tokens are the PCs; match each to a DDB character by fuzzy name.
+  // A token is a PC iff a PLAYER controls it (controlledby set, not "all").
+  // NOT layer (PCs sit on "objects" here, not "tokens" — the old bug) and NOT
+  // represents (monsters also link stat-block sheets, so represents sweeps in
+  // every Mage/Skeleton). controlledby is the only reliable PC discriminator.
+  // Names may have stray whitespace, so trim before matching.
   const entries: RosterEntry[] = tokens
-    .filter((t) => t.controlledby && t.controlledby.length > 0 && t.layer === "tokens")
+    .filter((t) => {
+      const controlled = (t.controlledby || "").trim();
+      return controlled.length > 0 && controlled !== "all";
+    })
     .map((t) => {
+      const name = (t.name || "").trim();
+      const lower = name.toLowerCase();
       const match = ddbNames.find(
-        (n) => n.toLowerCase().includes(t.name.toLowerCase()) || t.name.toLowerCase().includes(n.toLowerCase())
+        (n) => n.toLowerCase().includes(lower) || lower.includes(n.toLowerCase())
       );
-      return { tokenName: t.name, characterName: match, represents: t.represents || undefined };
+      return { tokenName: name, characterName: match, represents: t.represents || undefined };
     });
 
   const names = Array.from(new Set([

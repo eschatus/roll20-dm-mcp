@@ -146,23 +146,28 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "set_token_marker",
-    "Add or remove a status marker (sticker) on a Roll20 token by exact marker name. Use characterName to look up the token, or tokenId directly.",
+    "Set a condition on a token — updates BOTH the visible status sticker AND the token's tracked condition state. Pass a condition name (e.g. 'poisoned', 'prone', 'frightened', 'dead', 'unconscious', 'stunned', 'restrained', 'grappled', 'blinded', 'charmed', 'wounded'). active=true applies it, false clears it. Use characterName or tokenId. This is the condition primitive; use update_token_hp for hit points.",
     {
-      marker: z.string().describe("Exact Roll20 marker name, e.g. 'Charmed', 'pink', 'dead'"),
-      active: z.boolean().describe("true to add the marker, false to remove it"),
+      condition: z.string().describe("Condition name, e.g. 'poisoned', 'prone', 'dead'. Lowercase; mapped to the correct Roll20 marker + tracked state."),
+      active: z.boolean().describe("true to apply the condition, false to clear it"),
       characterName: z.string().optional(),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup"),
     },
-    async ({ marker, active, characterName, tokenId }) => {
+    async ({ condition, active, characterName, tokenId }) => {
       let resolvedTokenId = tokenId;
+      let charId: string | undefined;
       if (!resolvedTokenId) {
         if (!characterName) throw new Error("Provide characterName or tokenId");
         const entry = registry.lookup(characterName);
         if (!entry) throw new Error(`Character not registered: ${characterName}`);
         resolvedTokenId = entry.roll20TokenId;
       }
-      await roll20.relayCommand({ action: "setStatusMarker", tokenId: resolvedTokenId, marker, active });
-      return { content: [{ type: "text", text: `Marker '${marker}' ${active ? "added to" : "removed from"} token ${resolvedTokenId}` }] };
+      // Resolve the linked character so condition STATE (active_conditions) syncs,
+      // not just the sticker. toggleCondition handles both.
+      const tok = await roll20.relayCommand<{ represents?: string } | null>({ action: "getTokenById", tokenId: resolvedTokenId });
+      charId = tok?.represents || undefined;
+      await roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition, active });
+      return { content: [{ type: "text", text: `${condition} ${active ? "applied to" : "cleared from"} ${characterName ?? resolvedTokenId}` }] };
     }
   );
 
@@ -624,7 +629,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "update_token_hp",
-    "Apply damage, healing, or set HP directly on any Roll20 token by ID — no character sheet or DDB required. Use this for NPC/monster tokens that aren't registered characters. Reads bar1_value/bar1_max, computes new HP, writes back. Use addConditions/removeConditions to merge-add or merge-remove individual status markers without disturbing others. Use replaceConditions only when you want to set the complete condition list from scratch.",
+    "The HIT POINTS primitive. Apply damage, healing, or set HP on any Roll20 token by ID (no character sheet/DDB needed). Reads bar1, computes, writes back. For CONDITIONS (poisoned, prone, dead, etc.) use set_token_marker instead — not this. (The condition args here are legacy/bulk-only.)",
     {
       tokenId: z.string().describe("Roll20 token ID"),
       damage: z.number().int().min(0).optional().describe("Subtract this much from current HP (clamps at 0)"),
