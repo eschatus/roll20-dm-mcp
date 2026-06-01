@@ -1,10 +1,4 @@
-// NOTE: This suite is written for `vitest`. The repo does not yet list vitest in
-// package.json (which this team is not permitted to edit). To keep `tsc` (which compiles
-// src/**/*) green until the runner is installed, the vitest globals (describe/it/expect)
-// are declared as ambient globals at the bottom of this file rather than imported. Run
-// with vitest's globals mode enabled:
-//   npx vitest run --globals src/tools/tactics.test.ts
-// Once `vitest` is a real dependency you may instead `import { describe, it, expect } from "vitest"`.
+import { describe, it, expect } from "vitest";
 import {
   resolveMonsterStats,
   resolveTier,
@@ -233,24 +227,3 @@ describe("rangeBand", () => {
   });
 });
 
-// ─── Minimal ambient vitest-globals shim ───────────────────────────────────────
-// Declares just enough of vitest's globals surface for this suite to type-check under
-// `tsc` while vitest is not yet installed. When run under `vitest --globals`, these real
-// globals are provided at runtime. Delete this block once `@types`/vitest are available.
-declare global {
-  type VitestTestFn = () => void | Promise<void>;
-  interface VitestExpectation {
-    toBe(expected: unknown): void;
-    toEqual(expected: unknown): void;
-    toThrow(expected?: unknown): void;
-    toContain(expected: unknown): void;
-  }
-  // eslint-disable-next-line no-var
-  var describe: (name: string, fn: VitestTestFn) => void;
-  // eslint-disable-next-line no-var
-  var it: (name: string, fn: VitestTestFn) => void;
-  // eslint-disable-next-line no-var
-  var expect: (actual: unknown) => VitestExpectation;
-}
-
-export {};
