@@ -22,6 +22,20 @@ const READONLY_ACTIONS = new Set<string>([
   "findTokensInRange", "getJournalFolder", "ping",
 ]);
 
+// ─── Test seam ────────────────────────────────────────────────────────────────
+// When set (only by the test harness), relay/evaluate calls route here instead of
+// the live browser → chat → sandbox path, so the real combat/tactics tools can run
+// against an in-memory Roll20 emulator. Production never sets this; the default
+// path below is completely unaffected.
+export interface BridgeTestTransport {
+  relay<T>(cmd: Record<string, unknown>): Promise<T>;
+  evaluate<T>(fn: (args?: unknown) => T, args?: unknown): Promise<T>;
+}
+let _testTransport: BridgeTestTransport | null = null;
+export function __setBridgeTestTransport(t: BridgeTestTransport | null): void {
+  _testTransport = t;
+}
+
 let _editorPage: Page | null = null;
 let _loadedCampaignId: string | null = null;
 
@@ -114,11 +128,13 @@ async function getEditorPage(): Promise<Page> {
 }
 
 export async function evaluate<T>(fn: () => T): Promise<T> {
+  if (_testTransport) return _testTransport.evaluate<T>(fn as (args?: unknown) => T);
   const page = await getEditorPage();
   return page.evaluate(fn);
 }
 
 export async function evaluateWithArgs<T>(fn: (args: unknown) => T, args: unknown): Promise<T> {
+  if (_testTransport) return _testTransport.evaluate<T>(fn, args);
   const page = await getEditorPage();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return page.evaluate(fn as any, args);
@@ -167,6 +183,10 @@ async function relayCommandOnce<T>(page: Page, cmd: Record<string, unknown>, non
 let _relayQueue: Promise<unknown> = Promise.resolve();
 
 export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
+  // Test harness routes every relay action through the in-memory emulator (which
+  // implements getTurnOrder itself, so the Backbone short-circuit is bypassed).
+  if (_testTransport) return _testTransport.relay<T>(cmd);
+
   // Short-circuit read-only commands that can be served directly from Backbone models.
   const reader = BACKBONE_READS[cmd.action as string];
   if (reader) {

@@ -12,3 +12,6 @@ data/
 *.jpeg
 *.pdf
 voice-hud/stt/.venv/
+
+# test scratch
+.tmp-test-data/

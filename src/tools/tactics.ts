@@ -282,10 +282,16 @@ function addEntry(state: TacticalState, round: number, summary: string): void {
 
 // ─── Anthropic Client ─────────────────────────────────────────────────────────
 
-const anthropic = new Anthropic({
+let anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
   defaultHeaders: { "anthropic-beta": "prompt-caching-2024-07-31" },
 });
+
+// Test seam: swap in a mock client (deterministic canned plans) so the full
+// tactics pipeline can run in CI without real API calls. Production never calls this.
+export function __setAnthropicForTest(client: Pick<Anthropic, "messages">): void {
+  anthropic = client as Anthropic;
+}
 
 const TACTICS_SYSTEM_PROMPT = `You are the tactical AI for a D&D 5e dungeon master. Your job is to recommend the best action sequence for a creature's turn. Recommendations must reflect how this specific creature actually behaves — not generic "smart monster" advice.
 

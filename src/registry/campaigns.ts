@@ -1,8 +1,11 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import path from "path";
 
-const CAMPAIGNS_PATH = path.resolve("./data/campaigns.json");
-const ACTIVE_CAMPAIGN_PATH = path.resolve("./data/active-campaign.json");
+// Data dir is overridable via ROLL20_DATA_DIR so tests (and relocated installs)
+// don't read/write the real ./data files.
+const DATA_DIR = process.env.ROLL20_DATA_DIR ?? "./data";
+const CAMPAIGNS_PATH = path.resolve(DATA_DIR, "campaigns.json");
+const ACTIVE_CAMPAIGN_PATH = path.resolve(DATA_DIR, "active-campaign.json");
 
 export interface CampaignEntry {
   name: string;
