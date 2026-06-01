@@ -56,7 +56,30 @@ export async function restoreBrowserWindow(): Promise<void> {
   if (page) await setBrowserWindowState(page, "normal");
 }
 
+// Is this context's browser still alive? A cached context whose browser was
+// closed (manual close, crash, or a sibling server restart killing the launch)
+// would otherwise be handed back forever, every call throwing "Target page,
+// context or browser has been closed". connectOverCDP and launchPersistentContext
+// both expose the Browser via .browser(); isConnected() is the cheap truth.
+function contextAlive(ctx: BrowserContext): boolean {
+  try {
+    const b = ctx.browser();
+    return b ? b.isConnected() : true; // no handle → can't disprove; trust per-page checks
+  } catch {
+    return false;
+  }
+}
+
 async function getContext(): Promise<BrowserContext> {
+  // Validate a cached context before reuse; evict dead handles so we relaunch.
+  if (_contextPromise) {
+    try {
+      const ctx = await _contextPromise;
+      if (contextAlive(ctx)) return ctx;
+    } catch { /* failed launch — fall through to rebuild */ }
+    _contextPromise = null;
+    for (const s of Object.keys(_pagePromises) as Site[]) delete _pagePromises[s];
+  }
   if (!_contextPromise) {
     const userDataDir = path.resolve(
       process.env.BROWSER_USER_DATA_DIR ?? "./data/browser-session"
@@ -183,6 +206,15 @@ const LOGIN_FNS: Record<Site, (page: Page) => Promise<void>> = {
 const _pagePromises: Partial<Record<Site, Promise<Page>>> = {};
 
 export async function getPage(site: Site): Promise<Page> {
+  // Validate a cached page before reuse: a closed page (or one whose browser
+  // died) must be rebuilt, not handed back to throw on the next evaluate().
+  if (_pagePromises[site]) {
+    try {
+      const p = await _pagePromises[site]!;
+      if (!p.isClosed() && contextAlive(p.context())) return p;
+    } catch { /* failed page promise — rebuild */ }
+    delete _pagePromises[site];
+  }
   if (!_pagePromises[site]) {
     _pagePromises[site] = (async () => {
       const ctx = await getContext();

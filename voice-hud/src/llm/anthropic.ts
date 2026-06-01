@@ -12,7 +12,15 @@ export class AnthropicProvider implements LLMProvider {
   private tools: Anthropic.Tool[] = [];
 
   constructor(private model: string) {
-    this.client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    this.client = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      // Retries (429/overloaded) happen INSIDE create() with exponential backoff
+      // and were invisible — a rate-limited turn looked like a 27s "generation".
+      // Set DMW_ANTHROPIC_LOG=info to print each "retrying request in Xms" line;
+      // run() below also logs the rate-limit headers whenever a call is slow.
+      maxRetries: Number(process.env.DMW_ANTHROPIC_RETRIES) || 3,
+      logLevel: (process.env.DMW_ANTHROPIC_LOG as "off" | "error" | "warn" | "info" | "debug") || "warn",
+    });
   }
 
   start(systemPrompt: string, tools: ToolSpec[]): void {
@@ -38,13 +46,37 @@ export class AnthropicProvider implements LLMProvider {
 
   async run(): Promise<LLMTurn> {
     // The system prompt may carry the live roster; rebuild each call is fine.
-    const res = await this.client.messages.create({
-      model: this.model,
-      max_tokens: 4096,
-      system: this.system,
-      tools: this.tools,
-      messages: this.history,
-    });
+    // Take the raw response too, so we can read rate-limit headers and explain a
+    // slow turn (backoff vs genuine generation).
+    const t0 = Date.now();
+    let res: Anthropic.Message;
+    let headers: Headers;
+    try {
+      const r = await this.client.messages.create({
+        model: this.model,
+        max_tokens: 1024, // bound prose latency; a tool call + short reply fits easily
+        system: this.system,
+        tools: this.tools,
+        messages: this.history,
+      }).withResponse();
+      res = r.data;
+      headers = r.response.headers;
+    } catch (e) {
+      const err = e as { status?: number; headers?: { get?: (k: string) => string | null } };
+      const retryAfter = err.headers?.get?.("retry-after");
+      console.error(`[anthropic] request FAILED after ${Date.now() - t0}ms status=${err.status ?? "?"}${retryAfter ? ` retry-after=${retryAfter}s` : ""} — ${(e as Error).message}`);
+      throw e;
+    }
+
+    // A slow call (or one landing near the limit) is almost always rate-limit
+    // backoff, not generation. Surface the headers so the cause is visible.
+    const elapsed = Date.now() - t0;
+    const reqRemaining = headers.get("anthropic-ratelimit-requests-remaining");
+    const tokRemaining = headers.get("anthropic-ratelimit-tokens-remaining");
+    if (elapsed > 6000 || (reqRemaining !== null && Number(reqRemaining) < 2) || (tokRemaining !== null && Number(tokRemaining) < 2000)) {
+      const reset = headers.get("anthropic-ratelimit-tokens-reset") || headers.get("anthropic-ratelimit-requests-reset");
+      console.error(`[anthropic] SLOW ${elapsed}ms — likely rate-limit backoff. req_remaining=${reqRemaining} tok_remaining=${tokRemaining}${reset ? ` reset=${reset}` : ""}`);
+    }
 
     let text = "";
     const toolCalls: LLMTurn["toolCalls"] = [];

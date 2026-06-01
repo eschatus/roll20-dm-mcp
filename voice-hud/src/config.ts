@@ -3,6 +3,45 @@
 
 import * as path from "path";
 
+// Tool allow-list for LOCAL models. The full 60-tool schema is ~9.9k tokens —
+// most of a 7B's context before the DM even speaks, and it tanks tool selection.
+// Local models see only these live-combat tools (~15); map/vision/prep/journal
+// tools are hidden (the MCP server still serves all 60 to Claude Code / map prep).
+// Deduplicated to exactly ONE tool per job (small models pick badly when tools
+// overlap): update_token_hp is the SINGLE HP+conditions tool — the DDB-syncing
+// apply_damage/heal_character and batch_exec are intentionally excluded here.
+const LOCAL_TOOLS = [
+  // reads
+  "list_tokens", "get_token", "get_turn_order", "find_tokens_in_range",
+  "get_recent_chat", "get_dm_inbox",
+  // state changes — clean primitives: HP (single + batch) and conditions
+  "update_token_hp",   // hit points, one token
+  "update_hp_many",    // hit points, many tokens in ONE call (AoE — no iteration)
+  "set_token_marker",  // conditions (sticker + tracked state)
+  "set_token_props",   // position / aura / visual
+  // combat flow
+  "roll_initiative", "advance_turn", "roll_dice",
+  // areas
+  "create_zone", "clear_zone",
+  // comms
+  "send_narration", "whisper_player",
+];
+
+// Tool allow-list for CLOUD (Claude). Same stripped scope — NO vision/map/prep
+// tools (those ~15 schemas are pure bloat at the live table and were a real
+// chunk of cloud turn latency). Cloud handles richer tool use well, so on top of
+// the local set it keeps the power tools the 7B can't: batch ops, DDB-syncing HP,
+// full turn-order control, token removal. (Server still serves all 60 to Claude
+// Code for map prep.)
+const CLOUD_TOOLS = [
+  ...LOCAL_TOOLS,
+  "batch_exec",                                   // one round-trip for bulk edits
+  "apply_damage", "heal_character", "ddb_update_hp", // DDB-syncing HP
+  "get_token_markers", "get_selection",           // richer reads
+  "clear_turn_order", "update_turn_order", "inject_round_marker", // turn-order
+  "sync_character_state", "remove_object",
+];
+
 export const CONFIG = {
   // --- Push-to-talk ---
   // PTT key. Default Right-Ctrl (hold to talk, release to send) — no toggle
@@ -49,8 +88,14 @@ export const CONFIG = {
   // "ollama" (local, free, default) or "anthropic" (cloud). DMW_PROVIDER overrides.
   provider: (process.env.DMW_PROVIDER || "ollama") as "ollama" | "anthropic",
 
-  // Anthropic (cloud) model — used when provider=anthropic.
-  model: process.env.DMW_MODEL || "claude-sonnet-4-6",
+  // Anthropic (cloud) model — used when provider=anthropic or on auto-escalation.
+  // Haiku 4.5 is cheap + reliable at narration parsing / multi-target tool use
+  // (the exact thing the local 7B flubs). Bump to sonnet via DMW_MODEL if needed.
+  model: process.env.DMW_MODEL || "claude-haiku-4-5",
+
+  // Auto-escalate complex narration turns from local → cloud (Haiku). Off via
+  // DMW_AUTO_ESCALATE=0. Heuristic lives in agent.ts (length + multiple targets).
+  autoEscalate: process.env.DMW_AUTO_ESCALATE !== "0",
 
   // Ollama (local) — OpenAI-compatible endpoint + a tool-calling model.
   // qwen2.5:14b-instruct handles tool-calling well; R1-distill does NOT, so it's
@@ -62,32 +107,10 @@ export const CONFIG = {
   // tactics (runs when Whisper is idle).
   ollamaModel: process.env.DMW_OLLAMA_MODEL || "qwen2.5:7b-instruct",
 
-  // Tool allow-list for LOCAL models. The full 60-tool schema is ~9.9k tokens —
-  // most of a 7B's context before the DM even speaks, and it tanks tool selection.
-  // Local models see only these live-combat tools (~15); map/vision/prep/journal
-  // tools are hidden from the local agent (the MCP server still serves all 60 to
-  // Claude Code / map prep). Cloud provider gets the full set (handles it fine).
-  // Deduplicated to exactly ONE tool per job (small models pick badly when tools
-  // overlap). Notably: update_token_hp is the SINGLE HP+conditions tool — the
-  // DDB-syncing apply_damage/heal_character and the redundant set_token_marker
-  // are intentionally excluded from the local set (cloud still gets all 60).
-  // batch_exec/sync_character_state/get_selection dropped: schema-heavy or niche.
-  localToolAllowlist: [
-    // reads
-    "list_tokens", "get_token", "get_turn_order", "find_tokens_in_range",
-    "get_recent_chat", "get_dm_inbox",
-    // state changes — clean primitives: HP (single + batch) and conditions
-    "update_token_hp",   // hit points, one token
-    "update_hp_many",    // hit points, many tokens in ONE call (AoE — no iteration)
-    "set_token_marker",  // conditions (sticker + tracked state)
-    "set_token_props",   // position / aura / visual
-    // combat flow
-    "roll_initiative", "advance_turn", "roll_dice",
-    // areas
-    "create_zone", "clear_zone",
-    // comms
-    "send_narration", "whisper_player",
-  ],
+  // Live-play tool allow-lists (defined above). Both strip the vision/map/prep
+  // tools; cloud additionally keeps the heavier combat tools the 7B can't.
+  localToolAllowlist: LOCAL_TOOLS,
+  cloudToolAllowlist: CLOUD_TOOLS,
 
   // --- Agent whisper notification sound ---
   // The demonic whisper clip played when the agent responds. A random slice of

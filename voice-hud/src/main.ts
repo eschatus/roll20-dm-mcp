@@ -15,7 +15,7 @@ import { PttHook } from "./ptt";
 import { startStt, SttEngine } from "./stt";
 import { McpRoll20 } from "./mcp";
 import { DmAgent } from "./agent";
-import { buildRoster } from "./roster";
+import { buildRoster, clearRosterCache } from "./roster";
 import { loadCampaignData, saveCampaignData, buildVocabPrompt, addVocabTerm, CampaignData } from "./campaignData";
 import { loadSettings, saveSettings, AppSettings } from "./settings";
 
@@ -252,6 +252,11 @@ async function runAgent(transcript: string) {
   send("state", "thinking");
   console.error(`[agent] turn start: "${transcript.slice(0, 80)}"`);
   try {
+    // Keep the roster current every turn (cheap — DDB list is cached, only
+    // list_tokens re-runs). This is why there's no "refresh roster" command:
+    // joining combat in progress just works, the next thing you say sees the
+    // live tokens.
+    await refreshRoster({ silent: true });
     await agent.handle(transcript, {
       onText: (text) => { console.error(`[agent] say: ${text.slice(0, 80)}`); send("agent", { kind: "say", text }); },
       onToolStart: (name, args) => { console.error(`[agent] tool → ${name}(${shortArgs(args)})`); send("agent", { kind: "tool", text: `${name}(${shortArgs(args)})` }); },
@@ -289,7 +294,7 @@ function wireWizard() {
     return { ok: true, data: campaignData };
   });
   ipcMain.handle("rebuild-roster", async () => {
-    await refreshRoster();
+    await refreshRoster({ force: true });
     return { roster: rosterNames };
   });
   ipcMain.on("set-mode", (_e, m: Mode) => setMode(m));
@@ -329,8 +334,9 @@ function wireWizard() {
   });
 }
 
-async function refreshRoster() {
+async function refreshRoster(opts: { silent?: boolean; force?: boolean } = {}) {
   try {
+    if (opts.force) clearRosterCache();
     const { text, names } = await buildRoster(mcp);
     rosterNames = names;
     // Fold the campaign's nickname aliases + notes into the roster block so the
@@ -345,7 +351,7 @@ async function refreshRoster() {
       block += "\n\nCampaign notes:\n" + campaignData.notes.trim();
     }
     agent.setRoster(block);
-    send("agent", { kind: "info", text: `roster: ${names.length} names` });
+    if (!opts.silent) send("agent", { kind: "info", text: `roster: ${names.length} names` });
   } catch (err) {
     send("agent", { kind: "error", text: "roster build failed: " + (err as Error).message });
   }
@@ -411,13 +417,23 @@ export function setMode(next: Mode) {
     const cx = b.x + b.width / 2, cy = b.y + b.height / 2;
     gem.setIgnoreMouseEvents(false);
     gem.setFocusable(true);
+    // Expanded ledger behaves like a normal app window: resizable, movable, not
+    // pinned above everything. (Drag via the header's CSS app-region; resize from
+    // edges now that resizable is on.)
+    gem.setResizable(true);
+    gem.setMinimumSize(420, 320);
+    gem.setAlwaysOnTop(false);
     gem.setSize(PANEL_W, PANEL_H);
     gem.setPosition(
       Math.round(Math.min(Math.max(workArea.x, cx - PANEL_W / 2), workArea.x + workArea.width - PANEL_W)),
       Math.round(Math.min(Math.max(workArea.y, cy - PANEL_H / 2), workArea.y + workArea.height - PANEL_H)),
     );
+    gem.focus();
   } else {
     gem.setFocusable(false);
+    // Back to the always-on-top ghost gem (fixed size, not resizable).
+    gem.setResizable(false);
+    gem.setAlwaysOnTop(true, "screen-saver");
     gem.setSize(GEM_W, GEM_H);
     // Restore the gem to wherever it was before the ledger opened.
     if (_gemBoundsBeforeExpand) {

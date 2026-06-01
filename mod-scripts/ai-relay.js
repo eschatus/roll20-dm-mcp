@@ -131,6 +131,20 @@ function setConditionAttr(charId, conditionSet) {
   }
 }
 
+// Resolve the props object for setTokenProps. Callers SHOULD pass
+// { tokenId, props: {...} }, but small/cloud models routinely flatten the
+// fields up to the top level ({ tokenId, name: "X" }). Tolerate both, and
+// NEVER silently no-op: an empty prop set means a malformed call and must
+// throw, so the agent learns it changed nothing instead of reporting success.
+function normProps(args) {
+  if (args.props && typeof args.props === "object") return args.props;
+  var out = {};
+  Object.keys(args).forEach(function (k) {
+    if (k !== "tokenId" && k !== "action" && k !== "id" && k !== "props") out[k] = args[k];
+  });
+  return out;
+}
+
 // Synchronous operation executor used by batchExec.
 // Only sync-safe actions here — no sendChat callbacks.
 function runBatchOp(action, args) {
@@ -146,8 +160,11 @@ function runBatchOp(action, args) {
     case "setTokenProps": {
       let t = getObj("graphic", args.tokenId);
       if (!t) throw new Error("Token not found: " + args.tokenId);
-      t.set(args.props || {});
-      return { ok: true };
+      let props = normProps(args);
+      let keys = Object.keys(props);
+      if (keys.length === 0) throw new Error("setTokenProps: no properties to set — pass props:{...} (or top-level fields)");
+      t.set(props);
+      return { ok: true, set: keys };
     }
     case "toggleCondition": {
       let t = getObj("graphic", args.tokenId);
@@ -1010,8 +1027,11 @@ on("chat:message", function (msg) {
       case "setTokenProps": {
         let token = getObj("graphic", args.tokenId);
         if (!token) throw new Error("Token not found: " + args.tokenId);
-        token.set(args.props || {});
-        writeResult(nonce, { ok: true });
+        let props = normProps(args);
+        let keys = Object.keys(props);
+        if (keys.length === 0) throw new Error("setTokenProps: no properties to set — pass props:{...} (or top-level fields)");
+        token.set(props);
+        writeResult(nonce, { ok: true, set: keys });
         break;
       }
 

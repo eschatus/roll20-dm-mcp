@@ -47,21 +47,46 @@ async function tokenIdExists(id: string): Promise<boolean> {
 }
 
 async function resolveTokenByName(name: string): Promise<string | undefined> {
+  const r = await resolveToken(name);
+  return r.id;
+}
+
+// Richer resolve: returns the matched id, OR candidate names when the match is
+// ambiguous/missing so the agent can ask the DM "did you mean X / Y?" instead of
+// guessing a fake name. Matching: registry → exact → unique substring → else
+// collect the closest candidates.
+async function resolveToken(name: string, tokenList?: { id: string; name: string }[]): Promise<{ id?: string; candidates?: string[] }> {
   const entry = registry.lookup(name);
-  if (entry?.roll20TokenId) return entry.roll20TokenId;
+  if (entry?.roll20TokenId) return { id: entry.roll20TokenId };
   try {
-    const pageId = await roll20.getCurrentPageId();
-    const tokens = await roll20.relayCommand<{ id: string; name: string }[]>({ action: "getTokens", pageId });
+    // Caller may pass a pre-fetched token list (batch resolution fetches once).
+    const tokens = tokenList ?? await (async () => {
+      const pageId = await roll20.getCurrentPageId();
+      return roll20.relayCommand<{ id: string; name: string }[]>({ action: "getTokens", pageId });
+    })();
     const want = name.trim().toLowerCase();
-    const exact = tokens.find((t) => (t.name || "").trim().toLowerCase() === want);
-    if (exact) return exact.id;
-    const fuzzy = tokens.find((t) => {
-      const n = (t.name || "").trim().toLowerCase();
+    const norm = (t: { name?: string }) => (t.name || "").split("\n")[0].trim();
+
+    const exact = tokens.find((t) => norm(t).toLowerCase() === want);
+    if (exact) return { id: exact.id };
+
+    const subs = tokens.filter((t) => {
+      const n = norm(t).toLowerCase();
       return n && (n.includes(want) || want.includes(n));
     });
-    return fuzzy?.id;
+    if (subs.length === 1) return { id: subs[0].id };
+    if (subs.length > 1) return { candidates: subs.map(norm) };
+
+    // No substring hit — offer token-word overlap candidates (e.g. "the twisted"
+    // → every "Mage the Twisted"-ish name) so the agent can clarify.
+    const words = want.split(/\s+/).filter((w) => w.length > 2);
+    const near = tokens.filter((t) => {
+      const n = norm(t).toLowerCase();
+      return words.some((w) => n.includes(w));
+    }).map(norm);
+    return { candidates: Array.from(new Set(near)).slice(0, 8) };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -193,8 +218,12 @@ export function registerCombatTools(server: McpServer): void {
       let charId: string | undefined;
       if (!resolvedTokenId) {
         if (!characterName) throw new Error("Provide characterName or tokenId");
-        resolvedTokenId = await resolveTokenByName(characterName);
-        if (!resolvedTokenId) throw new Error(`No token found for: ${characterName}`);
+        const r = await resolveToken(characterName);
+        if (!r.id) {
+          const hint = r.candidates?.length ? ` Did you mean: ${r.candidates.join(", ")}?` : " No matching token.";
+          throw new Error(`Ambiguous target "${characterName}".${hint} Ask the DM to confirm, don't guess.`);
+        }
+        resolvedTokenId = r.id;
       }
       // Resolve the linked character so condition STATE (active_conditions) syncs,
       // not just the sticker. toggleCondition handles both.
@@ -285,25 +314,87 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "batch_exec",
-    "Execute multiple Roll20 operations in a single relay round-trip — eliminates per-call overhead for bulk combat updates. Use this instead of separate calls when applying damage/conditions to multiple tokens at once. Supported actions: setTokenBar (HP), setTokenProps (aura/tint/name), toggleCondition (merge-add/remove one condition), syncConditionsToToken (replace all conditions), getTokenById (read token state), setTurnOrder.",
+    "Execute multiple Roll20 operations in a single relay round-trip — eliminates per-call overhead for bulk combat updates. Use this instead of separate calls when applying damage/conditions to multiple tokens at once. TARGET BY NAME: set args.characterName to the token's on-map name (e.g. \"Mage the Twisted\") and the server resolves it to the right token — you do NOT need to call list_tokens first or pass raw token IDs. (tokenId still works if you already have one.) Supported actions: setTokenBar (HP), setTokenProps (aura/tint/name — put the values under args.props), toggleCondition (merge-add/remove one condition), syncConditionsToToken (replace all conditions; conditions:[] clears the standard-condition markers), getTokenById (read token state), setTurnOrder.",
     {
       ops: z.array(z.object({
         id: z.string().optional().describe("Optional label returned with the result for tracking which op is which"),
         action: z.enum(["setTokenBar", "setTokenProps", "toggleCondition", "syncConditionsToToken", "getTokenById", "setTurnOrder"])
           .describe("Relay action to execute"),
-        args: z.record(z.string(), z.unknown()).describe("Arguments for the action — same fields as the individual relay action"),
+        args: z.record(z.string(), z.unknown()).describe("Arguments for the action. Target a token with characterName (preferred — server resolves it) or tokenId. For setTokenProps, put the properties to change under a `props` object."),
       })).min(1).max(50).describe("Operations to run. All execute in order; failures are per-op and don't abort the batch."),
     },
     async ({ ops }) => {
       type BatchResult = { id: string | number; ok: boolean; data?: unknown; error?: string };
-      const results = await roll20.relayCommand<BatchResult[]>({ action: "batchExec", ops });
-      const failed = results.filter((r) => !r.ok);
-      const lines = results.map((r) =>
-        r.ok ? `✓ ${r.id}` : `✗ ${r.id}: ${r.error}`
-      );
-      const summary = `${results.length - failed.length}/${results.length} ops succeeded`;
+      // Actions that target a single token by id — these can be addressed by
+      // characterName instead and resolved here.
+      const TOKEN_ACTIONS = new Set(["setTokenBar", "setTokenProps", "toggleCondition", "syncConditionsToToken", "getTokenById"]);
+      const validId = (v: unknown) => typeof v === "string" && v.length > 0;
+      const selectorOf = (a: Record<string, unknown>) =>
+        [a.characterName, a.tokenName, a.targetName].find((s) => typeof s === "string" && s) as string | undefined;
+
+      // Fetch the page token list ONCE if any op needs name→id resolution, so the
+      // model never has to call list_tokens (and never burns a turn on a 0/N
+      // failure from guessing a tokenId). Registry is consulted per-name first.
+      const needsResolve = ops.some((op) => TOKEN_ACTIONS.has(op.action) && !validId((op.args as Record<string, unknown>)?.tokenId) && selectorOf((op.args ?? {}) as Record<string, unknown>));
+      let pageTokens: { id: string; name: string }[] = [];
+      if (needsResolve) {
+        try {
+          const pageId = await roll20.getCurrentPageId();
+          pageTokens = await roll20.relayCommand<{ id: string; name: string }[]>({ action: "getTokens", pageId });
+        } catch { /* resolution will fail per-op below with a clear message */ }
+      }
+
+      const resolveErrors = new Map<number, { id: string | number; error: string }>();
+      const relayOps: { id?: string; action: string; args: Record<string, unknown> }[] = [];
+      const relayOrigIndex: number[] = [];
+
+      for (let i = 0; i < ops.length; i++) {
+        const op = ops[i];
+        const label = op.id ?? i;
+        let args = { ...(op.args ?? {}) } as Record<string, unknown>;
+
+        // 1. Resolve a characterName/tokenName selector → tokenId (token actions only).
+        if (TOKEN_ACTIONS.has(op.action) && !validId(args.tokenId)) {
+          const sel = selectorOf(args);
+          if (sel) {
+            const r = await resolveToken(sel, pageTokens);
+            if (r.id) {
+              args.tokenId = r.id;
+            } else {
+              resolveErrors.set(i, { id: label, error: `Could not resolve "${sel}"${r.candidates?.length ? ` — did you mean: ${r.candidates.join(", ")}?` : " (no matching token)"}` });
+              continue; // don't relay an op we couldn't target
+            }
+          }
+        }
+        // Drop selector aliases so they aren't mistaken for props/relay args.
+        delete args.characterName; delete args.tokenName; delete args.targetName;
+
+        // 2. Normalize setTokenProps: models flatten fields ({tokenId, name})
+        // instead of nesting under props. The relay only reads `props`, so a flat
+        // call silently no-ops. Reshape so the change actually lands.
+        if (op.action === "setTokenProps" && !(args.props && typeof args.props === "object")) {
+          const { tokenId, id: _id, action: _action, ...rest } = args;
+          args = { tokenId, props: rest };
+        }
+
+        relayOrigIndex.push(i);
+        relayOps.push({ id: typeof label === "string" ? label : String(label), action: op.action, args });
+      }
+
+      const relayResults = relayOps.length
+        ? await roll20.relayCommand<BatchResult[]>({ action: "batchExec", ops: relayOps })
+        : [];
+
+      // Merge relayed results + synthetic resolution failures back into op order.
+      const merged: BatchResult[] = new Array(ops.length);
+      relayResults.forEach((r, k) => { merged[relayOrigIndex[k]] = r; });
+      for (const [i, e] of resolveErrors) merged[i] = { id: e.id, ok: false, error: e.error };
+
+      const failed = merged.filter((r) => !r.ok);
+      const lines = merged.map((r) => (r.ok ? `✓ ${r.id}` : `✗ ${r.id}: ${r.error}`));
+      const summary = `${merged.length - failed.length}/${merged.length} ops succeeded`;
       return {
-        content: [{ type: "text", text: `${summary}\n${lines.join("\n")}\n\n${JSON.stringify(results)}` }],
+        content: [{ type: "text", text: `${summary}\n${lines.join("\n")}\n\n${JSON.stringify(merged)}` }],
       };
     }
   );
@@ -679,13 +770,16 @@ export function registerCombatTools(server: McpServer): void {
       // page list FIRST — getTokenById on a bogus/hallucinated id hangs the relay
       // for 30s instead of failing fast (the 7B invented "skeleton1" and froze a turn).
       let resolvedTokenId = tokenId;
-      if (resolvedTokenId && !(await tokenIdExists(resolvedTokenId))) {
-        const byName = characterName ? await resolveTokenByName(characterName) : undefined;
-        if (!byName) throw new Error(`No such token id '${tokenId}'. Use characterName instead of guessing an id.`);
-        resolvedTokenId = byName;
+      if (resolvedTokenId && !(await tokenIdExists(resolvedTokenId))) resolvedTokenId = undefined;
+      if (!resolvedTokenId) {
+        if (!characterName) throw new Error("Provide characterName or tokenId");
+        const r = await resolveToken(characterName);
+        if (!r.id) {
+          const hint = r.candidates?.length ? ` Did you mean: ${r.candidates.join(", ")}?` : " No matching token on the page.";
+          throw new Error(`Ambiguous target "${characterName}".${hint} Ask the DM to confirm, don't guess.`);
+        }
+        resolvedTokenId = r.id;
       }
-      if (!resolvedTokenId && characterName) resolvedTokenId = await resolveTokenByName(characterName);
-      if (!resolvedTokenId) throw new Error("Provide characterName or tokenId");
       type TokenData = { bar1_value: number; bar1_max: number; name: string };
       const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId: resolvedTokenId });
       if (!token) throw new Error(`Token not found: ${characterName ?? tokenId}`);

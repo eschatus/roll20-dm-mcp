@@ -62,13 +62,15 @@ export class DmAgent {
   reset() { this.llm.reset(); this.started = false; this.busy = false; }
   isBusy() { return this.busy; }
 
-  private ensureStarted(): void {
-    if (this.started) return;
-    // Local (small) models choke on the full 60-tool schema (~9.9k tokens), so
-    // filter to the live-combat allow-list. Cloud Claude gets everything.
-    const allow = this.providerName === "ollama" ? new Set(CONFIG.localToolAllowlist) : null;
-    const tools: ToolSpec[] = this.mcp.getTools()
-      .filter((t) => !allow || allow.has(t.name))
+  // Tool schema for a provider. Both providers get a stripped live-combat
+  // allow-list (the full 61-tool schema is ~10k tokens — it tanks the 7B's tool
+  // selection and was a real chunk of cloud turn latency). Local gets the lean
+  // primitives-only set; cloud gets that plus the heavier combat tools (batch,
+  // DDB-syncing HP, turn-order). Neither sees vision/map/prep tools.
+  private toolSpecs(provider: ProviderName): ToolSpec[] {
+    const allow = new Set(provider === "ollama" ? CONFIG.localToolAllowlist : CONFIG.cloudToolAllowlist);
+    return this.mcp.getTools()
+      .filter((t) => allow.has(t.name))
       .map((t) => ({
         name: t.name,
         description: t.description,
@@ -76,8 +78,23 @@ export class DmAgent {
           ? t.inputSchema
           : { type: "object", properties: {} }) as Record<string, unknown>,
       }));
-    this.llm.start(buildSystemPrompt(this.roster, this.providerName), tools);
+  }
+
+  private ensureStarted(): void {
+    if (this.started) return;
+    this.llm.start(buildSystemPrompt(this.roster, this.providerName), this.toolSpecs(this.providerName));
     this.started = true;
+  }
+
+  // Heuristic: is this transcript a complex narration the local 7B will flub?
+  // (long, or names multiple targets / "all", or several effect verbs). Such turns
+  // auto-escalate to cloud Haiku. Simple single-target commands stay local.
+  private looksComplex(t: string): boolean {
+    const s = t.toLowerCase();
+    if (t.length > 90) return true;
+    if (/\b(all|each|every|both|the (party|skeletons|goblins|group))\b/.test(s)) return true;
+    const verbs = (s.match(/\b(takes?|deals?|damage|heal|save|casts?|hits?|misses?|drops?|falls?|burns?|marks?|poison|prone|stun|frighten)\b/g) || []).length;
+    return verbs >= 3; // multiple distinct effects in one breath
   }
 
   async handle(transcript: string, cb: AgentCallbacks): Promise<void> {
@@ -87,21 +104,34 @@ export class DmAgent {
     }
     this.busy = true;
     try {
-      this.ensureStarted();
-      this.llm.repair();
-      this.llm.pushUser(transcript);
+      // Per-turn provider: escalate complex narration to cloud Haiku (unless the
+      // active provider is already cloud, or auto-escalate is off). The escalated
+      // turn runs on a FRESH cloud provider seeded with just this transcript —
+      // combat commands are self-contained, so we don't need local's history.
+      const escalate = CONFIG.autoEscalate && this.providerName === "ollama" && this.looksComplex(transcript);
+      let turnLlm = this.llm;
+      if (escalate) {
+        cb.onToolResult("↑escalate", "complex narration → cloud (haiku)");
+        turnLlm = createProvider("anthropic");
+        turnLlm.start(buildSystemPrompt(this.roster, "anthropic"), this.toolSpecs("anthropic"));
+        turnLlm.pushUser(transcript);
+      } else {
+        this.ensureStarted();
+        this.llm.repair();
+        this.llm.pushUser(transcript);
+      }
 
       const turnStart = Date.now();
       for (let step = 0; step < 12; step++) {
         const t0 = Date.now();
-        const turn = await this.llm.run();
-        console.error(`[agent] step ${step} gen ${Date.now() - t0}ms (text:${turn.text.length} tools:${turn.toolCalls.length})`);
+        const turn = await turnLlm.run();
+        console.error(`[agent] step ${step} (${escalate ? "haiku" : this.providerName}) gen ${Date.now() - t0}ms (text:${turn.text.length} tools:${turn.toolCalls.length})`);
         if (turn.text) cb.onText(turn.text);
 
         // Truncated mid-thought without a tool call → nudge and continue, so it
         // actually acts instead of ending on prose ("said firing, nothing happened").
         if (turn.truncated && turn.toolCalls.length === 0) {
-          this.llm.pushContinue("Continue — keep narration brief and call the tools now to carry out the plan.");
+          turnLlm.pushContinue("Continue — keep narration brief and call the tools now to carry out the plan.");
           continue;
         }
         if (turn.toolCalls.length === 0) { console.error(`[agent] turn DONE ${Date.now() - turnStart}ms, ${step + 1} steps`); return; }
@@ -128,7 +158,7 @@ export class DmAgent {
             cb.onToolResult(call.name, m);
           }
         }
-        this.llm.pushToolResults(results);
+        turnLlm.pushToolResults(results);
       }
       cb.onText("(stopped after too many tool steps)");
     } catch (e) {
