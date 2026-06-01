@@ -11,3 +11,4 @@ data/
 *.jpg
 *.jpeg
 *.pdf
+voice-hud/stt/.venv/

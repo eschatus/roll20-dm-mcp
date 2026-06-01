@@ -44,15 +44,26 @@ export function register(
   save(full);
 }
 
+/**
+ * Resolve a character name to its registry key within one campaign's registry.
+ * Pure: exact (case-insensitive) match first, then bidirectional substring
+ * fuzzy match. Returns the matched key, or null. Exported for unit testing.
+ */
+export function resolveCharacterKey(
+  name: string,
+  reg: Record<string, CharacterEntry>
+): string | null {
+  const key = name.toLowerCase();
+  if (reg[key]) return key;
+  return Object.keys(reg).find((k) => k.includes(key) || key.includes(k)) ?? null;
+}
+
 export function lookup(name: string): CharacterEntry | null {
   const full = load();
   const reg = getCampaignRegistry(full);
-  const key = name.toLowerCase();
 
-  if (reg[key]) return reg[key];
-
-  const fuzzy = Object.keys(reg).find((k) => k.includes(key) || key.includes(k));
-  return fuzzy ? reg[fuzzy] : null;
+  const matched = resolveCharacterKey(name, reg);
+  return matched ? reg[matched] : null;
 }
 
 export function listAll(): Array<{ name: string } & CharacterEntry> {

@@ -38,15 +38,15 @@ MCP Server — src/tools/maps.ts
   ▼
 src/bridge/roll20.ts — page.evaluate()
   │
-  │  sets GM_AI_Bridge_cmd attribute in Roll20 campaign
+  │  types `!ai-relay {action:"createPage", name:"Dungeon Entrance", ...}` into Roll20 chat
   ▼
 Roll20 Mod Sandbox — mod-scripts/ai-relay.js
   │
-  │  on("change:attribute") fires for GM_AI_Bridge_cmd
+  │  on("chat:message") fires; sender is GM (playerIsGM check passes)
   │  createObj("page", { name, width, height, ... })
-  │  sets GM_AI_Bridge_result = { id: "pageId123" }
+  │  whispers result `/w gm <hidden div>{ id: "pageId123" }`
   ▼
-MCP Server (polls GM_AI_Bridge_result, reads pageId)
+MCP Server (MutationObserver reads the whispered result div, parses pageId)
   │
   │  tool call: auto_place_dl_walls({ walls: [...42], pageId: "pageId123" })
   ▼
@@ -91,28 +91,28 @@ MCP Server — src/tools/combat.ts
   │
   │  registry.lookup("Eli") → { roll20TokenId: "tok_abc", ddbCharId: 12345678 }
   │
-  │  ddb.getCharacter(12345678) → { maxHp: 45, removedHitPoints: 8, ... }
-  │  → currentHp = 45 - 8 = 37; newRemovedHp = 8 + 9 = 17; newHp = 45 - 17 = 28
+  │  Read current HP from the Roll20 token (source of truth):
+  │    relayCommand({ action: "getToken", tokenId: "tok_abc" })
+  │    → { bar1_value: 37, bar1_max: 45 }
+  │  → newHp = 37 - 9 = 28
   │
-  │  Promise.all([Roll20 path, DDB path]) — both run concurrently
+  │  D&D Beyond is READ-ONLY — no HP/condition write is issued.
+  │  (Optional, read-only: ddb.getCharacter(12345678) may be polled at round
+  │   start to spot-check drift; it is never written.)
   │
-  ├─────────────────────────────────────────────────────────┐
-  │  Roll20 path                                            │  DDB path
-  │                                                         │
-  │  relayCommand({ action: "setTokenBar",                  │  fetch PATCH /api/v5/character/12345678
-  │    tokenId: "tok_abc", value: 28, max: 45 })            │  body: { removedHitPoints: 17 }
-  │                                                         │  header: x-cobalt-token: <cookie>
-  │  → Roll20 relay fires                                   │
-  │  → token.set({ bar1_value: 28, bar1_max: 45 })          │  fetch POST /api/v5/character/12345678/conditions
-  │                                                         │  body: { conditionId: 11 }  ← "poisoned"
-  │  relayCommand({ action: "setStatusMarker",              │
-  │    tokenId: "tok_abc", marker: "skull", active: true }) │
-  │                                                         │
-  │  → Roll20 relay fires                                   │
-  │  → token.set({ statusmarkers: "skull" })                │
-  └─────────────────────────────────────────────────────────┘
+  │  All state changes go to the Roll20 token, sequentially via the relay:
   │
-  │  Both settled → return result
+  │  relayCommand({ action: "setTokenBar",
+  │    tokenId: "tok_abc", value: 28, max: 45 })
+  │  → Roll20 relay fires
+  │  → token.set({ bar1_value: 28, bar1_max: 45 })
+  │
+  │  relayCommand({ action: "setStatusMarker",
+  │    tokenId: "tok_abc", marker: "skull", active: true })  ← "poisoned"
+  │  → Roll20 relay fires
+  │  → token.set({ statusmarkers: "skull" })
+  │
+  │  → return result
   ▼
 Claude reports:
   {
@@ -122,13 +122,13 @@ Claude reports:
     maxHp: 45,
     conditionsApplied: ["poisoned"],
     roll20Updated: true,
-    ddbUpdated: true
+    ddbUpdated: false   // DDB is read-only; HP/conditions live on the token
   }
 
   "Eli takes 9 damage, now at 28/45 HP and is poisoned.
-   Token HP bar updated in Roll20. D&D Beyond sheet updated."
+   Token HP bar and status marker updated in Roll20."
 ```
 
-**Total hops:** DM → Claude → MCP Server → DDB API (2 requests) + Roll20 relay (2 relay calls) → both platforms updated
+**Total hops:** DM → Claude → MCP Server → Roll20 relay (HP bar + status marker) → Roll20 token updated
 
-**Note on parallelism:** The Roll20 and DDB updates run in `Promise.all()`. If one fails, the other still completes and the error is reported separately in the tool result — so a DDB network blip doesn't prevent the Roll20 token from updating.
+**Note on the Roll20-only write model:** HP and conditions are written exclusively to the Roll20 token, which is the single source of truth for live combat state. D&D Beyond write code (`patchCharacter`, `applyCondition`, `ddb_update_hp`, and the DDB branches of `apply_damage` / `heal_character`) has been removed — earlier DDB condition writes returned 405 and HP writes were unreliable. DDB remains available read-only (character/monster stat lookups, optional round-start drift checks).

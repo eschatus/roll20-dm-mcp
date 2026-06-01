@@ -135,11 +135,12 @@ Campaign specials: `change:campaign:turnorder`, `change:campaign:playerpageid`, 
 | `debug_turn_order` | debug_turn_order | raw `Campaign.turnorder` via `evaluate` |
 | setcampaign navigation | switch_campaign (lazy) | `/editor/setcampaign/<id>/` |
 
-### DDB bridge (separate; read-mostly)
+### DDB bridge (separate; read-only)
 Read: `getCharacter`, `getCharacterStats`, `getRawCharacter`, `getMonster`, `getCampaignCharacters`,
-`listCampaigns`. Write: HP (`patchCharacter removedHitPoints`), conditions
-(`applyCondition`/`removeCondition` via cookie-context fetch). **Most other DDB writes return 405 —
-treat DDB as ground-truth read + HP/condition write only.**
+`listCampaigns`. **No writes.** All DDB write paths (`patchCharacter`, `applyCondition` /
+`removeCondition`, `ddb_update_hp`, and the DDB branches of `apply_damage` / `heal_character`) have
+been removed — DDB condition writes returned 405 and HP writes were unreliable. Live HP and
+conditions are written exclusively to the Roll20 token; **treat DDB as ground-truth read only.**
 
 ---
 
