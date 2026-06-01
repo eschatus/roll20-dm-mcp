@@ -30,6 +30,29 @@ function toRoll20Marker(condition: string): string {
   return CONDITION_TO_MARKER[condition.toLowerCase()] ?? condition.toLowerCase();
 }
 
+// Resolve a spoken name to a Roll20 token id. Registered characters win; otherwise
+// fuzzy-match against token names on the current page (case-insensitive, substring
+// either direction, whitespace-trimmed). Shared by the HP + condition primitives so
+// they accept names consistently (the agent never sees raw token IDs).
+async function resolveTokenByName(name: string): Promise<string | undefined> {
+  const entry = registry.lookup(name);
+  if (entry?.roll20TokenId) return entry.roll20TokenId;
+  try {
+    const pageId = await roll20.getCurrentPageId();
+    const tokens = await roll20.relayCommand<{ id: string; name: string }[]>({ action: "getTokens", pageId });
+    const want = name.trim().toLowerCase();
+    const exact = tokens.find((t) => (t.name || "").trim().toLowerCase() === want);
+    if (exact) return exact.id;
+    const fuzzy = tokens.find((t) => {
+      const n = (t.name || "").trim().toLowerCase();
+      return n && (n.includes(want) || want.includes(n));
+    });
+    return fuzzy?.id;
+  } catch {
+    return undefined;
+  }
+}
+
 export function registerCombatTools(server: McpServer): void {
   server.tool(
     "apply_damage",
@@ -158,9 +181,8 @@ export function registerCombatTools(server: McpServer): void {
       let charId: string | undefined;
       if (!resolvedTokenId) {
         if (!characterName) throw new Error("Provide characterName or tokenId");
-        const entry = registry.lookup(characterName);
-        if (!entry) throw new Error(`Character not registered: ${characterName}`);
-        resolvedTokenId = entry.roll20TokenId;
+        resolvedTokenId = await resolveTokenByName(characterName);
+        if (!resolvedTokenId) throw new Error(`No token found for: ${characterName}`);
       }
       // Resolve the linked character so condition STATE (active_conditions) syncs,
       // not just the sticker. toggleCondition handles both.
@@ -631,18 +653,21 @@ export function registerCombatTools(server: McpServer): void {
     "update_token_hp",
     "The HIT POINTS primitive. Apply damage, healing, or set HP on any Roll20 token by ID (no character sheet/DDB needed). Reads bar1, computes, writes back. For CONDITIONS (poisoned, prone, dead, etc.) use set_token_marker instead — not this. (The condition args here are legacy/bulk-only.)",
     {
-      tokenId: z.string().describe("Roll20 token ID"),
+      characterName: z.string().optional().describe("Token/character name, e.g. 'Brie Mossfrond' or 'Goblin 2'. Resolved to a token on the current page. Use this OR tokenId."),
+      tokenId: z.string().optional().describe("Roll20 token ID (overrides characterName)"),
       damage: z.number().int().min(0).optional().describe("Subtract this much from current HP (clamps at 0)"),
       heal: z.number().int().min(0).optional().describe("Add this much to current HP (clamps at bar1_max)"),
       setHp: z.number().int().min(0).optional().describe("Set HP to this exact value regardless of current"),
-      addConditions: z.array(z.string()).optional().describe("Add these conditions without removing others (e.g. ['poisoned']). Safe to use alongside existing conditions."),
-      removeConditions: z.array(z.string()).optional().describe("Remove these conditions without touching others."),
-      replaceConditions: z.array(z.string()).optional().describe("REPLACES ALL existing condition markers with this list. Use only when setting the complete state from scratch."),
+      addConditions: z.array(z.string()).optional().describe("Legacy/bulk: add conditions. Prefer set_token_marker."),
+      removeConditions: z.array(z.string()).optional().describe("Legacy/bulk: remove conditions. Prefer set_token_marker."),
+      replaceConditions: z.array(z.string()).optional().describe("Legacy/bulk: replace ALL conditions. Prefer set_token_marker."),
     },
-    async ({ tokenId, damage, heal, setHp, addConditions, removeConditions, replaceConditions }) => {
+    async ({ characterName, tokenId, damage, heal, setHp, addConditions, removeConditions, replaceConditions }) => {
+      const resolvedTokenId = tokenId ?? (characterName ? await resolveTokenByName(characterName) : undefined);
+      if (!resolvedTokenId) throw new Error("Provide characterName or tokenId");
       type TokenData = { bar1_value: number; bar1_max: number; name: string };
-      const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId });
-      if (!token) throw new Error(`Token not found: ${tokenId}`);
+      const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId: resolvedTokenId });
+      if (!token) throw new Error(`Token not found: ${characterName ?? tokenId}`);
 
       const maxHp = Number(token.bar1_max) || 0;
       const currentHp = Number(token.bar1_value) || 0;
@@ -658,16 +683,16 @@ export function registerCombatTools(server: McpServer): void {
         throw new Error("Provide damage, heal, or setHp");
       }
 
-      await roll20.relayCommand({ action: "setTokenProps", tokenId, props: { bar1_value: newHp } });
+      await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props: { bar1_value: newHp } });
 
       if (replaceConditions !== undefined) {
-        await roll20.relayCommand({ action: "syncConditionsToToken", tokenId, conditions: replaceConditions });
+        await roll20.relayCommand({ action: "syncConditionsToToken", tokenId: resolvedTokenId, conditions: replaceConditions });
       } else {
         for (const c of addConditions ?? []) {
-          await roll20.relayCommand({ action: "toggleCondition", tokenId, condition: c, active: true });
+          await roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, condition: c, active: true });
         }
         for (const c of removeConditions ?? []) {
-          await roll20.relayCommand({ action: "toggleCondition", tokenId, condition: c, active: false });
+          await roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, condition: c, active: false });
         }
       }
 
