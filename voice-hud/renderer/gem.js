@@ -1,0 +1,593 @@
+// Renderer for the scrying gem: drives state classes, captures mic audio on PTT,
+// encodes a 16 kHz mono WAV, and ships it to main for transcription.
+//
+// Mic capture lives here because getUserMedia requires a window context. We use
+// the Web Audio API to downsample to 16 kHz mono PCM (faster-whisper's native
+// rate) and hand-roll a WAV header — avoids MediaRecorder's webm/opus container.
+
+/* global dmw */
+
+// Surface any renderer error to the main log so a thrown exception during
+// top-level wiring (which would silently kill later listeners) is diagnosable.
+window.addEventListener("error", (e) => {
+  console.error("[renderer error]", e.message, "@", e.filename + ":" + e.lineno);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  console.error("[renderer rejection]", (e.reason && e.reason.message) || e.reason);
+});
+
+const body = document.body;
+const caption = document.getElementById("caption");
+const captionText = document.getElementById("caption-text");
+const label = document.getElementById("label");
+let pendingDictations = 0; // in-flight PTT snippets awaiting transcription (ledger mode)
+
+// Apply a gem theme to the CSS variables (live). Edge facets derive from --gem.
+function applyTheme(theme) {
+  if (!theme) return;
+  const r = document.documentElement.style;
+  if (theme.gemPrimary) r.setProperty("--gem", theme.gemPrimary);
+  if (theme.textColor)  r.setProperty("--text", theme.textColor);
+  if (theme.textShadow) r.setProperty("--text-shadow", theme.textShadow);
+  if (theme.respColor)  r.setProperty("--resp", theme.respColor);
+  if (theme.respShadow) r.setProperty("--resp-shadow", theme.respShadow);
+}
+
+function setState(s) {
+  body.dataset.state = s;
+  const labels = { idle: "", listening: "listening", thinking: "scrying" };
+  if (labels[s]) { label.textContent = labels[s]; label.classList.add("show"); }
+  else label.classList.remove("show");
+  if (s !== "idle") { caption.classList.remove("show"); }
+}
+
+// source: "dm" (your transcript) | "agent" (the gem speaking back)
+// Teleprompter: constant-speed continuous upward scroll. When the text overflows
+// the gem viewport, two stacked copies make the loop seamless (wrap by one copy's
+// height). Short text just centers and holds. Mousewheel nudges the offset.
+let scrollRAF = null;
+let scrollState = null; // { y, copyH, loop }
+
+const SCROLL_SPEED = 16;  // px/sec — steady teleprompter crawl
+
+function showCaption(text, lowConf, source) {
+  caption.classList.toggle("lowconf", !!lowConf);
+  caption.classList.toggle("agent", source === "agent");
+  caption.classList.toggle("dm", source !== "agent");
+  caption.classList.add("show");
+  if (source === "agent") playWhisper();
+
+  // Build one copy, measure, then decide fit vs. loop.
+  captionText.innerHTML = "";
+  const c1 = document.createElement("div"); c1.className = "copy"; c1.textContent = text;
+  captionText.appendChild(c1);
+
+  requestAnimationFrame(() => {
+    const viewH = caption.clientHeight;
+    const oneH = c1.scrollHeight;
+    if (scrollRAF) { cancelAnimationFrame(scrollRAF); scrollRAF = null; }
+
+    if (oneH <= viewH - 2) {
+      // fits — center vertically, no motion
+      captionText.style.transform = `translateY(${Math.max(0, (viewH - oneH) / 2)}px)`;
+      scrollState = null;
+      return;
+    }
+
+    // overflow — append a gap + second copy for a seamless wrap
+    const gap = document.createElement("div"); gap.className = "gap"; captionText.appendChild(gap);
+    const c2 = document.createElement("div"); c2.className = "copy"; c2.textContent = text;
+    captionText.appendChild(c2);
+    const copyH = oneH + gap.offsetHeight; // distance to wrap by
+
+    // start just below the viewport so text rises in from the bottom
+    scrollState = { y: viewH * 0.5, copyH, last: performance.now() };
+    const step = (now) => {
+      const dt = (now - scrollState.last) / 1000; scrollState.last = now;
+      scrollState.y -= SCROLL_SPEED * dt;
+      // wrap seamlessly: keep y in (-copyH, 0]
+      if (scrollState.y <= -copyH) scrollState.y += copyH;
+      if (scrollState.y > 0) scrollState.y -= copyH;
+      captionText.style.transform = `translateY(${scrollState.y}px)`;
+      scrollRAF = requestAnimationFrame(step);
+    };
+    scrollRAF = requestAnimationFrame(step);
+  });
+}
+
+// Mousewheel scrollback (from the global hook). Nudges the teleprompter offset;
+// wrapping keeps it seamless. rotation>0 = wheel down (advance), <0 = up (rewind).
+function nudgeScroll(rotation) {
+  if (!scrollState) return;
+  scrollState.y -= rotation * 22;
+  const h = scrollState.copyH;
+  while (scrollState.y <= -h) scrollState.y += h;
+  while (scrollState.y > 0) scrollState.y -= h;
+  captionText.style.transform = `translateY(${scrollState.y}px)`;
+}
+
+// ---- demonic whisper notification ----
+// Decode the mp3 once; play a random clip (default 0.3s) when the agent speaks.
+let whisperBuf = null;       // decoded AudioBuffer
+let whisperClipMs = 300;
+let agentSound = true;
+let sfxCtx = null;
+
+async function initWhisperAudio() {
+  if (!window.dmw) return;
+  try {
+    const s = await dmw.getSettings();
+    agentSound = !!(s && s.agentSound);
+  } catch {}
+  try {
+    const res = await dmw.getWhisperAudio();
+    if (!res || !res.ok) return;
+    whisperClipMs = res.clipMs || 300;
+    sfxCtx = new AudioContext();
+    whisperBuf = await sfxCtx.decodeAudioData(res.data.slice(0));
+  } catch (e) { /* no sound available */ }
+}
+
+function playWhisper() {
+  if (!agentSound || !whisperBuf || !sfxCtx) return;
+  try {
+    if (sfxCtx.state === "suspended") sfxCtx.resume();
+    const clip = Math.min(whisperClipMs / 1000, whisperBuf.duration);
+    const maxStart = Math.max(0, whisperBuf.duration - clip);
+    const start = Math.random() * maxStart;
+    const src = sfxCtx.createBufferSource();
+    src.buffer = whisperBuf;
+    // short fade in/out so the slice doesn't click
+    const gain = sfxCtx.createGain();
+    const now = sfxCtx.currentTime;
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.9, now + 0.02);
+    gain.gain.setValueAtTime(0.9, now + clip - 0.04);
+    gain.gain.linearRampToValueAtTime(0, now + clip);
+    src.connect(gain); gain.connect(sfxCtx.destination);
+    src.start(now, start, clip);
+  } catch (e) { /* ignore */ }
+}
+
+// ---- audio capture ----
+let audioCtx = null;
+let stream = null;
+let source = null;
+let processor = null;
+let chunks = [];
+let capturing = false;
+
+let inRate = 48000;
+let partialTimer = null;
+let partialInFlight = false;
+let liveToChatbox = false;   // this hold streams into the chatbox vs. the caption
+let chatboxBase = "";        // chatbox text that existed before this hold (append target)
+const PARTIAL_MS = 900;
+
+async function startCapture() {
+  if (capturing) return;
+  capturing = true;
+  chunks = [];
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  } catch (e) {
+    capturing = false;
+    showCaption("no microphone", true);
+    return;
+  }
+  audioCtx = new AudioContext();
+  inRate = audioCtx.sampleRate;
+  source = audioCtx.createMediaStreamSource(stream);
+  // ScriptProcessor is deprecated but dependency-free and fine for PTT-length clips.
+  processor = audioCtx.createScriptProcessor(4096, 1, 1);
+  source.connect(processor);
+  processor.connect(audioCtx.destination);
+  processor.onaudioprocess = (e) => {
+    if (!capturing) return;
+    chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  };
+  if (window.dmw) dmw.recStarted();
+
+  // Decide the live target for this hold and remember the chatbox base text.
+  liveToChatbox = document.body.dataset.mode === "expanded";
+  if (liveToChatbox) {
+    showTab("chat");
+    const inp = document.getElementById("chat-text");
+    chatboxBase = inp && inp.value.trim() ? inp.value.replace(/\s+$/, "") + " " : "";
+  }
+
+  // Live partial loop: re-transcribe the growing buffer on an interval.
+  partialTimer = setInterval(runPartial, PARTIAL_MS);
+}
+
+async function runPartial() {
+  if (!capturing || partialInFlight || !window.dmw || chunks.length === 0) return;
+  partialInFlight = true;
+  try {
+    const wav = encodeWav(mergeChunks(chunks), inRate, 16000); // snapshot so far
+    const res = await dmw.sendPartial(wav);
+    if (capturing && res && res.ok) streamLive(res.text || "", false);
+  } catch { /* ignore a dropped partial */ }
+  finally { partialInFlight = false; }
+}
+
+// Put live/partial text into the active surface. final=true is the committed pass.
+function streamLive(text, final) {
+  const t = (text || "").trim();
+  if (liveToChatbox) {
+    const inp = document.getElementById("chat-text");
+    if (inp) {
+      inp.value = chatboxBase + t;
+      inp.setSelectionRange(inp.value.length, inp.value.length);
+    }
+  } else {
+    showCaption(t || (final ? "(silence)" : "…"), false, "dm");
+  }
+}
+
+async function stopCapture() {
+  if (!capturing) return;
+  capturing = false;
+  if (partialTimer) { clearInterval(partialTimer); partialTimer = null; }
+  try { processor && (processor.onaudioprocess = null); } catch {}
+  try { source && source.disconnect(); } catch {}
+  try { processor && processor.disconnect(); } catch {}
+  try { stream && stream.getTracks().forEach((t) => t.stop()); } catch {}
+  try { audioCtx && (await audioCtx.close()); } catch {}
+
+  const wav = encodeWav(mergeChunks(chunks), inRate, 16000);
+  chunks = [];
+  if (window.dmw) {
+    if (liveToChatbox) {
+      // Final clean pass replaces the streamed partial; the box stays editable
+      // and is NOT auto-sent (main only routes to "dictate" path via sendClip in
+      // gem mode; here we keep it local). Commit the final text into the box.
+      const res = await dmw.sendPartial(wav);
+      if (res && res.ok) {
+        const inp = document.getElementById("chat-text");
+        if (inp) {
+          inp.value = chatboxBase + (res.text || "").trim();
+          inp.focus();
+          inp.setSelectionRange(inp.value.length, inp.value.length);
+        }
+      }
+      document.getElementById("dictating").classList.remove("show");
+      setState("idle");
+    } else {
+      // gem mode: final transcript → run the agent (unchanged behavior)
+      const res = await dmw.sendClip(wav);
+      if (res && res.ok) showCaption(res.text || "(silence)", res.lowConfidence, "dm");
+      else if (res && res.error) showCaption("…", true, "dm");
+    }
+  }
+}
+
+function mergeChunks(list) {
+  let len = 0; for (const c of list) len += c.length;
+  const out = new Float32Array(len);
+  let off = 0; for (const c of list) { out.set(c, off); off += c.length; }
+  return out;
+}
+
+// Linear-resample float PCM to targetRate, then write a 16-bit PCM WAV.
+function encodeWav(samples, inRate, targetRate) {
+  const ratio = inRate / targetRate;
+  const outLen = Math.floor(samples.length / ratio);
+  const out = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const s = samples[Math.floor(i * ratio)] || 0;
+    const clamped = Math.max(-1, Math.min(1, s));
+    out[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+  }
+  const buffer = new ArrayBuffer(44 + out.length * 2);
+  const view = new DataView(buffer);
+  const w = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
+  w(0, "RIFF"); view.setUint32(4, 36 + out.length * 2, true); w(8, "WAVE");
+  w(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, targetRate, true);
+  view.setUint32(28, targetRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  w(36, "data"); view.setUint32(40, out.length * 2, true);
+  let off = 44; for (let i = 0; i < out.length; i++, off += 2) view.setInt16(off, out[i], true);
+  return buffer;
+}
+
+// ---- confirm banner ----
+const confirmEl = document.getElementById("confirm");
+function showConfirm(text) {
+  confirmEl.innerHTML = "<b>confirm:</b> " + escapeHtml(text) +
+    "<span class='hint'>Right-Shift to confirm · Esc to cancel</span>";
+  confirmEl.classList.add("show");
+}
+function hideConfirm() { confirmEl.classList.remove("show"); }
+function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c])); }
+
+// ---- main → renderer ----
+if (window.dmw) {
+  dmw.onState((s) => {
+    setState(s);
+    // Clear the confirm banner on ANY non-confirm state. (Bug: this used to live
+    // in an else-if chain, so "thinking" — what the confirm key sends — skipped it,
+    // leaving the last card stuck open.)
+    if (s !== "confirm") hideConfirm();
+    if (s === "listening") startCapture();
+    else if (s === "thinking") {
+      stopCapture();
+      // In ledger mode, releasing PTT kicks off transcription that lands seconds
+      // later in the chatbox — show a pending indicator so it's not a silent wait.
+      if (document.body.dataset.mode === "expanded") {
+        pendingDictations++;
+        document.getElementById("dictating").classList.add("show");
+      }
+    }
+    if (s === "expanded") { document.body.dataset.mode = "expanded"; loadWizard(); }
+  });
+  dmw.onTranscript((t) => { showCaption(t.text, t.lowConfidence, "dm"); pushChat("dm", t.text); });
+  dmw.onAgent((m) => {
+    if (m.kind === "confirm") { showConfirm(m.text); pushChat("confirm", "confirm: " + m.text); return; }
+    // Any non-confirm agent event means a prior proposal resolved — clear the banner.
+    hideConfirm();
+    if (m.kind === "say") { showCaption(m.text, false, "agent"); pushChat("agent", m.text); }
+    else if (m.kind === "error") { showCaption(m.text, true, "agent"); pushChat("err", m.text); }
+    else if (m.kind === "tool") pushChat("tool", "→ " + m.text);
+    else if (m.kind === "result") pushChat("tool", m.text + (m.detail ? "\n" + m.detail : ""));
+    else if (m.kind === "info") pushChat("tool", m.text);
+  });
+  dmw.onSettings((s) => { agentSound = !!s.agentSound; if (s.theme) applyTheme(s.theme); });
+  dmw.onWheel((d) => nudgeScroll(d.rotation));
+  // Apply persisted theme at startup.
+  dmw.getSettings().then((s) => { if (s && s.theme) applyTheme(s.theme); }).catch(() => {});
+  // Voice dictation into the chatbox while the ledger is open: append + focus so
+  // you can review/edit before sending (Enter sends, as usual).
+  dmw.onDictate((d) => {
+    // a pending snippet resolved — clear the indicator once all are in
+    if (pendingDictations > 0) pendingDictations--;
+    if (pendingDictations === 0) document.getElementById("dictating").classList.remove("show");
+    const inp = document.getElementById("chat-text");
+    if (!inp) return;
+    const t = (d.text || "").trim();
+    if (!t) return;
+    showTab("chat"); // make sure the chatbox is visible
+    // ALWAYS append to whatever's there now (late arrivals never overwrite).
+    inp.value = inp.value.trim() ? (inp.value.replace(/\s+$/, "") + " " + t) : t;
+    inp.focus();
+    inp.setSelectionRange(inp.value.length, inp.value.length);
+  });
+  initWhisperAudio();
+}
+
+// ---- hover-to-grab: report when cursor is over the gem or its ✦ widget ----
+// Lets main disable click-through just on hover, so the gem is draggable (CSS
+// drag region on .gem-wrap) and the ✦ is clickable, without blocking Roll20.
+// NOTE: click-through hit-testing now lives in the MAIN process (driven by the
+// native uiohook mouse position), so a starved renderer can't wedge it. The
+// renderer no longer reports hover. Only drag (event-driven) stays here.
+const dragHandle = document.getElementById("drag-handle");
+let dragging = false;
+
+// Manual drag via the ✥ handle (main moves the window following the cursor).
+dragHandle.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  dragging = true;
+  dragHandle.classList.add("pressed");
+  if (window.dmw) dmw.dragStart();
+});
+window.addEventListener("mouseup", () => {
+  if (!dragging) return;
+  dragging = false;
+  dragHandle.classList.remove("pressed");
+  if (window.dmw) dmw.dragEnd();
+});
+
+// ---- scry button + mode toggle ----
+document.getElementById("scry-btn").addEventListener("click", () => {
+  if (window.dmw) dmw.setMode("expanded");
+});
+document.getElementById("close").addEventListener("click", () => {
+  document.body.dataset.mode = "ghost";
+  if (window.dmw) dmw.setMode("ghost");
+});
+document.getElementById("quit").addEventListener("click", () => {
+  if (window.dmw) dmw.quit();
+});
+
+// ---- tabs ----
+function showTab(name) {
+  document.querySelectorAll(".tabbar button").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
+  document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
+}
+document.querySelectorAll(".tabbar button").forEach((b) => {
+  b.addEventListener("click", () => showTab(b.dataset.tab));
+});
+
+// ---- chat history (ledger) ----
+const chatlog = document.getElementById("chatlog");
+function pushChat(kind, text) {
+  if (!chatlog) return;
+  let el;
+  if (kind === "tool") {
+    // Tool calls/results are debug noise — collapse into an expandable line, and
+    // they're hidden entirely unless "show tool activity" is on (body.show-tools).
+    const firstLine = text.split("\n")[0];
+    const rest = text.slice(firstLine.length).trim();
+    el = document.createElement("details");
+    el.className = "msg tool";
+    el.innerHTML = `<summary>🔧 ${escapeHtml(firstLine).slice(0, 80)}</summary>` +
+      (rest ? `<div class="tool-detail">${escapeHtml(rest)}</div>` : "");
+  } else {
+    el = document.createElement("div");
+    el.className = "msg " + kind;
+    const who = { dm: "you", agent: "the gem", confirm: "", err: "error" }[kind];
+    el.innerHTML = (who ? `<span class="who">${who}</span>` : "") + escapeHtml(text);
+  }
+  chatlog.appendChild(el);
+  chatlog.scrollTop = chatlog.scrollHeight; // always pin to newest
+}
+function sendChatText() {
+  const inp = document.getElementById("chat-text");
+  const v = inp.value.trim();
+  if (!v || !window.dmw) return;
+  inp.value = "";
+  dmw.submitText(v);
+}
+document.getElementById("chat-send").addEventListener("click", sendChatText);
+document.getElementById("chat-text").addEventListener("keydown", (e) => { if (e.key === "Enter") sendChatText(); });
+// Show/hide tool activity (off by default — it's debug noise).
+document.getElementById("show-tools").addEventListener("change", (e) => {
+  document.body.classList.toggle("show-tools", e.target.checked);
+  chatlog.scrollTop = chatlog.scrollHeight;
+});
+
+// LLM brain hot-swap (local Ollama ↔ cloud Claude).
+function markProvider(active) {
+  document.querySelectorAll(".model-btn").forEach((b) =>
+    b.classList.toggle("active", b.dataset.provider === active));
+}
+async function refreshProvider() {
+  if (!window.dmw) return;
+  try { markProvider(await dmw.getProvider()); } catch {}
+}
+document.querySelectorAll(".model-btn").forEach((b) => {
+  b.addEventListener("click", async () => {
+    if (!window.dmw) return;
+    const r = await dmw.setProvider(b.dataset.provider);
+    if (r && r.active) markProvider(r.active);
+  });
+});
+
+// ---- wizard state + rendering ----
+let wiz = { slug: "", vocab: [], nicknames: [], notes: "" };
+
+async function loadWizard() {
+  if (!window.dmw) return;
+  const { data, roster } = await dmw.getCampaignData();
+  wiz = data || wiz;
+  document.getElementById("panel-slug").textContent = wiz.slug || "(no campaign)";
+  renderVocab();
+  renderNicks();
+  document.getElementById("notes").value = wiz.notes || "";
+  renderRoster(roster || []);
+  try {
+    const s = await dmw.getSettings();
+    document.getElementById("agent-sound").checked = !!(s && s.agentSound);
+    if (s && s.theme) { theme = { ...DEFAULT_THEME, ...s.theme }; loadThemeIntoPickers(); applyTheme(theme); }
+  } catch {}
+  // Pin chat to the newest message whenever the ledger opens.
+  chatlog.scrollTop = chatlog.scrollHeight;
+  refreshProvider();
+}
+
+// Persist the sound toggle immediately when flipped.
+document.getElementById("agent-sound").addEventListener("change", async (e) => {
+  agentSound = e.target.checked;
+  if (window.dmw) await dmw.saveSettings({ agentSound });
+});
+
+function renderVocab() {
+  const box = document.getElementById("vocab-chips");
+  box.innerHTML = "";
+  wiz.vocab.forEach((term, i) => {
+    const el = document.createElement("div");
+    el.className = "chip";
+    el.innerHTML = escapeHtml(term) + " <span class='x'>✕</span>";
+    el.querySelector(".x").addEventListener("click", () => { wiz.vocab.splice(i, 1); renderVocab(); });
+    box.appendChild(el);
+  });
+}
+function addVocabFromInput() {
+  const inp = document.getElementById("vocab-add");
+  const v = inp.value.trim();
+  if (v && !wiz.vocab.some((x) => x.toLowerCase() === v.toLowerCase())) wiz.vocab.push(v);
+  inp.value = ""; renderVocab();
+}
+document.getElementById("vocab-add-btn").addEventListener("click", addVocabFromInput);
+document.getElementById("vocab-add").addEventListener("keydown", (e) => { if (e.key === "Enter") addVocabFromInput(); });
+
+function renderNicks() {
+  const tbody = document.getElementById("nick-rows");
+  tbody.innerHTML = "";
+  wiz.nicknames.forEach((n, i) => {
+    const tr = document.createElement("tr");
+    const said = document.createElement("td"); const si = document.createElement("input");
+    si.value = n.nickname; si.addEventListener("input", () => wiz.nicknames[i].nickname = si.value); said.appendChild(si);
+    const means = document.createElement("td"); const mi = document.createElement("input");
+    mi.value = n.target; mi.addEventListener("input", () => wiz.nicknames[i].target = mi.value); means.appendChild(mi);
+    const del = document.createElement("td"); const x = document.createElement("span");
+    x.className = "x"; x.textContent = "✕"; x.style.cursor = "pointer"; x.style.color = "#d98";
+    x.addEventListener("click", () => { wiz.nicknames.splice(i, 1); renderNicks(); }); del.appendChild(x);
+    tr.append(said, means, del); tbody.appendChild(tr);
+  });
+}
+document.getElementById("nick-add-btn").addEventListener("click", () => {
+  const said = document.getElementById("nick-said");
+  const means = document.getElementById("nick-means");
+  if (said.value.trim() && means.value.trim()) {
+    wiz.nicknames.push({ nickname: said.value.trim(), target: means.value.trim() });
+    said.value = ""; means.value = ""; renderNicks();
+  }
+});
+
+function renderRoster(names) {
+  document.getElementById("roster-list").textContent = names.length ? names.join("\n") : "(empty — rebuild after tokens are deployed)";
+}
+document.getElementById("roster-rebuild").addEventListener("click", async () => {
+  if (!window.dmw) return;
+  const el = document.getElementById("roster-list"); el.textContent = "rebuilding…";
+  const { roster } = await dmw.rebuildRoster();
+  renderRoster(roster || []);
+});
+
+// ---- gem theme pickers (Roster tab) ----
+const DEFAULT_THEME = { gemPrimary:"#b43c5a", textColor:"#fff2f5", textShadow:"#50101a", respColor:"#b8f0c2", respShadow:"#1e7a3c" };
+let theme = { ...DEFAULT_THEME };
+const themeFields = [
+  ["c-gem", "gemPrimary"], ["c-text", "textColor"], ["c-text-shadow", "textShadow"],
+  ["c-resp", "respColor"], ["c-resp-shadow", "respShadow"],
+];
+function loadThemeIntoPickers() {
+  for (const [id, key] of themeFields) {
+    const el = document.getElementById(id);
+    if (el) el.value = theme[key] || DEFAULT_THEME[key];
+  }
+}
+async function persistTheme() {
+  if (!window.dmw) return;
+  const s = await dmw.getSettings();
+  await dmw.saveSettings({ ...s, theme });
+}
+for (const [id, key] of themeFields) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  el.addEventListener("input", () => { theme[key] = el.value; applyTheme(theme); });   // live preview
+  el.addEventListener("change", persistTheme);                                          // persist on commit
+}
+document.getElementById("theme-reset").addEventListener("click", async () => {
+  theme = { ...DEFAULT_THEME };
+  loadThemeIntoPickers(); applyTheme(theme); await persistTheme();
+});
+
+// Readability-tuned presets. Rule: text and response colors must contrast with
+// BOTH the gem body AND a green app background — so the emerald preset uses cream
+// text + a WARM GOLD response (green-on-green would vanish), not the usual green.
+const PRESETS = {
+  ruby:     { gemPrimary:"#b43c5a", textColor:"#fff2f5", textShadow:"#3a0a14", respColor:"#ffd98a", respShadow:"#5c3a00" },
+  emerald:  { gemPrimary:"#1f8f5f", textColor:"#fdfbe8", textShadow:"#06301d", respColor:"#ffcf6b", respShadow:"#5a3500" },
+  sapphire: { gemPrimary:"#2e5fb0", textColor:"#f3f7ff", textShadow:"#081a3a", respColor:"#ffd27a", respShadow:"#4a2f00" },
+  amethyst: { gemPrimary:"#8a4fc0", textColor:"#fbf2ff", textShadow:"#2a0d40", respColor:"#ffe08a", respShadow:"#4a3500" },
+  amber:    { gemPrimary:"#c98a2a", textColor:"#fff8ec", textShadow:"#3d2400", respColor:"#bff0c8", respShadow:"#13502a" },
+};
+document.querySelectorAll(".preset").forEach((b) => {
+  b.addEventListener("click", async () => {
+    const p = PRESETS[b.dataset.preset];
+    if (!p) return;
+    theme = { ...p };
+    loadThemeIntoPickers(); applyTheme(theme); await persistTheme();
+  });
+});
+
+document.getElementById("save-btn").addEventListener("click", async () => {
+  if (!window.dmw) return;
+  wiz.notes = document.getElementById("notes").value;
+  await dmw.saveCampaignData(wiz);
+  const msg = document.getElementById("saved-msg");
+  msg.classList.add("show"); setTimeout(() => msg.classList.remove("show"), 1500);
+});

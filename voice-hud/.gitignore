@@ -1,0 +1,20 @@
+# Python STT sidecar
+stt/.venv/
+stt/__pycache__/
+**/__pycache__/
+
+# Scratch test artifacts (smoke tests, logs, sample audio)
+stt/*.log
+stt/out*.json
+stt/err*.log
+stt/test-clip.wav
+stt/req.json
+# root-level scratch logs from iterative dev (run*.log, install/ollama/server logs)
+*.log
+run*.log
+
+# Node / Electron (Component C)
+node_modules/
+dist/
+out/
+data/

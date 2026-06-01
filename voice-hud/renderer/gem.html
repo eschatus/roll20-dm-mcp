@@ -1,0 +1,464 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self';" />
+<style>
+  /* Theme variables — live-updated from the ledger color pickers. Edge facets are
+     derived as darker mixes of the primary so they track the chosen gem color. */
+  :root {
+    --gem: #b43c5a;
+    --gem-dark:  color-mix(in srgb, var(--gem) 55%, #000);
+    --gem-deep:  color-mix(in srgb, var(--gem) 30%, #000);
+    --gem-light: color-mix(in srgb, var(--gem) 45%, #fff);
+    --text: #fff2f5;
+    --text-shadow: #50101a;
+    --resp: #b8f0c2;
+    --resp-shadow: #1e7a3c;
+  }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: transparent; overflow: hidden;
+    -webkit-user-select: none; user-select: none; cursor: default;
+    font-family: "Palatino Linotype", Palatino, Georgia, serif;
+  }
+  #stage {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  /* ---- The scrying gem: a horizontal CUSHION CUT ---- */
+  /* Cushion = chamfered-corner rectangle. This octagon clip gives the soft
+     beveled-corner silhouette; wider than tall = held horizontally. */
+  .gem-wrap {
+    position: relative; width: 360px; height: 232px;
+    transition: transform 320ms cubic-bezier(.2,.8,.2,1), filter 320ms ease;
+    filter: drop-shadow(0 0 12px color-mix(in srgb, var(--gem) 55%, transparent));
+    opacity: .95;
+    /* gem body is NOT a drag region — use the ✥ handle to move (reliable). */
+  }
+  /* cushion silhouette shared by all gem layers */
+  .cushion {
+    clip-path: polygon(
+      18% 4%, 82% 4%, 96% 26%, 100% 50%, 96% 74%, 82% 96%,
+      18% 96%, 4% 74%, 0% 50%, 4% 26%
+    );
+  }
+  .facet { position: absolute; inset: 0; }
+  /* EMERALD STEP CUT: concentric cushion frames terracing inward to the table.
+     Each step is a smaller cushion a shade lighter, stacked on the next; the thin
+     band of the darker layer that peeks out around each forms the step edge. */
+  .step { position:absolute; }
+  .step.s0 { inset:0;     background: var(--gem-deep); }   /* girdle (darkest rim)   */
+  .step.s1 { inset:7px;   background: var(--gem-dark); }   /* first terrace          */
+  .step.s2 { inset:16px;  background: var(--gem); }        /* second terrace         */
+  .step.s3 { inset:28px;  background: color-mix(in srgb, var(--gem) 78%, var(--gem-light)); }
+  .step.s4 { inset:42px;  /* the table — bright, slightly domed */
+    background: radial-gradient(120% 110% at 44% 34%,
+      var(--gem-light), var(--gem) 58%, var(--gem-dark) 100%);
+    box-shadow: inset 0 0 26px color-mix(in srgb, var(--gem-light) 35%, transparent);
+  }
+  /* faint dark hairline on each step edge for crisp definition */
+  .step.s1, .step.s2, .step.s3, .step.s4 {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--gem-deep) 60%, transparent);
+  }
+  /* inner core glow that breathes */
+  .core {
+    position: absolute; left: 50%; top: 50%; width: 40%; height: 56%;
+    transform: translate(-50%,-50%);
+    border-radius: 50%;
+    background: radial-gradient(circle,
+      color-mix(in srgb, var(--gem-light) 92%, #fff), var(--gem) 50%, transparent 74%);
+    filter: blur(3px);
+    animation: breathe 3.8s ease-in-out infinite;
+  }
+  /* refraction sparkle sweep */
+  .sheen {
+    position: absolute; inset: 0;
+    background: linear-gradient(115deg, transparent 34%, rgba(255,255,255,.30) 48%, transparent 62%);
+    background-size: 280% 280%; background-position: 120% 0;
+    animation: sweep 6s linear infinite; opacity: .45;
+  }
+
+  @keyframes breathe { 0%,100%{opacity:.6;transform:translate(-50%,-50%) scale(.92);} 50%{opacity:1;transform:translate(-50%,-50%) scale(1.06);} }
+  @keyframes sweep { 0%{background-position:120% 0;} 100%{background-position:-120% 0;} }
+  @keyframes spin  { 0%{transform:rotate(0);} 100%{transform:rotate(360deg);} }
+
+  /* ---- States ---- */
+  /* idle: faint, slow */
+  body[data-state="idle"]     .gem-wrap { transform: scale(.86); filter: drop-shadow(0 0 6px rgba(150,40,60,.3)); opacity:.78; }
+  body[data-state="idle"]     .core { animation-duration: 5.2s; }
+
+  /* listening: awake, brighter, faster breath + ring */
+  body[data-state="listening"] .gem-wrap { transform: scale(1.04); filter: drop-shadow(0 0 18px rgba(220,70,100,.7)); }
+  body[data-state="listening"] .core { animation-duration: 1.5s; }
+  body[data-state="listening"] .ring { opacity: 1; }
+
+  /* thinking: gem dims, ring spins */
+  body[data-state="thinking"] .gem-wrap { transform: scale(.96); filter: drop-shadow(0 0 14px rgba(120,60,200,.6)); }
+  body[data-state="thinking"] .ring { opacity: 1; animation: spin 1.1s linear infinite; border-top-color: rgba(190,150,255,.9); }
+
+  /* confirm: gem pulses gold, awaiting tap-to-confirm */
+  body[data-state="confirm"] .gem-wrap { transform: scale(1.0); filter: drop-shadow(0 0 20px rgba(230,180,60,.85)); }
+  body[data-state="confirm"] .ring { opacity: 1; border-top-color: rgba(240,200,90,.95); border-bottom-color: rgba(240,200,90,.5); animation: spin 2.4s linear infinite; }
+
+  /* rotating attention ring — an ellipse hugging the horizontal cushion */
+  .ring {
+    position: absolute; left:50%; top:50%; width:392px; height:262px;
+    /* center via negative margins so the spin keyframe's transform:rotate()
+       doesn't overwrite a centering translate (which knocked it off-axis). */
+    margin-left:-196px; margin-top:-131px;
+    border: 2px solid transparent;
+    border-top-color: color-mix(in srgb, var(--gem-light) 80%, transparent);
+    border-radius: 50%; opacity: 0; transition: opacity 300ms ease;
+    pointer-events: none;
+  }
+
+  /* ---- Caption (transcript / status) ---- */
+  /* caption sits INSIDE the gem, over the glowing core. Outer = clip viewport,
+     inner (#caption-text) holds the words and slowly scrolls when it overflows. */
+  #caption {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%,-50%);
+    width: 264px; height: 150px; /* wider for the horizontal cushion */
+    text-align: center;
+    font-size: 16px; line-height: 1.35; font-style: italic;
+    color: var(--text);
+    text-shadow: 0 0 6px var(--text-shadow), 0 1px 2px #000, 0 0 12px color-mix(in srgb, var(--text-shadow) 50%, transparent);
+    overflow: hidden;
+    opacity: 0; transition: opacity 250ms ease;
+    pointer-events: none;
+    /* fade the top/bottom edges so scrolled text dissolves rather than hard-clips */
+    -webkit-mask-image: linear-gradient(transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+            mask-image: linear-gradient(transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+  }
+  #caption-text {
+    position: absolute; left: 0; right: 0; top: 0;
+    /* vertical position driven by JS (teleprompter). For looping overflow we
+       render two stacked copies inside and wrap by one copy's height. */
+    will-change: transform;
+  }
+  #caption-text .copy { display:block; }
+  #caption-text .gap { height: 28px; } /* breathing space between loop copies */
+  #caption.show { opacity: 1; }
+  #caption.lowconf { color: #ffe0a0; }
+  /* DM's own transcript: clean serif, themed text color */
+  #caption.dm { font-family:"Palatino Linotype",Palatino,Georgia,serif; font-style:italic;
+    color: var(--text);
+    text-shadow: 0 0 6px var(--text-shadow), 0 1px 2px #000, 0 0 12px color-mix(in srgb, var(--text-shadow) 50%, transparent); }
+  /* Agent's reply: the gem "speaking back" — eldritch blackletter, themed response color */
+  #caption.agent {
+    font-family:"UnifrakturCook","Blackletter","Luminari","Palatino Linotype",fantasy,serif;
+    font-style:normal; letter-spacing:.5px;
+    color: var(--resp);
+    text-shadow:0 0 7px color-mix(in srgb, var(--resp-shadow) 70%, transparent),
+                0 0 14px color-mix(in srgb, var(--resp-shadow) 55%, transparent), 0 1px 2px #000;
+    animation: flicker 2.6s ease-in-out infinite;
+  }
+  @keyframes flicker { 0%,100%{opacity:1;} 45%{opacity:.86;} 70%{opacity:.97;} }
+  /* status label arcs just below the gem */
+  #label {
+    position:absolute; left:0; right:0; bottom: 26px; text-align:center;
+    font-size: 12px; letter-spacing: 3px; text-transform: uppercase;
+    color: rgba(230,160,180,.85); text-shadow: 0 1px 3px #000, 0 0 8px rgba(120,20,40,.8);
+    opacity:0; transition: opacity 250ms ease;
+  }
+  /* confirm banner under the gem: shows the proposed write + how to confirm */
+  #confirm {
+    position:absolute; left: 12px; right: 12px; bottom: 4px;
+    text-align:center; font-size: 12.5px; line-height:1.3;
+    color:#ffe6a8; background: rgba(40,24,2,.66); border:1px solid rgba(220,170,60,.5);
+    border-radius:8px; padding:6px 8px; opacity:0; transition:opacity 200ms ease;
+    pointer-events:none;
+  }
+  #confirm.show { opacity:1; }
+  #confirm b { color:#fff4d6; }
+  #confirm .hint { display:block; font-size:10.5px; color:#caa86a; margin-top:3px; letter-spacing:1px; }
+  #label.show { opacity: 1; }
+
+  /* Both control widgets sit OVER the gem surface (inside its 126px radius), near
+     the top, so moving the cursor toward them never leaves the gem's hover zone. */
+  #scry-btn, #drag-handle {
+    position:absolute; left:50%; top:50%;
+    width:28px; height:28px;
+    border-radius:50%; border:1px solid rgba(220,160,180,.6);
+    background:rgba(20,6,12,.78); color:#f0d2dc; font-size:15px; line-height:26px;
+    text-align:center; opacity:0; transition:opacity 200ms ease, box-shadow 200ms ease;
+    z-index:5;
+  }
+  /* scry (open ledger) — upper-right, over the cushion's top edge */
+  #scry-btn { transform: translate(40px, -90px); cursor:pointer; }
+  /* drag handle — upper-left, over the cushion's top edge. Manual drag (JS), not
+     app-region, so :hover/:active work and it can darken when pressed. */
+  #drag-handle { transform: translate(-68px, -90px); cursor:grab; }
+
+  /* visible only while hovering the gem; fully hidden otherwise */
+  #stage:hover #scry-btn, #stage:hover #drag-handle { opacity:.92; }
+  #scry-btn:hover { opacity:1; box-shadow:0 0 10px rgba(220,120,150,.75); }
+  #drag-handle:hover { opacity:1; box-shadow:0 0 10px rgba(150,120,220,.75); }
+  /* pressed: darken + inset, like a depressed button (stays visible while dragging) */
+  #drag-handle.pressed {
+    opacity:1 !important; cursor:grabbing;
+    background:rgba(6,2,4,.95); color:#9a7a86;
+    box-shadow:inset 0 0 8px rgba(0,0,0,.8), 0 0 6px rgba(150,120,220,.5);
+    transform: translate(-68px, -90px) scale(.92);
+  }
+
+  /* ---- Expanded wizard panel ---- */
+  #panel { display:none; }
+  body[data-mode="expanded"] #stage { display:none; }
+  body[data-mode="expanded"] #panel { display:flex; }
+  body[data-mode="expanded"] { background: rgba(10,3,6,.96); }
+
+  #panel {
+    position:absolute; inset:0; flex-direction:column;
+    color:#e9d2da; font-size:14px;
+    background:
+      radial-gradient(120% 80% at 30% 0%, rgba(60,12,28,.6), rgba(10,3,6,0) 60%),
+      linear-gradient(160deg, rgba(18,5,10,.98), rgba(8,2,5,.98));
+    border:1px solid rgba(150,40,70,.45); border-radius:10px;
+  }
+  #panel header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:10px 16px; border-bottom:1px solid rgba(150,40,70,.35);
+    -webkit-app-region:drag;
+  }
+  #panel header h1 {
+    margin:0; font-size:16px; font-weight:normal; letter-spacing:2px;
+    color:#cc6a82; text-transform:uppercase;
+  }
+  #panel header .slug { font-size:12px; color:#9a6a78; letter-spacing:1px; }
+  #panel header button, #panel .tabbar button, #panel .row button {
+    -webkit-app-region:no-drag;
+  }
+  #close, #quit { background:none;border:1px solid rgba(200,100,120,.4);color:#e9c9d2;
+    border-radius:6px; padding:3px 10px; cursor:pointer; font-size:13px; -webkit-app-region:no-drag; }
+  #close:hover { background:rgba(120,30,50,.4); }
+  #quit { border-color:rgba(200,70,70,.55); color:#ffb0b0; }
+  #quit:hover { background:rgba(120,20,20,.5); }
+
+  .tabbar { display:flex; gap:4px; padding:8px 14px 0; }
+  .tabbar button {
+    background:rgba(30,10,18,.6); border:1px solid rgba(150,40,70,.3); border-bottom:none;
+    color:#b98a98; padding:6px 14px; border-radius:7px 7px 0 0; cursor:pointer; font-size:13px;
+  }
+  .tabbar button.active { background:rgba(60,16,32,.7); color:#f0c9d6; }
+
+  .tabbody { flex:1; overflow:auto; padding:14px 16px; }
+  .tab { display:none; }
+  .tab.active { display:block; }
+
+  .hint-line { color:#9a6a78; font-size:12px; margin:0 0 10px; }
+
+  .chip-input { display:flex; gap:6px; margin-bottom:10px; }
+  .chip-input input { flex:1; }
+  input, textarea {
+    background:rgba(8,2,5,.8); border:1px solid rgba(150,60,80,.45); color:#f0dde3;
+    border-radius:6px; padding:7px 9px; font-size:13px; font-family:inherit;
+  }
+  input:focus, textarea:focus { outline:none; border-color:rgba(220,120,150,.8); }
+  button.act {
+    background:rgba(120,30,50,.55); border:1px solid rgba(220,120,150,.5); color:#ffe0e8;
+    border-radius:6px; padding:7px 12px; cursor:pointer; font-size:13px;
+  }
+  button.act:hover { background:rgba(150,40,66,.7); }
+
+  .chips { display:flex; flex-wrap:wrap; gap:6px; }
+  .chip {
+    background:rgba(60,16,32,.7); border:1px solid rgba(180,80,110,.4); border-radius:14px;
+    padding:4px 10px; font-size:12.5px; display:flex; align-items:center; gap:6px;
+  }
+  .chip span.x { cursor:pointer; color:#d98; font-weight:bold; }
+  .chip span.x:hover { color:#fbb; }
+
+  table.nick { width:100%; border-collapse:collapse; }
+  table.nick th { text-align:left; color:#b98a98; font-weight:normal; font-size:12px; padding:4px 6px; }
+  table.nick td { padding:3px 6px; }
+  table.nick input { width:100%; box-sizing:border-box; }
+  .row { display:flex; gap:6px; align-items:center; margin-top:8px; }
+
+  #notes { width:100%; box-sizing:border-box; min-height:340px; resize:vertical; line-height:1.5; }
+  .roster-list { color:#c9a9b4; font-size:12.5px; line-height:1.7; white-space:pre-wrap; }
+  .sep { border:0; border-top:1px solid rgba(150,40,70,.3); margin:14px 0 10px; }
+  .presets { display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-bottom:12px; }
+  .preset-label { font-size:11px; color:#b98a98; }
+  .preset {
+    font-size:12px; padding:4px 11px; border-radius:14px; cursor:pointer;
+    border:1px solid rgba(180,80,110,.4); background:rgba(40,16,26,.6); color:#e9c9d2;
+  }
+  .preset:hover { background:rgba(90,30,50,.7); box-shadow:0 0 8px rgba(220,120,150,.4); }
+  .swatches { display:flex; flex-wrap:wrap; gap:14px; align-items:flex-end; }
+  .swatches label { display:flex; flex-direction:column; gap:4px; font-size:11px; color:#b98a98; }
+  .swatches input[type="color"] {
+    width:46px; height:30px; padding:0; border:1px solid rgba(150,60,80,.5);
+    border-radius:6px; background:none; cursor:pointer;
+  }
+  .savebar { padding:10px 16px; border-top:1px solid rgba(150,40,70,.35); display:flex; justify-content:space-between; align-items:center; }
+  .saved { color:#9fd49f; font-size:12px; opacity:0; transition:opacity 200ms; }
+  .saved.show { opacity:1; }
+
+  /* ---- Chat tab ---- */
+  .tab[data-tab="chat"] { height:100%; display:none; flex-direction:column; }
+  .tab[data-tab="chat"].active { display:flex; }
+  #chatlog { flex:1; overflow:auto; padding-right:6px; display:flex; flex-direction:column; gap:9px; }
+  .msg { max-width:86%; padding:7px 11px; border-radius:10px; line-height:1.45; font-size:13.5px; white-space:pre-wrap; word-wrap:break-word; }
+  .msg.dm { align-self:flex-end; background:rgba(60,16,32,.6); border:1px solid rgba(180,80,110,.35);
+            color:#fff2f5; font-style:italic; font-family:"Palatino Linotype",Palatino,Georgia,serif; }
+  .msg.agent { align-self:flex-start; background:rgba(10,28,16,.55); border:1px solid rgba(60,160,90,.35);
+               color:#bff0c8; font-family:"UnifrakturCook","Luminari",fantasy,serif;
+               text-shadow:0 0 6px rgba(50,180,100,.4); }
+  .msg.tool { align-self:flex-start; background:rgba(20,16,30,.5); border:1px solid rgba(120,110,170,.3);
+              color:#b8b0d8; font-family:ui-monospace,Consolas,monospace; font-size:11.5px; opacity:.85;
+              max-width:92%; padding:4px 9px; }
+  .msg.tool summary { cursor:pointer; list-style:none; opacity:.75; }
+  .msg.tool summary::-webkit-details-marker { display:none; }
+  .msg.tool .tool-detail { margin-top:4px; white-space:pre-wrap; word-break:break-word; max-height:160px; overflow:auto; opacity:.8; }
+  /* tool activity hidden unless explicitly enabled */
+  .msg.tool { display:none; }
+  body.show-tools .msg.tool { display:block; }
+  .chat-toolbar { display:flex; justify-content:space-between; align-items:center; padding:0 2px 6px; }
+  .model-pick { font-size:11px; color:#9a7a86; display:flex; align-items:center; gap:4px; }
+  .model-btn {
+    font-size:11px; padding:2px 9px; border-radius:10px; cursor:pointer;
+    border:1px solid rgba(180,80,110,.4); background:rgba(30,12,20,.5); color:#c9a9b4;
+  }
+  .model-btn:hover { background:rgba(80,28,46,.6); }
+  .model-btn.active { background:rgba(150,40,66,.7); color:#ffe0e8; border-color:rgba(220,120,150,.7); }
+  .chat-toolbar label { display:flex; align-items:center; gap:5px; font-size:11px; color:#9a7a86; cursor:pointer; }
+  .chat-toolbar input { width:auto; }
+  .msg.confirm { align-self:center; background:rgba(40,24,2,.7); border:1px solid rgba(220,170,60,.55);
+                 color:#ffe6a8; font-size:12.5px; text-align:center; }
+  .msg.err { align-self:flex-start; background:rgba(40,8,8,.6); border:1px solid rgba(200,70,70,.5); color:#ffb0b0; }
+  .msg .who { display:block; font-size:10px; letter-spacing:1px; text-transform:uppercase; opacity:.6; margin-bottom:2px; }
+  .chat-input { display:flex; gap:6px; padding-top:10px; }
+  .chat-input input { flex:1; }
+  /* pending-dictation indicator: shows a snippet is being transcribed in flight */
+  #dictating {
+    display:none; align-self:flex-start; margin-top:8px;
+    font-size:12px; color:#c8b0ff; letter-spacing:.5px;
+    background:rgba(30,20,50,.55); border:1px solid rgba(140,110,210,.4);
+    border-radius:8px; padding:4px 10px;
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  #dictating.show { display:inline-block; }
+  @keyframes pulse { 0%,100%{opacity:.55;} 50%{opacity:1;} }
+</style>
+</head>
+<body data-state="idle" data-mode="ghost">
+  <div id="stage">
+    <div class="gem-wrap">
+      <div class="ring"></div>
+      <div class="step s0 cushion"></div>
+      <div class="step s1 cushion"></div>
+      <div class="step s2 cushion"></div>
+      <div class="step s3 cushion"></div>
+      <div class="step s4 cushion"></div>
+      <div class="core"></div>
+      <div class="sheen cushion"></div>
+    </div>
+    <div id="label"></div>
+    <div id="caption"><div id="caption-text"></div></div>
+    <div id="confirm"></div>
+    <div id="drag-handle" title="Drag to move">✥</div>
+    <div id="scry-btn" title="Scrying ledger">✦</div>
+  </div>
+
+  <!-- Expanded wizard: proper-noun vocab, nicknames, DM notes, roster -->
+  <div id="panel">
+    <header>
+      <div><h1>Scrying Ledger</h1></div>
+      <div class="slug" id="panel-slug">—</div>
+      <div style="display:flex;gap:8px;">
+        <button id="close">✕ close</button>
+        <button id="quit">⏻ quit scrying</button>
+      </div>
+    </header>
+    <div class="tabbar">
+      <button data-tab="chat" class="active">Chat</button>
+      <button data-tab="vocab">Proper Nouns</button>
+      <button data-tab="nick">Nicknames</button>
+      <button data-tab="notes">DM Notes</button>
+      <button data-tab="roster">Roster</button>
+    </div>
+    <div class="tabbody">
+      <div class="tab active" data-tab="chat">
+        <div class="chat-toolbar">
+          <span class="model-pick">
+            brain:
+            <button class="model-btn" data-provider="ollama">local</button>
+            <button class="model-btn" data-provider="anthropic">cloud</button>
+          </span>
+          <label><input type="checkbox" id="show-tools" /> show tool activity</label>
+        </div>
+        <div id="chatlog"></div>
+        <div id="dictating">🔮 scrying your words…</div>
+        <div class="chat-input">
+          <input id="chat-text" placeholder="Type to the gem… (Enter to send)" />
+          <button class="act" id="chat-send">Send</button>
+        </div>
+      </div>
+
+      <div class="tab" data-tab="vocab">
+        <p class="hint-line">Names, places, and terms to bias speech recognition (Strahd, Ireena, Barovia, Spirit Guardians…). Roster names are added automatically.</p>
+        <div class="chip-input">
+          <input id="vocab-add" placeholder="Add a proper noun, press Enter" />
+          <button class="act" id="vocab-add-btn">Add</button>
+        </div>
+        <div class="chips" id="vocab-chips"></div>
+      </div>
+
+      <div class="tab" data-tab="nick">
+        <p class="hint-line">Spoken alias → who it means. The agent resolves these when you talk (“the big guy” → Strahd).</p>
+        <table class="nick">
+          <thead><tr><th style="width:45%">You say…</th><th>means…</th><th style="width:32px"></th></tr></thead>
+          <tbody id="nick-rows"></tbody>
+        </table>
+        <div class="row">
+          <input id="nick-said" placeholder="the big guy" style="width:45%" />
+          <input id="nick-means" placeholder="Strahd" style="flex:1" />
+          <button class="act" id="nick-add-btn">+</button>
+        </div>
+      </div>
+
+      <div class="tab" data-tab="notes">
+        <p class="hint-line">Durable DM notebook for this campaign — persists across sessions.</p>
+        <textarea id="notes" placeholder="Secrets, plot threads, NPC voices, reminders…"></textarea>
+      </div>
+
+      <div class="tab" data-tab="roster">
+        <p class="hint-line">Live roster (page tokens ∩ DDB characters). Rebuild after deploying tokens.</p>
+        <div class="row"><button class="act" id="roster-rebuild">⟳ Rebuild roster</button></div>
+        <div class="roster-list" id="roster-list">—</div>
+
+        <hr class="sep" />
+        <p class="hint-line">Gem appearance — changes apply live; edge facets derive from the gem color.</p>
+        <div class="presets">
+          <span class="preset-label">Presets:</span>
+          <button class="preset" data-preset="ruby">Ruby</button>
+          <button class="preset" data-preset="emerald">Emerald</button>
+          <button class="preset" data-preset="sapphire">Sapphire</button>
+          <button class="preset" data-preset="amethyst">Amethyst</button>
+          <button class="preset" data-preset="amber">Amber</button>
+        </div>
+        <div class="swatches">
+          <label><span>Gem color</span><input type="color" id="c-gem" /></label>
+          <label><span>Text</span><input type="color" id="c-text" /></label>
+          <label><span>Text glow</span><input type="color" id="c-text-shadow" /></label>
+          <label><span>Response</span><input type="color" id="c-resp" /></label>
+          <label><span>Response glow</span><input type="color" id="c-resp-shadow" /></label>
+          <button class="act" id="theme-reset" style="align-self:end;">Reset</button>
+        </div>
+      </div>
+    </div>
+    <div class="savebar">
+      <label style="display:flex;align-items:center;gap:7px;color:#c9a9b4;font-size:12.5px;-webkit-app-region:no-drag;cursor:pointer;">
+        <input type="checkbox" id="agent-sound" style="width:auto;" /> demonic whisper on reply
+      </label>
+      <span class="saved" id="saved-msg">saved ✓</span>
+      <button class="act" id="save-btn">Save ledger</button>
+    </div>
+  </div>
+
+  <script src="gem.js"></script>
+</body>
+</html>

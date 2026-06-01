@@ -1,0 +1,18 @@
+# Whisper STT sidecar deps — install into a Python 3.10 venv (NOT system 3.13).
+# 3.10 is installed (py -3.10) and has the broadest CUDA wheel support for ctranslate2.
+#
+#   py -3.10 -m venv .venv
+#   .venv\Scripts\python -m pip install -U pip
+#   .venv\Scripts\python -m pip install -r requirements.txt
+#
+# faster-whisper pulls ctranslate2 (CUDA-enabled wheels), tokenizers, onnxruntime, av.
+# On Windows + NVIDIA, ctranslate2 wheels bundle the CUDA runtime, but cuDNN must be
+# reachable on PATH. If model load errors on missing CUDA libs, either install the
+# NVIDIA cuDNN package or run the sidecar with --device cpu --compute-type int8.
+faster-whisper>=1.0.3
+
+# CUDA 12 runtime libs ctranslate2 needs at transcribe time (cublas64_12.dll, cudnn).
+# The ctranslate2 Windows wheel does NOT bundle these. whisper_server.py registers
+# their bin dirs via os.add_dll_directory() at startup, so no manual PATH edits.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
