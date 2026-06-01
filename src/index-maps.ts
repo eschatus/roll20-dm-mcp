@@ -5,7 +5,7 @@ import "dotenv/config";
 import { registerCampaignTools } from "./tools/campaigns.js";
 import { registerMapTools } from "./tools/maps.js";
 import { registerTokenTools } from "./tools/tokens.js";
-import { registerVisionTools } from "./tools/vision.js";
+import { registerVisionTools, registerScreenshotTool } from "./tools/vision.js";
 
 const server = new McpServer({
   name: "roll20-dm-maps",
@@ -16,6 +16,7 @@ registerCampaignTools(server);
 registerMapTools(server);
 registerTokenTools(server);
 registerVisionTools(server);
+registerScreenshotTool(server);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

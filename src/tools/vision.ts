@@ -1015,6 +1015,12 @@ export function registerVisionTools(server: McpServer): void {
     }
   );
 
+}
+
+// screenshot_roll20 is split out of the map/wall authoring suite so the combat
+// server can keep a way to SEE the board without carrying the battlemap/wall
+// tools. Registered by BOTH the combat server and the maps server.
+export function registerScreenshotTool(server: McpServer): void {
   server.tool(
     "screenshot_roll20",
     "Take a screenshot of the current Roll20 editor view and save it to a local file path.",
