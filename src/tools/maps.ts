@@ -1,8 +1,49 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readFileSync } from "fs";
+import { readFileSync, statSync } from "fs";
 import path from "path";
 import * as roll20 from "../bridge/roll20.js";
+
+// --- Local-asset confinement ---------------------------------------------------
+// import_map_file / upload_and_place_map_image read arbitrary local paths handed
+// to them by an MCP client. Confine reads to a single asset base dir, cap size,
+// and require an image extension so the tool can't be coaxed into exfiltrating
+// e.g. ~/.ssh/id_rsa or a multi-GB file as base64.
+const ASSET_BASE = path.resolve(process.env.ROLL20_ASSET_DIR || path.join(process.cwd(), "data", "maps"));
+const MAX_IMAGE_BYTES = 32 * 1024 * 1024; // 32 MB
+const IMAGE_EXT_MEDIA: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+
+// Resolve `inputPath` and ensure it stays inside ASSET_BASE, is an allowed image
+// type, and is within the size cap. Returns the absolute path + media type, or
+// throws a clear error on any violation.
+export function resolveConfinedImage(inputPath: string): { abs: string; mediaType: string; size: number } {
+  const abs = path.resolve(ASSET_BASE, inputPath);
+  if (abs !== ASSET_BASE && !abs.startsWith(ASSET_BASE + path.sep)) {
+    throw new Error(`Path escapes the asset directory (${ASSET_BASE}): ${inputPath}`);
+  }
+  const ext = path.extname(abs).toLowerCase();
+  const mediaType = IMAGE_EXT_MEDIA[ext];
+  if (!mediaType) {
+    throw new Error(`Unsupported image type "${ext || "(none)"}". Allowed: ${Object.keys(IMAGE_EXT_MEDIA).join(", ")}`);
+  }
+  let st;
+  try {
+    st = statSync(abs);
+  } catch {
+    throw new Error(`File not found under asset directory: ${abs}`);
+  }
+  if (!st.isFile()) throw new Error(`Not a regular file: ${abs}`);
+  if (st.size > MAX_IMAGE_BYTES) {
+    throw new Error(`File too large (${st.size} bytes > ${MAX_IMAGE_BYTES} cap): ${abs}`);
+  }
+  return { abs, mediaType, size: st.size };
+}
 
 export function registerMapTools(server: McpServer): void {
   server.tool(
@@ -68,7 +109,7 @@ export function registerMapTools(server: McpServer): void {
       heightSquares: z.number().int().positive().default(13),
     },
     async ({ pageId, imagePath, widthSquares, heightSquares }) => {
-      const abs = path.resolve(imagePath);
+      const { abs } = resolveConfinedImage(imagePath);
       const imgsrc = await roll20.uploadArt(abs);
 
       const CELL = 70;
@@ -126,11 +167,8 @@ export function registerMapTools(server: McpServer): void {
       imagePath: z.string(),
     },
     async ({ imagePath }) => {
-      const abs = path.resolve(imagePath);
+      const { abs, mediaType } = resolveConfinedImage(imagePath);
       const buffer = readFileSync(abs);
-      const ext = abs.split(".").pop()?.toLowerCase();
-      const mediaType =
-        ext === "png" ? "image/png" : ext === "jpg" || ext === "jpeg" ? "image/jpeg" : "image/png";
       const base64 = buffer.toString("base64");
       const dataUrl = `data:${mediaType};base64,${base64}`;
 

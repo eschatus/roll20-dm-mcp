@@ -22,16 +22,18 @@ This document catalogs the attack surfaces in this project and the mitigations i
 
 ## 2. `cobalt` cookie scope
 
-**What it is:** D&D Beyond's session cookie. It provides full authenticated access to the account, including character write operations.
+**What it is:** D&D Beyond's session cookie. It provides full authenticated access to the account.
 
 **Risk:** Anyone with this cookie can modify your DDB characters, access your subscription, and act as you on DDB.
+
+**DDB writes have been removed.** This server no longer issues any D&D Beyond write requests — all `patchCharacter` / `applyCondition` / `ddb_update_hp` paths and the DDB branches of `apply_damage` / `heal_character` are gone (see `decisions.md` §1). DDB is read-only here: the cookie is used only for character/monster stat lookups and optional round-start drift checks. This shrinks the blast radius of a leaked cookie from "attacker modifies your sheets via this tool" to "attacker has your DDB session" (still serious, but the tool itself never writes).
 
 **Mitigations:**
 - The cookie is held in memory (via Playwright's cookie store) and on disk only in `userDataDir`
 - The cookie is never logged or written to `.env` or any plain-text file
 - Session rotation: if you suspect compromise, log out of DDB in the Playwright browser window — this invalidates the cookie
 
-**No current mitigation for:** The DDB API calls we make do not limit the cookie's scope — it's full-account. There is no way to obtain a scoped token with only character-write access through DDB's current auth system.
+**No current mitigation for:** The `cobalt` cookie's scope cannot be narrowed — it's full-account, including write capability we choose not to exercise. There is no way to obtain a read-only scoped token through DDB's current auth system.
 
 ---
 
@@ -77,16 +79,18 @@ This document catalogs the attack surfaces in this project and the mitigations i
 
 ---
 
-## 6. GM_AI_Bridge visibility to players
+## 6. Relay command transport and authorization
 
-**What it is:** The `GM_AI_Bridge_cmd` and `GM_AI_Bridge_result` campaign attributes are visible in the Roll20 attribute list if players have API access.
+**What it is:** The relay (`mod-scripts/ai-relay.js`) is **chat-command driven**. The MCP server issues commands by typing `!ai-relay {JSON}` into the Roll20 campaign chat (via the Playwright browser session); the relay listens on the Mod `chat:message` event, dispatches the action, and whispers the result back as a hidden `/w gm` div that the MCP server reads via a MutationObserver. There is no longer a `change:attribute` / `GM_AI_Bridge` attribute queue.
 
-**Risk:** Players who are also API (Mod) users could read the command queue or inject fake results. Players in the same campaign could read the attribute values via macros if the attribute visibility is not set to GM-only.
+**Risk:** Any player in the campaign can type `!ai-relay {...}` into chat. Without a sender check, a player could trigger relay actions (move tokens, set HP, create objects) by sending the command themselves.
 
 **Mitigations:**
-- In Roll20's attribute editor, set both `GM_AI_Bridge_cmd` and `GM_AI_Bridge_result` to **GM-only visibility**
-- The relay script (`ai-relay.js`) only responds to `change:attribute` events — it cannot be triggered by player macros if the attributes are GM-only
-- **Action item:** The `ensureRelayAttr()` function in `ai-relay.js` creates attributes without explicit visibility — after first run, manually set both to GM-only in Roll20's attribute editor
+- **GM-only sender check (added by the relay team):** the `chat:message` handler verifies the sender is a GM (`playerIsGM(msg.playerid)`) before dispatching any `!ai-relay` command. Commands from non-GM players are ignored. This is the primary authorization boundary — the transport is public (chat), so authorization must happen at the handler, not by hiding an attribute.
+- Result whispers use `/w gm`, so command output is not visible to players.
+- The relay dispatches only the hardcoded `action` strings in its `switch` statement (no `eval` / shell exec — see §5).
+
+**Action item:** Confirm the `playerIsGM` sender check is present and enabled in the deployed `ai-relay.js`. Because Roll20 chat is a shared, player-writable channel, this check — not attribute visibility — is what keeps players from driving the relay.
 
 ---
 

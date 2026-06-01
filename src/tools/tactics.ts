@@ -100,6 +100,15 @@ interface TurnOrderEntry {
   _pageid: string;
 }
 
+// ─── Model IDs ──────────────────────────────────────────────────────────────
+// Single source of truth for the model identifiers used across tactics + vision.
+// Update here when migrating model versions.
+export const MODELS = {
+  haiku: "claude-haiku-4-5-20251001",
+  sonnet: "claude-sonnet-4-6",
+  opus: "claude-opus-4-7",
+} as const;
+
 // ─── Tier Config ──────────────────────────────────────────────────────────────
 
 interface TierConfig {
@@ -115,15 +124,15 @@ interface TierConfig {
 }
 
 const TIER_CONFIGS: TierConfig[] = [
-  { tier: 0, label: "Feral",      model: "claude-haiku-4-5-20251001", thinkingBudget: null, maxResponseTokens: 150,  includeAllies: false, maxNearbyTokens: 1, memoryEntries: 0, cascade: "none" },
-  { tier: 1, label: "Dim",        model: "claude-haiku-4-5-20251001", thinkingBudget: null, maxResponseTokens: 250,  includeAllies: false, maxNearbyTokens: 2, memoryEntries: 1, cascade: "none" },
-  { tier: 2, label: "Average",    model: "claude-sonnet-4-6",          thinkingBudget: null, maxResponseTokens: 400,  includeAllies: false, maxNearbyTokens: 3, memoryEntries: 2, cascade: "none" },
-  { tier: 3, label: "Sharp",      model: "claude-sonnet-4-6",          thinkingBudget: 3000, maxResponseTokens: 1000, includeAllies: true,  maxNearbyTokens: 5, memoryEntries: 3, cascade: "none" },
-  { tier: 4, label: "Brilliant",  model: "claude-sonnet-4-6",          thinkingBudget: 8000, maxResponseTokens: 1500, includeAllies: true,  maxNearbyTokens: 8, memoryEntries: 5, cascade: "medium" },
-  { tier: 5, label: "Mastermind", model: "claude-opus-4-7",            thinkingBudget: 16000, maxResponseTokens: 2000, includeAllies: true, maxNearbyTokens: 12, memoryEntries: 8, cascade: "full" },
+  { tier: 0, label: "Feral",      model: MODELS.haiku,  thinkingBudget: null, maxResponseTokens: 150,  includeAllies: false, maxNearbyTokens: 1, memoryEntries: 0, cascade: "none" },
+  { tier: 1, label: "Dim",        model: MODELS.haiku,  thinkingBudget: null, maxResponseTokens: 250,  includeAllies: false, maxNearbyTokens: 2, memoryEntries: 1, cascade: "none" },
+  { tier: 2, label: "Average",    model: MODELS.sonnet, thinkingBudget: null, maxResponseTokens: 400,  includeAllies: false, maxNearbyTokens: 3, memoryEntries: 2, cascade: "none" },
+  { tier: 3, label: "Sharp",      model: MODELS.sonnet, thinkingBudget: 3000, maxResponseTokens: 1000, includeAllies: true,  maxNearbyTokens: 5, memoryEntries: 3, cascade: "none" },
+  { tier: 4, label: "Brilliant",  model: MODELS.sonnet, thinkingBudget: 8000, maxResponseTokens: 1500, includeAllies: true,  maxNearbyTokens: 8, memoryEntries: 5, cascade: "medium" },
+  { tier: 5, label: "Mastermind", model: MODELS.opus,   thinkingBudget: 16000, maxResponseTokens: 2000, includeAllies: true, maxNearbyTokens: 12, memoryEntries: 8, cascade: "full" },
 ];
 
-function resolveTier(intScore: number, wisScore: number): TierConfig {
+export function resolveTier(intScore: number, wisScore: number): TierConfig {
   const effective = Math.floor((intScore + wisScore) / 2);
   if (effective <= 5)  return TIER_CONFIGS[0];
   if (effective <= 8)  return TIER_CONFIGS[1];
@@ -133,7 +142,7 @@ function resolveTier(intScore: number, wisScore: number): TierConfig {
   return TIER_CONFIGS[5];
 }
 
-function awarenessRadius(wisScore: number, requestedRadius: number): number {
+export function awarenessRadius(wisScore: number, requestedRadius: number): number {
   const wisMod = Math.floor((wisScore - 10) / 2);
   const computed = 60 + wisMod * 15;
   return Math.max(15, Math.min(requestedRadius, Math.max(computed, 15)));
@@ -174,6 +183,84 @@ async function resolveMonsterData(name: string): Promise<MonsterData | null> {
   } catch {
     return null;
   }
+}
+
+// ─── Pure stat resolution cascade ────────────────────────────────────────────
+//
+// Resolves a creature's six ability scores + ability summary from up to three
+// already-fetched sources, in priority order:
+//   1. Explicit Int/Wis overrides (caller-supplied, e.g. for unlinked tokens).
+//   2. Character-sheet attributes + NPC action rows (source of truth if actions present).
+//   3. DDB compendium fallback (only consulted when the sheet had no actions).
+//   4. Hard defaults (physical/CHA → 10, INT/WIS → 8).
+//
+// This function performs NO I/O — all data is passed in. That makes the whole
+// cascade deterministic and unit-testable. The relay/network fetches stay in
+// internalPlanToken.
+
+export interface StatResolutionInputs {
+  intOverride?: number;
+  wisOverride?: number;
+  // Character-sheet ability scores (0 / undefined when absent). Already merged
+  // npc_* → pc fallback by the caller.
+  sheet?: {
+    strength?: number;
+    dexterity?: number;
+    constitution?: number;
+    intelligence?: number;
+    wisdom?: number;
+    charisma?: number;
+    // Pre-formatted "Actions:\n…" block from the npcaction repeating section.
+    // Presence makes the sheet the source of truth (DDB fallback is skipped).
+    abilitySummary?: string;
+  };
+  // DDB compendium data (null when the lookup failed or wasn't attempted).
+  ddb?: MonsterData | null;
+}
+
+export function resolveMonsterStats(inputs: StatResolutionInputs): MonsterData {
+  const { intOverride, wisOverride, sheet, ddb: ddbData } = inputs;
+
+  // Stage 2: seed from character sheet (0 means "absent").
+  let strScore = sheet?.strength ?? 0;
+  let dexScore = sheet?.dexterity ?? 0;
+  let conScore = sheet?.constitution ?? 0;
+  let intScore = intOverride ?? sheet?.intelligence ?? 0;
+  let wisScore = wisOverride ?? sheet?.wisdom ?? 0;
+  let chaScore = sheet?.charisma ?? 0;
+
+  const sheetSummary = sheet?.abilitySummary ?? "";
+  const wroteFromSheet = sheetSummary.length > 0;
+  let abilitySummary = sheetSummary;
+
+  // Stage 3: DDB compendium fallback — only when the sheet had no actions.
+  if (!wroteFromSheet && ddbData) {
+    if (strScore === 0) strScore = ddbData.strength;
+    if (dexScore === 0) dexScore = ddbData.dexterity;
+    if (conScore === 0) conScore = ddbData.constitution;
+    if (intScore === 0 && intOverride === undefined) intScore = ddbData.intelligence;
+    if (wisScore === 0 && wisOverride === undefined) wisScore = ddbData.wisdom;
+    if (chaScore === 0) chaScore = ddbData.charisma;
+    abilitySummary = ddbData.abilitySummary;
+  }
+
+  // Stage 4: defaults.
+  if (strScore === 0) strScore = 10;
+  if (dexScore === 0) dexScore = 10;
+  if (conScore === 0) conScore = 10;
+  if (intScore === 0) intScore = 8;
+  if (wisScore === 0) wisScore = 8;
+  if (chaScore === 0) chaScore = 10;
+
+  return Object.freeze({
+    strength: strScore,
+    dexterity: dexScore,
+    constitution: conScore,
+    intelligence: intScore,
+    wisdom: wisScore,
+    charisma: chaScore,
+    abilitySummary,
+  });
 }
 
 // ─── Tactical Memory ──────────────────────────────────────────────────────────
@@ -285,7 +372,7 @@ function formatHP(current: number, max: number): string {
   return `${current}/${max} HP (${label})`;
 }
 
-function rangeBand(feet: number): string {
+export function rangeBand(feet: number): string {
   if (feet <= 5)   return `adjacent (${Math.round(feet)}ft)`;
   if (feet <= 30)  return `near (${Math.round(feet)}ft)`;
   if (feet <= 60)  return `mid (${Math.round(feet)}ft)`;
@@ -398,13 +485,13 @@ async function planMediumCascade(
   onStage?: OnStage,
 ): Promise<{ shortTermPlan: string; mediumTermPlan: string }> {
   const shortPrompt = `${baseContext}\n\n[TASK]\nIt is ${tokenName}'s turn. State its Action, Bonus Action, and Movement in 2-3 sentences. Be direct.`;
-  const shortTermPlan = await callAI("claude-haiku-4-5-20251001", null, shortPrompt, 300);
+  const shortTermPlan = await callAI(MODELS.haiku, null, shortPrompt, 300);
   await onStage?.("short", shortTermPlan);
 
   const mediumLines = [baseContext, "", "[SHORT-TERM PLAN (THIS TURN)]", shortTermPlan];
   if (state.mediumTermPlan) mediumLines.push("", "[PRIOR MEDIUM-TERM PLAN]", state.mediumTermPlan);
   mediumLines.push("", "[TASK]", `Given the immediate action above, what is ${tokenName}'s tactical plan for the next 2-3 rounds? Consider positioning, resource conservation, focus fire, and contingencies.`);
-  const mediumTermPlan = await callAI("claude-sonnet-4-6", 8000, mediumLines.join("\n"), 1500);
+  const mediumTermPlan = await callAI(MODELS.sonnet, 8000, mediumLines.join("\n"), 1500);
   await onStage?.("medium", mediumTermPlan);
 
   return { shortTermPlan, mediumTermPlan };
@@ -420,7 +507,12 @@ async function planFullCascade(
 ): Promise<{ shortTermPlan: string; mediumTermPlan: string; longTermGoal: string }> {
   const { shortTermPlan, mediumTermPlan } = await planMediumCascade(baseContext, tokenName, state, onStage);
 
-  const needsLongReplan = !state.longTermGoal || forceReplan || currentHpPct <= 0.5;
+  // Opus tier-5 long-term strategy is expensive: fire it at most once per encounter per mob.
+  // Skip when a goal already exists AND we're not force-replanning AND the mob is healthy (hp > 50%).
+  // This means round 1 pays Opus once to establish the goal; later rounds reuse the stored goal,
+  // and we only re-strategize on an explicit forceReplan or when the mob drops to/below half HP.
+  const hasUsableGoal = !!state.longTermGoal && !forceReplan && currentHpPct > 0.5;
+  const needsLongReplan = !hasUsableGoal;
   let longTermGoal = state.longTermGoal ?? "";
 
   if (needsLongReplan) {
@@ -431,7 +523,7 @@ async function planFullCascade(
     ];
     if (state.longTermGoal && !forceReplan) longLines.push("", "[PRIOR STRATEGIC GOAL]", state.longTermGoal);
     longLines.push("", "[TASK]", `What is ${tokenName}'s overarching strategic goal for this entire encounter? Consider retreat conditions, protecting allies, eliminating priority targets, and leveraging the environment. This goal should guide decisions across many rounds.`);
-    longTermGoal = await callAI("claude-opus-4-7", 16000, longLines.join("\n"), 2000);
+    longTermGoal = await callAI(MODELS.opus, 16000, longLines.join("\n"), 2000);
     await onStage?.("long", longTermGoal);
   }
 
@@ -530,14 +622,8 @@ async function internalPlanToken(
   }
 
   if (!monsterData) {
-    let strScore = 0, dexScore = 0, conScore = 0;
-    let intScore = intOverride ?? 0;
-    let wisScore = wisOverride ?? 0;
-    let chaScore = 0;
-    let abilitySummary = "";
-    let wroteFromSheet = false;
-
-    // 2. Character sheet (linked tokens)
+    // ── I/O: gather raw inputs from the character sheet (linked tokens) ──
+    let sheet: StatResolutionInputs["sheet"];
     if (token.represents) {
       const attrs = await roll20.relayCommand<Record<string, { current: unknown }>>({
         action: "getCharacterAttributes",
@@ -551,12 +637,6 @@ async function internalPlanToken(
         const raw = attrs?.[npc]?.current ?? attrs?.[pc]?.current;
         return (raw !== undefined && raw !== null) ? Number(raw) : 0;
       };
-      strScore = readAttr("npc_strength", "strength");
-      dexScore = readAttr("npc_dexterity", "dexterity");
-      conScore = readAttr("npc_constitution", "constitution");
-      if (intOverride === undefined) intScore = readAttr("npc_intelligence", "intelligence");
-      if (wisOverride === undefined) wisScore = readAttr("npc_wisdom", "wisdom");
-      chaScore = readAttr("npc_charisma", "charisma");
 
       // Read NPC actions repeating section — if populated, the sheet is our source of truth
       const actionRows = await roll20.relayCommand<Record<string, Record<string, string>>>({
@@ -570,36 +650,24 @@ async function internalPlanToken(
           const desc = r.description || r.desc || "";
           return `  ${r.name}${desc ? `: ${desc.slice(0, 300)}` : ""}`;
         });
-      if (actionLines.length > 0) {
-        abilitySummary = `Actions:\n${actionLines.join("\n")}`;
-        wroteFromSheet = true;
-      }
+
+      sheet = {
+        strength: readAttr("npc_strength", "strength"),
+        dexterity: readAttr("npc_dexterity", "dexterity"),
+        constitution: readAttr("npc_constitution", "constitution"),
+        intelligence: readAttr("npc_intelligence", "intelligence"),
+        wisdom: readAttr("npc_wisdom", "wisdom"),
+        charisma: readAttr("npc_charisma", "charisma"),
+        abilitySummary: actionLines.length > 0 ? `Actions:\n${actionLines.join("\n")}` : "",
+      };
     }
 
-    // 3. DDB compendium fallback — if char sheet had no actions (or no sheet at all)
-    if (!wroteFromSheet) {
-      const ddbData = await resolveMonsterData(token.name);
-      if (ddbData) {
-        if (strScore === 0) strScore = ddbData.strength;
-        if (dexScore === 0) dexScore = ddbData.dexterity;
-        if (conScore === 0) conScore = ddbData.constitution;
-        if (intScore === 0 && intOverride === undefined) intScore = ddbData.intelligence;
-        if (wisScore === 0 && wisOverride === undefined) wisScore = ddbData.wisdom;
-        if (chaScore === 0) chaScore = ddbData.charisma;
-        abilitySummary = ddbData.abilitySummary;
-      }
-    }
+    // ── I/O: DDB compendium fallback — only when the sheet had no actions ──
+    const sheetHasActions = (sheet?.abilitySummary ?? "").length > 0;
+    const ddbData = sheetHasActions ? null : await resolveMonsterData(token.name);
 
-    // 4. Defaults
-    if (strScore === 0) strScore = 10;
-    if (dexScore === 0) dexScore = 10;
-    if (conScore === 0) conScore = 10;
-    if (intScore === 0) intScore = 8;
-    if (wisScore === 0) wisScore = 8;
-    if (chaScore === 0) chaScore = 10;
-
-    monsterData = { strength: strScore, dexterity: dexScore, constitution: conScore,
-                    intelligence: intScore, wisdom: wisScore, charisma: chaScore, abilitySummary };
+    // ── Pure: run the 4-tier resolution cascade ──
+    monsterData = resolveMonsterStats({ intOverride, wisOverride, sheet, ddb: ddbData });
 
     // Persist to token gmnotes — only if gmnotes is empty or already ours
     if (!token.gmnotes || token.gmnotes.startsWith(TACDATA)) {

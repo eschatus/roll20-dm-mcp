@@ -1,5 +1,5 @@
 import http, { IncomingMessage } from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import "dotenv/config";
 
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -19,6 +19,45 @@ import { buildCombatServer } from "./server-combat.js";
 const PORT = Number(process.env.ROLL20_HTTP_PORT) || 39200;
 const HOST = process.env.ROLL20_HTTP_HOST || "127.0.0.1";
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+
+// Shared-secret bearer token. Required: the server refuses to start without it,
+// so we never accidentally expose an unauthenticated MCP endpoint that can drive
+// the live Roll20 browser session.
+const AUTH_TOKEN = process.env.ROLL20_MCP_TOKEN;
+if (!AUTH_TOKEN) {
+  console.error(
+    "[roll20-dm http] FATAL: ROLL20_MCP_TOKEN is not set. Refusing to start an " +
+      "unauthenticated MCP server. Set ROLL20_MCP_TOKEN in the environment/.env.",
+  );
+  process.exit(1);
+}
+const AUTH_TOKEN_BUF = Buffer.from(AUTH_TOKEN, "utf8");
+
+// DNS-rebinding protection allowlists. A malicious web page could otherwise point
+// a victim's browser at http://127.0.0.1:39200 via a rebound DNS name; the MCP
+// transport rejects requests whose Host/Origin aren't on these lists.
+const ALLOWED_HOSTS = [
+  `${HOST}:${PORT}`,
+  `localhost:${PORT}`,
+  `127.0.0.1:${PORT}`,
+];
+const ALLOWED_ORIGINS = [
+  `http://${HOST}:${PORT}`,
+  `http://localhost:${PORT}`,
+  `http://127.0.0.1:${PORT}`,
+];
+
+// Constant-time bearer-token check. Guards the length mismatch up front because
+// timingSafeEqual throws on unequal-length buffers.
+function isAuthorized(req: IncomingMessage): boolean {
+  const header = req.headers["authorization"];
+  if (!header || Array.isArray(header)) return false;
+  const m = /^Bearer (.+)$/.exec(header);
+  if (!m) return false;
+  const presented = Buffer.from(m[1], "utf8");
+  if (presented.length !== AUTH_TOKEN_BUF.length) return false;
+  return timingSafeEqual(presented, AUTH_TOKEN_BUF);
+}
 
 const transports: Record<string, StreamableHTTPServerTransport> = {};
 
@@ -53,6 +92,23 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // Bearer-token gate in front of all MCP handling.
+  if (!isAuthorized(req)) {
+    res
+      .writeHead(401, {
+        "Content-Type": "application/json",
+        "WWW-Authenticate": "Bearer",
+      })
+      .end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          error: { code: -32001, message: "Unauthorized" },
+          id: null,
+        }),
+      );
+    return;
+  }
+
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
   try {
@@ -75,6 +131,9 @@ const httpServer = http.createServer(async (req, res) => {
         // New session — create transport + a fresh server bound to it.
         const newTransport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
+          enableDnsRebindingProtection: true,
+          allowedHosts: ALLOWED_HOSTS,
+          allowedOrigins: ALLOWED_ORIGINS,
           onsessioninitialized: (sid) => {
             transports[sid] = newTransport;
           },

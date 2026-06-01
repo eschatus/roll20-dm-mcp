@@ -2,13 +2,15 @@
   "name": "roll20-dm-mcp",
   "version": "1.0.0",
   "description": "MCP server for Roll20 DM automation + D&D Beyond combat sync",
-  "main": "src/index.ts",
+  "main": "dist/index-combat.js",
   "scripts": {
-    "start": "tsx src/index.ts",
+    "start": "node dist/index-combat.js",
     "build": "tsc",
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch src/index-combat.ts",
     "serve": "tsx src/index-http.ts",
-    "serve:watch": "tsx watch src/index-http.ts"
+    "serve:watch": "tsx watch src/index-http.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [],
   "author": "",
@@ -26,6 +28,7 @@
     "@types/node": "^25.9.1",
     "@types/sharp": "^0.31.1",
     "tsx": "^4.22.3",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^3.2.4"
   }
 }
