@@ -154,6 +154,38 @@ describe("AoE / emanation geometry (findTokensInRange)", () => {
   });
 });
 
+describe("getTurnOrder", () => {
+  it("returns the parsed turn order array", () => {
+    emu.campaignModel.set("turnorder", JSON.stringify([{ id: "a", pr: "20", custom: "" }]));
+    const order = emu.relay<Array<{ id: string; pr: string }>>({ action: "getTurnOrder" });
+    expect(order).toEqual([{ id: "a", pr: "20", custom: "" }]);
+  });
+  it("returns [] when empty", () => {
+    expect(emu.relay({ action: "getTurnOrder" })).toEqual([]);
+  });
+});
+
+describe("syncConditionsToToken", () => {
+  it("replaces the token's condition markers with exactly the active set", () => {
+    const pageId = emu.createPage();
+    const charId = emu.createCharacter("Goblin", {});
+    const tok = emu.createToken({ pageid: pageId, name: "Goblin", represents: charId, bar1_value: 7, bar1_max: 7 });
+    // Seed a stale marker, then sync to a different set.
+    emu.relay({ action: "toggleCondition", tokenId: tok.id, charId, condition: "poisoned", active: true });
+    const res = emu.relay<{ ok: boolean; conditions: string[] }>({
+      action: "syncConditionsToToken",
+      tokenId: tok.id,
+      charId,
+      conditions: ["prone", "stunned"],
+    });
+    expect(res.conditions.sort()).toEqual(["prone", "stunned"]);
+    const markers = emu.getObj("graphic", tok.id)!.get("statusmarkers") as string;
+    expect(markers).not.toContain("Poisoned"); // stale one removed
+    expect(markers).toContain("Prone");
+    expect(markers).toContain("Stunned");
+  });
+});
+
 describe("setTokenBar write", () => {
   it("sets absolute HP on the token", () => {
     const pageId = emu.createPage();
