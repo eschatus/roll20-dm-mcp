@@ -73,6 +73,11 @@ function createGem() {
     skipTaskbar: true, alwaysOnTop: true, hasShadow: false, focusable: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
+      // Defense-in-depth: sandbox the renderer. Safe here because preload.ts uses
+      // only electron's contextBridge/ipcRenderer (both available in sandboxed
+      // preloads) — it touches no Node APIs (fs/path/etc.), so the sandbox can't
+      // break it. contextIsolation + nodeIntegration:false keep the bridge narrow.
+      sandbox: true,
       contextIsolation: true, nodeIntegration: false,
     },
   });
