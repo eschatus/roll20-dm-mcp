@@ -8,9 +8,11 @@ This file records every non-obvious architectural choice made in this project. E
 
 **Choice:** Authenticate to D&D Beyond using the `cobalt` session cookie captured from a Playwright-driven browser login, rather than any OAuth flow.
 
-**Why:** D&D Beyond does not expose a stable public API for DM-side writes (HP updates, conditions). No OAuth endpoint grants write access to character sheets from a server process. The `cobalt` cookie is the community-documented approach for server-side DDB automation. The same pattern is used by tools like `ddb-importer` and prior homebrew Beyond20 replacements.
+**Why:** D&D Beyond does not expose a stable public API, and no OAuth endpoint grants programmatic access to character sheets from a server process. The `cobalt` cookie is the community-documented approach for server-side DDB automation. The same pattern is used by tools like `ddb-importer` and prior homebrew Beyond20 replacements.
 
-**Trade-offs:** The `cobalt` cookie is a session token with full account access. It must be stored securely (see `security.md`). If D&D Beyond changes their auth system, this breaks.
+**DDB is read-only.** All D&D Beyond write paths have been removed (`patchCharacter`, `applyCondition`, `ddb_update_hp`, and the DDB branches of `apply_damage` / `heal_character`). DDB condition writes returned 405 and HP writes were unreliable. Live HP and conditions are now written exclusively to the Roll20 token (see Trace 2 in `choreography.md`). The `cobalt` cookie is used only for read access: character/monster stat lookups and optional round-start drift checks.
+
+**Trade-offs:** The `cobalt` cookie is a session token with full account access (read and, in principle, write). We never issue writes, but the cookie scope cannot be narrowed (see `security.md` §2). It must be stored securely. If D&D Beyond changes their auth system, read access breaks.
 
 ---
 
@@ -51,6 +53,8 @@ This file records every non-obvious architectural choice made in this project. E
 **Why:** Campaign attribute `change:` events fire synchronously within the Roll20 Mod sandbox. Handout polling runs on a timer and adds ~500ms of round-trip latency per command.
 
 **Trade-offs:** Campaign attributes with empty `characterid` are an undocumented but stable feature of Roll20's data model. Handouts would be more visible and editable but slower.
+
+> **SUPERSEDED — transport is now chat-command driven.** The attribute-queue (`change:attribute` on `GM_AI_Bridge_cmd` / `GM_AI_Bridge_result`) has been replaced by a `!ai-relay {JSON}` chat command: the MCP server types the command into Roll20 chat, the relay handles it on `chat:message`, and the result is whispered back as a hidden `/w gm` div read by a MutationObserver. State that needs to persist across sandbox restarts lives in `state.GM_AI_Bridge` (see `docs/roll20-api-coverage.md`), not in attributes. Because chat is a player-writable channel, authorization is enforced by a GM-only sender check (`playerIsGM`) in the handler — see `security.md` §6.
 
 ---
 
@@ -94,3 +98,11 @@ This file records every non-obvious architectural choice made in this project. E
 - The active campaign resets on MCP server restart — the DM must call `switch_campaign` once at the start of each session. This is intentional: it prevents accidentally updating the wrong campaign's tokens after a restart.
 - The Roll20 editor page navigates to the new campaign URL when `switch_campaign` is called (on the next tool call that needs the browser). This takes ~5–10 seconds but only happens once per switch.
 - `data/campaigns.json` and `data/characters.json` should be backed up — they're the DM's work, not derivable from Roll20 or DDB.
+
+---
+
+## 10. Deferred: `ai-relay.js` dispatch-switch → handler-map refactor
+
+**Known smell:** `mod-scripts/ai-relay.js` dispatches every relay command through a single ~1,300-line `switch (action)` statement. A handler-map refactor (one function per action, registered in a lookup table) would shrink the file and make each action independently testable.
+
+**Decision:** This refactor is **DEFERRED** until a relay test/replay harness exists. The relay runs inside the Roll20 Mod sandbox, which has no local test runner; the only current way to validate a change is to deploy it into a live campaign and exercise it by hand. Refactoring 1,300 lines of dispatch logic with no automated regression net is high-risk for a cosmetic gain. Build the harness (record real `!ai-relay {JSON}` commands + expected token mutations, replay them against the handler functions) first; do the handler-map split second.
