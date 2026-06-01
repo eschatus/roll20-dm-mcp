@@ -13,29 +13,6 @@ async function getCobaltToken(): Promise<string> {
   return cobalt.value;
 }
 
-// Some DDB endpoints (e.g. /condition) require cookie-based auth rather than Bearer.
-// Run those from within the page context so the browser's own session cookies are sent.
-async function ddbPageFetch(url: string, options: { method?: string; body?: string; charId?: number } = {}): Promise<void> {
-  const page = await getPage("ddb");
-  // Navigate to the character sheet so DDB's server sees the right origin/referrer context
-  if (options.charId) {
-    await page.goto(`https://www.dndbeyond.com/characters/${options.charId}`, { waitUntil: "domcontentloaded", timeout: 20_000 });
-    await page.waitForTimeout(2000);
-  }
-  const result = await page.evaluate(async ({ url, method, body }: { url: string; method: string; body?: string }) => {
-    const res = await fetch(url, {
-      method,
-      headers: { "Content-Type": "application/json" },
-      ...(body ? { body } : {}),
-      credentials: "include",
-    });
-    return { status: res.status, text: await res.text().catch(() => "") };
-  }, { url, method: options.method ?? "GET", body: options.body });
-  if (result.status < 200 || result.status >= 300) {
-    throw new Error(`DDB API ${result.status}: ${result.text}`);
-  }
-}
-
 async function ddbFetch<T>(url: string, options: { method?: string; body?: string } = {}): Promise<T> {
   const page = await getPage("ddb");
   const token = await getCobaltToken();
@@ -113,7 +90,7 @@ export interface DdbCharacterStats {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function parseStats(raw: any): DdbCharacterStats {
+export function parseStats(raw: any): DdbCharacterStats {
   // Final ability scores: override > base + modifier bonuses
   const scores: Record<string, number> = {};
   for (const stat of (raw.stats ?? [])) {
@@ -237,16 +214,6 @@ export async function getCharacter(ddbCharId: number): Promise<DdbCharacter> {
   const response = await responsePromise;
   const json = await response.json() as { data: DdbCharacter };
   return json.data;
-}
-
-export async function patchCharacter(
-  ddbCharId: number,
-  patch: Partial<DdbCharacter>
-): Promise<void> {
-  await ddbFetch(`${DDB_CHARACTER_SERVICE}/character/${ddbCharId}`, {
-    method: "PATCH",
-    body: JSON.stringify(patch),
-  });
 }
 
 export interface DdbCampaignCharacter {
@@ -402,41 +369,6 @@ export function getMonsterAbilities(monster: DdbMonster): string {
   return lines.join("\n");
 }
 
-const CONDITION_IDS: Record<string, number> = {
-  blinded: 1,
-  charmed: 2,
-  deafened: 3,
-  exhaustion: 4,
-  frightened: 5,
-  grappled: 6,
-  incapacitated: 7,
-  invisible: 8,
-  paralyzed: 9,
-  petrified: 10,
-  poisoned: 11,
-  prone: 12,
-  restrained: 13,
-  stunned: 14,
-  unconscious: 15,
-};
-
-// /condition endpoint requires cookie auth — use ddbPageFetch (browser context) not ddbFetch (Bearer).
-export async function applyCondition(ddbCharId: number, conditionName: string): Promise<void> {
-  const conditionId = CONDITION_IDS[conditionName.toLowerCase()];
-  if (!conditionId) throw new Error(`Unknown DDB condition: ${conditionName}`);
-  await ddbPageFetch(`${DDB_CHARACTER_SERVICE}/condition`, {
-    method: "POST",
-    body: JSON.stringify({ characterId: ddbCharId, id: conditionId }),
-    charId: ddbCharId,
-  });
-}
-
-export async function removeCondition(ddbCharId: number, conditionName: string): Promise<void> {
-  const conditionId = CONDITION_IDS[conditionName.toLowerCase()];
-  if (!conditionId) throw new Error(`Unknown DDB condition: ${conditionName}`);
-  await ddbPageFetch(`${DDB_CHARACTER_SERVICE}/condition`, {
-    method: "DELETE",
-    body: JSON.stringify({ characterId: ddbCharId, id: conditionId }),
-    charId: ddbCharId,
-  });
-}
+// D&D Beyond is READ-ONLY in this integration. All write paths (HP patch,
+// condition apply/remove) have been removed; HP and condition mutations happen
+// on the Roll20 side only.

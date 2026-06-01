@@ -4,27 +4,46 @@ import * as registry from "../registry/characters.js";
 import * as ddb from "../bridge/dndbeyond.js";
 import * as roll20 from "../bridge/roll20.js";
 
-// Roll20 status marker names for D&D 5e conditions.
-// Roll20 uses short marker strings; we map from DDB/natural-language condition names.
-const CONDITION_TO_MARKER: Record<string, string> = {
-  dead:          "Unconscious::4444317",
-  unconscious:   "Unconscious::4444317",
-  wounded:       "Wounded::4444333",
-  poisoned:      "Poisoned::4444329",
-  blinded:       "Blinded::4444318",
-  charmed:       "Charmed::4444320",
-  deafened:      "Deafened::4444321",
-  frightened:    "Feared::4444323",
-  grappled:      "Grappled::4444314",
-  incapacitated: "Incapacitated::4444325",
-  invisible:     "Invisible::4444344",
-  paralyzed:     "Paralyzed::4444327",
-  petrified:     "Petrified::4444328",
-  prone:         "Prone::4444315",
-  restrained:    "Restrained::4444316",
-  stunned:       "Stunned::4444331",
-  exhaustion:    "Exhausted::4444322",
-};
+// ONE canonical condition table — Roll20 status marker tags for D&D 5e
+// conditions, keyed by natural-language / DDB condition name. Both the
+// name→marker lookup (toRoll20Marker) and the marker-tag→condition lookup
+// (RESERVED_MARKER_CONDITIONS, used by get_token_markers) are derived from this.
+// Keep in sync with ai-relay.js CONDITION_MARKERS (the Roll20 sandbox keeps its
+// own separate copy — do not assume they share this module).
+const CONDITION_MARKERS: { name: string; marker: string; label?: string }[] = [
+  { name: "dead",          marker: "Unconscious::4444317", label: "unconscious / dead" },
+  { name: "unconscious",   marker: "Unconscious::4444317", label: "unconscious / dead" },
+  { name: "wounded",       marker: "Wounded::4444333",     label: "wounded / bloodied" },
+  { name: "poisoned",      marker: "Poisoned::4444329" },
+  { name: "blinded",       marker: "Blinded::4444318" },
+  { name: "charmed",       marker: "Charmed::4444320" },
+  { name: "deafened",      marker: "Deafened::4444321" },
+  { name: "frightened",    marker: "Feared::4444323",      label: "frightened" },
+  { name: "grappled",      marker: "Grappled::4444314" },
+  { name: "incapacitated", marker: "Incapacitated::4444325" },
+  { name: "invisible",     marker: "Invisible::4444344" },
+  { name: "paralyzed",     marker: "Paralyzed::4444327" },
+  { name: "petrified",     marker: "Petrified::4444328" },
+  { name: "prone",         marker: "Prone::4444315" },
+  { name: "restrained",    marker: "Restrained::4444316" },
+  { name: "stunned",       marker: "Stunned::4444331" },
+  { name: "exhaustion",    marker: "Exhausted::4444322" },
+];
+
+// name → marker tag
+const CONDITION_TO_MARKER: Record<string, string> = Object.fromEntries(
+  CONDITION_MARKERS.map((c) => [c.name, c.marker])
+);
+
+// marker tag → the 5e condition it represents (first name wins for shared markers,
+// e.g. Unconscious::… is shared by dead+unconscious). Used to flag RESERVED markers.
+const RESERVED_MARKER_CONDITIONS: Record<string, string> = (() => {
+  const out: Record<string, string> = {};
+  for (const c of CONDITION_MARKERS) {
+    if (!(c.marker in out)) out[c.marker] = c.label ?? c.name;
+  }
+  return out;
+})();
 
 function toRoll20Marker(condition: string): string {
   return CONDITION_TO_MARKER[condition.toLowerCase()] ?? condition.toLowerCase();
@@ -90,34 +109,10 @@ async function resolveToken(name: string, tokenList?: { id: string; name: string
   }
 }
 
-// Marker tags RESERVED for mechanical conditions: applying/clearing these via
-// set_token_marker also writes tracked condition state (the active_conditions attr),
-// and a DDB condition-sync may add/remove them. The agent should treat these as
-// "owned by the condition system" and not repurpose them as decoration. Tag → the
-// 5e condition it represents. Keep in sync with the relay's CONDITION_MARKERS.
-const RESERVED_MARKER_CONDITIONS: Record<string, string> = {
-  "Unconscious::4444317": "unconscious / dead",
-  "Wounded::4444333":     "wounded / bloodied",
-  "Poisoned::4444329":    "poisoned",
-  "Blinded::4444318":     "blinded",
-  "Charmed::4444320":     "charmed",
-  "Deafened::4444321":    "deafened",
-  "Feared::4444323":      "frightened",
-  "Grappled::4444314":    "grappled",
-  "Incapacitated::4444325": "incapacitated",
-  "Invisible::4444344":   "invisible",
-  "Paralyzed::4444327":   "paralyzed",
-  "Petrified::4444328":   "petrified",
-  "Prone::4444315":       "prone",
-  "Restrained::4444316":  "restrained",
-  "Stunned::4444331":     "stunned",
-  "Exhausted::4444322":   "exhaustion",
-};
-
 export function registerCombatTools(server: McpServer): void {
   server.tool(
     "apply_damage",
-    "Apply damage (and optional conditions) to a character — syncs both Roll20 and D&D Beyond",
+    "Apply damage (and optional conditions) to a registered character on Roll20. Roll20-only — D&D Beyond is read-only and is NOT written. Reads the token's bar1 HP, subtracts damage, then applies each requested condition, reporting per-condition success/failure.",
     {
       characterName: z.string(),
       damage: z.number().int().min(0),
@@ -127,42 +122,44 @@ export function registerCombatTools(server: McpServer): void {
       const entry = registry.lookup(characterName);
       if (!entry) throw new Error(`Character not registered: ${characterName}. Use create_pc_token first.`);
 
-      const { roll20TokenId, ddbCharId } = entry;
+      const { roll20TokenId } = entry;
 
-      // Fetch current DDB HP to compute new value
-      const char = await ddb.getCharacter(ddbCharId);
-      const maxHp = ddb.getMaxHp(char);
-      const currentRemovedHp = char.removedHitPoints;
-      const newRemovedHp = Math.min(currentRemovedHp + damage, maxHp);
-      const currentHp = maxHp - newRemovedHp;
+      // Read current HP from the Roll20 token bar (DDB is read-only — not the source of truth here).
+      type TokenData = { bar1_value: number; bar1_max: number } | null;
+      const token = await roll20.relayCommand<TokenData>({ action: "getTokenById", tokenId: roll20TokenId });
+      if (!token) throw new Error(`Token not found for ${characterName} (id ${roll20TokenId})`);
+      const maxHp = Number(token.bar1_max) || 0;
+      const currentHp = Number(token.bar1_value) || 0;
+      const newHp = Math.max(0, currentHp - damage);
 
-      const results = await Promise.allSettled([
-        // Roll20: update token bar and status markers
-        (async () => {
-          await roll20.relayCommand({ action: "setTokenBar", tokenId: roll20TokenId, value: currentHp, max: maxHp });
-          for (const condition of conditions) {
-            await roll20.relayCommand({
-              action: "setStatusMarker",
-              tokenId: roll20TokenId,
-              marker: toRoll20Marker(condition),
-              active: true,
-            });
-          }
-        })(),
-        // DDB: patch HP and apply conditions
-        (async () => {
-          await ddb.patchCharacter(ddbCharId, { removedHitPoints: newRemovedHp });
-          for (const condition of conditions) {
-            await ddb.applyCondition(ddbCharId, condition);
-          }
-        })(),
-      ]);
+      // Update HP first, then each condition — report per-condition outcome so partial
+      // failure is visible rather than collapsing to a single boolean.
+      let hpUpdated = false;
+      let hpError: string | undefined;
+      try {
+        await roll20.relayCommand({ action: "setTokenBar", tokenId: roll20TokenId, value: newHp, max: maxHp || undefined });
+        hpUpdated = true;
+      } catch (err) {
+        hpError = err instanceof Error ? err.message : String(err);
+      }
 
-      const roll20Updated = results[0].status === "fulfilled";
-      const ddbUpdated = results[1].status === "fulfilled";
-      const errors = results
-        .filter((r) => r.status === "rejected")
-        .map((r) => (r as PromiseRejectedResult).reason?.message ?? String((r as PromiseRejectedResult).reason));
+      const conditionResults: { condition: string; applied: boolean; error?: string }[] = [];
+      for (const condition of conditions) {
+        try {
+          await roll20.relayCommand({
+            action: "setStatusMarker",
+            tokenId: roll20TokenId,
+            marker: toRoll20Marker(condition),
+            active: true,
+          });
+          conditionResults.push({ condition, applied: true });
+        } catch (err) {
+          conditionResults.push({ condition, applied: false, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+
+      const conditionsApplied = conditionResults.filter((c) => c.applied).map((c) => c.condition);
+      const conditionsFailed = conditionResults.filter((c) => !c.applied).map((c) => c.condition);
 
       return {
         content: [
@@ -171,12 +168,14 @@ export function registerCombatTools(server: McpServer): void {
             text: JSON.stringify({
               character: characterName,
               damageTaken: damage,
-              newHp: currentHp,
+              newHp,
               maxHp,
-              conditionsApplied: conditions,
-              roll20Updated,
-              ddbUpdated,
-              ...(errors.length ? { errors } : {}),
+              roll20Updated: hpUpdated,
+              hpUpdated,
+              conditionsApplied,
+              conditionsFailed,
+              conditionResults,
+              ...(hpError ? { hpError } : {}),
             }),
           },
         ],
@@ -186,7 +185,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "heal_character",
-    "Heal a character by amount — syncs both Roll20 and D&D Beyond",
+    "Heal a character by amount on Roll20. Roll20-only — D&D Beyond is read-only and is NOT written. Reads the token's bar1 HP and adds the amount (clamped to max).",
     {
       characterName: z.string(),
       amount: z.number().int().min(0),
@@ -195,17 +194,17 @@ export function registerCombatTools(server: McpServer): void {
       const entry = registry.lookup(characterName);
       if (!entry) throw new Error(`Character not registered: ${characterName}`);
 
-      const { roll20TokenId, ddbCharId } = entry;
+      const { roll20TokenId } = entry;
 
-      const char = await ddb.getCharacter(ddbCharId);
-      const maxHp = ddb.getMaxHp(char);
-      const newRemovedHp = Math.max(char.removedHitPoints - amount, 0);
-      const newHp = maxHp - newRemovedHp;
+      // Read current HP from the Roll20 token bar (DDB is read-only — not written here).
+      type TokenData = { bar1_value: number; bar1_max: number } | null;
+      const token = await roll20.relayCommand<TokenData>({ action: "getTokenById", tokenId: roll20TokenId });
+      if (!token) throw new Error(`Token not found for ${characterName} (id ${roll20TokenId})`);
+      const maxHp = Number(token.bar1_max) || 0;
+      const currentHp = Number(token.bar1_value) || 0;
+      const newHp = maxHp ? Math.min(maxHp, currentHp + amount) : currentHp + amount;
 
-      await Promise.all([
-        roll20.relayCommand({ action: "setTokenBar", tokenId: roll20TokenId, value: newHp, max: maxHp }),
-        ddb.patchCharacter(ddbCharId, { removedHitPoints: newRemovedHp }),
-      ]);
+      await roll20.relayCommand({ action: "setTokenBar", tokenId: roll20TokenId, value: newHp, max: maxHp || undefined });
 
       return {
         content: [
@@ -438,6 +437,24 @@ export function registerCombatTools(server: McpServer): void {
       relayResults.forEach((r, k) => { merged[relayOrigIndex[k]] = r; });
       for (const [i, e] of resolveErrors) merged[i] = { id: e.id, ok: false, error: e.error };
 
+      // Guard against a short/long relay response (relayResults.length !== relayOps.length):
+      // any op slot the relay didn't answer for stays undefined and would crash the
+      // .filter(r => !r.ok) below. Fill those with an explicit failure so it's reported.
+      if (relayResults.length !== relayOps.length) {
+        for (let k = 0; k < relayOps.length; k++) {
+          const slot = relayOrigIndex[k];
+          if (merged[slot] === undefined) {
+            merged[slot] = { id: relayOps[k].id ?? slot, ok: false, error: "no result returned by relay (batch response length mismatch)" };
+          }
+        }
+      }
+      // Final safety: ensure no undefined slot survives (e.g. unexpected gaps).
+      for (let i = 0; i < merged.length; i++) {
+        if (merged[i] === undefined) {
+          merged[i] = { id: ops[i].id ?? i, ok: false, error: "no result returned for this op" };
+        }
+      }
+
       const failed = merged.filter((r) => !r.ok);
       const lines = merged.map((r) => (r.ok ? `✓ ${r.id}` : `✗ ${r.id}: ${r.error}`));
       const summary = `${merged.length - failed.length}/${merged.length} ops succeeded`;
@@ -522,15 +539,25 @@ export function registerCombatTools(server: McpServer): void {
         lines = rolls.map((r) => `${r.name}: ${r.d20}${r.initBonus >= 0 ? "+" : ""}${r.initBonus} = **${r.total}**`);
       }
 
-      let existing: TurnEntry[] = [];
-      if (!clearFirst) {
-        existing = await roll20.relayCommand<TurnEntry[]>({ action: "getTurnOrder" });
-        const newIds = new Set(newEntries.map((e) => e.id));
-        existing = existing.filter((e) => !newIds.has(e.id));
+      // At combat start (clearFirst) wipe everything, then write our entries.
+      // Otherwise upsert ONLY our entries via mergeTurnOrder — the relay merges by
+      // id atomically and preserves player/other entries we didn't pass (fixes the
+      // read-modify-write race that could wipe player slots).
+      let finalOrder: TurnEntry[];
+      if (clearFirst) {
+        await roll20.relayCommand({ action: "setTurnOrder", entries: [] });
+        const merged = await roll20.relayCommand<{ ok: boolean; turnorder: TurnEntry[] }>({
+          action: "mergeTurnOrder",
+          entries: newEntries,
+        });
+        finalOrder = merged.turnorder ?? newEntries;
+      } else {
+        const merged = await roll20.relayCommand<{ ok: boolean; turnorder: TurnEntry[] }>({
+          action: "mergeTurnOrder",
+          entries: newEntries,
+        });
+        finalOrder = merged.turnorder ?? newEntries;
       }
-
-      const finalOrder = [...existing, ...newEntries].sort((a, b) => Number(b.pr) - Number(a.pr));
-      await roll20.relayCommand({ action: "setTurnOrder", entries: finalOrder });
       await roll20.relayCommand({ action: "setTurnHook", enabled: true, reset: true });
 
       return {
@@ -905,16 +932,48 @@ export function registerCombatTools(server: McpServer): void {
       }
       if (!targets.length) throw new Error(`No tokens matched ${nameMatch ? `'${nameMatch}'` : (names || []).join(", ")}`);
 
-      const lines: string[] = [];
+      // Tag each op with the target token id so the per-op batch result can be
+      // matched back to a token and any failure surfaced (don't blindly report all OK).
       const ops = targets.map((t) => {
         const cur = Number(t.bar1_value) || 0, max = Number(t.bar1_max) || 0;
         const nv = damage !== undefined ? Math.max(0, cur - damage) : (max ? Math.min(max, cur + heal!) : cur + heal!);
-        lines.push(`${(t.name || "").split("\n")[0].trim()}: ${nv}${max ? "/" + max : ""}`);
-        return { action: "setTokenBar", args: { tokenId: t.id, value: nv, max: max || undefined } };
+        return {
+          id: t.id,
+          action: "setTokenBar",
+          args: { tokenId: t.id, value: nv, max: max || undefined },
+          _name: (t.name || "").split("\n")[0].trim(),
+          _nv: nv,
+          _max: max,
+        };
       });
-      await roll20.relayCommand({ action: "batchExec", ops });
+
+      type BatchResult = { id: string | number; ok: boolean; error?: string };
+      const relayOps = ops.map(({ id, action, args }) => ({ id, action, args }));
+      const results = await roll20.relayCommand<BatchResult[]>({ action: "batchExec", ops: relayOps });
+      const byId = new Map<string, BatchResult>();
+      for (const r of results ?? []) byId.set(String(r.id), r);
+
+      const okLines: string[] = [];
+      const failLines: string[] = [];
+      for (const op of ops) {
+        const r = byId.get(op.id);
+        // Treat a missing result as a failure rather than silently counting it as success.
+        const ok = r ? r.ok : false;
+        if (ok) {
+          okLines.push(`${op._name}: ${op._nv}${op._max ? "/" + op._max : ""}`);
+        } else {
+          const reason = r?.error ?? "no result returned by relay";
+          failLines.push(`${op._name}: FAILED (${reason})`);
+        }
+      }
+
       const verb = damage !== undefined ? `−${damage}` : `+${heal}`;
-      return { content: [{ type: "text", text: `${verb} to ${targets.length}: ${lines.join(" · ")}` }] };
+      const summary = `${verb} applied to ${okLines.length}/${targets.length}`;
+      const body = [
+        okLines.length ? okLines.join(" · ") : null,
+        failLines.length ? `failed: ${failLines.join(" · ")}` : null,
+      ].filter(Boolean).join(" | ");
+      return { content: [{ type: "text", text: `${summary}: ${body}` }] };
     }
   );
 
@@ -1201,19 +1260,24 @@ export function registerCombatTools(server: McpServer): void {
           _pageid: pageId,
           formula: "+1",
         };
-        current = [marker, ...current];
+        // Upsert the sentinel via mergeTurnOrder (atomic, preserves player entries —
+        // no full-order write-back race). Merge keys on id ("-1" = the round marker).
+        const merged = await roll20.relayCommand<{ ok: boolean; turnorder: TurnEntry[] }>({
+          action: "mergeTurnOrder",
+          entries: [marker],
+        });
+        current = (merged.turnorder ?? [marker, ...current]).slice();
       } else {
         if (existing === -1) {
           return { content: [{ type: "text", text: "Round Start marker not found." }] };
         }
+        // Removal can't be expressed as a merge upsert — filter and write back the remainder.
         current = current.filter((_, i) => i !== existing);
+        await roll20.relayCommand({ action: "setTurnOrder", entries: current });
       }
 
-      // Sort by pr descending
+      // Sort by pr descending (for the reported order)
       current.sort((a, b) => Number(b.pr) - Number(a.pr));
-
-      // Write back
-      await roll20.relayCommand({ action: "setTurnOrder", entries: current });
 
       const action = active ? "Injected" : "Removed";
       return {
@@ -1250,44 +1314,30 @@ export function registerCombatTools(server: McpServer): void {
 
       type TurnEntry = { id: string; pr: string; custom: string; _pageid: string };
 
-      // Read current turn order
       const pageId = await roll20.getCurrentPageId();
-      let current: TurnEntry[] = await roll20.relayCommand<TurnEntry[]>({ action: "getTurnOrder" });
 
-      // Apply modification
+      // insert/update upsert a SINGLE entry via mergeTurnOrder (atomic merge by id,
+      // preserves every entry we don't pass — no full-order write-back race).
+      // remove still needs a read-filter-write since merge can only upsert.
       let modified: TurnEntry[];
-      if (operation === "insert") {
-        // Check if already in order (shouldn't be, but be safe)
-        const alreadyExists = current.some((e) => e.id === tokenId);
-        if (alreadyExists) {
-          throw new Error(`Token ${tokenId} already in turn order. Use operation='update' instead.`);
-        }
-        // Add new entry
-        const newEntry: TurnEntry = {
+      if (operation === "insert" || operation === "update") {
+        const entry: TurnEntry = {
           id: tokenId,
           pr: String(pr!),
           custom: name ?? "",
           _pageid: pageId,
         };
-        modified = [...current, newEntry];
-      } else if (operation === "update") {
-        // Find and update existing entry
-        const idx = current.findIndex((e) => e.id === tokenId);
-        if (idx === -1) {
-          throw new Error(`Token ${tokenId} not found in turn order. Use operation='insert' to add it.`);
-        }
-        modified = [...current];
-        modified[idx] = { ...modified[idx], pr: String(pr!) };
+        const merged = await roll20.relayCommand<{ ok: boolean; turnorder: TurnEntry[] }>({
+          action: "mergeTurnOrder",
+          entries: [entry],
+        });
+        modified = (merged.turnorder ?? [entry]).slice().sort((a, b) => Number(b.pr) - Number(a.pr));
       } else {
-        // Remove
-        modified = current.filter((e) => e.id !== tokenId);
+        // Remove — read, filter out the target, write back the remainder.
+        const current: TurnEntry[] = await roll20.relayCommand<TurnEntry[]>({ action: "getTurnOrder" });
+        modified = current.filter((e) => e.id !== tokenId).sort((a, b) => Number(b.pr) - Number(a.pr));
+        await roll20.relayCommand({ action: "setTurnOrder", entries: modified });
       }
-
-      // Sort by initiative descending
-      modified.sort((a, b) => Number(b.pr) - Number(a.pr));
-
-      // Write back
-      await roll20.relayCommand({ action: "setTurnOrder", entries: modified });
 
       // Return summary
       const summary =
