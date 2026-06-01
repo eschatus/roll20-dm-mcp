@@ -90,6 +90,30 @@ async function resolveToken(name: string, tokenList?: { id: string; name: string
   }
 }
 
+// Marker tags RESERVED for mechanical conditions: applying/clearing these via
+// set_token_marker also writes tracked condition state (the active_conditions attr),
+// and a DDB condition-sync may add/remove them. The agent should treat these as
+// "owned by the condition system" and not repurpose them as decoration. Tag → the
+// 5e condition it represents. Keep in sync with the relay's CONDITION_MARKERS.
+const RESERVED_MARKER_CONDITIONS: Record<string, string> = {
+  "Unconscious::4444317": "unconscious / dead",
+  "Wounded::4444333":     "wounded / bloodied",
+  "Poisoned::4444329":    "poisoned",
+  "Blinded::4444318":     "blinded",
+  "Charmed::4444320":     "charmed",
+  "Deafened::4444321":    "deafened",
+  "Feared::4444323":      "frightened",
+  "Grappled::4444314":    "grappled",
+  "Incapacitated::4444325": "incapacitated",
+  "Invisible::4444344":   "invisible",
+  "Paralyzed::4444327":   "paralyzed",
+  "Petrified::4444328":   "petrified",
+  "Prone::4444315":       "prone",
+  "Restrained::4444316":  "restrained",
+  "Stunned::4444331":     "stunned",
+  "Exhausted::4444322":   "exhaustion",
+};
+
 export function registerCombatTools(server: McpServer): void {
   server.tool(
     "apply_damage",
@@ -196,20 +220,32 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "get_token_markers",
-    "List all custom token markers in the Roll20 campaign with their IDs and tags — use this to find the correct name::id format for set_token_marker",
+    "List the campaign's token markers, split into RESERVED (tied to a mechanical condition — apply/clear with set_token_marker by condition name; it also tracks state) and AVAILABLE (free for ad-hoc visual use: buffs, concentration, GM annotations — apply by tag via set_token_props/batch_exec statusmarkers). Use this to find the correct name::id tag. NOTE: 'bloodied' is NOT a real marker (renders nothing) — use the Wounded marker. The built-in color dots (red/blue/green/brown/purple/pink/yellow) and 'dead' (renders as a red X over the whole token) are always available but not listed here.",
     {},
     async () => {
       const markers = await roll20.relayCommand<{ id: number; name: string; tag: string }[]>({ action: "getTokenMarkers" });
-      return { content: [{ type: "text", text: JSON.stringify(markers, null, 2) }] };
+      const reserved: { name: string; tag: string; condition: string }[] = [];
+      const available: { name: string; tag: string }[] = [];
+      for (const m of markers) {
+        const condition = RESERVED_MARKER_CONDITIONS[m.tag];
+        if (condition) reserved.push({ name: m.name, tag: m.tag, condition });
+        else available.push({ name: m.name, tag: m.tag });
+      }
+      const out = {
+        note: "RESERVED = mechanical conditions; apply/clear via set_token_marker (condition name), which also writes tracked state. AVAILABLE = free visual markers; apply by tag via set_token_props/batch_exec statusmarkers. Don't repurpose RESERVED markers for decoration. 'bloodied' is not real — use Wounded. 'dead' (red-X overlay) + color dots are built-in.",
+        reserved,
+        available,
+      };
+      return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
     }
   );
 
   server.tool(
     "set_token_marker",
-    "Set a condition on a token — updates BOTH the visible status sticker AND the token's tracked condition state. Pass a condition name (e.g. 'poisoned', 'prone', 'frightened', 'dead', 'unconscious', 'stunned', 'restrained', 'grappled', 'blinded', 'charmed', 'wounded'). active=true applies it, false clears it. Use characterName or tokenId. This is the condition primitive; use update_token_hp for hit points.",
+    "Apply or clear a state on a token — sets the visible status sticker AND tracks the state. Pass ANY state name; the relay picks the icon and the tracking automatically: (1) true 5e conditions (poisoned, prone, frightened, blinded, charmed, deafened, grappled, incapacitated, invisible, paralyzed, petrified, restrained, stunned, unconscious, exhaustion, dead) get their canonical icon + sync to the character's tracked conditions; (2) common pseudo-conditions (bloodied, concentrating, blessed, bane, hasted, raging, marked, hidden, dodging, enlarged, flying, sleeping, burning, surprised, cursed, …) get a fixed well-known icon, DM-managed; (3) any OTHER name you invent (e.g. 'hunters-mark', 'charging-up') is auto-assigned a consistent icon and tracked in campaign state — list_custom_states shows these. NEVER use 'bloodied' worrying it won't show — it's handled. Use characterName or tokenId. For hit points use update_token_hp.",
     {
-      condition: z.string().describe("Condition name, e.g. 'poisoned', 'prone', 'dead'. Lowercase; mapped to the correct Roll20 marker + tracked state."),
-      active: z.boolean().describe("true to apply the condition, false to clear it"),
+      condition: z.string().describe("Any state name. True conditions + pseudo-conditions get canonical icons; anything else is auto-assigned a consistent icon and tracked."),
+      active: z.boolean().describe("true to apply, false to clear"),
       characterName: z.string().optional(),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup"),
     },
@@ -226,11 +262,23 @@ export function registerCombatTools(server: McpServer): void {
         resolvedTokenId = r.id;
       }
       // Resolve the linked character so condition STATE (active_conditions) syncs,
-      // not just the sticker. toggleCondition handles both.
+      // not just the sticker. toggleCondition handles both + the pseudo/custom tiers.
       const tok = await roll20.relayCommand<{ represents?: string } | null>({ action: "getTokenById", tokenId: resolvedTokenId });
       charId = tok?.represents || undefined;
-      await roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition, active });
-      return { content: [{ type: "text", text: `${condition} ${active ? "applied to" : "cleared from"} ${characterName ?? resolvedTokenId}` }] };
+      const res = await roll20.relayCommand<{ tier?: string; marker?: string }>({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition, active });
+      const tierNote = res?.tier === "custom" ? " (custom state — icon auto-assigned + tracked)" : res?.tier === "pseudo" ? " (pseudo-condition)" : "";
+      return { content: [{ type: "text", text: `${condition} ${active ? "applied to" : "cleared from"} ${characterName ?? resolvedTokenId}${tierNote}` }] };
+    }
+  );
+
+  server.tool(
+    "list_custom_states",
+    "List the ad-hoc DM-defined states currently being tracked (tier-2 custom states set via set_token_marker that aren't standard conditions or pseudo-conditions) — each with its auto-assigned icon tag and which tokens currently hold it. Use to answer 'who is <custom state>?' or to see what bespoke states are in play.",
+    {},
+    async () => {
+      const states = await roll20.relayCommand<{ state: string; tag: string; tokens: { id: string; name: string }[] }[]>({ action: "getCustomStates" });
+      if (!states.length) return { content: [{ type: "text", text: "No custom states currently tracked." }] };
+      return { content: [{ type: "text", text: JSON.stringify(states, null, 2) }] };
     }
   );
 

@@ -101,10 +101,12 @@ function getMonsterEpithets(tokenName) {
   return GENERIC_EPITHETS;
 }
 
+// TIER 1a — true 5e conditions. These are the ONLY markers swept by
+// syncConditionsToToken (DDB condition mirroring / "clear all conditions"), so
+// keep this list to real conditions that DDB knows about.
 const CONDITION_MARKERS = {
   dead:          "Unconscious::4444317",
   unconscious:   "Unconscious::4444317",
-  wounded:       "Wounded::4444333",
   poisoned:      "Poisoned::4444329",
   blinded:       "Blinded::4444318",
   charmed:       "Charmed::4444320",
@@ -120,6 +122,96 @@ const CONDITION_MARKERS = {
   stunned:       "Stunned::4444331",
   exhaustion:    "Exhausted::4444322",
 };
+
+// TIER 1b — pseudo-conditions: well-known iconography for states that aren't formal
+// 5e conditions but are commonly tracked. Fixed icons, but DM-managed — deliberately
+// NOT in CONDITION_MARKERS so a DDB sync / "clear conditions" never strips them.
+const PSEUDO_MARKERS = {
+  bloodied:      "Wounded::4444333", // "bloodied" is not a real Roll20 marker; alias to Wounded
+  wounded:       "Wounded::4444333",
+  concentrating: "Concentrating::4444313",
+  concentration: "Concentrating::4444313",
+  blessed:       "Blessed::4444338",
+  bless:         "Blessed::4444338",
+  bane:          "Bane::4444349",
+  baned:         "Bane::4444349",
+  hasted:        "Hastened::4444343",
+  hastened:      "Hastened::4444343",
+  haste:         "Hastened::4444343",
+  raging:        "Rage::4444347",
+  rage:          "Rage::4444347",
+  marked:        "Marked::4444350",
+  hidden:        "Hidden::4444335",
+  hiding:        "Hidden::4444335",
+  dodging:       "Dodging::4444334",
+  dodge:         "Dodging::4444334",
+  enlarged:      "Enlarged::4444340",
+  flying:        "Flying::4444342",
+  fly:           "Flying::4444342",
+  sleeping:      "Sleeping::4444330",
+  asleep:        "Sleeping::4444330",
+  burning:       "Burning::4444319",
+  surprised:     "Suprised::4444332",
+  disguised:     "Disguised::4444339",
+  featherfall:   "Featherfall::4444341",
+  mirrorimage:   "MirrorImage::4444346",
+  magicweapon:   "MagicWeapon::4444345",
+  buffed:        "Buffed::4444336",
+  drowning:      "Drowning::4444352",
+  afflicted:     "Afflicted::4444348",
+  cursed:        "Afflicted::4444348",
+  illusion:      "Illusion::4444311",
+  disarmed:      "Disarmed::4444324",
+  mute:          "Mute::4444326",
+  silenced:      "Mute::4444326",
+  dismembered:   "Dismembered::4444312",
+};
+
+// TIER 2 — ad-hoc pool: abstract built-in icons (kept distinct from the meaningful
+// condition/pseudo icons so iconography stays legible) used for arbitrary DM-defined
+// states. A state name not in tier 1 deterministically hashes to one of these, and the
+// binding + which tokens hold it are tracked in B().customStates (persisted campaign state).
+const AD_HOC_POOL = [
+  "aura", "radioactive", "cobweb", "trophy", "grenade", "stopwatch", "snail",
+  "spanner", "fishing-net", "padlock", "three-leaves", "fist", "tread", "back-pain",
+  "bolt-shield", "white-tower", "frozen-orb", "rolling-bomb", "screaming", "sentry-gun",
+  "all-for-one", "angel-outfit", "archery-target", "drink-me", "death-zone", "edge-crack",
+  "fluffy-wing", "interdiction", "lightning-helix", "ninja-mask", "overdrive", "strong",
+  "arrowed", "black-flag", "flying-flag", "chemical-bolt", "grab", "half-haze", "pummeled",
+];
+
+// Deterministic name -> ad-hoc icon (FNV-ish). Same name always yields the same icon,
+// no storage needed; distinct names can collide on an icon (acceptable — list_custom_states
+// shows the bindings so the DM can see any overlap).
+function hashToPool(name) {
+  let s = String(name || "").toLowerCase();
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h * 16777619) >>> 0; }
+  return AD_HOC_POOL[h % AD_HOC_POOL.length];
+}
+
+// Classify a state name into a marker tag + tier.
+//   condition -> tracked 5e condition (active_conditions attr, swept by sync)
+//   pseudo    -> fixed well-known icon, DM-managed
+//   custom    -> hashed ad-hoc icon, tracked in B().customStates
+function resolveMarkerForState(name) {
+  let lc = String(name || "").toLowerCase().trim();
+  if (CONDITION_MARKERS[lc]) return { tag: CONDITION_MARKERS[lc], tier: "condition", key: lc };
+  if (PSEUDO_MARKERS[lc])    return { tag: PSEUDO_MARKERS[lc],    tier: "pseudo",    key: lc };
+  return { tag: hashToPool(lc), tier: "custom", key: lc };
+}
+
+// Track a tier-2 custom state in persisted campaign state: which tokens currently hold it.
+function trackCustomState(key, tag, tokenId, active) {
+  let cs = B().customStates = B().customStates || {};
+  let entry = cs[key] || { tag: tag, tokens: [] };
+  let set = {};
+  (entry.tokens || []).forEach(function (id) { set[id] = true; });
+  if (active) set[tokenId] = true; else delete set[tokenId];
+  entry.tokens = Object.keys(set);
+  entry.tag = tag;
+  if (entry.tokens.length === 0) delete cs[key]; else cs[key] = entry;
+}
 
 function setConditionAttr(charId, conditionSet) {
   let condStr = Array.from(conditionSet).join(",");
@@ -170,18 +262,20 @@ function runBatchOp(action, args) {
       let t = getObj("graphic", args.tokenId);
       if (!t) throw new Error("Token not found: " + args.tokenId);
       let cond = (args.condition || "").toLowerCase();
-      let marker = CONDITION_MARKERS[cond] || cond;
+      let res = resolveMarkerForState(cond);
+      let marker = res.tag;
       let ms = new Set((t.get("statusmarkers") || "").split(",").filter(Boolean));
       if (args.active) ms.add(marker); else ms.delete(marker);
       t.set("statusmarkers", Array.from(ms).join(","));
-      if (args.charId) {
+      if (res.tier === "condition" && args.charId) {
         let existing = findObjs({ _type: "attribute", _characterid: args.charId, name: "active_conditions" });
         let condList = existing.length > 0 ? (existing[0].get("current") || "").split(",").filter(Boolean) : [];
         let cs = new Set(condList);
         if (args.active) cs.add(cond); else cs.delete(cond);
         setConditionAttr(args.charId, cs);
       }
-      return { ok: true, marker: marker };
+      if (res.tier === "custom") trackCustomState(res.key, marker, args.tokenId, !!args.active);
+      return { ok: true, marker: marker, tier: res.tier };
     }
     case "syncConditionsToToken": {
       let t = getObj("graphic", args.tokenId);
@@ -1246,18 +1340,22 @@ on("chat:message", function (msg) {
         let token = getObj("graphic", args.tokenId);
         if (!token) throw new Error("Token not found: " + args.tokenId);
         let condition = (args.condition || "").toLowerCase();
-        let marker = CONDITION_MARKERS[condition] || condition;
+        let res = resolveMarkerForState(condition);
+        let marker = res.tag;
         let markerSet = new Set((token.get("statusmarkers") || "").split(",").filter(Boolean));
         if (args.active) markerSet.add(marker); else markerSet.delete(marker);
         token.set("statusmarkers", Array.from(markerSet).join(","));
-        if (args.charId) {
+        // Tier 1a (true conditions) tracks on the character's active_conditions attr.
+        if (res.tier === "condition" && args.charId) {
           let existing = findObjs({ _type: "attribute", _characterid: args.charId, name: "active_conditions" });
           let condList = existing.length > 0 ? (existing[0].get("current") || "").split(",").filter(Boolean) : [];
           let condSet = new Set(condList);
           if (args.active) condSet.add(condition); else condSet.delete(condition);
           setConditionAttr(args.charId, condSet);
         }
-        writeResult(nonce, { ok: true, condition: condition, active: !!args.active, marker: marker });
+        // Tier 2 (ad-hoc) tracks which tokens hold the named state in campaign state.
+        if (res.tier === "custom") trackCustomState(res.key, marker, args.tokenId, !!args.active);
+        writeResult(nonce, { ok: true, condition: condition, active: !!args.active, marker: marker, tier: res.tier });
         break;
       }
 
@@ -1267,6 +1365,21 @@ on("chat:message", function (msg) {
         writeResult(nonce, markers.map(function(m) {
           return { id: m.id, name: m.name, tag: m.tag };
         }));
+        break;
+      }
+
+      case "getCustomStates": {
+        // Tier-2 ad-hoc states the DM is tracking: name -> icon + which tokens hold it.
+        let cs = B().customStates || {};
+        let out = Object.keys(cs).map(function (name) {
+          let entry = cs[name] || {};
+          let holders = (entry.tokens || []).map(function (id) {
+            let g = getObj("graphic", id);
+            return { id: id, name: g ? (g.get("name") || "") : "(missing)" };
+          });
+          return { state: name, tag: entry.tag, tokens: holders };
+        });
+        writeResult(nonce, out);
         break;
       }
 

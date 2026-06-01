@@ -37,7 +37,7 @@ const CLOUD_TOOLS = [
   ...LOCAL_TOOLS,
   "batch_exec",                                   // one round-trip for bulk edits
   "apply_damage", "heal_character", "ddb_update_hp", // DDB-syncing HP
-  "get_token_markers", "get_selection",           // richer reads
+  "get_token_markers", "get_selection", "list_custom_states", // richer reads
   "clear_turn_order", "update_turn_order", "inject_round_marker", // turn-order
   "sync_character_state", "remove_object",
 ];
