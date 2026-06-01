@@ -425,6 +425,120 @@ function runBatchOp(action, args) {
   }
 }
 
+// ─── Action handlers ──────────────────────────────────────────────────────────
+// Incremental migration away from the monolithic dispatch switch below. Each
+// handler takes a context { args, nonce, msg, senderPlayerId } and is responsible
+// for calling writeResult (or throwing — the dispatcher's try/catch reports it).
+// The dispatcher prefers ACTION_HANDLERS[action]; anything not yet migrated falls
+// through to the switch. Migrate in batches, each verified by the test suite.
+const ACTION_HANDLERS = {
+  getTokens: function (ctx) {
+    const { args, nonce } = ctx;
+    const tokens = findObjs({ _type: "graphic", _pageid: args.pageId });
+    const result = tokens.map((t) => ({
+      id: t.id,
+      name: t.get("name"),
+      bar1_value: t.get("bar1_value"),
+      bar1_max: t.get("bar1_max"),
+      statusmarkers: t.get("statusmarkers"),
+      layer: t.get("layer"),
+      imgsrc: t.get("imgsrc"),
+      left: t.get("left"),
+      top: t.get("top"),
+      width: t.get("width"),
+      height: t.get("height"),
+      represents: t.get("represents") || "",
+      controlledby: t.get("controlledby") || "",
+    }));
+    writeResult(nonce, result);
+  },
+
+  getTokenById: function (ctx) {
+    writeResult(ctx.nonce, runBatchOp("getTokenById", ctx.args));
+  },
+
+  setTokenProps: function (ctx) {
+    writeResult(ctx.nonce, runBatchOp("setTokenProps", ctx.args));
+  },
+
+  setTurnHook: function (ctx) {
+    const { args, nonce } = ctx;
+    let bs = B();
+    bs.turnHookEnabled = !!args.enabled;
+    if (args.reset) { bs.round = 0; }
+    writeResult(nonce, { ok: true, enabled: bs.turnHookEnabled, round: bs.round });
+  },
+
+  mergeTurnOrder: function (ctx) {
+    // Atomic upsert into the live turn order — read, merge, write in ONE sandbox
+    // tick so it never clobbers entries (e.g. player initiatives) added between a
+    // read and a write. Each entry is matched by `id`: replace in place if that id
+    // already exists, else append. Custom rows (id "-1") are always inserted.
+    const { args, nonce } = ctx;
+    let rawTO = Campaign().get("turnorder");
+    let merged;
+    try { merged = rawTO ? JSON.parse(rawTO) : []; } catch (e) { merged = []; }
+    if (!Array.isArray(merged)) merged = [];
+    let incoming = args.entries || [];
+    incoming.forEach(function (entry) {
+      if (!entry || typeof entry !== "object") return;
+      let id = entry.id;
+      if (id != null && String(id) !== "-1") {
+        let idx = -1;
+        for (let i = 0; i < merged.length; i++) {
+          if (merged[i] && String(merged[i].id) === String(id)) { idx = i; break; }
+        }
+        if (idx !== -1) { merged[idx] = entry; return; }
+      }
+      merged.push(entry);
+    });
+    // Stable pr-descending sort. Math, not lexical, so "10" sorts above "9".
+    merged = merged
+      .map(function (e, i) { return { e: e, i: i }; })
+      .sort(function (a, b) {
+        let pa = Number(a.e && a.e.pr);
+        let pb = Number(b.e && b.e.pr);
+        if (isNaN(pa)) pa = -Infinity;
+        if (isNaN(pb)) pb = -Infinity;
+        if (pb !== pa) return pb - pa;
+        return a.i - b.i; // preserve original order on ties
+      })
+      .map(function (x) { return x.e; });
+    Campaign().set("turnorder", JSON.stringify(merged));
+    writeResult(nonce, { ok: true, turnorder: merged });
+  },
+
+  advanceTurn: function (ctx) {
+    const { nonce } = ctx;
+    let order = Campaign().get("turnorder");
+    if (!order) { writeResult(nonce, { ok: false, note: "Turn order is empty" }); return; }
+    let entries = JSON.parse(order);
+    if (entries.length === 0) { writeResult(nonce, { ok: false, note: "Turn order is empty" }); return; }
+    // Rotate: move first entry to end
+    entries.push(entries.shift());
+    Campaign().set("turnorder", JSON.stringify(entries));
+    let current = entries[0];
+    let currentToken = current.id ? getObj("graphic", current.id) : null;
+    writeResult(nonce, {
+      ok: true,
+      current: {
+        id: current.id,
+        pr: current.pr,
+        custom: current.custom,
+        name: currentToken ? currentToken.get("name") : (current.custom || "?"),
+      },
+    });
+  },
+
+  createHandout: function (ctx) {
+    writeResult(ctx.nonce, runBatchOp("createHandout", ctx.args));
+  },
+
+  createCharacter: function (ctx) {
+    writeResult(ctx.nonce, runBatchOp("createCharacter", ctx.args));
+  },
+};
+
 on("chat:message", function (msg) {
   // Buffer all non-relay messages (captures Beyond20 dice rolls, player chat, etc.)
   if (msg.content && typeof msg.content === "string" && !msg.content.startsWith("!ai-relay")) {
@@ -494,28 +608,11 @@ on("chat:message", function (msg) {
   }
 
   try {
+    const ctx = { args, nonce, msg, senderPlayerId };
+    if (ACTION_HANDLERS[action]) {
+      ACTION_HANDLERS[action](ctx);
+    } else {
     switch (action) {
-      case "getTokens": {
-        const tokens = findObjs({ _type: "graphic", _pageid: args.pageId });
-        const result = tokens.map((t) => ({
-          id: t.id,
-          name: t.get("name"),
-          bar1_value: t.get("bar1_value"),
-          bar1_max: t.get("bar1_max"),
-          statusmarkers: t.get("statusmarkers"),
-          layer: t.get("layer"),
-          imgsrc: t.get("imgsrc"),
-          left: t.get("left"),
-          top: t.get("top"),
-          width: t.get("width"),
-          height: t.get("height"),
-          represents: t.get("represents") || "",
-          controlledby: t.get("controlledby") || "",
-        }));
-        writeResult(nonce, result);
-        break;
-      }
-
       case "getSelection": {
         // Roll20 exposes the current selection ONLY as msg.selected on the chat command
         // that triggered this handler — there is no passive getSelectedTokens() in the
@@ -1031,48 +1128,6 @@ on("chat:message", function (msg) {
         break;
       }
 
-      case "mergeTurnOrder": {
-        // Atomic upsert into the live turn order — read, merge, write in ONE
-        // sandbox tick so it never clobbers entries (e.g. player initiatives)
-        // added between a read and a write. Each entry is matched by `id`:
-        // replace in place if that id already exists, else append. Custom rows
-        // (id "-1") have no stable identity, so they are always inserted, never
-        // matched. After merging we sort pr-descending (Roll20's convention),
-        // keeping custom "-1" rows in their inserted relative order.
-        let rawTO = Campaign().get("turnorder");
-        let merged;
-        try { merged = rawTO ? JSON.parse(rawTO) : []; } catch (e) { merged = []; }
-        if (!Array.isArray(merged)) merged = [];
-        let incoming = args.entries || [];
-        incoming.forEach(function (entry) {
-          if (!entry || typeof entry !== "object") return;
-          let id = entry.id;
-          if (id != null && String(id) !== "-1") {
-            let idx = -1;
-            for (let i = 0; i < merged.length; i++) {
-              if (merged[i] && String(merged[i].id) === String(id)) { idx = i; break; }
-            }
-            if (idx !== -1) { merged[idx] = entry; return; }
-          }
-          merged.push(entry);
-        });
-        // Stable pr-descending sort. Math, not lexical, so "10" sorts above "9".
-        merged = merged
-          .map(function (e, i) { return { e: e, i: i }; })
-          .sort(function (a, b) {
-            let pa = Number(a.e && a.e.pr);
-            let pb = Number(b.e && b.e.pr);
-            if (isNaN(pa)) pa = -Infinity;
-            if (isNaN(pb)) pb = -Infinity;
-            if (pb !== pa) return pb - pa;
-            return a.i - b.i; // preserve original order on ties
-          })
-          .map(function (x) { return x.e; });
-        Campaign().set("turnorder", JSON.stringify(merged));
-        writeResult(nonce, { ok: true, turnorder: merged });
-        break;
-      }
-
       case "rollInitiativeForTokens": {
         // Roll d20 + initiative bonus for each token. Tries common 5e attribute names.
         // If args.rollPublic is true, tokens with a linked character sheet get a gothic public announcement.
@@ -1187,40 +1242,6 @@ on("chat:message", function (msg) {
         break;
       }
 
-      case "advanceTurn": {
-        let order = Campaign().get("turnorder");
-        if (!order) { writeResult(nonce, { ok: false, note: "Turn order is empty" }); break; }
-        let entries = JSON.parse(order);
-        if (entries.length === 0) { writeResult(nonce, { ok: false, note: "Turn order is empty" }); break; }
-        // Rotate: move first entry to end
-        entries.push(entries.shift());
-        Campaign().set("turnorder", JSON.stringify(entries));
-        let current = entries[0];
-        let currentToken = current.id ? getObj("graphic", current.id) : null;
-        writeResult(nonce, {
-          ok: true,
-          current: {
-            id: current.id,
-            pr: current.pr,
-            custom: current.custom,
-            name: currentToken ? currentToken.get("name") : (current.custom || "?"),
-          },
-        });
-        break;
-      }
-
-      case "getTokenById": {
-        // Single implementation lives in runBatchOp (rich token shape).
-        writeResult(nonce, runBatchOp("getTokenById", args));
-        break;
-      }
-
-      case "setTokenProps": {
-        // Single implementation lives in runBatchOp.
-        writeResult(nonce, runBatchOp("setTokenProps", args));
-        break;
-      }
-
       case "getRecentChat": {
         let n = Math.min(args.limit || 50, CHAT_BUFFER.length);
         writeResult(nonce, CHAT_BUFFER.slice(-n));
@@ -1307,14 +1328,6 @@ on("chat:message", function (msg) {
         });
         rangeResults.sort(function(a, b) { return a.distanceFeet - b.distanceFeet; });
         writeResult(nonce, rangeResults);
-        break;
-      }
-
-      case "setTurnHook": {
-        let bs = B();
-        bs.turnHookEnabled = !!args.enabled;
-        if (args.reset) { bs.round = 0; }
-        writeResult(nonce, { ok: true, enabled: bs.turnHookEnabled, round: bs.round });
         break;
       }
 
@@ -1720,23 +1733,9 @@ on("chat:message", function (msg) {
         break;
       }
 
-      case "createHandout": {
-        // Single implementation lives in runBatchOp.
-        // Full-page journal handout. notes = player-visible HTML, gmnotes = GM-only.
-        // inplayerjournals "all" shares with players. avatar = Roll20 CDN url.
-        writeResult(nonce, runBatchOp("createHandout", args));
-        break;
-      }
-
-      case "createCharacter": {
-        // Single implementation lives in runBatchOp.
-        // Bestiary stub: a character entry (draggable token). attributes = [{name,current,max}].
-        writeResult(nonce, runBatchOp("createCharacter", args));
-        break;
-      }
-
       default:
         throw new Error(`Unknown action: ${action}`);
+    }
     }
   } catch (err) {
     writeResult(nonce, null, err.message || String(err));
