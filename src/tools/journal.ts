@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as roll20 from "../bridge/roll20.js";
+import { resolveConfinedImage } from "./maps.js";
 
 // Journal tools: write Roll20 handouts, character (bestiary) stubs, and the
 // journal folder tree (_journalfolder). Mirrors the relay actions defined in
@@ -14,7 +15,10 @@ export function registerJournalTools(server: McpServer): void {
       localPath: z.string(),
     },
     async ({ localPath }) => {
-      const url = await roll20.uploadArt(localPath);
+      // Confine to the asset dir + image allowlist + size cap (uploadArt would
+      // otherwise hand any local file to the Roll20 art library).
+      const { abs } = resolveConfinedImage(localPath);
+      const url = await roll20.uploadArt(abs);
       return { content: [{ type: "text", text: url }] };
     }
   );
