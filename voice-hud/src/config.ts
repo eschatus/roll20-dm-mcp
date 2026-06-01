@@ -62,11 +62,14 @@ export const CONFIG = {
     python: process.env.DMW_STT_PYTHON ||
       path.join(__dirname, "..", "stt", ".venv", "Scripts", "python.exe"),
     script: path.join(__dirname, "..", "stt", "whisper_server.py"),
-    // Primary engine. Default large-v3-turbo at int8 (~1.5GB, half of float16's
-    // ~3GB) to leave more VRAM for the local LLM. Override via DMW_STT_*.
+    // Primary engine: large-v3-turbo at float16 (~3GB) for best accuracy. We used
+    // to run int8_float16 (~1.5GB) to share the GPU with the local 7B LLM — but the
+    // HUD agent now runs on cloud Claude (DMW_PROVIDER=anthropic), so that VRAM is
+    // free and full float16 fits with headroom on the 3080 Ti. Override via
+    // DMW_STT_*; the fallback chain below still drops to int8 on OOM.
     model: process.env.DMW_STT_MODEL || "large-v3-turbo",
     device: process.env.DMW_STT_DEVICE || "cuda",
-    computeType: process.env.DMW_STT_COMPUTE || "int8_float16",
+    computeType: process.env.DMW_STT_COMPUTE || "float16",
     // Fallback chain: tried in order if the one before fails to load (OOM, missing
     // CUDA libs, etc.). Each step is smaller/cheaper; last is CPU so STT always works.
     fallbacks: [
