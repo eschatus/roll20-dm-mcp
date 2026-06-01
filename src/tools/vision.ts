@@ -5,10 +5,14 @@ import * as path from "path";
 import sharp from "sharp";
 import Anthropic from "@anthropic-ai/sdk";
 import * as roll20 from "../bridge/roll20.js";
+import { MODELS } from "./tactics.js";
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+  defaultHeaders: { "anthropic-beta": "prompt-caching-2024-07-31" },
+});
 
-const VISION_MODEL = "claude-sonnet-4-6";
+const VISION_MODEL = MODELS.sonnet;
 const DEFAULT_MAX_DIM = 1500;
 const MAX_TOKENS_HARD_LIMIT = 50_000;
 
@@ -174,7 +178,16 @@ async function preprocessForVision(buffer: Buffer): Promise<Buffer> {
     .toBuffer();
 }
 
-async function drawGridOverlay(buffer: Buffer, widthPx: number, heightPx: number, grid: GridInfo): Promise<Buffer> {
+interface HoughCandidate {
+  from: [number, number];
+  to: [number, number];
+  length?: number;
+  confidence?: number;
+  orientation?: string;
+}
+
+// Build the SVG <line>/<text> elements for the yellow grid + labels (pure string gen, no I/O).
+function gridOverlaySvgParts(widthPx: number, heightPx: number, grid: GridInfo): string[] {
   const { gridSizePx: gs, gridOffsetX: ox, gridOffsetY: oy, cols, rows } = grid;
   const fontSize = Math.max(9, Math.min(14, Math.round(gs * 0.2)));
   const lineColor = "rgba(255,220,0,0.55)";
@@ -206,27 +219,42 @@ async function drawGridOverlay(buffer: Buffer, widthPx: number, heightPx: number
     parts.push(`<text x="${x}" y="${y}" fill="${labelColor}" font-size="${fontSize}" text-anchor="middle" font-weight="bold" font-family="monospace">${r + 1}</text>`);
   }
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${widthPx}" height="${heightPx}">\n${parts.join("\n")}\n</svg>`;
-  return sharp(buffer).composite([{ input: Buffer.from(svg), blend: "over" }]).png().toBuffer();
+  return parts;
 }
 
-interface HoughCandidate {
-  from: [number, number];
-  to: [number, number];
-  length?: number;
-  confidence?: number;
-  orientation?: string;
-}
-
-// Draw Hough candidate line segments as bright orange lines on the image.
+// Build the SVG <line> elements for the orange Hough candidate overlay (pure string gen, no I/O).
 // High-confidence candidates (≥0.8) are drawn thicker so the model can distinguish them.
-async function drawCandidateOverlay(buffer: Buffer, widthPx: number, heightPx: number, candidates: HoughCandidate[]): Promise<Buffer> {
-  const parts = candidates.map((c) => {
+function candidateOverlaySvgParts(candidates: HoughCandidate[]): string[] {
+  return candidates.map((c) => {
     const thick = (c.confidence ?? 0) >= 0.8 ? 3 : 2;
     return `<line x1="${c.from[0]}" y1="${c.from[1]}" x2="${c.to[0]}" y2="${c.to[1]}" stroke="#FF6600" stroke-width="${thick}" stroke-linecap="round" opacity="0.85"/>`;
   });
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${widthPx}" height="${heightPx}">\n${parts.join("\n")}\n</svg>`;
-  return sharp(buffer).composite([{ input: Buffer.from(svg), blend: "over" }]).png().toBuffer();
+}
+
+function svgWrap(widthPx: number, heightPx: number, parts: string[]): Buffer {
+  return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${widthPx}" height="${heightPx}">\n${parts.join("\n")}\n</svg>`);
+}
+
+// Composite the grid overlay AND (when present) the orange Hough-candidate overlay onto
+// the base image in a SINGLE sharp pass. Previously these were two sequential
+// sharp(buf).composite().toBuffer() calls (two decode/encode round-trips); merging both
+// SVG layers into one composite call halves that to a single pass. Output is identical:
+// SVG layers are drawn in the same order (grid first, candidates over it) with the same
+// "over" blend.
+async function drawOverlays(
+  buffer: Buffer,
+  widthPx: number,
+  heightPx: number,
+  grid: GridInfo,
+  candidates?: HoughCandidate[],
+): Promise<Buffer> {
+  const layers = [
+    { input: svgWrap(widthPx, heightPx, gridOverlaySvgParts(widthPx, heightPx, grid)), blend: "over" as const },
+  ];
+  if (candidates && candidates.length > 0) {
+    layers.push({ input: svgWrap(widthPx, heightPx, candidateOverlaySvgParts(candidates)), blend: "over" as const });
+  }
+  return sharp(buffer).composite(layers).png().toBuffer();
 }
 
 // ─── Grid auto-detection ──────────────────────────────────────────────────────
@@ -237,12 +265,37 @@ async function drawCandidateOverlay(buffer: Buffer, widthPx: number, heightPx: n
 //  3. Scan from each image border to find the first strong edge (building wall) = grid offset.
 //  4. Fall back to knownGridSizePx if autocorrelation finds no clear peak.
 //
+// Downsample target for the autocorrelation pass. The O(W·H) mean loop and the
+// O(N·maxLag) autocorrelation are both proportional to the working resolution, so we run
+// them on a copy whose long side is capped here, then rescale the detected period/offsets
+// back to original-image pixels. Periodicity is scale-invariant, so a ~2–3× downsample
+// keeps the detected grid period equivalent within ±1px after rescaling.
+const AUTOCORR_MAX_DIM = 750;
+
 async function detectGridByAutocorrelation(
   buffer: Buffer,
   knownGridSizePx = 70,
 ): Promise<{ gridSizePx: number; gridOffsetX: number; gridOffsetY: number; cols: number; rows: number }> {
-  const { data, info } = await sharp(buffer).grayscale().raw().toBuffer({ resolveWithObject: true });
+  // Read original dimensions so cols/rows/offsets can be reported in original pixels.
+  const origMeta = await sharp(buffer).metadata();
+  const origW = origMeta.width ?? 0;
+  const origH = origMeta.height ?? 0;
+  const longSide = Math.max(origW, origH);
+
+  // Downsample factor ≥ 1. factor=1 means no downscale (already small enough).
+  const factor = longSide > AUTOCORR_MAX_DIM ? longSide / AUTOCORR_MAX_DIM : 1;
+
+  const pipeline = sharp(buffer).grayscale();
+  if (factor > 1) {
+    pipeline.resize(Math.round(origW / factor), Math.round(origH / factor), { fit: "fill" });
+  }
+  const { data, info } = await pipeline.raw().toBuffer({ resolveWithObject: true });
   const W = info.width, H = info.height;
+
+  // Detection runs in downsampled space; scale the search range down by `factor` so the
+  // 20–120px (original) window maps onto the smaller image, then scale results back up.
+  const lagMin = Math.max(4, Math.round(20 / factor));
+  const lagMax = Math.max(lagMin + 1, Math.round(120 / factor));
 
   const colMeans = new Float64Array(W);
   const rowMeans = new Float64Array(H);
@@ -311,27 +364,30 @@ async function detectGridByAutocorrelation(
   const rowGrad = absGrad(rowMeans);
 
   // Try to detect grid size from horizontal and vertical signals independently, then pick the best.
-  // Search range: 20–120px to cover most battlemap scales (36px cells at 1× up to 100px at large scale).
-  const detectedH = findPeriodByAutocorrelation(colGrad, 20, 120);
-  const detectedV = findPeriodByAutocorrelation(rowGrad, 20, 120);
+  // Search range (downsampled): the original 20–120px window scaled by 1/factor.
+  const detectedH = findPeriodByAutocorrelation(colGrad, lagMin, lagMax);
+  const detectedV = findPeriodByAutocorrelation(rowGrad, lagMin, lagMax);
 
+  // Detected periods are in downsampled pixels — rescale to original-image pixels.
   let gridSizePx: number;
   if (detectedH !== null && detectedV !== null) {
     // Average both axes — they should agree closely
-    gridSizePx = Math.round((detectedH + detectedV) / 2);
+    gridSizePx = Math.round(((detectedH + detectedV) / 2) * factor);
   } else if (detectedH !== null) {
-    gridSizePx = detectedH;
+    gridSizePx = Math.round(detectedH * factor);
   } else if (detectedV !== null) {
-    gridSizePx = detectedV;
+    gridSizePx = Math.round(detectedV * factor);
   } else {
-    // No clear periodicity detected — fall back to known value
+    // No clear periodicity detected — fall back to known value (already in original px)
     gridSizePx = knownGridSizePx;
   }
 
-  const gridOffsetX = findFirstEdge(colGrad);
-  const gridOffsetY = findFirstEdge(rowGrad);
-  const cols = Math.max(1, Math.floor((W - gridOffsetX) / gridSizePx));
-  const rows = Math.max(1, Math.floor((H - gridOffsetY) / gridSizePx));
+  // Offsets are detected in downsampled space; rescale back to original-image pixels.
+  const gridOffsetX = Math.round(findFirstEdge(colGrad) * factor);
+  const gridOffsetY = Math.round(findFirstEdge(rowGrad) * factor);
+  // cols/rows are computed against original dimensions so downstream pixel conversion is correct.
+  const cols = Math.max(1, Math.floor((origW - gridOffsetX) / gridSizePx));
+  const rows = Math.max(1, Math.floor((origH - gridOffsetY) / gridSizePx));
 
   return { gridSizePx, gridOffsetX, gridOffsetY, cols, rows };
 }
@@ -426,17 +482,71 @@ function cutGapsInWalls(
 
 // ─── Vision passes ────────────────────────────────────────────────────────────
 
-async function callVision(imageBuffer: Buffer, mediaType: "image/png" | "image/jpeg", prompt: string, maxTokens = 2048): Promise<string> {
+// Large static wall-tracing instruction block. Identical on every analyze_battlemap
+// call, so it's sent as its own cache_control: ephemeral block (see callVision) and
+// reused across calls. Only the per-image grid header + candidate hint vary, and
+// those travel in a separate uncached text block.
+const WALL_TRACE_INSTRUCTIONS = `WALLS ARE: thick continuous black or dark lines forming room boundaries and the building perimeter. A wall must span at least half a grid cell and have a solid, unbroken dark line. When in doubt, omit it — a missing wall is better than a phantom one.
+
+DO NOT TRACE: furniture, tables, chairs, rugs, carpet edges, floor planks, stairs, pillars, bookshelves, decorative borders, shadows, or any object sitting on the floor. These are NOT walls. If a dark line is shorter than half a grid cell or clearly part of an object, skip it.
+
+Trace ALL structural walls — all exterior building walls AND every interior partition (room dividers, corridor walls, alcoves). Leave a gap at every door or window opening.
+
+CRITICAL — gaps: wherever you see a door or window, you MUST leave a physical gap in the wall. Do NOT draw a continuous wall through a doorway. Instead:
+  - Emit two separate wall segments: one ending at the near edge of the opening, one starting at the far edge.
+  - Also add the opening to the "openings" array with its from/to span.
+  Example: wall runs col 0→3 row 2, door at col 1→2 row 2 → emit walls [0,2]→[1,2] and [2,2]→[3,2], opening from [1,2] to [2,2].
+
+Return ONLY JSON (no markdown):
+{
+  "walls": [
+    {"from":[col,row],"to":[col,row],"sideA":"label for space on this side","sideB":"label or 'exterior'"}
+  ],
+  "openings": [
+    {"type":"door"|"window","from":[col,row],"to":[col,row]}
+  ],
+  "secretDoors": [],
+  "validation": {
+    "notes": "<brief topology summary: list every distinct enclosed space you found>"
+  }
+}
+
+Rules:
+- sideA/sideB: free-form labels (e.g. "upper-left room", "corridor", "exterior"). sideB="exterior" marks outer walls.
+- Every door/window MUST appear in openings[] AND the adjacent wall segments must stop at the opening edges.
+- Fractional coords (e.g. [2.5, 3]) are fine for opening endpoints.
+- All coords must stay within the valid col/row range stated above.`;
+
+// callVision accepts an optional `staticInstructions` block that is sent as a
+// cache_control: ephemeral text block so the large, unchanging instruction text is
+// cached across repeated calls. `prompt` carries the small per-image dynamic text.
+async function callVision(
+  imageBuffer: Buffer,
+  mediaType: "image/png" | "image/jpeg",
+  prompt: string,
+  maxTokens = 2048,
+  staticInstructions?: string,
+): Promise<string> {
+  // Static instructions go FIRST as a cache_control: ephemeral block so they form a
+  // stable, byte-identical cacheable prefix across calls. The (always-different) image
+  // and the per-image dynamic prompt follow and are not cached.
+  const content: Anthropic.ContentBlockParam[] = [];
+  if (staticInstructions) {
+    content.push({
+      type: "text",
+      text: staticInstructions,
+      cache_control: { type: "ephemeral" },
+    });
+  }
+  content.push(
+    { type: "image", source: { type: "base64", media_type: mediaType, data: imageBuffer.toString("base64") } },
+    { type: "text", text: prompt },
+  );
+
   const response = await anthropic.messages.create({
     model: VISION_MODEL,
     max_tokens: maxTokens,
-    messages: [{
-      role: "user",
-      content: [
-        { type: "image", source: { type: "base64", media_type: mediaType, data: imageBuffer.toString("base64") } },
-        { type: "text", text: prompt },
-      ],
-    }],
+    messages: [{ role: "user", content }],
   });
   return response.content[0].type === "text" ? response.content[0].text : "";
 }
@@ -474,43 +584,17 @@ async function traceWallsDirect(
   - Add all doors and windows in their correct positions\n`
     : "";
 
+  // Per-image dynamic header (grid geometry + optional candidate hint). The large
+  // static instruction block (WALL_TRACE_INSTRUCTIONS) is sent separately as a cached
+  // block by callVision. The explicit col/row bounds live here since they vary per map.
   const prompt = `This battlemap has a yellow grid overlay. Grid cell size: ${grid.gridSizePx}px.
 Columns A–${colLabel(grid.cols - 1)} left-to-right (A=leftmost), rows 1–${grid.rows} top-to-bottom (1=topmost).
 Grid corners: [col,row] where [0,0]=top-left of cell A1. Valid range: col 0–${grid.cols}, row 0–${grid.rows}.
-${candidateHint}
-WALLS ARE: thick continuous black or dark lines forming room boundaries and the building perimeter. A wall must span at least half a grid cell and have a solid, unbroken dark line. When in doubt, omit it — a missing wall is better than a phantom one.
-
-DO NOT TRACE: furniture, tables, chairs, rugs, carpet edges, floor planks, stairs, pillars, bookshelves, decorative borders, shadows, or any object sitting on the floor. These are NOT walls. If a dark line is shorter than half a grid cell or clearly part of an object, skip it.
-
-Trace ALL structural walls — all exterior building walls AND every interior partition (room dividers, corridor walls, alcoves). Leave a gap at every door or window opening.
-
-CRITICAL — gaps: wherever you see a door or window, you MUST leave a physical gap in the wall. Do NOT draw a continuous wall through a doorway. Instead:
-  - Emit two separate wall segments: one ending at the near edge of the opening, one starting at the far edge.
-  - Also add the opening to the "openings" array with its from/to span.
-  Example: wall runs col 0→3 row 2, door at col 1→2 row 2 → emit walls [0,2]→[1,2] and [2,2]→[3,2], opening from [1,2] to [2,2].
-
-Return ONLY JSON (no markdown):
-{
-  "walls": [
-    {"from":[col,row],"to":[col,row],"sideA":"label for space on this side","sideB":"label or 'exterior'"}
-  ],
-  "openings": [
-    {"type":"door"|"window","from":[col,row],"to":[col,row]}
-  ],
-  "secretDoors": [],
-  "validation": {
-    "notes": "<brief topology summary: list every distinct enclosed space you found>"
-  }
-}
-
-Rules:
-- sideA/sideB: free-form labels (e.g. "upper-left room", "corridor", "exterior"). sideB="exterior" marks outer walls.
-- Every door/window MUST appear in openings[] AND the adjacent wall segments must stop at the opening edges.
-- Fractional coords (e.g. [2.5, 3]) are fine for opening endpoints.
-- All coords: col ∈ [0, ${grid.cols}], row ∈ [0, ${grid.rows}].`;
+All coords: col ∈ [0, ${grid.cols}], row ∈ [0, ${grid.rows}].
+${candidateHint}`;
 
   const visionBuffer = await preprocessForVision(overlaidBuffer);
-  const text = await callVision(visionBuffer, "image/png", prompt, 8192);
+  const text = await callVision(visionBuffer, "image/png", prompt, 8192, WALL_TRACE_INSTRUCTIONS);
 
   type RawOpening = { type: "door" | "window"; from: Point; to: Point };
   type RawWall = { from: Point; to: Point; sideA?: string; sideB?: string };
@@ -582,10 +666,7 @@ export async function analyzeImageTwoPass(
   validation: { isolatedRooms: string[]; notes: string };
 }> {
   const grid = await detectGridByAutocorrelation(info.buffer, knownGridSizePx);
-  let overlaidBuffer = await drawGridOverlay(info.buffer, info.widthPx, info.heightPx, grid);
-  if (houghCandidates && houghCandidates.length > 0) {
-    overlaidBuffer = await drawCandidateOverlay(overlaidBuffer, info.widthPx, info.heightPx, houghCandidates);
-  }
+  const overlaidBuffer = await drawOverlays(info.buffer, info.widthPx, info.heightPx, grid, houghCandidates);
   const result = await traceWallsDirect(overlaidBuffer, grid, houghCandidates);
   return { ...result, rooms: [] };
 }
