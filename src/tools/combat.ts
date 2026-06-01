@@ -196,6 +196,26 @@ export function registerCombatTools(server: McpServer): void {
   );
 
   server.tool(
+    "get_selection",
+    "Read the tokens the GM currently has selected in the Roll20 editor, resolving each to its name and linked character. Use this to capture a roster from the tabletop — e.g. select the party (or a group of NPCs) and call this to learn who they are. Roll20 only exposes the selection on the command that triggers it, so this reflects whatever is selected at the moment of the call.",
+    {},
+    async () => {
+      const selection = await roll20.relayCommand<{
+        id: string; name: string; represents: string; characterName: string;
+        left: number; top: number; width: number; height: number;
+        bar1_value: number; bar1_max: number; statusmarkers: string;
+        layer: string; controlledby: string;
+      }[]>({ action: "getSelection" });
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(selection, null, 2),
+        }],
+      };
+    }
+  );
+
+  server.tool(
     "roll_dice",
     "Roll one or more dice formulas using Roll20's real in-game dice engine. Results appear in Roll20 chat and are returned here. Use for saving throws, ability checks, attack rolls, damage, or any other roll where the result needs to be visible to players.",
     {
@@ -913,6 +933,143 @@ export function registerCombatTools(server: McpServer): void {
     async ({ playerName, message }) => {
       const result = await roll20.relayCommand({ action: "whisperPlayer", playerName, message });
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }
+  );
+
+  server.tool(
+    "inject_round_marker",
+    "Insert or remove a synthetic 'Top of Order' marker at initiative 99 to mark the round start. Use this before roll_initiative to ensure the marker stays sorted at position 1 (rounds always begin with this sentinel before any actual combatant).",
+    {
+      active: z.boolean().describe("true to inject the marker, false to remove it"),
+    },
+    async ({ active }) => {
+      type TurnEntry = { id: string; pr: string; custom: string; _pageid: string; formula?: string };
+
+      const pageId = await roll20.getCurrentPageId();
+      let current: TurnEntry[] = await roll20.relayCommand<TurnEntry[]>({ action: "getTurnOrder" });
+
+      // Custom (non-token) entries use id="-1" in Roll20's API; detect by custom text
+      const existing = current.findIndex((e) => e.id === "-1" && e.custom?.includes("Round"));
+
+      if (active) {
+        if (existing !== -1) {
+          return { content: [{ type: "text", text: "Round Start marker already present." }] };
+        }
+        const marker: TurnEntry = {
+          id: "-1",
+          pr: "99",
+          custom: "⏺ Round Start",
+          _pageid: pageId,
+          formula: "+1",
+        };
+        current = [marker, ...current];
+      } else {
+        if (existing === -1) {
+          return { content: [{ type: "text", text: "Round Start marker not found." }] };
+        }
+        current = current.filter((_, i) => i !== existing);
+      }
+
+      // Sort by pr descending
+      current.sort((a, b) => Number(b.pr) - Number(a.pr));
+
+      // Write back
+      await roll20.relayCommand({ action: "setTurnOrder", entries: current });
+
+      const action = active ? "Injected" : "Removed";
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            action,
+            markerPresent: active,
+            totalEntries: current.length,
+            turnOrder: current.map((e) => ({ id: e.id, name: e.custom || e.id, pr: e.pr })),
+          }, null, 2),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "update_turn_order",
+    "Insert, update, or remove a single turn-order entry while preserving all existing entries. Reads the full turn order, applies the modification, and rebuilds before sending back. Use to adjust an NPC's initiative mid-combat without affecting player slots.",
+    {
+      operation: z.enum(["insert", "update", "remove"]).describe("insert=add new token, update=change existing token's pr, remove=delete token"),
+      tokenId: z.string().describe("Roll20 token ID to operate on"),
+      pr: z.number().int().optional().describe("Initiative value (required for insert/update)"),
+      name: z.string().optional().describe("Token name for display (required for insert without a token lookup)"),
+    },
+    async ({ operation, tokenId, pr, name }) => {
+      // Validate inputs
+      if ((operation === "insert" || operation === "update") && pr === undefined) {
+        throw new Error(`${operation} requires a pr (initiative) value`);
+      }
+      if (operation === "insert" && !name && !tokenId) {
+        throw new Error("insert requires either name or tokenId");
+      }
+
+      type TurnEntry = { id: string; pr: string; custom: string; _pageid: string };
+
+      // Read current turn order
+      const pageId = await roll20.getCurrentPageId();
+      let current: TurnEntry[] = await roll20.relayCommand<TurnEntry[]>({ action: "getTurnOrder" });
+
+      // Apply modification
+      let modified: TurnEntry[];
+      if (operation === "insert") {
+        // Check if already in order (shouldn't be, but be safe)
+        const alreadyExists = current.some((e) => e.id === tokenId);
+        if (alreadyExists) {
+          throw new Error(`Token ${tokenId} already in turn order. Use operation='update' instead.`);
+        }
+        // Add new entry
+        const newEntry: TurnEntry = {
+          id: tokenId,
+          pr: String(pr!),
+          custom: name ?? "",
+          _pageid: pageId,
+        };
+        modified = [...current, newEntry];
+      } else if (operation === "update") {
+        // Find and update existing entry
+        const idx = current.findIndex((e) => e.id === tokenId);
+        if (idx === -1) {
+          throw new Error(`Token ${tokenId} not found in turn order. Use operation='insert' to add it.`);
+        }
+        modified = [...current];
+        modified[idx] = { ...modified[idx], pr: String(pr!) };
+      } else {
+        // Remove
+        modified = current.filter((e) => e.id !== tokenId);
+      }
+
+      // Sort by initiative descending
+      modified.sort((a, b) => Number(b.pr) - Number(a.pr));
+
+      // Write back
+      await roll20.relayCommand({ action: "setTurnOrder", entries: modified });
+
+      // Return summary
+      const summary =
+        operation === "insert"
+          ? `Inserted ${tokenId} at initiative ${pr}`
+          : operation === "update"
+            ? `Updated ${tokenId} initiative to ${pr}`
+            : `Removed ${tokenId}`;
+
+      const resultOrder = modified.map((e) => ({ id: e.id, pr: e.pr }));
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            operation,
+            summary,
+            totalEntries: modified.length,
+            turnOrder: resultOrder,
+          }, null, 2),
+        }],
+      };
     }
   );
 }

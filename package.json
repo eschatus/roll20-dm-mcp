@@ -6,7 +6,9 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "build": "tsc",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "serve": "tsx src/index-http.ts",
+    "serve:watch": "tsx watch src/index-http.ts"
   },
   "keywords": [],
   "author": "",

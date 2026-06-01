@@ -21,13 +21,25 @@ function writeResult(nonce, data, error) {
 }
 
 // --- Globals ---
+// CHAT_BUFFER stays in-memory (transient): it self-repopulates from live chat, and persisting a
+// high-frequency 100-entry rolling buffer to `state` would churn the campaign save on every message.
 const CHAT_BUFFER = [];
 const CHAT_BUFFER_MAX = 100;
-let DM_INBOX = [];
 const DM_INBOX_MAX = 50;
-let ROUND_NUMBER = 0;
-let TURN_HOOK_ENABLED = false;
-let MOB_PLANS = {};  // tokenId → { html: string }, consumed at each mob's turn start
+
+// Durable session state lives in Roll20's persistent `state` object so it survives a Mod sandbox
+// restart / script redeploy. Previously these were module-level vars that were silently wiped on
+// every save — which disarmed the turn hook mid-combat. B() is self-healing: it backfills any
+// missing key, so it works on first run, after a redeploy, and when upgrading from an older shape.
+function B() {
+  let s = state.GM_AI_Bridge;
+  if (!s) { s = state.GM_AI_Bridge = {}; }
+  if (typeof s.round !== "number") s.round = 0;
+  if (typeof s.turnHookEnabled !== "boolean") s.turnHookEnabled = false;
+  if (!Array.isArray(s.dmInbox)) s.dmInbox = [];
+  if (!s.mobPlans || typeof s.mobPlans !== "object") s.mobPlans = {};
+  return s;
+}
 
 // --- Helpers ---
 
@@ -192,6 +204,40 @@ function runBatchOp(action, args) {
       Campaign().set("turnorder", JSON.stringify(args.turnorder || []));
       return { ok: true };
     }
+    case "createHandout": {
+      let h = createObj("handout", {
+        name: args.name || "Handout",
+        inplayerjournals: args.inplayerjournals || "",
+        controlledby: args.controlledby || "",
+        archived: false,
+      });
+      if (!h) throw new Error("createObj('handout') returned undefined");
+      if (args.notes !== undefined) h.set("notes", args.notes);
+      if (args.gmnotes !== undefined) h.set("gmnotes", args.gmnotes);
+      if (args.avatar) h.set("avatar", args.avatar);
+      return { id: h.id };
+    }
+    case "createCharacter": {
+      let ch = createObj("character", {
+        name: args.name || "Creature",
+        inplayerjournals: args.inplayerjournals || "",
+        controlledby: args.controlledby || "",
+        archived: false,
+      });
+      if (!ch) throw new Error("createObj('character') returned undefined");
+      if (args.bio !== undefined) ch.set("bio", args.bio);
+      if (args.gmnotes !== undefined) ch.set("gmnotes", args.gmnotes);
+      if (args.avatar) ch.set("avatar", args.avatar);
+      (args.attributes || []).forEach(function(a) {
+        createObj("attribute", {
+          characterid: ch.id,
+          name: a.name,
+          current: a.current != null ? a.current : "",
+          max: a.max != null ? a.max : "",
+        });
+      });
+      return { id: ch.id };
+    }
     default:
       throw new Error("batchExec: unsupported action '" + action + "'. Supported: setTokenBar, setTokenProps, toggleCondition, syncConditionsToToken, getTokenById, setTurnOrder");
   }
@@ -217,14 +263,15 @@ on("chat:message", function (msg) {
     let dmText = msg.content.slice(4).trim();
     if (dmText) {
       let isQuery = /^(what|who|how|is|am|are|do|does|can|did|\?)/i.test(dmText) || dmText.endsWith("?");
-      DM_INBOX.push({
+      let inbox = B().dmInbox;
+      inbox.push({
         who: msg.who || "",
         playerid: msg.playerid || "",
         content: dmText,
         type: isQuery ? "query" : "intent",
         timestamp: Date.now(),
       });
-      if (DM_INBOX.length > DM_INBOX_MAX) DM_INBOX.shift();
+      if (inbox.length > DM_INBOX_MAX) inbox.shift();
       sendChat("Initiative", "/desc 🎲 **" + (msg.who || "Someone") + "** has set their mind to an action.");
       let ackVerb = isQuery ? "Got your question — I'll answer shortly." : "Got it — I'll have this ready for your turn.";
       sendChat("GM-AI-Bridge", "/w " + (msg.who || "gm") + " " + ackVerb + " (" + dmText + ")", null, { noarchive: true });
@@ -268,6 +315,43 @@ on("chat:message", function (msg) {
           controlledby: t.get("controlledby") || "",
         }));
         writeResult(nonce, result);
+        break;
+      }
+
+      case "getSelection": {
+        // Roll20 exposes the current selection ONLY as msg.selected on the chat command
+        // that triggered this handler — there is no passive getSelectedTokens() in the
+        // sandbox. The bridge sends !ai-relay while the GM has tokens selected, so this
+        // reflects the live tabletop selection in the GM's session.
+        // Each msg.selected entry is { _id, _type }. Resolve graphics to name + linked character.
+        let sel = msg.selected || [];
+        let selResults = sel.map(function (s) {
+          if (s._type !== "graphic") return { id: s._id, type: s._type };
+          let t = getObj("graphic", s._id);
+          if (!t) return { id: s._id, error: "not found" };
+          let charId = t.get("represents") || "";
+          let charName = "";
+          if (charId) {
+            let ch = getObj("character", charId);
+            if (ch) charName = ch.get("name");
+          }
+          return {
+            id: t.id,
+            name: t.get("name"),
+            represents: charId,
+            characterName: charName,
+            left: t.get("left"),
+            top: t.get("top"),
+            width: t.get("width"),
+            height: t.get("height"),
+            bar1_value: t.get("bar1_value"),
+            bar1_max: t.get("bar1_max"),
+            statusmarkers: t.get("statusmarkers") || "",
+            layer: t.get("layer"),
+            controlledby: t.get("controlledby") || "",
+          };
+        });
+        writeResult(nonce, selResults);
         break;
       }
 
@@ -938,18 +1022,20 @@ on("chat:message", function (msg) {
       }
 
       case "getDmInbox": {
+        let inbox = B().dmInbox;
         let inboxEntries = args.type
-          ? DM_INBOX.filter(function(e) { return e.type === args.type; })
-          : DM_INBOX.slice();
+          ? inbox.filter(function(e) { return e.type === args.type; })
+          : inbox.slice();
         writeResult(nonce, inboxEntries);
         break;
       }
 
       case "clearDmInbox": {
+        let bs = B();
         if (args.playerName) {
-          DM_INBOX = DM_INBOX.filter(function(e) { return e.who !== args.playerName; });
+          bs.dmInbox = bs.dmInbox.filter(function(e) { return e.who !== args.playerName; });
         } else {
-          DM_INBOX = [];
+          bs.dmInbox = [];
         }
         writeResult(nonce, { ok: true });
         break;
@@ -957,17 +1043,18 @@ on("chat:message", function (msg) {
 
       case "setMobPlan": {
         if (!args.tokenId) throw new Error("setMobPlan requires tokenId");
+        let plans = B().mobPlans;
         if (args.html) {
-          MOB_PLANS[args.tokenId] = { html: args.html };
+          plans[args.tokenId] = { html: args.html };
         } else {
-          delete MOB_PLANS[args.tokenId];
+          delete plans[args.tokenId];
         }
         writeResult(nonce, { ok: true });
         break;
       }
 
       case "clearMobPlans": {
-        MOB_PLANS = {};
+        B().mobPlans = {};
         writeResult(nonce, { ok: true });
         break;
       }
@@ -1018,14 +1105,16 @@ on("chat:message", function (msg) {
       }
 
       case "setTurnHook": {
-        TURN_HOOK_ENABLED = !!args.enabled;
-        if (args.reset) { ROUND_NUMBER = 0; }
-        writeResult(nonce, { ok: true, enabled: TURN_HOOK_ENABLED, round: ROUND_NUMBER });
+        let bs = B();
+        bs.turnHookEnabled = !!args.enabled;
+        if (args.reset) { bs.round = 0; }
+        writeResult(nonce, { ok: true, enabled: bs.turnHookEnabled, round: bs.round });
         break;
       }
 
       case "getTurnHookState": {
-        writeResult(nonce, { enabled: TURN_HOOK_ENABLED, round: ROUND_NUMBER });
+        let bs = B();
+        writeResult(nonce, { enabled: bs.turnHookEnabled, round: bs.round });
         break;
       }
 
@@ -1236,7 +1325,7 @@ on("chat:message", function (msg) {
       }
 
       case "ping": {
-        writeResult(nonce, { pong: true, version: "2.0.0" });
+        writeResult(nonce, { pong: true, version: "2.1.0" });
         break;
       }
 
@@ -1382,6 +1471,71 @@ on("chat:message", function (msg) {
         break;
       }
 
+      case "getJournalFolder": {
+        let rawJf = Campaign().get("_journalfolder");
+        writeResult(nonce, rawJf ? JSON.parse(rawJf) : []);
+        break;
+      }
+
+      case "setJournalFolder": {
+        // Two modes:
+        //  - args.json = a full array -> replace the whole _journalfolder tree.
+        //  - args.json = { __append__: [folder, ...] } -> read the LIVE tree and push
+        //    those folders/ids onto the end (safe merge; never clobbers existing).
+        if (args.json && !Array.isArray(args.json) && args.json.__append__) {
+          let rawJf = Campaign().get("_journalfolder");
+          let tree = rawJf ? JSON.parse(rawJf) : [];
+          args.json.__append__.forEach(function(f) { tree.push(f); });
+          Campaign().set("_journalfolder", JSON.stringify(tree));
+          writeResult(nonce, { ok: true, appended: args.json.__append__.length, total: tree.length });
+        } else {
+          Campaign().set("_journalfolder", JSON.stringify(args.json || []));
+          writeResult(nonce, { ok: true });
+        }
+        break;
+      }
+
+      case "createHandout": {
+        // Full-page journal handout. notes = player-visible HTML, gmnotes = GM-only.
+        // inplayerjournals "all" shares with players. avatar = Roll20 CDN url.
+        let h = createObj("handout", {
+          name: args.name || "Handout",
+          inplayerjournals: args.inplayerjournals || "",
+          controlledby: args.controlledby || "",
+          archived: false,
+        });
+        if (!h) throw new Error("createObj('handout') returned undefined");
+        if (args.notes !== undefined) h.set("notes", args.notes);
+        if (args.gmnotes !== undefined) h.set("gmnotes", args.gmnotes);
+        if (args.avatar) h.set("avatar", args.avatar);
+        writeResult(nonce, { id: h.id });
+        break;
+      }
+
+      case "createCharacter": {
+        // Bestiary stub: a character entry (draggable token). attributes = [{name,current,max}].
+        let ch = createObj("character", {
+          name: args.name || "Creature",
+          inplayerjournals: args.inplayerjournals || "",
+          controlledby: args.controlledby || "",
+          archived: false,
+        });
+        if (!ch) throw new Error("createObj('character') returned undefined");
+        if (args.bio !== undefined) ch.set("bio", args.bio);
+        if (args.gmnotes !== undefined) ch.set("gmnotes", args.gmnotes);
+        if (args.avatar) ch.set("avatar", args.avatar);
+        (args.attributes || []).forEach(function(a) {
+          createObj("attribute", {
+            characterid: ch.id,
+            name: a.name,
+            current: a.current != null ? a.current : "",
+            max: a.max != null ? a.max : "",
+          });
+        });
+        writeResult(nonce, { id: ch.id });
+        break;
+      }
+
       default:
         throw new Error(`Unknown action: ${action}`);
     }
@@ -1423,7 +1577,8 @@ function combatantStatusLine(entry) {
 }
 
 on("change:campaign:turnorder", function(obj, prev) {
-  if (!TURN_HOOK_ENABLED) return;
+  let bs = B();
+  if (!bs.turnHookEnabled) return;
 
   let rawNew = obj.get("turnorder");
   let rawOld = prev ? prev["turnorder"] : null;
@@ -1452,19 +1607,19 @@ on("change:campaign:turnorder", function(obj, prev) {
 
   // Round detection: initiative wrapped when current pr > the pr of the token that just finished.
   // No token-ID tracking — works correctly regardless of late joiners, rerolls, or deaths.
-  if (ROUND_NUMBER === 0) {
-    ROUND_NUMBER = 1;
+  if (bs.round === 0) {
+    bs.round = 1;
   } else if (oldFirstPr !== null && currentPr > oldFirstPr) {
     // Wrapped — end of previous round, start of new
     let summaryLines = newOrder.map(function(e) { return combatantStatusLine(e); }).filter(Boolean);
     let summaryHtml = "<div style='background:#080204;border:1px solid #3a0000;padding:6px 10px;'>"
-      + "<div style='color:#cc4444;font-family:\"Palatino Linotype\",Palatino,serif;text-align:center;font-size:1em;margin-bottom:4px;'>⚔ Round " + ROUND_NUMBER + " Complete</div>"
+      + "<div style='color:#cc4444;font-family:\"Palatino Linotype\",Palatino,serif;text-align:center;font-size:1em;margin-bottom:4px;'>⚔ Round " + bs.round + " Complete</div>"
       + summaryLines.map(function(r) {
           return "<div style='color:#d4a0a0;font-family:\"Palatino Linotype\",Palatino,serif;font-size:0.9em;padding:1px 4px;'>" + r + "</div>";
         }).join("")
       + "</div>";
     sendChat("GM-AI-Bridge", summaryHtml, null, { noarchive: false });
-    ROUND_NUMBER++;
+    bs.round++;
   }
 
   // Post turn announcement
@@ -1478,23 +1633,24 @@ on("change:campaign:turnorder", function(obj, prev) {
   markers.forEach(function(m) { let c = markerMap[m]; if (c) condSet[c] = true; });
   let conditions = Object.keys(condSet);
 
-  // Check DM_INBOX for a preloaded intent from this token's controller
+  // Check the persisted DM inbox for a preloaded intent from this token's controller
   let pendingIntent = null;
   if (token) {
     let controlled = token.get("controlledby") || "";
     let controllerIds = controlled.split(",").map(function(s){ return s.trim(); }).filter(Boolean);
-    for (let di = 0; di < DM_INBOX.length; di++) {
-      if (DM_INBOX[di].type === "intent" && controllerIds.indexOf(DM_INBOX[di].playerid) !== -1) {
-        pendingIntent = DM_INBOX[di];
-        DM_INBOX.splice(di, 1);
+    let inbox = bs.dmInbox;
+    for (let di = 0; di < inbox.length; di++) {
+      if (inbox[di].type === "intent" && controllerIds.indexOf(inbox[di].playerid) !== -1) {
+        pendingIntent = inbox[di];
+        inbox.splice(di, 1);
         break;
       }
     }
   }
 
   // Consume any stored mob tactical plan for this token
-  let mobPlan = MOB_PLANS[newFirst.id] || null;
-  if (mobPlan) { delete MOB_PLANS[newFirst.id]; }
+  let mobPlan = bs.mobPlans[newFirst.id] || null;
+  if (mobPlan) { delete bs.mobPlans[newFirst.id]; }
 
   let hpLine = "";
   if (maxHp) {
@@ -1510,7 +1666,7 @@ on("change:campaign:turnorder", function(obj, prev) {
     : "";
 
   let html = "<div style='background:#080204;border-left:3px solid #cc4444;padding:5px 10px;'>"
-    + "<div style='color:#cc4444;font-family:\"Palatino Linotype\",Palatino,serif;font-size:1em;'>🩸 <b>" + name + "</b> — Round " + ROUND_NUMBER + "</div>"
+    + "<div style='color:#cc4444;font-family:\"Palatino Linotype\",Palatino,serif;font-size:1em;'>🩸 <b>" + name + "</b> — Round " + bs.round + "</div>"
     + hpLine + condLine + intentLine
     + "</div>";
   sendChat("Initiative", html, null, { noarchive: false });
@@ -1518,6 +1674,13 @@ on("change:campaign:turnorder", function(obj, prev) {
   if (mobPlan) {
     sendChat("GM-AI-Bridge", "/w gm " + mobPlan.html, null, { noarchive: true });
   }
+});
+
+on("ready", function() {
+  let bs = B();
+  log("[GM_AI_Bridge] Relay ready. State restored from `state` — round=" + bs.round
+    + " turnHook=" + bs.turnHookEnabled + " inbox=" + bs.dmInbox.length
+    + " plans=" + Object.keys(bs.mobPlans).length);
 });
 
 log("[GM_AI_Bridge] Relay script loaded. Ready for !ai-relay commands.");

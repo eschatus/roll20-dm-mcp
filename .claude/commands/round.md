@@ -1,10 +1,17 @@
 # Round Narration Parser
 
-The DM is about to narrate what happened this round — either spoken to the players (voice-to-text) or typed directly. Parse it into a structured list of map actions and execute on confirmation.
+The DM is about to narrate what happened this round — spoken (voice-to-text) or typed. Parse it
+into a structured list of map actions and execute on confirmation.
+
+**Operating rules:** follow `@skills/dm-rules.md` (write-safety, never auto-advance, conditions/
+deaths/wounds, aura-vs-zone, narration cadence, voice-to-text resolution, real tool names). This
+file covers the round-parsing choreography and the state snapshot.
 
 ## Step 0: Write the round state snapshot
 
-At the end of every round (after narration posts), overwrite `C:\Users\escha\.claude\projects\e--personalProjects-roll20-dm-mcp\memory\session-combat-state.md` with the current combat state. This keeps context recoverable if compression happens mid-fight.
+At the end of every round (after narration posts), overwrite
+`C:\Users\escha\.claude\projects\e--personalProjects-roll20-dm-mcp\memory\session-combat-state.md`
+with the current combat state. Keeps context recoverable if compression happens mid-fight.
 
 Format:
 ```
@@ -24,47 +31,42 @@ PCs:
 
 DEAD THIS FIGHT: comma-separated names
 
-Round N events: [2-3 sentence summary of what happened]
+Round N events: [2-3 sentence summary]
 ```
 
-**Spell slot tracking**: DnD Beyond is not reliably writable from this workflow. Treat the snapshot as the authoritative state for spell slots and prepared spells. Update the snapshot whenever a PC casts a spell — this is our record, not DDB's. At round start, do a spot-check against DDB (call `ddb_get_character` for each PC) and note any discrepancies in the snapshot without trying to correct DDB.
+**Spell slot tracking**: DDB isn't reliably writable here — treat the snapshot as authoritative
+for slots/prepared spells. Update it whenever a PC casts. At round start, spot-check against DDB
+(`ddb_get_character` per PC) and note discrepancies in the snapshot without correcting DDB.
 
-## Step 1: Orient yourself
+## Step 1: Orient
 
-Before parsing the narration, quickly call `list_tokens` and `get_turn_order` if you don't already have the current combat state in context. You need to know: who's on the map, what layer they're on, and their current HP.
+If you don't already have current state in context, call `list_tokens` and `get_turn_order`
+(who's on the map, what layer, current HP). Call `get_recent_chat limit=30` for this round's
+Beyond20 rolls — attack/damage totals you'll need to fill in numbers the DM doesn't state.
 
-Also call `get_recent_chat limit=30` to see any Beyond20 dice rolls that came in this round — attack rolls, damage totals — you'll need these to fill in numbers the DM doesn't explicitly state.
-
-**AoE templates are always pre-placed.** Whenever a player or the DM describes an AoE spell, assume a template token is already on the map (e.g. a cone, circle, or blast marker). Call `list_tokens` to find it (look for names like "60ft cone", "20ft radius", "AoE", or similar). Rename it to the spell (e.g. "Fireball", "Cloudkill") via `set_token_props`. Then use `find_tokens_in_range` centered on that token to get the intersection list — never guess targets by description alone.
+**AoE templates are pre-placed.** When an AoE is described, assume a template token is already on
+the map. `list_tokens` to find it (names like "60ft cone", "20ft radius", "AoE"), rename it to
+the spell via `set_token_props`, then `find_tokens_in_range` centered on it for the target list —
+never guess targets by description alone.
 
 ## Step 2: Parse the narration
 
-The DM's narration mixes player description with implicit mechanical info. Extract:
+Extract (see dm-rules.md for the condition/death/wound and voice-to-text rules):
 
-- **Damage events**: "the fireball catches the three goblins" → find goblin tokens, apply damage. Amount may be in the narration or in recent chat rolls. For AoE spells, check for a placed marker token first.
-- **NPC saves**: Auto-roll using `roll_dice`. Use stat block bonuses — don't ask the DM. Check for resistances (Ghost = fire resist, etc.) and apply them silently.
-- **PC saves**: Note as pending — the player rolls their own. Don't hold up the rest of the action list.
-- **Undead Fortitude**: When a zombie/undead drops to 0 HP from non-radiant, non-crit damage, roll Undead Fortitude (DC = 5 + damage taken) automatically.
-- **Conditions**: "the cultist is on fire" → `Burning`. "Heinz goes prone" → `Prone`. Use the campaign marker list.
-- **HP directly stated**: "Zeno drops to 8 HP" → set HP to 8.
-- **Deaths/unconscious**: "the goblin drops" → apply `Unconscious` / `dead` marker.
-- **Wounded marker**: Apply `Wounded::4444333` when a token drops below 50% max HP. Remove when healed above half.
-- **AoE template cleanup**: After resolving an AoE:
-  - One-shot spells (Fireball, Cone of Cold, Thunder Wave): remove the template token via `removeObject`.
-  - Persistent effects (Web, Cloudkill, Spike Growth, Wall of Fire): move the template to the map layer via `set_token_props layer="map"` so it lingers visually. Also rename it cleanly ("Cloudkill — Round N").
-- **Zones to clear**: "the web burns away" → remove via `removeObject` or `clear_zone`.
-- **Auras to set/clear**: concentration effects on tokens (use `set_token_props aura1_radius=…`).
-
-**Voice-to-text is noisy.** "Brucepolis" = Beucephalus. "Bogor Zombie" = Ogre Zombie. "Arcmaige" = Archmage. Resolve by fuzzy-matching against the token list — don't ask unless genuinely unresolvable.
-
-**Player names**: map to characters using the session's player→character table.
-
-**When damage is ambiguous**: check recent chat for a matching roll. Take the first/higher result without asking.
+- **Damage events** — find tokens, apply damage (amount from narration or recent chat rolls).
+- **NPC saves** — auto-roll via `roll_dice` using stat-block bonuses; apply resistances silently.
+- **PC saves** — note as pending; the player rolls their own. Don't hold up the action list.
+- **HP directly stated** — set HP to that value.
+- **Deaths/unconscious** — apply `Unconscious`/`dead`, then move dead tokens to the map layer.
+- **AoE template cleanup** — one-shot spells: `remove_object` the template. Persistent effects
+  (Web, Cloudkill, Spike Growth, Wall of Fire): move template to map layer + rename ("Cloudkill
+  — Round N").
+- **Zones/auras** — clear burned-away areas (`remove_object`/`clear_zone`); set/clear
+  concentration auras on tokens.
 
 ## Step 3: Propose before executing
 
-Output a numbered action list here in this chat. Be specific — include before/after HP:
-
+Output a numbered action list with before/after HP:
 ```
 1. Goblin the Savage: 8 damage (half, made save) → 7/15 HP
 2. Goblin the Bold: 16 damage (full, failed) → dead
@@ -73,44 +75,35 @@ Output a numbered action list here in this chat. Be specific — include before/
 5. Apply Prone to Heinz Craft
 6. NPC saves needed: roll Goblin CON saves (DC 14) on confirm
 ```
-
-Then say: **"Execute? (or say what to change)"**
+Then: **"Execute? (or say what to change)"**
 
 ## Step 4: Execute — dice first, then narration
 
-On confirmation ("yes", "go", "do it"):
+On confirmation ("yes/go/do it"):
 
-1. **Roll any needed NPC saves** via `roll_dice` — these appear in Roll20 chat for everyone to see.
-2. **Apply all HP changes and conditions** using the results.
-3. **Post a narration** to Roll20 chat via `send_narration` — dramatic description of what just happened, followed by a mechanic summary:
-
-```
-send_narration style=narration  → atmospheric description of the action
-send_narration style=combat     → bulleted outcome list, no exact HP numbers
-```
-
-Combat summary format — ASCII bar and Wounded marker are the HP readout; never post exact numbers:
+1. **Roll needed NPC saves** via `roll_dice` (visible in Roll20 chat).
+2. **Apply** all HP changes and conditions (use `batch_exec` for 2+ tokens).
+3. **Post narration** via `send_narration`: `style=narration` for atmosphere, then `style=combat`
+   for the outcome list. Use the ASCII bar + Wounded marker — **never exact HP numbers**:
 ```
 • Goblin the Bold → dead
 • Cultist → ████░░░░░░ Burning
 • Dante → ██░░░░░░░░ Wounded (2 failed death saves)
 • Lara → unconscious
 ```
+The narration + summary IS the table's confirmation prompt.
 
-The narration + mechanic summary IS the table's confirmation prompt. Players see the dice, read the outcome, and correct anything wrong.
+**Do not advance the turn** — wait for the DM to say so.
 
 ## Step 5: Top of round — recap + state check
 
-At the top of each new round (when the turn order cycles back to the first combatant):
+When the order cycles back to the first combatant:
 
-**1. Post a narrative recap** — use `style=dramatic`. Cover:
-- Key events: who hit whom, who fell, what spells landed
-- Turning points and deaths
-- Current stakes: who's down, who's in danger
-- No exact HP numbers in the recap. Wounded marker and bar are the player-facing readout.
+1. **Narrative recap** (`style=dramatic`): key events, who fell, what landed, current stakes. No
+   exact HP numbers.
+2. **Spot-check DDB** — `ddb_get_character` per surviving PC; compare slots to the snapshot. Note
+   discrepancies (DDB ahead = possible missed cast; DDB behind = possible external change) without
+   correcting DDB.
+3. **Check the turn hook** — if not firing, re-enable `set_turn_hook enabled=true`.
 
-**2. Spot-check DDB** — call `ddb_get_character` for each surviving PC. Compare spell slots against the snapshot. Note discrepancies in the session-combat-state.md without attempting to fix DDB. If a PC's DDB slot count is higher than our tracked count, note it as "DDB ahead of tracked — possible missed cast." If lower, note "DDB behind — possible external change."
-
-**3. Check the turn hook.** If not firing, re-enable with `set_turn_hook enabled=true`.
-
-Then ask: "Ready for next narration?"
+Then: "Ready for next narration?"
