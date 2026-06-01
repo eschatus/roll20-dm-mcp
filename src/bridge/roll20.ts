@@ -23,6 +23,20 @@ const READONLY_ACTIONS = new Set<string>([
   "findTokensInRange", "getJournalFolder", "ping",
 ]);
 
+// ─── Test seam ────────────────────────────────────────────────────────────────
+// When set (only by the test harness), relay/evaluate calls route here instead of
+// the live browser → chat → sandbox path, so the real combat/tactics tools can run
+// against an in-memory Roll20 emulator. Production never sets this; the default
+// path below is completely unaffected.
+export interface BridgeTestTransport {
+  relay<T>(cmd: Record<string, unknown>): Promise<T>;
+  evaluate<T>(fn: (args?: unknown) => T, args?: unknown): Promise<T>;
+}
+let _testTransport: BridgeTestTransport | null = null;
+export function __setBridgeTestTransport(t: BridgeTestTransport | null): void {
+  _testTransport = t;
+}
+
 let _editorPage: Page | null = null;
 let _loadedCampaignId: string | null = null;
 
@@ -145,11 +159,13 @@ export async function reconnectRoll20(opts: { hard?: boolean } = {}): Promise<{ 
 }
 
 export async function evaluate<T>(fn: () => T): Promise<T> {
+  if (_testTransport) return _testTransport.evaluate<T>(fn as (args?: unknown) => T);
   const page = await getEditorPage();
   return page.evaluate(fn);
 }
 
 export async function evaluateWithArgs<T>(fn: (args: unknown) => T, args: unknown): Promise<T> {
+  if (_testTransport) return _testTransport.evaluate<T>(fn, args);
   const page = await getEditorPage();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return page.evaluate(fn as any, args);
@@ -297,6 +313,9 @@ async function relayCommandOnce<T>(page: Page, cmd: Record<string, unknown>, non
 let _relayQueue: Promise<unknown> = Promise.resolve();
 
 export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
+  // Test harness routes every relay action through the in-memory emulator (bypasses rt/browser).
+  if (_testTransport) return _testTransport.relay<T>(cmd);
+
   // Browserless realtime transport (ROLL20_TRANSPORT=rt): push !ai-relay over Firebase and read
   // the Mod's AIBRIDGE_RESULT back. The Mod handles every action, so RT can serve all of them.
   // On ANY failure (auth, timeout, disconnect) fall back to the Playwright relay below — so
