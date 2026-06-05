@@ -72,6 +72,25 @@ behind a flag, or a mocked relay):
 - **State-diff harness:** snapshot relevant Roll20 state before/after a tool, diff it, and flag any
   unexpected field changes (catches "weird state changes the test didn't anticipate").
 
+## Findings from the first live test run (follow-ups)
+
+The new tests immediately earned their keep — two real issues surfaced:
+
+1. **RT transport falls back to the browser on a *Mod error*, not just a transport failure.**
+   `roll20.ts` `relayCommand` treats ANY `rtRelayCommand` rejection as a transport failure and
+   retries via the Playwright relay. But a legitimate Mod validation error (e.g. "no properties to
+   set") is a *successful* round-trip that the Mod chose to reject — re-running it via the browser is
+   wasteful and, for a mutating command that errored post-partial-write, risks a double-apply (the
+   browser fallback uses a fresh nonce, bypassing the idempotency cache). **Fix:** tag Mod-returned
+   errors distinctly (e.g. a `RelayModError`) and have the fallback re-throw those instead of
+   retrying; only fall back on real transport failures (timeout/auth/disconnect).
+
+2. **`getCharacterStats`/`getRawCharacter` can't read player-owned DDB characters (403).** They use
+   the direct character-service API, which only serves characters the account owns or that are
+   public; `getCharacter` already has a browser-page fallback for this — the stats readers don't.
+   **Fix:** give the stats readers the same 403→browser-fetch fallback (coordinate with the
+   `feat/ddb-browserless` work). Until then the DDB→Roll20 integration test skips on 403.
+
 ## Keep as the live smoke layer
 
 `src/recon/*` stays the manual pre-deploy smoke/soak layer; `soak-test.ts` is the canonical
