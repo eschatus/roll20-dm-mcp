@@ -47,9 +47,8 @@ function bootstrapToken(): string {
     }
   } catch {}
   console.error(
-    "\n[roll20-dm] First-time setup: ROLL20_MCP_TOKEN generated and saved.\n" +
-    `[roll20-dm] Token: ${token}\n` +
-    "[roll20-dm] Written to .env and .mcp.json — restart Claude Code to pick up the new header.\n",
+    "\n[roll20-dm] First-time setup: ROLL20_MCP_TOKEN generated and saved to .env and .mcp.json.\n" +
+    "[roll20-dm] Restart Claude Code to pick up the new header.\n",
   );
   process.env.ROLL20_MCP_TOKEN = token;
   return token;

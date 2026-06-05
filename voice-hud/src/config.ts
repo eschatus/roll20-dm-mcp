@@ -41,6 +41,7 @@ const CLOUD_TOOLS = [
   "apply_damage", "heal_character", "ddb_update_hp", // DDB-syncing HP
   "get_token_markers", "get_selection", "list_custom_states", // richer reads
   "clear_turn_order", "update_turn_order", "inject_round_marker", // turn-order
+  "set_turn_hook", "check_turn_hook", "plan_all_tactics", "plan_tactics", // combat start/round hooks
   "sync_character_state", "remove_object",
   "get_mob_plans",  // read persisted tactical plans for HUD display
   "ddb_get_character", "ddb_get_monster", "ddb_list_campaign_characters", "ddb_list_campaigns", // DDB reads

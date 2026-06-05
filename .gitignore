@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .env
+.mcp.json
 data/
 .tmp-test-data/
 .claude/worktrees/

@@ -311,8 +311,8 @@ async function runAgent(transcript: string) {
     if (latestTurnId) lastNarratedTurnId = latestTurnId;
     // Reload vocab from disk (agent may have called add_vocab/add_nickname) and
     // refresh roster names so names discovered this turn are in STT next utterance.
-    campaignData = loadCampaignData(activeSlug);
-    refreshRoster({ silent: true }).catch(() => {});
+    if (activeSlug) campaignData = loadCampaignData(activeSlug);
+    refreshRoster({ silent: true }).catch((e) => console.error("[roster] post-turn refresh failed:", (e as Error).message));
   } catch (err) {
     send("agent", { kind: "error", text: (err as Error).message });
   } finally {

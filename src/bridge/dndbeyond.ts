@@ -188,17 +188,21 @@ export async function getRawCharacter(ddbCharId: number): Promise<any> {
 }
 
 export async function getCharacter(ddbCharId: number): Promise<DdbCharacter> {
-  if (ddbRtEnabled()) return rtGetRawCharacter(ddbCharId) as Promise<DdbCharacter>;
-
-  // Try direct API first (works for own characters and public sheets).
-  // Fall back to browser page interception for DM-accessible sheets that reject direct API auth.
-  try {
-    const data = await ddbFetch<{ data: DdbCharacter }>(`${DDB_CHARACTER_SERVICE}/character/${ddbCharId}`);
-    return data.data;
-  } catch (err) {
-    if (!String(err).includes("403")) throw err;
+  if (ddbRtEnabled()) {
+    // RT path: on 403 fall through to the browser intercept (DM-accessible sheets that
+    // reject direct API auth still need the page-navigation workaround).
+    try { return await rtGetRawCharacter(ddbCharId) as DdbCharacter; }
+    catch (err) { if (!String(err).includes("403")) throw err; }
+  } else {
+    try {
+      const data = await ddbFetch<{ data: DdbCharacter }>(`${DDB_CHARACTER_SERVICE}/character/${ddbCharId}`);
+      return data.data;
+    } catch (err) {
+      if (!String(err).includes("403")) throw err;
+    }
   }
 
+  // Browser intercept fallback — only for DM-accessible sheets that return 403 on direct API.
   const page = await getPage("ddb");
   const responsePromise = page.waitForResponse(
     (resp) => resp.url().includes(`/character/${ddbCharId}`) && resp.request().method() === "GET" && resp.status() === 200,
