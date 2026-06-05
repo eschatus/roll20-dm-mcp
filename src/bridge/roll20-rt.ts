@@ -23,6 +23,8 @@ import {
 import { getPage } from "./browser.js";
 import type { Page } from "playwright";
 import { getActiveCampaign } from "../registry/campaigns.js";
+import { resolveMarkerForState } from "./markers.js";
+import { trackCustomState, getCustomStates as getCustomStatesStore } from "./relayState.js";
 
 // Public web config captured from the live editor (safe to embed — it's the client config).
 const FIREBASE_CONFIG = {
@@ -319,6 +321,21 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
         const n = Math.min(Number(cmd.limit) || 50, chatBuffer.length);
         return chatBuffer.slice(-n);
       }
+      case "getCustomStates": {
+        const cs = getCustomStatesStore(getActiveCampaign().roll20CampaignId);
+        const out: { state: string; tag: string; tokens: { id: string; name: string }[] }[] = [];
+        for (const key of Object.keys(cs)) {
+          const entry = cs[key];
+          const tokens: { id: string; name: string }[] = [];
+          for (const tid of entry.tokens) {
+            const p = await rtFindTokenPage(tid);
+            const t = p ? await rtGet<Record<string, unknown>>(`graphics/page/${p}/${tid}`).catch(() => null) : null;
+            tokens.push({ id: tid, name: String(t?.name || "") });
+          }
+          out.push({ state: key, tag: entry.tag, tokens });
+        }
+        return out;
+      }
       case "getTurnOrder": {
         const campaign = await rtGet<Record<string, unknown>>("campaign");
         return parseTurnorder(campaign?.turnorder);
@@ -432,6 +449,23 @@ async function tryDirectWrite(cmd: Record<string, unknown>): Promise<unknown | t
         else if (!cmd.active && i !== -1) markers.splice(i, 1);
         await rtUpdate(`graphics/page/${pid}/${cmd.tokenId}`, { statusmarkers: markers.join(",") });
         return { ok: true };
+      }
+      case "toggleCondition": {
+        const cond = String(cmd.condition || "").toLowerCase().trim();
+        if (!cond) return NOT_HANDLED;
+        const pid = await rtFindTokenPage(cmd.tokenId as string, cmd.pageId as string | undefined);
+        if (!pid) return NOT_HANDLED;
+        const res = resolveMarkerForState(cond);
+        const tok = await rtGet<Record<string, unknown>>(`graphics/page/${pid}/${cmd.tokenId}`);
+        const markers = String(tok?.statusmarkers || "").split(",").filter(Boolean);
+        const i = markers.indexOf(res.tag);
+        if (cmd.active && i === -1) markers.push(res.tag);
+        else if (!cmd.active && i !== -1) markers.splice(i, 1);
+        await rtUpdate(`graphics/page/${pid}/${cmd.tokenId}`, { statusmarkers: markers.join(",") });
+        // active_conditions sheet attr is vestigial (conditions are derived from statusmarkers), so
+        // we don't write it. Only tier-2 custom states need tracking for getCustomStates.
+        if (res.tier === "custom") trackCustomState(getActiveCampaign().roll20CampaignId, res.key, res.tag, cmd.tokenId as string, !!cmd.active);
+        return { ok: true, marker: res.tag, tier: res.tier };
       }
       default:
         return NOT_HANDLED;
