@@ -1,6 +1,7 @@
 import { Page } from "playwright";
-import { getPage } from "./browser.js";
+import { getPage, closeBrowser } from "./browser.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
+import { rtEnabled, rtRelayCommand } from "./roll20-rt.js";
 
 const RELAY_TIMEOUT_MS = 30_000;
 
@@ -74,6 +75,15 @@ const OBSERVER_SCRIPT = `(function() {
 async function getEditorPage(): Promise<Page> {
   const { roll20CampaignId } = getActiveCampaign();
 
+  // Discard a cached editor page that's been closed (Roll20 tab/window closed, or the
+  // Chromium restarted out from under a long-lived server) — otherwise we keep handing back
+  // a dead handle and every relay call fails instantly with "Target page, context or browser
+  // has been closed". (DDB stays working in this state because it's a separate page handle.)
+  if (_editorPage && _editorPage.isClosed()) {
+    _editorPage = null;
+    _loadedCampaignId = null;
+  }
+
   if (_editorPage && _loadedCampaignId === roll20CampaignId) return _editorPage;
 
   const page = _editorPage ?? (await getPage("roll20"));
@@ -113,6 +123,27 @@ async function getEditorPage(): Promise<Page> {
   return page;
 }
 
+// Force a clean rebind of the browser + Roll20 editor page. The bridge self-heals lazily
+// (closed handles are evicted on the next call), but a wedged/zombie page can pass the
+// isClosed()/isConnected() checks while still failing every command. This explicitly tears
+// down BOTH layers — the roll20 editor-page cache here AND the Chromium context in browser.ts
+// — then re-acquires from scratch (relaunch or CDP reattach, re-navigate to the active
+// campaign, reinstall the chat observer). Exposed as the reconnect_browser MCP tool.
+export async function reconnectRoll20(opts: { hard?: boolean } = {}): Promise<{ url: string; hard: boolean }> {
+  const hard = opts.hard !== false; // default true
+  // Don't leave callers hanging on the dead page's nonces.
+  for (const { reject } of pendingRelays.values()) reject(new Error("relay reconnecting"));
+  pendingRelays.clear();
+  _editorPage = null;
+  _loadedCampaignId = null;
+  if (hard) {
+    // Close the whole Chromium context so a zombie page/browser can't survive the rebind.
+    await closeBrowser().catch(() => {});
+  }
+  const page = await getEditorPage(); // relaunch/reattach + navigate + reinstall observer
+  return { url: page.url(), hard };
+}
+
 export async function evaluate<T>(fn: () => T): Promise<T> {
   const page = await getEditorPage();
   return page.evaluate(fn);
@@ -131,6 +162,105 @@ const BACKBONE_READS: Record<string, () => unknown> = {
     const raw = (window as any).Campaign.get("turnorder");
     return raw ? JSON.parse(raw) : [];
   },
+};
+
+// --- Client-direct READS ---
+// Reads served straight from the browser's live Backbone models (Campaign.activePage().thegraphics,
+// Campaign.get("token_markers")) — synchronous, no chat round-trip, no Mod, no timeout. WRITES stay
+// on the server-authoritative Mod relay (guaranteed propagation). Each evaluator throws on any
+// surprise (page not loaded, token on a non-active page, unexpected client shape) → relayCommand
+// catches and falls back to the Mod relay, so this can only ever be faster, never less correct.
+// Confirmed live (2026-06-02): `Campaign.activePage().thegraphics` is the token collection with
+// `.get(id)`; models expose `.get(attr)`. `window.d20` no longer exists in this build.
+type ClientRead = (page: Page, args: Record<string, any>) => Promise<unknown>;
+
+// Pages the automation browser actually has graphics loaded for: the page it's VIEWING
+// (activePage) and the PLAYER-ribbon page (where combat tokens live). Any other page may have
+// unloaded graphics that only the server-side Mod can see — so we never serve those client-side.
+// Each evaluator re-derives this guard inline (page.evaluate can't close over Node scope).
+
+const CLIENT_READS: Record<string, ClientRead> = {
+  // Mirrors the Mod's tokenSummary(profile) shape exactly. Serves only a loaded page (player/active).
+  getTokens: (page, args) => page.evaluate((a: any) => {
+    const C = (window as any).Campaign;
+    if (!C) throw new Error("Campaign not ready");
+    const playerId = C.get("playerpageid");
+    const activeId = C.activePage ? C.activePage().id : null;
+    const pid = a.pageId || playerId;                  // combat reads target the PLAYER page, not activePage
+    if (pid !== playerId && pid !== activeId) throw new Error("page " + pid + " not loaded client-side → Mod");
+    const pg = C.pages && C.pages.get ? C.pages.get(pid) : null;
+    if (!pg || !pg.thegraphics || !pg.thegraphics.models) throw new Error("graphics not loaded for " + pid);
+    const profile = a.profile || "full";
+    return pg.thegraphics.models.map((g: any) => {
+      const s: any = { id: g.id, name: g.get("name"), represents: g.get("represents") || "", controlledby: g.get("controlledby") || "", layer: g.get("layer") };
+      if (profile === "lean") return s;
+      s.bar1_value = g.get("bar1_value"); s.bar1_max = g.get("bar1_max"); s.statusmarkers = g.get("statusmarkers");
+      if (profile === "status") return s;
+      s.left = g.get("left"); s.top = g.get("top"); s.width = g.get("width"); s.height = g.get("height");
+      return s;
+    });
+  }, args),
+
+  // Full token props. Searches the loaded pages (player + active); throws if not found so the Mod
+  // (global getObj) does the authoritative lookup across all pages.
+  getTokenById: (page, args) => page.evaluate((a: any) => {
+    const C = (window as any).Campaign;
+    const ids = [C.get("playerpageid"), C.activePage ? C.activePage().id : null].filter(Boolean);
+    let g: any = null;
+    for (const pid of ids) {
+      const pg = C.pages && C.pages.get ? C.pages.get(pid) : null;
+      if (pg && pg.thegraphics && pg.thegraphics.get) { const f = pg.thegraphics.get(a.tokenId); if (f) { g = f; break; } }
+    }
+    if (!g) throw new Error("token not on loaded pages: " + a.tokenId);
+    return {
+      id: g.id, name: g.get("name"), represents: g.get("represents") || "", layer: g.get("layer"),
+      controlledby: g.get("controlledby") || "", left: g.get("left"), top: g.get("top"),
+      width: g.get("width"), height: g.get("height"), rotation: g.get("rotation"),
+      imgsrc: g.get("imgsrc"), statusmarkers: g.get("statusmarkers") || "",
+      bar1_value: g.get("bar1_value"), bar1_max: g.get("bar1_max"),
+      bar2_value: g.get("bar2_value"), bar2_max: g.get("bar2_max"),
+      bar3_value: g.get("bar3_value"), bar3_max: g.get("bar3_max"),
+      aura1_radius: g.get("aura1_radius"), aura1_color: g.get("aura1_color"), aura1_square: g.get("aura1_square"), showplayers_aura1: g.get("showplayers_aura1"),
+      aura2_radius: g.get("aura2_radius"), aura2_color: g.get("aura2_color"), aura2_square: g.get("aura2_square"), showplayers_aura2: g.get("showplayers_aura2"),
+      tint_color: g.get("tint_color"), light_radius: g.get("light_radius"), light_dimradius: g.get("light_dimradius"),
+      gmnotes: g.get("gmnotes") || "",
+    };
+  }, args),
+
+  // Mirrors the Mod's findTokensInRange (page scale → ft, nearest-first). Loaded page only.
+  findTokensInRange: (page, args) => page.evaluate((a: any) => {
+    const C = (window as any).Campaign;
+    if (!C) throw new Error("Campaign not ready");
+    const playerId = C.get("playerpageid");
+    const activeId = C.activePage ? C.activePage().id : null;
+    const pid = a.pageId || playerId;
+    if (pid !== playerId && pid !== activeId) throw new Error("page " + pid + " not loaded client-side → Mod");
+    const pg = C.pages && C.pages.get ? C.pages.get(pid) : null;
+    if (!pg || !pg.thegraphics) throw new Error("graphics not loaded for " + pid);
+    const center = pg.thegraphics.get(a.centerTokenId);
+    if (!center) throw new Error("center token not found: " + a.centerTokenId);
+    const pixelsPerFoot = 70 / (pg.get("scale_number") || 5);
+    const cx = center.get("left"), cy = center.get("top");
+    const radiusFeet = a.radiusFeet || 15;
+    const results: any[] = [];
+    pg.thegraphics.models.forEach((g: any) => {
+      if (g.id === a.centerTokenId) return;
+      if (a.layerFilter && g.get("layer") !== a.layerFilter) return;
+      const dx = g.get("left") - cx, dy = g.get("top") - cy;
+      const distFeet = Math.sqrt(dx * dx + dy * dy) / pixelsPerFoot;
+      if (distFeet <= radiusFeet) results.push({ id: g.id, name: g.get("name"), layer: g.get("layer"), distanceFeet: Math.round(distFeet * 10) / 10, bar1_value: g.get("bar1_value"), bar1_max: g.get("bar1_max"), controlledby: g.get("controlledby") || "" });
+    });
+    results.sort((x, y) => x.distanceFeet - y.distanceFeet);
+    return results;
+  }, args),
+
+  // Campaign-level marker registry (mirrors the Mod's getTokenMarkers).
+  getTokenMarkers: (page) => page.evaluate(() => {
+    const C = (window as any).Campaign;
+    const raw = C.get("token_markers");
+    const m = typeof raw === "string" ? JSON.parse(raw) : (raw || []);
+    return m.map((x: any) => ({ id: x.id, name: x.name, tag: x.tag }));
+  }),
 };
 
 async function sendToChat(page: Page, payload: string): Promise<void> {
@@ -167,12 +297,46 @@ async function relayCommandOnce<T>(page: Page, cmd: Record<string, unknown>, non
 let _relayQueue: Promise<unknown> = Promise.resolve();
 
 export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
-  // Short-circuit read-only commands that can be served directly from Backbone models.
-  const reader = BACKBONE_READS[cmd.action as string];
-  if (reader) {
-    return getEditorPage().then(page => page.evaluate(reader as () => T));
+  // Browserless realtime transport (ROLL20_TRANSPORT=rt): push !ai-relay over Firebase and read
+  // the Mod's AIBRIDGE_RESULT back. The Mod handles every action, so RT can serve all of them.
+  // On ANY failure (auth, timeout, disconnect) fall back to the Playwright relay below — so
+  // enabling RT can only ever be faster/lighter, never less capable.
+  if (rtEnabled()) {
+    return rtRelayCommand<T>(cmd).catch((err) => {
+      console.error(`[roll20] rt transport ${cmd.action} → browser fallback: ${(err as Error).message}`);
+      return _relayDefault<T>(cmd);
+    });
+  }
+  return _relayDefault<T>(cmd);
+}
+
+function _relayDefault<T>(cmd: Record<string, unknown>): Promise<T> {
+  const action = cmd.action as string;
+
+  // Client-direct reads: serve from the browser's live Backbone models. On ANY error, fall back
+  // to the Mod relay — so this is strictly faster-or-equal, never less correct.
+  const client = CLIENT_READS[action];
+  if (client) {
+    return getEditorPage()
+      .then((page) => client(page, cmd as Record<string, any>) as Promise<T>)
+      .catch((err) => {
+        console.error(`[roll20] client-direct ${action} → relay fallback: ${(err as Error).message}`);
+        return _relayViaChat<T>(cmd);
+      });
   }
 
+  // Legacy zero-arg Backbone reads (turn order).
+  const reader = BACKBONE_READS[action];
+  if (reader) {
+    return getEditorPage().then((page) => page.evaluate(reader as () => T));
+  }
+
+  return _relayViaChat<T>(cmd);
+}
+
+// The original chat-relay path: serialized queue → !ai-relay command → AIBRIDGE_RESULT round-trip.
+// Used for writes and anything without a client-direct evaluator.
+function _relayViaChat<T>(cmd: Record<string, unknown>): Promise<T> {
   const queued = _relayQueue.then(() => _relayCommandRaw<T>(cmd));
   _relayQueue = queued.catch(() => {});
   return queued;

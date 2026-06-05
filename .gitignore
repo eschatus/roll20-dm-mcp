@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 data/
+.tmp-test-data/
 .claude/settings.json
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
