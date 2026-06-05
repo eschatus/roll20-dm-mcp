@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as campaigns from "../registry/campaigns.js";
+import { reconnectRoll20 } from "../bridge/roll20.js";
 
 export function registerCampaignTools(server: McpServer): void {
   server.tool(
@@ -119,6 +120,36 @@ export function registerCampaignTools(server: McpServer): void {
           },
         ],
       };
+    }
+  );
+
+  server.tool(
+    "reconnect_browser",
+    "Force-rebind the Playwright browser + Roll20 page when relay commands or reads start failing/hanging with 'Target page, context or browser has been closed' (browser crashed, tab closed, page wedged, hooks dead). Tears down the cached Chromium context AND the Roll20 editor-page handle, then relaunches/reattaches and re-navigates to the active campaign. Use this instead of restarting the whole MCP server.",
+    {
+      hard: z
+        .boolean()
+        .optional()
+        .describe("Default true: fully close the Chromium context before relaunching (kills a zombie browser). Set false for a soft re-acquire that reattaches if the browser is still alive."),
+    },
+    async ({ hard }) => {
+      let name = "(unknown campaign)";
+      try { name = campaigns.getActiveCampaign().name; } catch { /* no active campaign — still fine to rebind */ }
+      try {
+        const res = await reconnectRoll20({ hard: hard !== false });
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Rebound Roll20 browser (${res.hard ? "hard relaunch/reattach" : "soft re-acquire"}) for "${name}" — page at ${res.url}`,
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Reconnect failed: ${(err as Error).message}. If the profile is locked, close stray Chromium windows and retry, or restart the MCP server.` }],
+        };
+      }
     }
   );
 }

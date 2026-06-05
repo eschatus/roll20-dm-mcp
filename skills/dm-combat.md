@@ -11,6 +11,8 @@ Use instead:
 - **`/combat`** (`.claude/commands/combat.md`) — combat-start choreography.
 - **`/round`** (`.claude/commands/round.md`) — round narration parsing + execution.
 
-For natural-language combat sync, the real tools are `update_token_hp` (NPC tokens),
-`apply_damage` / `heal_character` (registered PCs synced to DDB), and `set_token_marker` (single
-status marker). There is no `apply_condition`/`remove_condition`.
+For natural-language combat sync, the real tools are `update_token_hp` (HP for any token —
+auto-routes NPC HP to the token bar, PC HP to relay state memory), `update_hp_many` (area
+effects), and `set_token_marker` (single status marker). There is no `apply_condition`/
+`remove_condition`. **D&D Beyond is read-only** — only players change their own DDB HP; there is
+no `ddb_update_hp`/`apply_damage`/`heal_character`.

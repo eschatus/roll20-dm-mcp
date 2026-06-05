@@ -1,12 +1,8 @@
 {
   "mcpServers": {
     "roll20-dm": {
-      "type": "stdio",
-      "command": "node",
-      "args": [
-        "E:\\personalProjects\\roll20-dm-mcp\\dist\\index-combat.js"
-      ],
-      "cwd": "E:\\personalProjects\\roll20-dm-mcp"
+      "type": "http",
+      "url": "http://127.0.0.1:39200/mcp"
     },
     "roll20-dm-maps": {
       "type": "stdio",

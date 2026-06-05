@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { registerCampaignTools } from "./tools/campaigns.js";
+import { registerCampaignContextTools } from "./tools/campaignContext.js";
 import { registerCombatTools } from "./tools/combat.js";
 import { registerDdbTools } from "./tools/ddb.js";
 import { registerVisionTools } from "./tools/vision.js";
@@ -16,6 +17,7 @@ export function buildCombatServer(): McpServer {
   });
 
   registerCampaignTools(server);
+  registerCampaignContextTools(server);
   registerCombatTools(server);
   registerDdbTools(server);
   registerVisionTools(server);

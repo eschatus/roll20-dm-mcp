@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import "dotenv/config";
 
 import { registerCampaignTools } from "./tools/campaigns.js";
+import { registerCampaignContextTools } from "./tools/campaignContext.js";
 import { registerMapTools } from "./tools/maps.js";
 import { registerTokenTools } from "./tools/tokens.js";
 import { registerVisionTools } from "./tools/vision.js";
@@ -13,6 +14,7 @@ const server = new McpServer({
 });
 
 registerCampaignTools(server);
+registerCampaignContextTools(server);
 registerMapTools(server);
 registerTokenTools(server);
 registerVisionTools(server);

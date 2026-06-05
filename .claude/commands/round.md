@@ -83,8 +83,9 @@ On confirmation ("yes/go/do it"):
 
 1. **Roll needed NPC saves** via `roll_dice` (visible in Roll20 chat).
 2. **Apply** all HP changes and conditions (use `batch_exec` for 2+ tokens).
-3. **Post narration** via `send_narration`: `style=narration` for atmosphere, then `style=combat`
-   for the outcome list. Use the ASCII bar + Wounded marker — **never exact HP numbers**:
+3. **Post the receipt** via `send_narration` (`style=combat`): the outcome list only — no
+   atmosphere prose, the DM narrates. Add at most one short line of color. Use the ASCII bar +
+   Wounded marker — **never exact HP numbers**:
 ```
 • Goblin the Bold → dead
 • Cultist → ████░░░░░░ Burning
@@ -99,8 +100,8 @@ The narration + summary IS the table's confirmation prompt.
 
 When the order cycles back to the first combatant:
 
-1. **Narrative recap** (`style=dramatic`): key events, who fell, what landed, current stakes. No
-   exact HP numbers.
+1. **Terse mechanical summary**: who fell, active conditions, effect countdowns, current stakes
+   in a line or two. No exact HP numbers, no dramatic recap — the DM delivers the drama.
 2. **Spot-check DDB** — `ddb_get_character` per surviving PC; compare slots to the snapshot. Note
    discrepancies (DDB ahead = possible missed cast; DDB behind = possible external change) without
    correcting DDB.
