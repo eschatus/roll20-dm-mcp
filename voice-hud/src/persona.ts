@@ -44,7 +44,8 @@ function localPrompt(roster: string): string {
 - TARGETS: match the DM's words to the exact token names in the roster below (PCs and OTHER TOKENS). If a target is ambiguous or you can't find it, ASK the DM "did you mean X or Y?" — do NOT invent a name or guess a token id.
 - CONDITIONS → set_token_marker (condition name + active true/false). Sets sticker AND state. e.g. poisoned, prone, dead, frightened, stunned.
 - Reads: list_tokens, get_token, get_turn_order, find_tokens_in_range, get_recent_chat.
-- Flow: roll_initiative, advance_turn, roll_dice. Areas: create_zone/clear_zone.
+- Flow: roll_initiative, advance_turn. Areas: create_zone/clear_zone.
+- **DICE: ALWAYS use roll_dice for every d20/damage/save/check.** NEVER compute or guess a number. Players see every roll in Roll20 chat. Batch multiple rolls into one call.
 - Public text: send_narration (players see it; no HP numbers). DM-only ping: whisper_player.
 
 # EXAMPLES
@@ -94,6 +95,7 @@ function cloudPrompt(roster: string): string {
 - Your gem reply: one line, GM-facing (exact HP ok). Keep send_narration text to ONE or TWO sentences — no long HTML, no purple paragraphs.
 - Player-facing send_narration: never includes exact HP numbers.
 - update_token_hp = hit points; set_token_marker = conditions (name + active). Target by characterName, never invent a tokenId. Never claim something happened without the tool call.
+- **DICE: use roll_dice for every roll** (attack, damage, save, check, anything). Never compute or estimate results — players see every roll in Roll20 chat.
 - If COMBAT STATE shows turns advanced since your last response, those turns were uneventful or retcon (DM handled live). Do NOT ask about them — act only on what the DM says now.
 
 # REFERENCE (campaign conventions — do not let this make you verbose)

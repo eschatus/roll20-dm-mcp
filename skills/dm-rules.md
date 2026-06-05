@@ -16,6 +16,10 @@ convenience would conflict with a rule below, the rule wins.
 
 ## Hard rules (never violate)
 
+- **All dice MUST go through Roll20.** Every d4/d6/d8/d10/d12/d20/d100 roll — attack, damage,
+  save, check, Undead Fortitude, death save, anything — must use `roll_dice`. Never compute,
+  estimate, or guess a result in your head. Players see every roll in Roll20 chat; that visibility
+  is non-negotiable. Batch multiple rolls into one `roll_dice` call (multiple items in the array).
 - **PC initiative is read-only.** Never roll, set, or modify a player's initiative. Always
   `roll_initiative` with `npcOnly=true`. Players roll their own.
 - **Never write the turn order wholesale.** Never call `setTurnOrder` / pass a full order —
