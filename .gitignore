@@ -3,6 +3,7 @@ dist/
 .env
 data/
 .tmp-test-data/
+.claude/worktrees/
 .claude/settings.json
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
