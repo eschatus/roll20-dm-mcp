@@ -1,54 +1,86 @@
 # roll20-dm-mcp
 
-MCP server for AI-assisted D&D 5e session management on Roll20. Two servers in one repo:
+AI-assisted D&D 5e session management for Roll20 + D&D Beyond. Three components:
 
-- **`roll20-dm` (combat)** — real-time combat assistant: HP tracking, conditions, initiative, dice rolls, narration, turn hooks, AoE targeting, zones, and a per-monster tactical AI advisor.
-- **`roll20-dm-maps` (maps)** — map prep pipeline: upload battlemaps, auto-place dynamic lighting walls via Claude Vision analysis, token creation. Used between sessions.
-
-Both talk to Roll20 via a Playwright browser session + a deployed Roll20 Mod script (`ai-relay.js`). D&D Beyond is read-only (HP sync, character/monster stat lookups).
+- **`roll20-dm` MCP server** — live combat assistant over HTTP: HP tracking, conditions, initiative, dice, narration, turn hooks, AoE targeting, zones, tactical AI advisor, DDB character/monster reads.
+- **`roll20-dm-maps` MCP server** — map prep pipeline (stdio): upload battlemaps, auto-place dynamic lighting walls via Claude Vision, token creation.
+- **Voice HUD** (`voice-hud/`) — transparent Electron overlay: push-to-talk → Whisper STT → Claude agent → live tabletop. The DM speaks; the gem acts.
 
 ## Architecture
 
 ```
-Claude Code (Claude Sonnet)
-    │  MCP tool calls (JSON-RPC over stdio)
-    ▼
-MCP Server (TypeScript, local process)
-    ├──► Anthropic API  (tactical advisor — Haiku / Sonnet / Opus cascade)
-    │
-    ├──► Playwright → roll20.net  (persistent browser session)
-    │         │  !ai-relay {JSON} → Roll20 chat
-    │         ▼
-    │    Roll20 Mod Script  (mod-scripts/ai-relay.js)
-    │    deployed in campaign API editor
-    │    ← result whispered back as hidden div, read by MutationObserver
-    │
-    └──► D&D Beyond  (REST, cobalt cookie auth, read-only)
+┌─────────────────────────────────────────────────────┐
+│  Voice HUD (Electron)                               │
+│  PTT → Whisper STT → Claude Haiku agent             │
+│  transparent gem overlay, always on top             │
+└────────────────────┬────────────────────────────────┘
+                     │ HTTP MCP (bearer auth, port 39200)
+┌────────────────────▼────────────────────────────────┐
+│  roll20-dm MCP server (HTTP, src/index-http.ts)     │
+│                                                     │
+│  ┌── RT transport (default) ──────────────────┐     │
+│  │  Firebase RTDB direct reads (~50ms warm)   │     │
+│  │  signInWithCustomToken (harvested once,     │     │
+│  │  cached to data/roll20-rt-token.json)       │     │
+│  └────────────────────────────────────────────┘     │
+│                                                     │
+│  ┌── Mod relay (writes + fallback) ───────────┐     │
+│  │  Playwright → roll20.net                   │     │
+│  │  !ai-relay {JSON} → Roll20 chat            │     │
+│  │  ← result via MutationObserver             │     │
+│  └────────────────────────────────────────────┘     │
+│                                                     │
+│  ┌── D&D Beyond (browserless) ────────────────┐     │
+│  │  CobaltSession cookie → JWT (ttl 300s)     │     │
+│  │  character-service / monster-service       │     │
+│  │  plain fetch, no browser needed            │     │
+│  └────────────────────────────────────────────┘     │
+└─────────────────────────────────────────────────────┘
+
+Claude Code (separate MCP client, same server)
+  └── map prep, session setup, /combat, /round skills
 ```
 
-### Browser session sharing
+### Transport layers
 
-Two MCP server processes share a single browser window. On startup each server tries `connectOverCDP(localhost:9222)` first; if no existing browser is found, it launches a new Playwright persistent context with `--remote-debugging-port=9222`. This eliminates the "profile already in use" error when both servers run simultaneously.
+| Layer | Read latency | Write latency | When used |
+|---|---|---|---|
+| RT (Firebase RTDB) | ~50ms warm | — | Token reads, turn order, page state |
+| Mod relay (Playwright) | 3–4s | 3–4s | All writes; read fallback if RT unavailable |
+| DDB REST | ~200ms | — | Character sheets, monster stats, campaign roster |
+
+The browser window opens only for the initial RT token harvest and for write-relay commands. It closes automatically after token harvest and reopens on demand.
 
 ## Setup
 
 ```bash
 cp .env.example .env
-# Fill in: ANTHROPIC_API_KEY, ROLL20_EMAIL, ROLL20_PASSWORD, DDB_EMAIL, DDB_PASSWORD
+# Required: ANTHROPIC_API_KEY, ROLL20_EMAIL, ROLL20_PASSWORD
+# Optional: DDB_COBALT (skip browser harvest), ROLL20_MCP_TOKEN (auto-generated if absent)
 
 npm install
 npx playwright install chromium
 npm run build
 ```
 
+### First run
+
+```bash
+npm run serve          # starts roll20-dm HTTP server on port 39200
+```
+
+On first run with no `ROLL20_MCP_TOKEN` in `.env`, the server auto-generates a token, writes it to `.env`, and updates `.mcp.json` with the bearer header. Restart Claude Code once to pick up the new header.
+
+`.mcp.json` is gitignored — it contains the live bearer token and is regenerated automatically.
+
 ## MCP server registration
 
-Servers are defined in `.mcp.json` and auto-discovered by Claude Code. No manual setup needed.
+Servers are defined in `.mcp.json` (gitignored, auto-managed):
 
-| Key | Entry point | Use when |
-|---|---|---|
-| `roll20-dm` | `dist/index-combat.js` | Running a live session |
-| `roll20-dm-maps` | `dist/index-maps.js` | Preparing maps between sessions |
+| Key | Transport | Entry point | Use when |
+|---|---|---|---|
+| `roll20-dm` | HTTP (port 39200) | `src/index-http.ts` (`npm run serve`) | Live session or Voice HUD |
+| `roll20-dm-maps` | stdio | `dist/index-maps.js` | Map prep between sessions |
 
 ## Deploy the Roll20 Mod script
 
@@ -56,70 +88,75 @@ Servers are defined in `.mcp.json` and auto-discovered by Claude Code. No manual
 2. Create a new script, paste `mod-scripts/ai-relay.js`
 3. Save — active immediately, no restart needed
 
-The relay receives `!ai-relay {JSON}` commands and whispers results back as hidden divs that a MutationObserver delivers to the MCP server without polling.
+The relay receives `!ai-relay {JSON}` commands and whispers results back as hidden divs read by a MutationObserver in the Playwright session.
 
-## First run
+## Voice HUD
 
-1. Start Claude Code in this directory
-2. The first tool call opens a browser window. Log in to Roll20 and D&D Beyond if the session isn't already persisted.
-3. Sessions persist to `data/browser-session/` and reuse on restart.
+The scrying gem — a transparent cushion-cut crystal overlay that floats above Roll20 in the corner of the screen.
+
+```bash
+cd voice-hud
+npm install
+npm run start          # builds + launches Electron
+```
+
+**Controls:**
+- Hold **Right Ctrl** → speak → release to send (configurable via `DMW_PTT_KEY`)
+- **Right Shift** to confirm a proposed write action
+- **Esc** to cancel
+- Click the ✥ handle to drag the gem
+- Click the ✦ icon to open the Scrying Ledger (full panel with Chat, Config, Debug tabs)
+
+**Agent:** defaults to Anthropic cloud (Claude Haiku). Brain buttons in the Chat tab switch between local Ollama and cloud; selection persists across restarts.
+
+**STT:** faster-whisper `large-v3-turbo` on CUDA. Character names, nicknames, and campaign vocab are injected as `initial_prompt` for every transcription, updated after each agent turn.
+
+**Config:** all runtime knobs (PTT key, STT model, MCP URL, provider, etc.) are exposed in the Scrying Ledger Config tab and persisted to `voice-hud/.env`.
+
+**Debug:** the Scrying Ledger Debug tab streams the main process `console.error` log live, with 500-entry history.
+
+## Campaign context
+
+`data/campaign-context.json` is the shared source of truth for per-campaign vocab, nickname aliases, and DM notes. Both the MCP server tools (`add_vocab`, `add_nickname`, `set_campaign_notes`) and the Voice HUD wizard panel read and write this file. The agent can extend it at any time via tool calls.
 
 ## Claude Code skills
 
 `.claude/commands/` contains slash commands for live sessions:
 
-- `/combat` — session startup: switch campaign, list tokens, enable turn hook, roll initiative, start player inbox loop
-- `/round` — parse DM voice narration → auto-roll NPC saves → apply HP/conditions → post styled narration to Roll20 chat
+- `/combat` — session startup: switch campaign, list tokens, enable turn hook, roll NPC initiative, arm player inbox loop, plan all tactics
+- `/round` — parse DM narration → propose action list (HP changes, conditions, narration) → execute on confirmation
 
 ## Tactical Advisor
 
-The tactical advisor (`plan_tactics` / `plan_all_tactics`) generates per-monster turn plans scaled to the creature's Intelligence and Wisdom:
+`plan_tactics` / `plan_all_tactics` generates per-monster turn plans scaled to creature Intelligence and Wisdom. Called automatically at combat start and at the top of each round (both from the `/combat` skill and the Voice HUD agent).
 
 | Tier | Int/Wis avg | Model | Behavior |
 |---|---|---|---|
-| 0 Feral | ≤5 | Haiku | Pure instinct, one move |
+| 0 Feral | ≤5 | Haiku | Pure instinct |
 | 1 Dim | ≤8 | Haiku | Basic predatory logic |
 | 2 Average | ≤11 | Sonnet | Reads the battlefield |
 | 3 Sharp | ≤15 | Sonnet + thinking | Coordinates with allies |
-| 4 Brilliant | ≤20 | Sonnet + extended thinking | Short + medium-term cascade |
+| 4 Brilliant | ≤20 | Sonnet + extended thinking | Short + medium-term planning |
 | 5 Mastermind | 21+ | Opus + extended thinking | Full 3-stage strategic cascade |
 
-**Context injected per plan:**
-- Monster abilities (from Roll20 character sheet `npcaction` repeating section, or DDB compendium fallback)
-- Tactical doctrine (Ammann *flee, Mortal, flee* excerpts, keyed by creature type)
-- Battlefield: nearby enemies with HP status and range band (`adjacent / near / mid / far / distant`), plus nearby allies for all tiers
-- Tactical memory: what the creature did in prior rounds
-- DM notes: freeform context injected per encounter
-
-**Awareness radius:** 60ft base (Wis modifier adjusts ±15ft per point above/below 10). Suited for outdoor encounters; creatures with darkvision see the full radius in darkness.
-
-**Output:** single-line whisper to GM only (`/w gm`) using bold Markdown labels:
-```
-🧠 Wolf the Scarred — **Move:** Close on Dante · **Action:** Bite · **Note:** Pack Tactics needs ally adjacent
-```
-
-**Turn hook integration:** plans are whispered to GM automatically when the initiative tracker advances to each mob's turn. `plan_all_tactics` is called automatically at combat start and round start.
-
-**Debug mode:** `plan_tactics tokenId=X debug=true postToChat=false` returns the full `baseContext`, complete `prompt`, and `rawResponse` for inspection.
-
-## Combat workflow
-
-1. DM narrates what happened (voice-to-text or typed)
-2. `/round` parses it: finds AoE templates on the map, auto-rolls NPC saves, applies damage/conditions
-3. Claude proposes a numbered action list with before/after HP, executes on confirmation
-4. Two Roll20 chat posts: atmospheric narration (`style=narration`) + bulleted mechanic summary (`style=combat`) — no exact HP numbers visible to players, only ASCII bar + Wounded marker
-5. Session state snapshot written to memory after each round
+Plans are whispered GM-only and surfaced again automatically when the initiative tracker reaches each mob's turn.
 
 ## Key design decisions
 
-**D&D Beyond is read-only.** DDB condition writes return 405. HP is tracked on Roll20 tokens; spell slots are tracked in session state snapshots. DDB is polled at round start to spot-check drift against tracked values.
+**RT transport reads Roll20 state directly.** Firebase RTDB token is harvested once via browser (intercepting `signInWithCustomToken`), cached to `data/roll20-rt-token.json`, and reused for all subsequent reads. Writes still go through the Mod relay (guaranteed server-side propagation).
 
-**AoE templates are pre-placed.** Players drop a cone/circle marker before the DM narrates. The relay finds it via `list_tokens`, renames it to the spell, uses `find_tokens_in_range` for targeting, then removes it (one-shot spells) or moves it to the map layer (persistent effects like Web or Cloudkill).
+**D&D Beyond is fully browserless.** `CobaltSession` cookie is harvested once and cached to `data/ddb-cobalt.json`. Every DDB read thereafter is a plain HTTPS fetch via `character-service` or `monster-service` — no Chromium involved.
 
-**Conditions use `Name::id` marker format.** e.g. `Wounded::4444333`. Applied and removed via `batch_exec` for speed — single relay round-trip for multi-token updates.
+**D&D Beyond is read-only.** HP and conditions are tracked on Roll20 tokens. DDB is polled for character state (HP, conditions, stats) but never written to.
 
-**Zones go on the map layer.** Spell areas drawn by `create_zone` land on Roll20's map layer so tokens always render above them. Auras (Spirit Guardians, etc.) use token `aura1_radius` instead.
+**PC initiative is read-only.** `roll_initiative` always uses `npcOnly=true`. Players set their own initiative; the Mod never touches PC entries.
 
-**Duplicate token epithets.** Tokens with the same name get epithets at initiative roll time (`Wolf the Scarred`, `Wolf the Gaunt`) — assigned from monster-type word banks, stored in the token name and tooltip. Epithets use a space separator; Roll20 nameplates do not support multi-line text.
+**Turn order writes wipe player entries.** The relay never calls `setTurnOrder` wholesale. NPCs are added via `roll_initiative npcOnly=true clearFirst=false`; single entries adjusted via `update_turn_order`.
 
-**Tactical data cached in gmnotes.** Monster ability scores and action text are written to the token's `gmnotes` field on first plan, keyed by `TACDATA:`. Subsequent plans skip the DDB lookup — survives MCP server restarts.
+**AoE emanations use token auras; fixed areas use zones.** Spirit Guardians, Aura of Protection, etc. → `set_token_props aura1_radius`. Fireball, Web, Cloudkill → `create_zone` on the map layer.
+
+**Duplicate token epithets.** Tokens sharing a name get epithets at initiative roll time (`Wolf the Scarred`, `Wolf the Gaunt`) — assigned from creature-type word banks, stored in the token name.
+
+**Tactical data cached in gmnotes.** Monster ability scores and action text are written to `gmnotes` on first plan under `TACDATA:`. Subsequent plans skip the DDB lookup — survives MCP server restarts.
+
+**Shared campaign context.** `data/campaign-context.json` is written by the MCP server tools, the Voice HUD wizard, and the agent's `add_vocab`/`add_nickname` calls — one file, no sync needed.
