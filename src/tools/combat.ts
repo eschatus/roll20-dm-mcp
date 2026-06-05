@@ -495,7 +495,7 @@ export function registerCombatTools(server: McpServer): void {
       clearFirst: z.boolean().default(false).describe("Wipe the existing turn order before adding rolls. Set true at combat start."),
       flatInit: z.number().int().optional().describe("If set, place all matched tokens at this fixed initiative value instead of rolling."),
       nameFilter: z.string().optional().describe("Case-insensitive substring filter on token names. E.g. 'goblin' matches 'Goblin 1', 'Goblin Archer', etc."),
-      publicRoll: z.boolean().default(false).describe("If true, tokens with a linked character sheet get a public chat announcement of their roll result (name, d20, bonus, total)."),
+      publicRoll: z.boolean().default(true).describe("If true (default), posts a public gothic initiative card to chat showing all rolled tokens sorted by result. Pass false to roll silently."),
     },
     async ({ pageId, npcOnly, clearFirst, flatInit, nameFilter, publicRoll }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
@@ -540,25 +540,15 @@ export function registerCombatTools(server: McpServer): void {
         lines = rolls.map((r) => `${r.name}: ${r.d20}${r.initBonus >= 0 ? "+" : ""}${r.initBonus} = **${r.total}**`);
       }
 
-      // At combat start (clearFirst) wipe everything, then write our entries.
-      // Otherwise upsert ONLY our entries via mergeTurnOrder — the relay merges by
-      // id atomically and preserves player/other entries we didn't pass (fixes the
-      // read-modify-write race that could wipe player slots).
-      let finalOrder: TurnEntry[];
-      if (clearFirst) {
-        await roll20.relayCommand({ action: "setTurnOrder", entries: [] });
-        const merged = await roll20.relayCommand<{ ok: boolean; turnorder: TurnEntry[] }>({
-          action: "mergeTurnOrder",
-          entries: newEntries,
-        });
-        finalOrder = merged.turnorder ?? newEntries;
-      } else {
-        const merged = await roll20.relayCommand<{ ok: boolean; turnorder: TurnEntry[] }>({
-          action: "mergeTurnOrder",
-          entries: newEntries,
-        });
-        finalOrder = merged.turnorder ?? newEntries;
-      }
+      // clearFirst: strip NPC-controlled entries first (preserves PC player initiatives),
+      // then upsert our new NPC rolls. Never does a full setTurnOrder([]) wipe.
+      // Otherwise (default): upsert only, preserving everything.
+      const merged = await roll20.relayCommand<{ ok: boolean; turnorder: TurnEntry[] }>({
+        action: "mergeTurnOrder",
+        entries: newEntries,
+        clearNpcFirst: clearFirst,
+      });
+      const finalOrder = merged.turnorder ?? newEntries;
       await roll20.relayCommand({ action: "setTurnHook", enabled: true, reset: true });
 
       // Auto-fire tactics at combat start — whisper cards arrive as each mob's plan completes.

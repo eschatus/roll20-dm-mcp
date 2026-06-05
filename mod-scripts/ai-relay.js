@@ -1260,10 +1260,25 @@ on("chat:message", function (msg) {
         // (id "-1") have no stable identity, so they are always inserted, never
         // matched. After merging we sort pr-descending (Roll20's convention),
         // keeping custom "-1" rows in their inserted relative order.
+        //
+        // clearNpcFirst: true → strip all non-PC token entries before merging.
+        // Keeps player-controlled tokens (controlledby = a real player ID) and
+        // custom rows (id "-1", e.g. round markers). Safe replacement for a full
+        // setTurnOrder([]) wipe that would also erase player entries.
         let rawTO = Campaign().get("turnorder");
         let merged;
         try { merged = rawTO ? JSON.parse(rawTO) : []; } catch (e) { merged = []; }
         if (!Array.isArray(merged)) merged = [];
+        if (args.clearNpcFirst) {
+          merged = merged.filter(function(entry) {
+            if (!entry) return false;
+            if (String(entry.id) === "-1") return true; // keep round markers / custom rows
+            let t = getObj("graphic", entry.id);
+            if (!t) return false; // stale entry → remove
+            let cb = String(t.get("controlledby") || "").trim();
+            return cb !== "" && cb.toLowerCase() !== "all"; // keep player-controlled only
+          });
+        }
         let incoming = args.entries || [];
         incoming.forEach(function (entry) {
           if (!entry || typeof entry !== "object") return;
@@ -1296,11 +1311,11 @@ on("chat:message", function (msg) {
 
       case "rollInitiativeForTokens": {
         // Roll d20 + initiative bonus for each token. Tries common 5e attribute names.
-        // If args.rollPublic is true, tokens with a linked character sheet get a gothic public announcement.
+        // Posts a public gothic HTML initiative card by default (rollPublic defaults true).
         // Duplicate-named tokens are renamed with a random epithet (e.g. "Goblin the Savage") so they
         // are distinguishable both on the map and in the turn tracker.
         let initAttrNames = ["initiative_bonus", "npc_initiative", "dex_mod", "dexterity_mod"];
-        let rollPublic = !!args.rollPublic;
+        let rollPublic = args.rollPublic !== false; // default true
 
         // Pass 1: count names to detect duplicates
         let nameCounts = {};
@@ -1376,11 +1391,9 @@ on("chat:message", function (msg) {
             return { tokenId: t.tokenId, name: t.name, d20: d20, initBonus: t.initBonus, total: total };
           });
 
-          // Announce public entries via gothic HTML card
+          // Announce public entries via gothic HTML card (all rolled tokens, not just charId).
           if (rollPublic) {
-            let publicEntries = rollResults.filter(function(r) {
-              return validTokens.some(function(t) { return t.tokenId === r.tokenId && t.charId; });
-            });
+            let publicEntries = rollResults.slice();
             if (publicEntries.length > 0) {
               publicEntries.sort(function(a, b) { return b.total - a.total; });
               let rows = publicEntries.map(function(e, idx) {
