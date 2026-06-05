@@ -25,6 +25,11 @@ import type { Page } from "playwright";
 import { getActiveCampaign } from "../registry/campaigns.js";
 import { resolveMarkerForState } from "./markers.js";
 import { trackCustomState, getCustomStates as getCustomStatesStore } from "./relayState.js";
+import {
+  AIBRIDGE_MARKER as MARKER, parseAibridge, cleanChat,
+  parsePcHpBlock, writePcHpBlock, type PcHpEntry,
+  mapToken, parseTurnorder, stripUndefWrite,
+} from "./rt-helpers.js";
 
 // Public web config captured from the live editor (safe to embed — it's the client config).
 const FIREBASE_CONFIG = {
@@ -133,29 +138,12 @@ const pending = new Map<number, { resolve: (d: unknown) => void; reject: (e: Err
 const seenKeys = new Set<string>(); // dedupe onChildAdded replays
 let _nonceCounter = 0;
 
-const MARKER = "AIBRIDGE_RESULT:";
-
 // --- Live chat buffer (replaces the Mod's getRecentChat round-trip) ---
 // We already receive every /chat child on the socket; buffer the real table chat here so
-// get_recent_chat is served from memory — no Mod, no chat-command echo. Mirrors the Mod's
-// CHAT_BUFFER filter (skip our own !ai-relay commands and API/bridge output) and cleanChat.
+// get_recent_chat is served from memory. cleanChat/parsing live in rt-helpers (unit-tested).
 interface ChatEntry { who: string; type: string; content: string; inlinerolls: { expression: string; total: number | null }[]; timestamp: number }
 const chatBuffer: ChatEntry[] = [];
 const CHAT_BUFFER_MAX = 100;
-
-// Port of the Mod's cleanChat: strip rolltemplate HTML / URLs to dense text (roll totals are kept
-// separately in inlinerolls, so this can be aggressive).
-function cleanChat(raw: unknown): string {
-  return String(raw == null ? "" : raw)
-    .replace(/<br\s*\/?>/gi, " ")
-    .replace(/<\/(div|p|tr|td|li|h[1-6])>/gi, " ")
-    .replace(/<[^>]+>/g, "")
-    .replace(/https?:\/\/\S+/g, "")
-    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-    .replace(/&#39;/g, "'").replace(/&rsquo;/g, "'").replace(/&quot;/g, '"')
-    .replace(/\s+/g, " ").trim().slice(0, 240);
-}
 
 function bufferChat(val: unknown): void {
   const m = val as { content?: unknown; who?: unknown; type?: unknown; playerid?: unknown; inlinerolls?: unknown };
@@ -175,26 +163,6 @@ function bufferChat(val: unknown): void {
     timestamp: Date.now(),
   });
   if (chatBuffer.length > CHAT_BUFFER_MAX) chatBuffer.shift();
-}
-
-// Extract the first balanced-brace JSON object following the marker (mirrors roll20.ts OBSERVER_SCRIPT).
-function parseAibridge(text: string): { nonce: number; data?: unknown; error?: string } | null {
-  const pos = text.indexOf(MARKER);
-  if (pos === -1) return null;
-  const start = pos + MARKER.length;
-  if (text[start] !== "{") return null;
-  let depth = 0, inStr = false, esc = false;
-  for (let i = start; i < text.length; i++) {
-    const c = text[i];
-    if (esc) { esc = false; continue; }
-    if (inStr) { if (c === "\\") esc = true; else if (c === '"') inStr = false; continue; }
-    if (c === '"') { inStr = true; continue; }
-    if (c === "{") depth++;
-    if (c === "}" && --depth === 0) {
-      try { return JSON.parse(text.slice(start, i + 1)); } catch { return null; }
-    }
-  }
-  return null;
 }
 
 // Try to resolve a pending relay from a message `content` string. Returns true if it matched.
@@ -295,38 +263,6 @@ const NOT_HANDLED = Symbol("not-handled");
 // PC HP carrier: a %%PCHP={...}%% block in the token's GM-only gmnotes (never shown to players).
 // Single source of truth read/written by BOTH this client (direct) and the Mod (batchExec +
 // turn-hook narration) — verified to round-trip raw in both directions. Existing gmnotes preserved.
-const PCHP_RE = /%%PCHP=({[\s\S]*?})%%/;
-interface PcHpEntry { current: number; max: number; name: string; updated: number }
-function parsePcHpBlock(gm: unknown): PcHpEntry | null {
-  const m = String(gm ?? "").match(PCHP_RE);
-  if (!m) return null;
-  try { return JSON.parse(m[1]) as PcHpEntry; } catch { return null; }
-}
-function writePcHpBlock(gm: unknown, entry: PcHpEntry): string {
-  const base = String(gm ?? "").replace(PCHP_RE, "").replace(/\s+$/, "");
-  return (base ? base + " " : "") + "%%PCHP=" + JSON.stringify(entry) + "%%";
-}
-
-function mapToken(g: Record<string, unknown>, profile: string): Record<string, unknown> {
-  const s: Record<string, unknown> = {
-    id: g.id, name: g.name || "", represents: g.represents || "",
-    controlledby: g.controlledby || "", layer: g.layer,
-  };
-  if (profile === "lean") return s;
-  s.bar1_value = g.bar1_value; s.bar1_max = g.bar1_max; s.statusmarkers = g.statusmarkers || "";
-  if (profile === "status") return s;
-  s.left = g.left; s.top = g.top; s.width = g.width; s.height = g.height;
-  return s;
-}
-
-// turnorder is stored either as a JSON string (classic) or a live array — tolerate both.
-function parseTurnorder(v: unknown): Record<string, unknown>[] {
-  let arr: unknown = v;
-  if (typeof v === "string") { try { arr = JSON.parse(v); } catch { arr = []; } }
-  if (!Array.isArray(arr)) return [];
-  return arr.map((e) => { const o: Record<string, unknown> = {}; for (const k in e) if (k !== "_pageid") o[k] = (e as Record<string, unknown>)[k]; return o; });
-}
-
 async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | typeof NOT_HANDLED> {
   const action = cmd.action as string;
   if (cmd.__forceMod) return NOT_HANDLED; // debug/escape hatch: force the Mod path
@@ -582,19 +518,6 @@ export async function rtGet<T = unknown>(relPath: string, opts: { shallow?: bool
 // Expose the storage path for callers that need to build their own refs/paths.
 export async function rtStoragePath(): Promise<string> {
   return (await getConn()).storagePath;
-}
-
-// Firebase rejects undefined/NaN; scrub before any write (client-side equivalent of the Mod's
-// stripUndef guard — see relay-undefined-firebase-crash). null is allowed (it deletes a key).
-function stripUndefWrite(o: Record<string, unknown>): Record<string, unknown> {
-  const clean: Record<string, unknown> = {};
-  for (const k of Object.keys(o)) {
-    const v = o[k];
-    if (v === undefined) continue;
-    if (typeof v === "number" && Number.isNaN(v)) continue;
-    clean[k] = v;
-  }
-  return clean;
 }
 
 // Merge-write fields onto a node under the storage root (RTDB update = partial merge), like the
