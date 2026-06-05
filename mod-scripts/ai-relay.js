@@ -72,6 +72,64 @@ const CHAT_BUFFER = [];
 const CHAT_BUFFER_MAX = 100;
 const DM_INBOX_MAX = 50;
 
+// --- Payload-slimming helpers (keep relay reads lean — see docs/relay-payload-slimming.md) ---
+
+// Project a graphic token to a field profile. imgsrc is in NONE — no caller reads it
+// (art goes through createGraphic-type actions, never read-back).
+function tokenSummary(t, profile) {
+  var s = {
+    id: t.id,
+    name: t.get("name"),
+    represents: t.get("represents") || "",
+    controlledby: t.get("controlledby") || "",
+    layer: t.get("layer"),
+  };
+  if (profile === "lean") return s;
+  s.bar1_value = t.get("bar1_value");           // HP
+  s.bar1_max = t.get("bar1_max");
+  s.statusmarkers = t.get("statusmarkers");     // conditions
+  if (profile === "status") return s;
+  s.left = t.get("left");                        // geometry
+  s.top = t.get("top");
+  s.width = t.get("width");
+  s.height = t.get("height");
+  return s; // "full"
+}
+
+// Strip rolltemplate HTML / URLs down to text. The dice signal is preserved separately in
+// inlinerolls, so this can be aggressive without ever losing a roll total.
+function cleanChat(raw) {
+  return String(raw == null ? "" : raw)
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<\/(div|p|tr|td|li|h[1-6])>/gi, " ")
+    .replace(/<[^>]+>/g, "")                      // drop all tags (kills <img>, styled spans)
+    .replace(/https?:\/\/\S+/g, "")               // drop bare URLs (avatars / marketplace art)
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&#39;/g, "'").replace(/&rsquo;/g, "'").replace(/&quot;/g, '"')
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);                               // cleaned text is dense; 240 >> 600 raw
+}
+
+// Cheap bounding box from a points array — handles v1 [x,y] and pathv2 [cmd,x,y] points.
+function bboxOf(points) {
+  if (!Array.isArray(points) || !points.length) return null;
+  var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  points.forEach(function (p) {
+    if (!Array.isArray(p)) return;
+    var x = p.length >= 3 ? p[1] : p[0];
+    var y = p.length >= 3 ? p[2] : p[1];
+    if (typeof x !== "number" || typeof y !== "number") return;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  });
+  if (minX === Infinity) return null;
+  return { minX: minX, minY: minY, maxX: maxX, maxY: maxY };
+}
+
 // Durable session state lives in Roll20's persistent `state` object so it survives a Mod sandbox
 // restart / script redeploy. Previously these were module-level vars that were silently wiped on
 // every save — which disarmed the turn hook mid-combat. B() is self-healing: it backfills any
@@ -83,7 +141,104 @@ function B() {
   if (typeof s.turnHookEnabled !== "boolean") s.turnHookEnabled = false;
   if (!Array.isArray(s.dmInbox)) s.dmInbox = [];
   if (!s.mobPlans || typeof s.mobPlans !== "object") s.mobPlans = {};
+  // PC hit points live here, NOT on the token bar: the player's Beyond20 plugin owns a
+  // PC token's bar1 and overwrites anything we write. Keyed by lowercased token name →
+  // { current, max, name, updated }. NPC HP stays on the token bar as before.
+  if (!s.pcHp || typeof s.pcHp !== "object") s.pcHp = {};
   return s;
+}
+
+// True when a token is a player character (a real player controls it) — as opposed to
+// an NPC/mob (no controller) or a shared summon (controlledby "all", no DDB sheet).
+function isPcToken(t) {
+  let cb = String(t.get("controlledby") || "").trim();
+  return cb !== "" && cb.toLowerCase() !== "all";
+}
+
+function pcHpKey(name) { return String(name || "").split("\n")[0].trim().toLowerCase(); }
+
+// PC HP carrier: a %%PCHP={...}%% block in the token's GM-only gmnotes (never shown to players).
+// This is the SINGLE source of truth, shared raw with the RT client so it can read/write PC HP
+// directly (off chat) while this Mod still sees it for turn-hook narration. (Replaces the old
+// B().pcHp store; verified to round-trip raw in both directions over the realtime DB.)
+var PCHP_RE = /%%PCHP=({[\s\S]*?})%%/;
+function parsePcHpBlock(gm) {
+  var m = String(gm == null ? "" : gm).match(PCHP_RE);
+  if (!m) return null;
+  try { return JSON.parse(m[1]); } catch (e) { return null; }
+}
+function writePcHpBlock(gm, entry) {
+  var base = String(gm == null ? "" : gm).replace(PCHP_RE, "").replace(/\s+$/, "");
+  return (base ? base + " " : "") + "%%PCHP=" + JSON.stringify(entry) + "%%";
+}
+
+// Adjust a PC's tracked HP in the token's gmnotes block (never touches the player-visible bar).
+// Seeds current/max from the token bar the first time we touch a PC, then keeps the running value.
+function adjustPcHp(t, args) {
+  let name = (t.get("name") || "").split("\n")[0].trim();
+  let gm = t.get("gmnotes") || "";
+  let entry = parsePcHpBlock(gm);
+  let tokBar = Number(t.get("bar1_value"));
+  let tokMax = Number(t.get("bar1_max"));
+  let cur = (entry && isFinite(entry.current)) ? entry.current : (isFinite(tokBar) ? tokBar : 0);
+  let max = (entry && isFinite(entry.max) && entry.max > 0) ? entry.max : (isFinite(tokMax) ? tokMax : 0);
+  let nv;
+  if (args.setHp !== undefined && args.setHp !== null) nv = Number(args.setHp);
+  else if (args.damage !== undefined && args.damage !== null) nv = Math.max(0, cur - Number(args.damage));
+  else if (args.heal !== undefined && args.heal !== null) nv = max ? Math.min(max, cur + Number(args.heal)) : cur + Number(args.heal);
+  else throw new Error("adjustPcHp: provide damage, heal, or setHp");
+  if (!isFinite(nv)) throw new Error("adjustPcHp: computed HP is not finite (got " + JSON.stringify(nv) + ")");
+  t.set("gmnotes", writePcHpBlock(gm, { current: nv, max: max, name: name, updated: Date.now() }));
+  return { ok: true, pc: true, name: name, current: nv, max: max, tokenBar: isFinite(tokBar) ? tokBar : null };
+}
+
+// Display HP for a token: PCs read tracked state (token bar is Beyond20-owned and lies);
+// NPCs read the bar. Returns { hp, maxHp, note } — note is set only when a PC's token bar
+// disagrees with our tracked value (surfaced subtly in announcements).
+function effectiveHp(t) {
+  let hp = t.get("bar1_value");
+  let maxHp = t.get("bar1_max");
+  let note = null;
+  if (isPcToken(t)) {
+    let entry = parsePcHpBlock(t.get("gmnotes"));
+    if (entry && isFinite(entry.current)) {
+      let tokBar = Number(hp);
+      if (isFinite(tokBar) && tokBar !== entry.current) note = { tracked: entry.current, max: entry.max, tokenBar: tokBar };
+      hp = entry.current;
+      if (entry.max) maxHp = entry.max;
+    }
+  }
+  return { hp: hp, maxHp: maxHp, note: note };
+}
+
+// Save a token's portable configuration as its character's DEFAULT token (the token Roll20
+// uses when the sheet is dragged onto a map). Copies art/bars/control/auras/light but strips
+// page-instance fields (id, _pageid, left, top) so the default isn't pinned to a spot. Roll20
+// stores this as a JSON string on the character's `defaulttoken` property.
+function setDefaultTokenForChar(t, args) {
+  var charId = args.charId || t.get("represents");
+  if (!charId) throw new Error("Token has no linked character (represents) — pass charId or link the token first");
+  var ch = getObj("character", charId);
+  if (!ch) throw new Error("Character not found: " + charId);
+  if (!t.get("represents")) t.set("represents", charId); // keep the link bidirectional
+  var KEYS = [
+    "name", "imgsrc", "represents", "controlledby",
+    "bar1_link", "bar2_link", "bar3_link",
+    "bar1_value", "bar1_max", "bar2_value", "bar2_max", "bar3_value", "bar3_max",
+    "width", "height", "rotation", "statusmarkers", "tint_color",
+    "aura1_radius", "aura1_color", "aura1_square", "showplayers_aura1",
+    "aura2_radius", "aura2_color", "aura2_square", "showplayers_aura2",
+    "showname", "showplayers_name", "showplayers_bar1", "showplayers_bar2", "showplayers_bar3",
+    "light_radius", "light_dimradius", "light_otherplayers", "light_hassight",
+    "light_angle", "light_losangle", "sides", "currentside",
+  ];
+  var props = {};
+  KEYS.forEach(function (k) {
+    var v = t.get(k);
+    if (v !== undefined && v !== null && v !== "") props[k] = v;
+  });
+  ch.set("defaulttoken", JSON.stringify(props));
+  return { ok: true, charId: charId, character: ch.get("name"), fields: Object.keys(props).length };
 }
 
 // --- Helpers ---
@@ -282,6 +437,21 @@ function normProps(args) {
   return out;
 }
 
+// Firebase rejects `undefined` (and chokes on NaN) for ANY property. Worse, the
+// bad value isn't rejected synchronously — t.set() schedules a deferred _doSave,
+// and the failure later crashes the whole API sandbox (no try/catch can catch it).
+// So scrub every props object before handing it to t.set().
+function stripUndef(props) {
+  var clean = {};
+  Object.keys(props).forEach(function (k) {
+    var v = props[k];
+    if (v === undefined || v === null) return;
+    if (typeof v === "number" && isNaN(v)) return;
+    clean[k] = v;
+  });
+  return clean;
+}
+
 // Synchronous operation executor used by batchExec.
 // Only sync-safe actions here — no sendChat callbacks.
 function runBatchOp(action, args) {
@@ -289,15 +459,27 @@ function runBatchOp(action, args) {
     case "setTokenBar": {
       let t = getObj("graphic", args.tokenId);
       if (!t) throw new Error("Token not found: " + args.tokenId);
-      let p = { bar1_value: args.value };
-      if (args.max !== undefined) p.bar1_max = args.max;
+      let v = Number(args.value);
+      if (!isFinite(v)) throw new Error("setTokenBar: value must be a finite number, got " + JSON.stringify(args.value));
+      let p = { bar1_value: v };
+      if (args.max !== undefined && isFinite(Number(args.max))) p.bar1_max = Number(args.max);
       t.set(p);
       return { ok: true };
+    }
+    case "adjustPcHp": {
+      let t = getObj("graphic", args.tokenId);
+      if (!t) throw new Error("Token not found: " + args.tokenId);
+      return adjustPcHp(t, args);
+    }
+    case "setDefaultToken": {
+      let t = getObj("graphic", args.tokenId);
+      if (!t) throw new Error("Token not found: " + args.tokenId);
+      return setDefaultTokenForChar(t, args);
     }
     case "setTokenProps": {
       let t = getObj("graphic", args.tokenId);
       if (!t) throw new Error("Token not found: " + args.tokenId);
-      let props = normProps(args);
+      let props = stripUndef(normProps(args));
       let keys = Object.keys(props);
       if (keys.length === 0) throw new Error("setTokenProps: no properties to set — pass props:{...} (or top-level fields)");
       t.set(props);
@@ -421,17 +603,21 @@ function runBatchOp(action, args) {
       return { id: ch.id };
     }
     default:
-      throw new Error("batchExec: unsupported action '" + action + "'. Supported: setTokenBar, setTokenProps, toggleCondition, syncConditionsToToken, getTokenById, setTurnOrder, createHandout, createCharacter");
+      throw new Error("batchExec: unsupported action '" + action + "'. Supported: setTokenBar, adjustPcHp, setDefaultToken, setTokenProps, toggleCondition, syncConditionsToToken, getTokenById, setTurnOrder, createHandout, createCharacter");
   }
 }
 
 on("chat:message", function (msg) {
-  // Buffer all non-relay messages (captures Beyond20 dice rolls, player chat, etc.)
-  if (msg.content && typeof msg.content === "string" && !msg.content.startsWith("!ai-relay")) {
+  // Buffer only real table chat: not relay commands, and NOT our own API/bridge output
+  // (AIBRIDGE_RESULT whispers, Initiative announces, whisperPlayer — all playerid "API").
+  // Beyond20 player rolls keep a real playerid, so they're retained.
+  if (msg.content && typeof msg.content === "string"
+      && !msg.content.startsWith("!ai-relay")
+      && msg.playerid !== "API") {
     CHAT_BUFFER.push({
       who: msg.who || "",
       type: msg.type || "",
-      content: msg.content.slice(0, 600),
+      content: cleanChat(msg.content),
       inlinerolls: (msg.inlinerolls || []).map(function(r) {
         return { expression: r.expression, total: r.results ? r.results.total : null };
       }),
@@ -496,23 +682,10 @@ on("chat:message", function (msg) {
   try {
     switch (action) {
       case "getTokens": {
+        // profile: "lean" | "status" | "full" (default). imgsrc dropped from all — no caller reads it.
+        const profile = args.profile || "full";
         const tokens = findObjs({ _type: "graphic", _pageid: args.pageId });
-        const result = tokens.map((t) => ({
-          id: t.id,
-          name: t.get("name"),
-          bar1_value: t.get("bar1_value"),
-          bar1_max: t.get("bar1_max"),
-          statusmarkers: t.get("statusmarkers"),
-          layer: t.get("layer"),
-          imgsrc: t.get("imgsrc"),
-          left: t.get("left"),
-          top: t.get("top"),
-          width: t.get("width"),
-          height: t.get("height"),
-          represents: t.get("represents") || "",
-          controlledby: t.get("controlledby") || "",
-        }));
-        writeResult(nonce, result);
+        writeResult(nonce, tokens.map((t) => tokenSummary(t, profile)));
         break;
       }
 
@@ -533,21 +706,9 @@ on("chat:message", function (msg) {
             let ch = getObj("character", charId);
             if (ch) charName = ch.get("name");
           }
-          return {
-            id: t.id,
-            name: t.get("name"),
-            represents: charId,
-            characterName: charName,
-            left: t.get("left"),
-            top: t.get("top"),
-            width: t.get("width"),
-            height: t.get("height"),
-            bar1_value: t.get("bar1_value"),
-            bar1_max: t.get("bar1_max"),
-            statusmarkers: t.get("statusmarkers") || "",
-            layer: t.get("layer"),
-            controlledby: t.get("controlledby") || "",
-          };
+          let summ = tokenSummary(t, "full");
+          summ.characterName = charName;
+          return summ;
         });
         writeResult(nonce, selResults);
         break;
@@ -556,11 +717,52 @@ on("chat:message", function (msg) {
       case "setTokenBar": {
         const token = getObj("graphic", args.tokenId);
         if (!token) throw new Error(`Token not found: ${args.tokenId}`);
+        const v = Number(args.value);
+        if (!isFinite(v)) throw new Error(`setTokenBar: value must be a finite number, got ${JSON.stringify(args.value)}`);
         token.set({
-          bar1_value: args.value,
-          ...(args.max !== undefined ? { bar1_max: args.max } : {}),
+          bar1_value: v,
+          ...(args.max !== undefined && isFinite(Number(args.max)) ? { bar1_max: Number(args.max) } : {}),
         });
         writeResult(nonce, { ok: true });
+        break;
+      }
+
+      case "adjustPcHp": {
+        const token = getObj("graphic", args.tokenId);
+        if (!token) throw new Error(`Token not found: ${args.tokenId}`);
+        writeResult(nonce, adjustPcHp(token, args));
+        break;
+      }
+
+      case "getPcHp": {
+        // Read tracked PC HP from the token gmnotes PCHP block (single source of truth).
+        // tokenId → that token; characterName → first matching PC token; otherwise the whole map.
+        if (args.tokenId) {
+          let t = getObj("graphic", args.tokenId);
+          writeResult(nonce, t ? parsePcHpBlock(t.get("gmnotes")) : null);
+        } else if (args.characterName) {
+          let want = pcHpKey(args.characterName);
+          let found = null;
+          findObjs({ _type: "graphic" }).forEach(function(t) {
+            if (found) return;
+            if (pcHpKey(t.get("name")) === want) { let e = parsePcHpBlock(t.get("gmnotes")); if (e) found = e; }
+          });
+          writeResult(nonce, found);
+        } else {
+          let map = {};
+          findObjs({ _type: "graphic" }).forEach(function(t) {
+            let e = parsePcHpBlock(t.get("gmnotes"));
+            if (e) map[pcHpKey(t.get("name"))] = e;
+          });
+          writeResult(nonce, map);
+        }
+        break;
+      }
+
+      case "setDefaultToken": {
+        const token = getObj("graphic", args.tokenId);
+        if (!token) throw new Error(`Token not found: ${args.tokenId}`);
+        writeResult(nonce, setDefaultTokenForChar(token, args));
         break;
       }
 
@@ -654,16 +856,23 @@ on("chat:message", function (msg) {
 
       case "getWalls": {
         // Read pathv2 DL barrier objects (Latest VTT Engine / UDL) from a page.
+        // Default to a metadata summary (count + bbox); raw point arrays are huge — pass
+        // includePoints:true only when geometry is actually needed (placement verification).
+        let includePoints = args.includePoints === true;
         let walls = findObjs({ _type: "pathv2", _pageid: args.pageId, layer: "walls" });
         writeResult(nonce, walls.map(function(w) {
-          return {
+          let pts = w.get("points");
+          let base = {
             id: w.id,
-            points: w.get("points"),
             x: w.get("x"),
             y: w.get("y"),
             barrierType: w.get("barrierType"),
             shape: w.get("shape"),
+            pointCount: Array.isArray(pts) ? pts.length : 0,
+            bbox: bboxOf(pts),
           };
+          if (includePoints) base.points = pts;
+          return base;
         }));
         break;
       }
@@ -809,14 +1018,16 @@ on("chat:message", function (msg) {
         // Read back all path/graphic objects from a page. If layer is omitted, returns all layers.
         let query = { _pageid: args.pageId };
         if (args.layer) query.layer = args.layer;
+        // left/top/width/height already give the bounding box; the raw SVG `path` string and
+        // graphic imgsrc are the bloat — gate both behind includePath (default off).
+        let includePath = args.includePath === true;
         let paths = findObjs(Object.assign({ _type: "path" }, query));
         let graphics = args.includeGraphics ? findObjs(Object.assign({ _type: "graphic" }, query)) : [];
         let results = paths.map(function(p) {
-          return {
+          let base = {
             type: "path",
             id: p.id,
             layer: p.get("layer"),
-            path: p.get("path"),
             left: p.get("left"),
             top: p.get("top"),
             width: p.get("width"),
@@ -824,8 +1035,10 @@ on("chat:message", function (msg) {
             rotation: p.get("rotation"),
             stroke: p.get("stroke"),
           };
+          if (includePath) base.path = p.get("path");
+          return base;
         }).concat(graphics.map(function(g) {
-          return {
+          let base = {
             type: "graphic",
             id: g.id,
             layer: g.get("layer"),
@@ -834,8 +1047,9 @@ on("chat:message", function (msg) {
             width: g.get("width"),
             height: g.get("height"),
             rotation: g.get("rotation"),
-            imgsrc: g.get("imgsrc"),
           };
+          if (includePath) base.imgsrc = g.get("imgsrc");
+          return base;
         }));
         writeResult(nonce, results);
         break;
@@ -1021,7 +1235,14 @@ on("chat:message", function (msg) {
 
       case "getTurnOrder": {
         let rawOrder = Campaign().get("turnorder");
-        writeResult(nonce, rawOrder ? JSON.parse(rawOrder) : []);
+        let parsed = rawOrder ? JSON.parse(rawOrder) : [];
+        // Drop the per-entry _pageid (repeated on every row, never read downstream); keep
+        // everything else (id, pr, custom, formula for round markers).
+        writeResult(nonce, parsed.map(function(e) {
+          let o = {};
+          for (let k in e) { if (k !== "_pageid") o[k] = e[k]; }
+          return o;
+        }));
         break;
       }
 
@@ -1393,7 +1614,17 @@ on("chat:message", function (msg) {
           if (!rows[rowId]) rows[rowId] = {};
           rows[rowId][field] = val;
         });
-        writeResult(nonce, rows);
+        // Cap very long sections (a caster's full spell list) — keep context bounded.
+        let maxRows = args.maxRows || 60;
+        let rowIds = Object.keys(rows);
+        if (rowIds.length > maxRows) {
+          let capped = {};
+          rowIds.slice(0, maxRows).forEach(function(id) { capped[id] = rows[id]; });
+          capped.__truncated = rowIds.length;
+          writeResult(nonce, capped);
+        } else {
+          writeResult(nonce, rows);
+        }
         break;
       }
 
@@ -1758,8 +1989,9 @@ function combatantStatusLine(entry) {
   let t = getObj("graphic", entry.id);
   if (!t) return null;
   let name = t.get("name") || "?";
-  let hp = t.get("bar1_value");
-  let maxHp = t.get("bar1_max");
+  let eff = effectiveHp(t);
+  let hp = eff.hp;
+  let maxHp = eff.maxHp;
   let markerMap = buildMarkerToCondition();
   let markers = (t.get("statusmarkers") || "").split(",").filter(Boolean);
   let conditions = markers.map(function(m) { return markerMap[m]; }).filter(Boolean);
@@ -1824,8 +2056,9 @@ on("change:campaign:turnorder", function(obj, prev) {
   // Post turn announcement
   let token = getObj("graphic", newFirst.id);
   let name = token ? token.get("name") : (newFirst.custom || "?");
-  let hp = token ? token.get("bar1_value") : null;
-  let maxHp = token ? token.get("bar1_max") : null;
+  let eff = token ? effectiveHp(token) : { hp: null, maxHp: null, note: null };
+  let hp = eff.hp;
+  let maxHp = eff.maxHp;
   let markerMap = buildMarkerToCondition();
   let markers = token ? (token.get("statusmarkers") || "").split(",").filter(Boolean) : [];
   let condSet = {};
@@ -1856,6 +2089,12 @@ on("change:campaign:turnorder", function(obj, prev) {
     let filled = Math.round((hp / maxHp) * 10);
     let bar = "█".repeat(Math.max(0, filled)) + "░".repeat(Math.max(0, 10 - filled));
     hpLine = "<div style='color:#d4a0a0;font-size:0.85em;font-family:monospace;'>" + bar + "</div>";
+  }
+  // Subtle note when a PC's Beyond20-owned token bar disagrees with our tracked HP.
+  if (eff.note) {
+    hpLine += "<div style='color:#6b5a3a;font-size:0.68em;font-style:italic;'>tracked "
+      + eff.note.tracked + (eff.note.max ? "/" + eff.note.max : "")
+      + " · token bar " + eff.note.tokenBar + "</div>";
   }
   let condLine = conditions.length > 0
     ? "<div style='color:#bb8888;font-size:0.85em;'>Conditions: " + conditions.join(", ") + "</div>"

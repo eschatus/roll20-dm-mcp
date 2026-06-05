@@ -292,6 +292,21 @@ export async function rtReconnect(): Promise<void> {
 // Returns NOT_HANDLED for anything not directly readable, so it falls through to the Mod relay.
 const NOT_HANDLED = Symbol("not-handled");
 
+// PC HP carrier: a %%PCHP={...}%% block in the token's GM-only gmnotes (never shown to players).
+// Single source of truth read/written by BOTH this client (direct) and the Mod (batchExec +
+// turn-hook narration) — verified to round-trip raw in both directions. Existing gmnotes preserved.
+const PCHP_RE = /%%PCHP=({[\s\S]*?})%%/;
+interface PcHpEntry { current: number; max: number; name: string; updated: number }
+function parsePcHpBlock(gm: unknown): PcHpEntry | null {
+  const m = String(gm ?? "").match(PCHP_RE);
+  if (!m) return null;
+  try { return JSON.parse(m[1]) as PcHpEntry; } catch { return null; }
+}
+function writePcHpBlock(gm: unknown, entry: PcHpEntry): string {
+  const base = String(gm ?? "").replace(PCHP_RE, "").replace(/\s+$/, "");
+  return (base ? base + " " : "") + "%%PCHP=" + JSON.stringify(entry) + "%%";
+}
+
 function mapToken(g: Record<string, unknown>, profile: string): Record<string, unknown> {
   const s: Record<string, unknown> = {
     id: g.id, name: g.name || "", represents: g.represents || "",
@@ -320,6 +335,14 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
       case "getRecentChat": {
         const n = Math.min(Number(cmd.limit) || 50, chatBuffer.length);
         return chatBuffer.slice(-n);
+      }
+      case "getPcHp": {
+        // By token → read the gmnotes PCHP block directly. by-name / whole-map → Mod fallback.
+        if (!cmd.tokenId) return NOT_HANDLED;
+        const pid = await rtFindTokenPage(cmd.tokenId as string, cmd.pageId as string | undefined);
+        if (!pid) return NOT_HANDLED;
+        const tok = await rtGet<Record<string, unknown>>(`graphics/page/${pid}/${cmd.tokenId}`);
+        return parsePcHpBlock(tok?.gmnotes);
       }
       case "getCustomStates": {
         const cs = getCustomStatesStore(getActiveCampaign().roll20CampaignId);
@@ -449,6 +472,25 @@ async function tryDirectWrite(cmd: Record<string, unknown>): Promise<unknown | t
         else if (!cmd.active && i !== -1) markers.splice(i, 1);
         await rtUpdate(`graphics/page/${pid}/${cmd.tokenId}`, { statusmarkers: markers.join(",") });
         return { ok: true };
+      }
+      case "adjustPcHp": {
+        const pid = await rtFindTokenPage(cmd.tokenId as string, cmd.pageId as string | undefined);
+        if (!pid) return NOT_HANDLED;
+        const tok = await rtGet<Record<string, unknown>>(`graphics/page/${pid}/${cmd.tokenId}`);
+        const name = String(tok?.name || "").split("\n")[0].trim();
+        const existing = parsePcHpBlock(tok?.gmnotes);
+        const tokBar = Number(tok?.bar1_value), tokMax = Number(tok?.bar1_max);
+        const cur = existing && Number.isFinite(existing.current) ? existing.current : (Number.isFinite(tokBar) ? tokBar : 0);
+        const max = existing && Number.isFinite(existing.max) && existing.max > 0 ? existing.max : (Number.isFinite(tokMax) ? tokMax : 0);
+        let nv: number;
+        if (cmd.setHp !== undefined && cmd.setHp !== null) nv = Number(cmd.setHp);
+        else if (cmd.damage !== undefined && cmd.damage !== null) nv = Math.max(0, cur - Number(cmd.damage));
+        else if (cmd.heal !== undefined && cmd.heal !== null) nv = max ? Math.min(max, cur + Number(cmd.heal)) : cur + Number(cmd.heal);
+        else return NOT_HANDLED; // malformed → let the Mod throw the descriptive error
+        if (!Number.isFinite(nv)) return NOT_HANDLED;
+        const entry: PcHpEntry = { current: nv, max, name, updated: Date.now() };
+        await rtUpdate(`graphics/page/${pid}/${cmd.tokenId}`, { gmnotes: writePcHpBlock(tok?.gmnotes, entry) });
+        return { ok: true, pc: true, name, current: nv, max, tokenBar: Number.isFinite(tokBar) ? tokBar : null };
       }
       case "toggleCondition": {
         const cond = String(cmd.condition || "").toLowerCase().trim();
