@@ -101,6 +101,8 @@ function createGem() {
   gem.setAlwaysOnTop(true, "screen-saver");
   gem.loadFile(path.join(__dirname, "..", "renderer", "gem.html"));
   setGhostClickThrough(true);
+  // Null the reference on close so gem?.xxx never tries to use a destroyed object.
+  gem.on("closed", () => { gem = null; });
 }
 
 let _clickThrough: boolean | null = null;
@@ -111,7 +113,7 @@ function setGhostClickThrough(on: boolean) {
 }
 
 function send(channel: string, payload: unknown) {
-  gem?.webContents.send(channel, payload);
+  if (gem && !gem.isDestroyed()) gem.webContents.send(channel, payload);
 }
 
 // --- PTT wiring ---
@@ -446,7 +448,11 @@ app.whenReady().then(async () => {
   }
 });
 
+let appQuitting = false;
+app.on("before-quit", () => { appQuitting = true; });
+
 app.on("window-all-closed", () => {
+  appQuitting = true;
   ptt.stop();
   stt?.stop();
   mcp.close().catch(() => {});
@@ -476,7 +482,7 @@ function connectEventStream() {
   const req = http.request(reqOpts, (res) => {
     if (res.statusCode !== 200) {
       console.error(`[events] SSE ${res.statusCode} — retrying in 10s`);
-      setTimeout(connectEventStream, 10_000);
+      if (!appQuitting) setTimeout(connectEventStream, 10_000);
       return;
     }
     let buf = "";
@@ -493,10 +499,10 @@ function connectEventStream() {
         }
       }
     });
-    res.on("end", () => { console.error("[events] SSE closed — reconnecting in 3s"); setTimeout(connectEventStream, 3_000); });
-    res.on("error", (e: Error) => { console.error("[events] SSE error:", e.message); setTimeout(connectEventStream, 5_000); });
+    res.on("end", () => { if (!appQuitting) { console.error("[events] SSE closed — reconnecting in 3s"); setTimeout(connectEventStream, 3_000); } });
+    res.on("error", (e: Error) => { if (!appQuitting) { console.error("[events] SSE error:", e.message); setTimeout(connectEventStream, 5_000); } });
   });
-  req.on("error", (e: Error) => { console.error("[events] SSE connect error:", e.message); setTimeout(connectEventStream, 5_000); });
+  req.on("error", (e: Error) => { if (!appQuitting) { console.error("[events] SSE connect error:", e.message); setTimeout(connectEventStream, 5_000); } });
   req.end();
 }
 

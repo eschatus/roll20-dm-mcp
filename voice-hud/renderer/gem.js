@@ -383,8 +383,11 @@ document.getElementById("scry-btn").addEventListener("click", () => {
   if (window.dmw) dmw.setMode("expanded");
 });
 document.getElementById("close").addEventListener("click", () => {
-  document.body.dataset.mode = "ghost";
+  // Send resize IPC first; delay CSS mode change until window has settled (~120ms).
+  // Without the delay, #stage becomes visible at 760px width and the elements
+  // "fly" to their new positions as the window shrinks.
   if (window.dmw) dmw.setMode("ghost");
+  setTimeout(() => { document.body.dataset.mode = "ghost"; }, 120);
 });
 document.getElementById("quit").addEventListener("click", () => {
   if (window.dmw) dmw.quit();
@@ -605,13 +608,16 @@ function updateCombatBand(d) {
     return;
   }
   body.dataset.combat = "active";
+
   const roundStr = d.round > 0 ? ` · R${d.round}` : "";
-  document.getElementById("cb-turn").textContent = `▸ ${d.currentName || "?"}${roundStr}`;
+  const nameTxt = document.getElementById("cb-name-txt");
+  if (nameTxt) nameTxt.textContent = `▸ ${d.currentName || "?"}${roundStr}`;
+
   currentPlan = d.plan;
   allPlans = d.allPlans || {};
   const tacticEl = document.getElementById("cb-tactic");
   if (d.plan && d.plan.shortTerm) {
-    tacticEl.textContent = d.plan.shortTerm.slice(0, 72);
+    tacticEl.textContent = d.plan.shortTerm.slice(0, 80);
     tacticEl.style.display = "";
   } else {
     tacticEl.style.display = "none";
@@ -664,9 +670,21 @@ document.addEventListener("click", (e) => {
 
 function updateInboxBadge(count) {
   inboxCountDisplay = count;
-  const el = document.getElementById("cb-inbox");
-  if (count > 0) { el.textContent = `📬 ${count}`; el.classList.add("show"); }
-  else el.classList.remove("show");
+  const hot     = document.getElementById("right-mdln-hot");
+  const cres    = document.getElementById("inbox-crescent");
+  const badge   = document.getElementById("cb-inbox-txt");
+  const scryBtn = document.getElementById("scry-btn");
+  if (count > 0) {
+    if (hot)   hot.style.display   = "";
+    if (cres)  cres.style.display  = "none";
+    if (badge) { badge.textContent = count; badge.style.display = ""; }
+    if (scryBtn) scryBtn.textContent = count;
+  } else {
+    if (hot)   hot.style.display   = "none";
+    if (cres)  cres.style.display  = "";
+    if (badge) badge.style.display = "none";
+    if (scryBtn) scryBtn.textContent = "✦";
+  }
 }
 
 // Wire up the IPC events from main
@@ -678,3 +696,4 @@ if (window.dmw) {
     dmw.onInboxUpdate((d) => updateInboxBadge(d.count));
   }
 }
+
