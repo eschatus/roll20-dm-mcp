@@ -17,7 +17,7 @@ import path from "path";
 import { initializeApp, deleteApp, type FirebaseApp } from "firebase/app";
 import { getAuth, signInWithCustomToken, type User } from "firebase/auth";
 import {
-  getDatabase, ref, get, push, set, serverTimestamp, query, limitToLast, onChildAdded,
+  getDatabase, ref, get, push, set, update, remove, serverTimestamp, query, limitToLast, onChildAdded,
   type Database, type DatabaseReference,
 } from "firebase/database";
 import { getPage } from "./browser.js";
@@ -312,6 +312,7 @@ function parseTurnorder(v: unknown): Record<string, unknown>[] {
 
 async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | typeof NOT_HANDLED> {
   const action = cmd.action as string;
+  if (cmd.__forceMod) return NOT_HANDLED; // debug/escape hatch: force the Mod path
   try {
     switch (action) {
       case "getRecentChat": {
@@ -392,12 +393,64 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
   }
 }
 
-// Drop-in replacement for roll20.ts relayCommand. Reads are served directly off the socket;
-// everything else (writes + un-mapped reads) is pushed to /chat for the Mod and awaits the
-// AIBRIDGE_RESULT whisper. Throws on timeout/auth failure so callers can fall back to the browser.
+// --- Direct RTDB writes (token props/bars/markers straight to graphics/page/<id>, like the UI) ---
+// Validated: accepted by rules, persisted, and propagated to all clients (incl. the Mod's getObj).
+// Only side-effect-free token writes go here; conditions (attr sync), adjustPcHp (Mod state),
+// batchExec, createObj, dice, and narration stay on the Mod. Falls back to the Mod when the
+// token's page can't be resolved client-side.
+async function tryDirectWrite(cmd: Record<string, unknown>): Promise<unknown | typeof NOT_HANDLED> {
+  if (cmd.__forceMod) return NOT_HANDLED;
+  const action = cmd.action as string;
+  try {
+    switch (action) {
+      case "setTokenBar": {
+        const v = Number(cmd.value);
+        if (!Number.isFinite(v)) return NOT_HANDLED; // let the Mod throw its descriptive error
+        const pid = await rtFindTokenPage(cmd.tokenId as string, cmd.pageId as string | undefined);
+        if (!pid) return NOT_HANDLED;
+        const props: Record<string, unknown> = { bar1_value: v };
+        if (cmd.max !== undefined && Number.isFinite(Number(cmd.max))) props.bar1_max = Number(cmd.max);
+        await rtUpdate(`graphics/page/${pid}/${cmd.tokenId}`, props);
+        return { ok: true };
+      }
+      case "setTokenProps": {
+        const p = cmd.props as Record<string, unknown> | undefined;
+        if (!p || typeof p !== "object" || !Object.keys(p).length) return NOT_HANDLED; // flattened shape → Mod
+        const pid = await rtFindTokenPage(cmd.tokenId as string, cmd.pageId as string | undefined);
+        if (!pid) return NOT_HANDLED;
+        await rtUpdate(`graphics/page/${pid}/${cmd.tokenId}`, p);
+        return { ok: true, set: Object.keys(p) };
+      }
+      case "setStatusMarker": {
+        const pid = await rtFindTokenPage(cmd.tokenId as string, cmd.pageId as string | undefined);
+        if (!pid) return NOT_HANDLED;
+        const tok = await rtGet<Record<string, unknown>>(`graphics/page/${pid}/${cmd.tokenId}`);
+        const markers = String(tok?.statusmarkers || "").split(",").filter(Boolean);
+        const marker = cmd.marker as string;
+        const i = markers.indexOf(marker);
+        if (cmd.active && i === -1) markers.push(marker);
+        else if (!cmd.active && i !== -1) markers.splice(i, 1);
+        await rtUpdate(`graphics/page/${pid}/${cmd.tokenId}`, { statusmarkers: markers.join(",") });
+        return { ok: true };
+      }
+      default:
+        return NOT_HANDLED;
+    }
+  } catch (err) {
+    if (process.env.RT_DEBUG) console.error(`[rt-debug] direct write ${action} failed → Mod fallback: ${(err as Error).message}`);
+    return NOT_HANDLED;
+  }
+}
+
+// Drop-in replacement for roll20.ts relayCommand. Reads + side-effect-free token writes are served
+// directly off the socket (no Mod, no chat); everything else (writes with side effects, un-mapped
+// reads) is pushed to /chat for the Mod and awaits the AIBRIDGE_RESULT whisper. Throws on
+// timeout/auth failure so callers can fall back to the browser.
 export async function rtRelayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
   const direct = await tryDirectRead(cmd);
   if (direct !== NOT_HANDLED) return direct as T;
+  const directWrite = await tryDirectWrite(cmd);
+  if (directWrite !== NOT_HANDLED) return directWrite as T;
 
   const conn = await getConn();
   // Monotonic, unique, and safely within MAX_SAFE_INTEGER (seeded once from Date.now()).
@@ -453,4 +506,48 @@ export async function rtGet<T = unknown>(relPath: string, opts: { shallow?: bool
 // Expose the storage path for callers that need to build their own refs/paths.
 export async function rtStoragePath(): Promise<string> {
   return (await getConn()).storagePath;
+}
+
+// Firebase rejects undefined/NaN; scrub before any write (client-side equivalent of the Mod's
+// stripUndef guard — see relay-undefined-firebase-crash). null is allowed (it deletes a key).
+function stripUndefWrite(o: Record<string, unknown>): Record<string, unknown> {
+  const clean: Record<string, unknown> = {};
+  for (const k of Object.keys(o)) {
+    const v = o[k];
+    if (v === undefined) continue;
+    if (typeof v === "number" && Number.isNaN(v)) continue;
+    clean[k] = v;
+  }
+  return clean;
+}
+
+// Merge-write fields onto a node under the storage root (RTDB update = partial merge), like the
+// Roll20 UI does when you edit a token. No Mod, no chat.
+export async function rtUpdate(relPath: string, partial: Record<string, unknown>): Promise<void> {
+  const conn = await getConn();
+  const clean = relPath.replace(/^\/+|\/+$/g, "");
+  await update(ref(conn.db, `${conn.storagePath}/${clean}`), stripUndefWrite(partial));
+}
+
+// Delete a node (set null), like the UI deleting an object.
+export async function rtRemove(relPath: string): Promise<void> {
+  const conn = await getConn();
+  const clean = relPath.replace(/^\/+|\/+$/g, "");
+  await remove(ref(conn.db, `${conn.storagePath}/${clean}`));
+}
+
+// Resolve which page a token is on (cached; tries hint → cache → player/initiative page). Each
+// candidate is verified by an existence read, so a stale cache entry can't misdirect a write.
+// Returns null if not found on those pages → caller falls back to the Mod's global getObj lookup.
+const _tokenPageCache = new Map<string, string>();
+export async function rtFindTokenPage(tokenId: string, hintPageId?: string): Promise<string | null> {
+  const campaign = await rtGet<Record<string, unknown>>("campaign");
+  const candidates = [hintPageId, _tokenPageCache.get(tokenId), campaign?.playerpageid as string, campaign?.initiativepage as string]
+    .filter((p, i, a) => p && a.indexOf(p) === i) as string[];
+  for (const pid of candidates) {
+    const t = await rtGet<unknown>(`graphics/page/${pid}/${tokenId}`).catch(() => null);
+    if (t) { _tokenPageCache.set(tokenId, pid); return pid; }
+  }
+  _tokenPageCache.delete(tokenId);
+  return null;
 }
