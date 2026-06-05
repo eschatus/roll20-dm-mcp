@@ -339,14 +339,14 @@ export function registerCombatTools(server: McpServer): void {
         label: z.string().describe("Who or what is rolling, e.g. 'Goblin — DEX save', 'Strahd — Attack'"),
         formula: z.string().describe("Roll20 dice formula, e.g. '1d20+5', '2d8+3', '1d20'"),
       })).min(1),
-      speakAs: z.string().optional().describe("Name shown in chat as the roller. Default: 'GM-AI-Bridge'"),
+      speakAs: z.string().optional().describe("Name shown in chat as the roller. Default: 'The Bones'"),
       silent: z.boolean().default(false).describe("If true, roll is hidden from chat log (noarchive). Default false — rolls are visible."),
     },
     async ({ rolls, speakAs, silent }) => {
       const results = await roll20.relayCommand<{ label: string; formula: string; total: number; dice: number[]; error?: string }[]>({
         action: "rollFormulas",
         items: rolls,
-        speakAs: speakAs ?? "GM-AI-Bridge",
+        speakAs: speakAs ?? "The Bones",
         silent,
       });
       const lines = results.map((r) =>

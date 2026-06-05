@@ -1357,7 +1357,7 @@ on("chat:message", function (msg) {
           return t.name + ": [[1d20" + (t.initBonus !== 0 ? sign + t.initBonus : "") + "]]";
         });
 
-        sendChat("GM-AI-Bridge", msgParts.join(" | "), function(ops) {
+        sendChat("Initiative", msgParts.join(" | "), function(ops) {
           let inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
 
           let rollResults = validTokens.map(function(t, i) {
@@ -1716,20 +1716,20 @@ on("chat:message", function (msg) {
       }
 
       case "rollFormulas": {
-        // Roll one or more dice formulas using Roll20's real dice engine via sendChat inline rolls.
-        // Each item: { label, formula }  e.g. { label: "Fireball save — Goblin", formula: "1d20+2" }
-        // Results appear in Roll20 chat (noarchive by default so they don't clutter the log).
+        // Roll one or more dice formulas using Roll20's real dice engine.
+        // Step 1: roll silently via sendChat callback to get actual dice values from Roll20's RNG.
+        // Step 2: post a visible styled HTML message with the results (same path as narration).
+        // This guarantees visibility — inline-roll API messages render inconsistently in some CSS themes.
         let rollNonce = nonce;
         let items = args.items || [];
         if (!items.length) { writeResult(rollNonce, []); break; }
 
-        let speaker = args.speakAs || "GM-AI-Bridge";
-        let noarchive = args.silent === true; // default visible; pass silent:true to hide from chat
-        let msgParts = items.map(function(item) {
-          return (item.label ? item.label + ": " : "") + "[[" + item.formula + "]]";
-        });
+        let speaker = args.speakAs || "The Bones";
+        let silent = args.silent === true;
+        // Build one inline roll expression per item for the silent callback roll.
+        let rollExpr = items.map(function(item) { return "[[" + item.formula + "]]"; }).join(" ");
 
-        sendChat(speaker, msgParts.join(" | "), function(ops) {
+        sendChat("GM-AI-Bridge", rollExpr, function(ops) {
           let inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
           let results = items.map(function(item, i) {
             let roll = inlinerolls[i];
@@ -1738,15 +1738,26 @@ on("chat:message", function (msg) {
             (roll.results.rolls || []).forEach(function(r) {
               if (r.type === "R") (r.results || []).forEach(function(d) { dice.push(d.v); });
             });
-            return {
-              label: item.label || "",
-              formula: item.formula,
-              total: roll.results.total,
-              dice: dice,
-            };
+            return { label: item.label || "", formula: item.formula, total: roll.results.total, dice: dice };
           });
+
+          // Post visible styled HTML unless silent.
+          if (!silent) {
+            let rows = results.map(function(r) {
+              if (r.error) return "<div><b style='color:#cc4444'>" + r.label + "</b>: ERROR</div>";
+              let diceHtml = r.dice.map(function(d) {
+                return "<span style='background:#150406;border:1px solid #8b0000;color:#ff5555;border-radius:2px;padding:1px 4px;font-family:\"Courier New\",monospace;font-size:0.9em;'>" + d + "</span>";
+              }).join(" + ");
+              let totalHtml = "<span style='color:#ff8866;font-weight:bold;font-size:1.1em;'>" + r.total + "</span>";
+              let labelHtml = r.label ? "<b style='color:#cc2200;font-variant:small-caps;'>" + r.label + "</b>: " : "";
+              return "<div style='margin:1px 0;'>" + labelHtml + diceHtml + (r.dice.length > 1 || r.formula.indexOf("+") >= 0 || r.formula.indexOf("-") >= 0 ? " = " + totalHtml : "") + "</div>";
+            });
+            let html = "<div style='font-family:\"Palatino Linotype\",Palatino,serif;padding:4px 6px;border-left:2px solid #8b0000;'>" + rows.join("") + "</div>";
+            sendChat(speaker, html, null, { noarchive: false });
+          }
+
           writeResult(rollNonce, results);
-        }, { noarchive: noarchive });
+        }, { noarchive: true });
         break;
       }
 
