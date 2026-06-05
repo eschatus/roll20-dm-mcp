@@ -342,6 +342,103 @@
   }
   #dictating.show { display:inline-block; }
   @keyframes pulse { 0%,100%{opacity:.55;} 50%{opacity:1;} }
+
+  /* ---- Combat band — gold setting that holds the gem ---- */
+  /* Positioned to sit flush under the gem's visual base, like a jeweler's bezel */
+  #combat-band {
+    position: absolute; left: 28px; right: 28px; bottom: 6px;
+    /* Layered gold metallic gradient: bright highlight stripe over warm brass base */
+    background-color: #a87e00;
+    background-image:
+      linear-gradient(180deg,
+        rgba(255,230,100,0.60) 0%,
+        rgba(255,210,60,0.22) 18%,
+        transparent           45%,
+        rgba(255,200,50,0.15) 78%,
+        rgba(0,0,0,0.28)      100%
+      ),
+      /* Fine vertical engraving lines for a worked-metal texture */
+      repeating-linear-gradient(90deg,
+        transparent, transparent 3px,
+        rgba(0,0,0,0.045) 3px, rgba(0,0,0,0.045) 4px
+      );
+    border-radius: 5px 5px 8px 8px;
+    padding: 6px 14px 7px;
+    /* Beveled edges: bright top edge where gem rests, dark shadow below */
+    border-top: 2px solid #e8c040;
+    border-left: 1.5px solid #8a6810;
+    border-right: 1.5px solid #8a6810;
+    border-bottom: 2px solid #3e2c00;
+    box-shadow:
+      0 5px 16px rgba(0,0,0,0.88),       /* drop shadow under the setting */
+      0 -1px 4px rgba(0,0,0,0.55),        /* shadow at the gem junction */
+      inset 0 1px 0 rgba(255,240,130,0.55), /* inner top gold highlight */
+      inset 0 -2px 4px rgba(0,0,0,0.45);  /* inner bottom shadow (depth) */
+    display: none;
+    align-items: center; gap: 8px;
+    pointer-events: auto;
+  }
+  body[data-combat="active"] #combat-band { display: flex; }
+
+  /* Central filigree prong — a small ornament above the band's top edge suggesting
+     the setting grips the gem from below */
+  #combat-band::before {
+    content: '⚜';
+    position: absolute; top: -13px; left: 50%; transform: translateX(-50%);
+    font-size: 11px; color: #d4a520;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.9), 0 0 8px rgba(200,160,0,0.4);
+    pointer-events: none; user-select: none;
+  }
+
+  #cb-turn {
+    flex: 1; min-width: 0;
+    font-size: 11px; font-weight: bold; letter-spacing: 0.6px;
+    font-family: "Palatino Linotype", Palatino, Georgia, serif;
+    color: #140900;                           /* near-black on gold */
+    text-shadow: 0 1px 0 rgba(255,220,90,0.45); /* subtle emboss */
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #cb-tactic {
+    font-size: 10px; font-style: italic;
+    color: #2a1600;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 176px;
+    cursor: pointer; flex-shrink: 0;
+  }
+  #cb-tactic:hover { color: #0d0700; }
+  #cb-expand {
+    cursor: pointer; flex-shrink: 0; user-select: none;
+    color: #3d2600; font-size: 11px;
+  }
+  #cb-expand:hover { color: #0d0700; }
+  #cb-inbox {
+    background: linear-gradient(to bottom, #c06010, #8c3e00);
+    border: 1px solid rgba(220,140,60,0.6); border-radius: 10px;
+    padding: 1px 7px; font-size: 10px; color: #fff8e8;
+    flex-shrink: 0; display: none; cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,200,100,0.25);
+  }
+  #cb-inbox.show { display: block; }
+
+  /* ---- Tactic detail overlay — dark jewel-box above the band ---- */
+  #cb-detail {
+    position: absolute; left: 10px; right: 10px; bottom: 42px;
+    background: linear-gradient(160deg, rgba(18,11,0,.97), rgba(8,5,0,.97));
+    border: 1px solid rgba(200,155,30,0.5);
+    border-radius: 8px; padding: 11px 14px;
+    display: none; z-index: 10;
+    font-family: "Palatino Linotype", Palatino, Georgia, serif;
+    color: #e4cfa0; font-size: 12px; line-height: 1.55; max-height: 240px; overflow-y: auto;
+    box-shadow:
+      0 6px 22px rgba(0,0,0,0.92),
+      0 0 0 1px rgba(80,55,0,0.4),
+      inset 0 1px 0 rgba(200,160,40,0.18);
+    pointer-events: auto;
+  }
+  #cb-detail.show { display: block; }
+  #cb-detail h4 { margin: 0 0 7px; color: #d4a820; font-size: 13px; font-weight: normal; letter-spacing: 1px; }
+  #cb-detail .plan-label { font-size: 10px; color: rgba(180,140,50,0.72); letter-spacing: 1px; text-transform: uppercase; margin: 7px 0 2px; }
+  #cb-detail .close-x { float: right; cursor: pointer; color: rgba(180,130,30,0.7); font-size: 13px; line-height: 1; margin-left: 8px; }
+  #cb-detail .close-x:hover { color: #d4a820; }
 </style>
 </head>
 <body data-state="idle" data-mode="ghost">
@@ -359,6 +456,13 @@
     <div id="label"></div>
     <div id="caption"><div id="caption-text"></div></div>
     <div id="confirm"></div>
+    <div id="cb-detail"></div>
+    <div id="combat-band">
+      <span id="cb-turn"></span>
+      <span id="cb-tactic"></span>
+      <span id="cb-expand">▾</span>
+      <span id="cb-inbox"></span>
+    </div>
     <div id="drag-handle" title="Drag to move">✥</div>
     <div id="scry-btn" title="Scrying ledger">✦</div>
   </div>

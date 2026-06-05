@@ -3,6 +3,7 @@ import { z } from "zod";
 import * as registry from "../registry/characters.js";
 import * as ddb from "../bridge/dndbeyond.js";
 import * as roll20 from "../bridge/roll20.js";
+import { fireTacticsForPage } from "./tactics.js";
 
 // ONE canonical condition table — Roll20 status marker tags for D&D 5e
 // conditions, keyed by natural-language / DDB condition name. Both the
@@ -559,6 +560,9 @@ export function registerCombatTools(server: McpServer): void {
         finalOrder = merged.turnorder ?? newEntries;
       }
       await roll20.relayCommand({ action: "setTurnHook", enabled: true, reset: true });
+
+      // Auto-fire tactics at combat start — whisper cards arrive as each mob's plan completes.
+      if (clearFirst) void fireTacticsForPage(activePage);
 
       return {
         content: [{
@@ -1161,6 +1165,16 @@ export function registerCombatTools(server: McpServer): void {
       const result = await roll20.relayCommand<{ enabled: boolean; round: number; firstTokenId: string | null }>({ action: "getTurnHookState" });
       const status = result.enabled ? `ENABLED (round ${result.round})` : "DISABLED";
       return { content: [{ type: "text", text: `Turn hook: ${status}\n${JSON.stringify(result)}` }] };
+    }
+  );
+
+  server.tool(
+    "get_mob_plans",
+    "Read the stored tactical plans for all mob tokens. Plans are set by plan_all_tactics and persist until overwritten by a fresh run. Returns a map of tokenId → { html, plan: { name, shortTerm, mediumTerm?, longGoal? } }.",
+    {},
+    async () => {
+      const result = await roll20.relayCommand<Record<string, unknown>>({ action: "getMobPlans" });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
     }
   );
 

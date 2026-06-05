@@ -52,6 +52,23 @@ let settings: AppSettings = loadSettings();
 // A pending write-tool proposal awaiting DM confirmation (tap=confirm, Esc=cancel).
 let pendingConfirm: ((ok: boolean) => void) | null = null;
 
+// Combat turn tracking — updated in refreshRoster, consumed by runAgent.
+// lastNarratedTurnId: token id that was current when the DM last spoke to the gem.
+// latestTurnId: token id that is currently first in the turn order.
+// When they differ, turns have advanced without gem narration (misses, retcon, etc.).
+let lastNarratedTurnId = "";
+let latestTurnId = "";
+
+// Combat state maintained via RTDB push events (updated by connectEventStream)
+interface CombatPlan { name: string; shortTerm: string; mediumTerm?: string; longGoal?: string }
+const combatPlans = new Map<string, CombatPlan>();
+let combatCurrentId = "";
+let combatCurrentName = "";
+let combatRound = 0;
+let inboxCount = 0;
+// Token id→name map (updated from roster, consumed by RTDB event handler)
+let rosterTokenById: Record<string, string> = {};
+
 // Manual-drag state for the ✥ handle.
 let dragTimer: NodeJS.Timeout | null = null;
 let dragOffset: { dx: number; dy: number } | null = null;
@@ -258,9 +275,8 @@ async function runAgent(transcript: string) {
   console.error(`[agent] turn start: "${transcript.slice(0, 80)}"`);
   try {
     // Keep the roster current every turn (cheap — DDB list is cached, only
-    // list_tokens re-runs). This is why there's no "refresh roster" command:
-    // joining combat in progress just works, the next thing you say sees the
-    // live tokens.
+    // list_tokens re-runs). Also fetches the current turn order to build the
+    // COMBAT STATE header — Haiku sees whose turn it is and whether turns advanced.
     await refreshRoster({ silent: true });
     await agent.handle(transcript, {
       onText: (text) => { console.error(`[agent] say: ${text.slice(0, 80)}`); send("agent", { kind: "say", text }); },
@@ -272,6 +288,9 @@ async function runAgent(transcript: string) {
         send("state", "confirm");
       }),
     });
+    // Record the turn that was current when the DM just spoke, so the next
+    // refreshRoster can tell whether turns have advanced since this narration.
+    if (latestTurnId) lastNarratedTurnId = latestTurnId;
   } catch (err) {
     send("agent", { kind: "error", text: (err as Error).message });
   } finally {
@@ -342,12 +361,36 @@ function wireWizard() {
 async function refreshRoster(opts: { silent?: boolean; force?: boolean } = {}) {
   try {
     if (opts.force) clearRosterCache();
-    const { text, names } = await buildRoster(mcp);
+    const { text, names, tokenById } = await buildRoster(mcp);
     rosterNames = names;
+
+    // Update the tokenById cache used by RTDB event handler
+    rosterTokenById = tokenById;
+
+    // -- Combat state header (driven by RTDB push events, no relay needed) --
+    let combatHeader = "";
+    if (combatCurrentName) {
+      const roundStr = combatRound > 0 ? `Round ${combatRound}` : "Combat active";
+      const turnAdvanced = !!lastNarratedTurnId && !!combatCurrentId && combatCurrentId !== lastNarratedTurnId;
+      combatHeader = `COMBAT STATE (${roundStr}) — current turn: ${combatCurrentName}`;
+      if (turnAdvanced) combatHeader += " — [turns advanced without gem narration; assume retcon or uneventful — do NOT ask]";
+      const plan = combatPlans.get(combatCurrentId);
+      if (plan) {
+        combatHeader += `\nTACTIC: ${plan.shortTerm}`;
+        if (plan.mediumTerm) combatHeader += ` | 2-3r: ${plan.mediumTerm}`;
+      }
+      const allLines = Array.from(combatPlans.entries())
+        .filter(([id]) => id !== combatCurrentId)
+        .map(([, p]) => `• ${p.name}: ${p.shortTerm.slice(0, 100)}`)
+        .join("\n");
+      if (allLines) combatHeader += `\n\nOther mobs:\n${allLines}`;
+      combatHeader += "\n\n";
+    }
+
     // Fold the campaign's nickname aliases + notes into the roster block so the
     // agent can resolve "Ryan"/"Diver"→character and has party context. (These
     // were previously only used for STT vocab biasing, never shown to the model.)
-    let block = text;
+    let block = combatHeader + text;
     if (campaignData.nicknames?.length) {
       block += "\n\nAliases (say → means):\n" +
         campaignData.nicknames.map((n) => `- ${n.nickname} → ${n.target}`).join("\n");
@@ -395,6 +438,8 @@ app.whenReady().then(async () => {
     send("agent", { kind: "info", text: "bound to Roll20" });
     await refreshRoster();
     console.error(`[roster] ${rosterNames.length} names`);
+    // Start RTDB event stream for live turn order + tactical plan push
+    connectEventStream();
   } catch (err) {
     console.error(`[mcp] CONNECT FAILED: ${(err as Error).message}`);
     send("agent", { kind: "error", text: "MCP connect failed (is the server running on 39200?): " + (err as Error).message });
@@ -409,6 +454,88 @@ app.on("window-all-closed", () => {
 });
 
 let _gemBoundsBeforeExpand: { x: number; y: number } | null = null;
+
+// --- RTDB event stream (SSE from the MCP server, replaces polling) ---
+function connectEventStream() {
+  if (!process.env.ROLL20_MCP_TOKEN) return; // no token → RT transport not configured
+  const baseUrl = CONFIG.mcpUrl.replace(/\/mcp$/, "");
+  const url = new URL(baseUrl + "/events");
+  const reqOpts = {
+    hostname: url.hostname,
+    port: url.port || 39200,
+    path: url.pathname,
+    method: "GET" as const,
+    headers: {
+      Authorization: `Bearer ${process.env.ROLL20_MCP_TOKEN}`,
+      Accept: "text/event-stream",
+      Connection: "keep-alive",
+    },
+  };
+
+  const http = require("http") as typeof import("http");
+  const req = http.request(reqOpts, (res) => {
+    if (res.statusCode !== 200) {
+      console.error(`[events] SSE ${res.statusCode} — retrying in 10s`);
+      setTimeout(connectEventStream, 10_000);
+      return;
+    }
+    let buf = "";
+    let evtType = "";
+    res.on("data", (chunk: Buffer) => {
+      buf += chunk.toString();
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.startsWith("event: ")) { evtType = line.slice(7).trim(); }
+        else if (line.startsWith("data: ") && evtType) {
+          try { handleRtdbEvent(evtType, JSON.parse(line.slice(6))); } catch { /* malformed */ }
+          evtType = "";
+        }
+      }
+    });
+    res.on("end", () => { console.error("[events] SSE closed — reconnecting in 3s"); setTimeout(connectEventStream, 3_000); });
+    res.on("error", (e: Error) => { console.error("[events] SSE error:", e.message); setTimeout(connectEventStream, 5_000); });
+  });
+  req.on("error", (e: Error) => { console.error("[events] SSE connect error:", e.message); setTimeout(connectEventStream, 5_000); });
+  req.end();
+}
+
+function handleRtdbEvent(type: string, data: unknown) {
+  type TurnEntry = { id?: string; pr?: string | number; custom?: string; formula?: string };
+  type Plan = { name: string; shortTerm: string; mediumTerm?: string; longGoal?: string };
+
+  if (type === "combat-update") {
+    const d = data as { turnOrder: TurnEntry[]; round: number };
+    combatRound = d.round;
+    const activeEntry = d.turnOrder.find((e) => e.id && String(e.id) !== "-1") ?? null;
+    const newId = activeEntry ? String(activeEntry.id ?? "") : "";
+    combatCurrentId = newId;
+    combatCurrentName = newId ? (rosterTokenById[newId] ?? "") : "";
+    const plan = newId ? (combatPlans.get(newId) ?? null) : null;
+    send("combat-update", {
+      active: d.turnOrder.length > 0 && !!newId,
+      currentName: combatCurrentName,
+      round: combatRound,
+      plan,
+      allPlans: Object.fromEntries(combatPlans),
+    });
+  } else if (type === "mob-plan") {
+    const d = data as { tokenId: string; plan: Plan };
+    combatPlans.set(d.tokenId, d.plan);
+    if (d.tokenId === combatCurrentId) {
+      send("combat-update", {
+        active: true,
+        currentName: combatCurrentName,
+        round: combatRound,
+        plan: d.plan,
+        allPlans: Object.fromEntries(combatPlans),
+      });
+    }
+  } else if (type === "inbox-item") {
+    inboxCount++;
+    send("inbox-update", { count: inboxCount, item: (data as { item?: unknown }).item });
+  }
+}
 
 export function setMode(next: Mode) {
   mode = next;

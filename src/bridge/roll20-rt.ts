@@ -17,7 +17,7 @@ import path from "path";
 import { initializeApp, deleteApp, type FirebaseApp } from "firebase/app";
 import { getAuth, signInWithCustomToken, type User } from "firebase/auth";
 import {
-  getDatabase, ref, get, push, set, update, remove, serverTimestamp, query, limitToLast, onChildAdded,
+  getDatabase, ref, get, push, set, update, remove, serverTimestamp, query, limitToLast, onChildAdded, onValue,
   type Database, type DatabaseReference,
 } from "firebase/database";
 import { getPage } from "./browser.js";
@@ -185,6 +185,23 @@ function handleChatChild(key: string | null, val: unknown): void {
   if (process.env.RT_DEBUG) {
     const who = (val as { who?: unknown })?.who;
     console.error(`[rt-debug] chat child key=${key} who=${JSON.stringify(who)} content=${String(content).slice(0, 120).replace(/\s+/g, " ")}`);
+  }
+  // Detect player !dm messages — push to RTDB inbox for the gem's push subscription
+  if (typeof content === "string" && content.startsWith("!dm ")) {
+    const text = content.slice(4).trim();
+    if (text) {
+      const m = val as { who?: unknown; playerid?: unknown };
+      const isQuery = /^(what|who|how|is|am|are|do|does|can|did|\?)/i.test(text) || text.endsWith("?");
+      void getConn().then((conn) =>
+        push(ref(conn.db, `${conn.storagePath}/aibridge/dmInbox`), {
+          who: String(m.who || ""),
+          playerid: String(m.playerid || ""),
+          content: text,
+          type: isQuery ? "query" : "intent",
+          timestamp: Date.now(),
+        })
+      ).catch(() => {});
+    }
   }
   // An AIBRIDGE result resolves a pending relay; anything else is real table chat → buffer it.
   if (!tryResolveContent(content)) bufferChat(val);
@@ -549,4 +566,90 @@ export async function rtFindTokenPage(tokenId: string, hintPageId?: string): Pro
   }
   _tokenPageCache.delete(tokenId);
   return null;
+}
+
+// ─── RTDB Broadcast (SSE event source for the gem HUD) ───────────────────────
+
+export interface TurnOrderEntry { id?: string; pr?: string | number; custom?: string; formula?: string }
+export interface MobPlanData { name: string; shortTerm: string; mediumTerm?: string; longGoal?: string }
+export interface DmInboxEntry { who: string; playerid: string; content: string; type: "query" | "intent"; timestamp: number; key: string }
+
+export type RtdbBroadcastEvent =
+  | { type: "combat-update"; turnOrder: TurnOrderEntry[]; round: number }
+  | { type: "mob-plan"; tokenId: string; plan: MobPlanData }
+  | { type: "inbox-item"; item: DmInboxEntry };
+
+type EventCallback = (event: RtdbBroadcastEvent) => void;
+const _eventSubs = new Set<EventCallback>();
+export function onRtdbEvent(cb: EventCallback): () => void {
+  _eventSubs.add(cb);
+  return () => _eventSubs.delete(cb);
+}
+function _broadcast(event: RtdbBroadcastEvent): void {
+  for (const cb of _eventSubs) cb(event);
+}
+
+// Round tracking for combat-update events (mirrors the Mod's B().round logic)
+let _prevFirstId: string | null = null;
+let _prevFirstPr: number | null = null;
+let _currentRound = 0;
+let _subscriptionsStarted = false;
+
+export async function startRtdbSubscriptions(): Promise<void> {
+  if (_subscriptionsStarted) return;
+  _subscriptionsStarted = true;
+  try {
+    const conn = await getConn();
+
+    // Turn order — fires on every turn advance
+    const toPath = ref(conn.db, `${conn.storagePath}/campaign/turnorder`);
+    onValue(toPath, (snap) => {
+      const order = parseTurnorder(snap.val()) as TurnOrderEntry[];
+      const firstReal = order.find((e) => e.id && String(e.id) !== "-1") ?? null;
+      const firstId = firstReal ? String(firstReal.id ?? "") : null;
+      const firstPr = firstReal ? Number(firstReal.pr ?? 0) : null;
+
+      if (firstId && firstPr !== null) {
+        if (_currentRound === 0) {
+          _currentRound = 1;
+        } else if (_prevFirstId && firstId !== _prevFirstId && _prevFirstPr !== null && firstPr > _prevFirstPr) {
+          _currentRound++; // order wrapped → new round
+        }
+      } else if (!firstId) {
+        _currentRound = 0; // no combatants → out of combat
+      }
+      _prevFirstId = firstId;
+      _prevFirstPr = firstPr;
+      _broadcast({ type: "combat-update", turnOrder: order, round: _currentRound });
+    });
+
+    // Mob tactical plans (written by plan_all_tactics)
+    const plansPath = ref(conn.db, `${conn.storagePath}/aibridge/mobPlans`);
+    onValue(plansPath, (snap) => {
+      const all = snap.val() as Record<string, MobPlanData> | null;
+      if (!all) return;
+      for (const [tokenId, plan] of Object.entries(all)) {
+        if (plan?.name && plan?.shortTerm) _broadcast({ type: "mob-plan", tokenId, plan });
+      }
+    });
+
+    // DM inbox (written when !dm messages are detected in chat)
+    const inboxPath = ref(conn.db, `${conn.storagePath}/aibridge/dmInbox`);
+    onChildAdded(query(inboxPath, limitToLast(20)), (snap) => {
+      const item = snap.val() as Omit<DmInboxEntry, "key"> | null;
+      if (item?.content) _broadcast({ type: "inbox-item", item: { ...item, key: snap.key ?? "" } });
+    });
+
+    console.error("[rtdb] RTDB subscriptions started");
+  } catch (e) {
+    _subscriptionsStarted = false; // allow retry
+    throw e;
+  }
+}
+
+// Write a mob tactical plan to RTDB (so the gem HUD can display it via SSE).
+// Called from tactics.ts after plan_all_tactics completes, when RT transport is active.
+export async function rtWriteMobPlan(tokenId: string, plan: MobPlanData): Promise<void> {
+  const conn = await getConn();
+  await update(ref(conn.db, `${conn.storagePath}/aibridge/mobPlans`), { [tokenId]: plan });
 }

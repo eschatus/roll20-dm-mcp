@@ -40,6 +40,7 @@ const CLOUD_TOOLS = [
   "get_token_markers", "get_selection", "list_custom_states", // richer reads
   "clear_turn_order", "update_turn_order", "inject_round_marker", // turn-order
   "sync_character_state", "remove_object",
+  "get_mob_plans",  // read persisted tactical plans for HUD display
 ];
 
 export const CONFIG = {

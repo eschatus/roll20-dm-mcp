@@ -1472,11 +1472,20 @@ on("chat:message", function (msg) {
         if (!args.tokenId) throw new Error("setMobPlan requires tokenId");
         let plans = B().mobPlans;
         if (args.html) {
-          plans[args.tokenId] = { html: args.html };
+          // Store structured plan alongside HTML so callers (gem HUD, etc.) can read
+          // the plaintext without parsing the Roll20 template card.
+          plans[args.tokenId] = { html: args.html, plan: args.plan || null };
         } else {
           delete plans[args.tokenId];
         }
         writeResult(nonce, { ok: true });
+        break;
+      }
+
+      case "getMobPlans": {
+        // Read all stored mob plans. Plans persist until overwritten by a fresh
+        // plan_all_tactics run (they are NOT deleted when the token's turn fires).
+        writeResult(nonce, B().mobPlans || {});
         break;
       }
 
@@ -2080,9 +2089,9 @@ on("change:campaign:turnorder", function(obj, prev) {
     }
   }
 
-  // Consume any stored mob tactical plan for this token
+  // Show the stored mob tactical plan for this token (persists — not deleted here;
+  // overwritten by the next plan_all_tactics run).
   let mobPlan = bs.mobPlans[newFirst.id] || null;
-  if (mobPlan) { delete bs.mobPlans[newFirst.id]; }
 
   let hpLine = "";
   if (maxHp) {

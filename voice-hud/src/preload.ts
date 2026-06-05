@@ -54,4 +54,11 @@ contextBridge.exposeInMainWorld("dmw", {
   saveSettings: (s: unknown) => ipcRenderer.invoke("save-settings", s),
   onSettings: (cb: (s: { agentSound: boolean }) => void) => ipcRenderer.on("settings", (_e, s) => cb(s)),
   getWhisperAudio: () => ipcRenderer.invoke("get-whisper-audio"),
+
+  // RTDB push: live combat state (turn order changes, tactical plans)
+  onCombatUpdate: (cb: (d: { active: boolean; currentName: string; round: number; plan: { name: string; shortTerm: string; mediumTerm?: string; longGoal?: string } | null; allPlans: Record<string, { name: string; shortTerm: string; mediumTerm?: string; longGoal?: string }> }) => void) =>
+    ipcRenderer.on("combat-update", (_e, d) => cb(d)),
+  // RTDB push: player DM inbox items
+  onInboxUpdate: (cb: (d: { count: number; item?: { who: string; content: string; type: string } }) => void) =>
+    ipcRenderer.on("inbox-update", (_e, d) => cb(d)),
 });

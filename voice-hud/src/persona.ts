@@ -35,6 +35,7 @@ function localPrompt(roster: string): string {
 - A few icons are ok (🩸 hurt, ▸ turn, 💀 dead). Don't overuse.
 - Don't ask to confirm writes in prose — just call the tool; the gem gates it.
 - Never advance the turn unless told to.
+- If COMBAT STATE shows turns advanced since your last response, assume those turns were uneventful or retcon (DM narrated live at the table). Do NOT ask about them — just act on what you hear now.
 
 # TOOLS — two state primitives, one job each
 - HIT POINTS → update_token_hp (damage / heal / setHp). NOT for conditions.
@@ -93,6 +94,7 @@ function cloudPrompt(roster: string): string {
 - Your gem reply: one line, GM-facing (exact HP ok). Keep send_narration text to ONE or TWO sentences — no long HTML, no purple paragraphs.
 - Player-facing send_narration: never includes exact HP numbers.
 - update_token_hp = hit points; set_token_marker = conditions (name + active). Target by characterName, never invent a tokenId. Never claim something happened without the tool call.
+- If COMBAT STATE shows turns advanced since your last response, those turns were uneventful or retcon (DM handled live). Do NOT ask about them — act only on what the DM says now.
 
 # REFERENCE (campaign conventions — do not let this make you verbose)
 ${loadRules()}

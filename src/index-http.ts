@@ -6,6 +6,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 import { buildCombatServer } from "./server-combat.js";
+import { rtEnabled, onRtdbEvent, startRtdbSubscriptions } from "./bridge/roll20-rt.js";
 
 // Long-running HTTP MCP server. One process owns the shared Playwright browser
 // (via src/bridge/browser.ts singletons) and serves multiple clients — the Voice
@@ -87,7 +88,33 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 const httpServer = http.createServer(async (req, res) => {
-  if (!req.url || !req.url.startsWith("/mcp")) {
+  if (!req.url) { res.writeHead(404).end("Not found"); return; }
+
+  // SSE event stream for the gem HUD (RTDB push events for turn order, plans, inbox)
+  if (req.url === "/events") {
+    if (!isAuthorized(req)) { res.writeHead(401).end("Unauthorized"); return; }
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+    });
+    res.write(":\n\n"); // handshake comment
+
+    const sendEvent = (name: string, data: unknown) => {
+      try { res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* client gone */ }
+    };
+    const unsub = onRtdbEvent((e) => sendEvent(e.type, e));
+    req.on("close", unsub);
+
+    if (rtEnabled()) {
+      startRtdbSubscriptions().catch((e) =>
+        sendEvent("error", { message: (e as Error).message })
+      );
+    }
+    return;
+  }
+
+  if (!req.url.startsWith("/mcp")) {
     res.writeHead(404).end("Not found");
     return;
   }

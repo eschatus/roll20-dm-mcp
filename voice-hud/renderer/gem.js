@@ -591,3 +591,90 @@ document.getElementById("save-btn").addEventListener("click", async () => {
   const msg = document.getElementById("saved-msg");
   msg.classList.add("show"); setTimeout(() => msg.classList.remove("show"), 1500);
 });
+
+// ---- Combat HUD band ----
+let currentPlan = null;
+let allPlans = {};
+let detailOpen = false;
+let inboxCountDisplay = 0;
+
+function updateCombatBand(d) {
+  if (!d || !d.active) {
+    body.dataset.combat = "";
+    if (detailOpen) closeTacticDetail();
+    return;
+  }
+  body.dataset.combat = "active";
+  const roundStr = d.round > 0 ? ` · R${d.round}` : "";
+  document.getElementById("cb-turn").textContent = `▸ ${d.currentName || "?"}${roundStr}`;
+  currentPlan = d.plan;
+  allPlans = d.allPlans || {};
+  const tacticEl = document.getElementById("cb-tactic");
+  if (d.plan && d.plan.shortTerm) {
+    tacticEl.textContent = d.plan.shortTerm.slice(0, 72);
+    tacticEl.style.display = "";
+  } else {
+    tacticEl.style.display = "none";
+  }
+  if (detailOpen) renderTacticDetail();
+}
+
+function renderTacticDetail() {
+  const el = document.getElementById("cb-detail");
+  if (!currentPlan) { closeTacticDetail(); return; }
+  let html = `<h4><span class="close-x" id="cb-close-x">✕</span>🧠 ${escapeHtml(currentPlan.name || "?")}</h4>`;
+  html += `<div class="plan-label">⚡ This Turn</div><div>${escapeHtml(currentPlan.shortTerm || "")}</div>`;
+  if (currentPlan.mediumTerm) html += `<div class="plan-label">📅 2-3 Rounds</div><div>${escapeHtml(currentPlan.mediumTerm)}</div>`;
+  if (currentPlan.longGoal)  html += `<div class="plan-label">🎯 Goal</div><div>${escapeHtml(currentPlan.longGoal)}</div>`;
+  const others = Object.entries(allPlans).filter(([, p]) => p.name !== currentPlan.name);
+  if (others.length) {
+    html += `<div class="plan-label" style="margin-top:10px;border-top:1px solid rgba(160,120,20,.25);padding-top:8px;">Other Mobs</div>`;
+    for (const [, p] of others) {
+      html += `<div style="margin-bottom:5px;"><span style="color:#d4a820;">${escapeHtml(p.name)}</span> — ${escapeHtml((p.shortTerm || "").slice(0, 120))}</div>`;
+    }
+  }
+  el.innerHTML = html;
+  el.classList.add("show");
+  document.getElementById("cb-close-x")?.addEventListener("click", closeTacticDetail);
+}
+
+function closeTacticDetail() {
+  detailOpen = false;
+  document.getElementById("cb-detail").classList.remove("show");
+}
+
+document.getElementById("cb-expand").addEventListener("click", () => {
+  detailOpen = !detailOpen;
+  if (detailOpen) renderTacticDetail();
+  else closeTacticDetail();
+});
+document.getElementById("cb-tactic")?.addEventListener("click", () => {
+  detailOpen = !detailOpen;
+  if (detailOpen) renderTacticDetail();
+  else closeTacticDetail();
+});
+
+// Clicking outside the detail panel closes it
+document.addEventListener("click", (e) => {
+  if (!detailOpen) return;
+  const detail = document.getElementById("cb-detail");
+  const band = document.getElementById("combat-band");
+  if (!detail.contains(e.target) && !band.contains(e.target)) closeTacticDetail();
+});
+
+function updateInboxBadge(count) {
+  inboxCountDisplay = count;
+  const el = document.getElementById("cb-inbox");
+  if (count > 0) { el.textContent = `📬 ${count}`; el.classList.add("show"); }
+  else el.classList.remove("show");
+}
+
+// Wire up the IPC events from main
+if (window.dmw) {
+  if (typeof dmw.onCombatUpdate === "function") {
+    dmw.onCombatUpdate((d) => updateCombatBand(d));
+  }
+  if (typeof dmw.onInboxUpdate === "function") {
+    dmw.onInboxUpdate((d) => updateInboxBadge(d.count));
+  }
+}

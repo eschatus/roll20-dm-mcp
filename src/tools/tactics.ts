@@ -6,6 +6,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import * as roll20 from "../bridge/roll20.js";
 import * as ddb from "../bridge/dndbeyond.js";
+import { rtEnabled, rtWriteMobPlan } from "../bridge/roll20-rt.js";
 
 // ─── Doctrine Index (Ammann book) ────────────────────────────────────────────
 
@@ -725,7 +726,15 @@ async function internalPlanToken(
       intScore, wisScore, nearby.length,
       shortTermPlan, mediumTermPlan, longTermGoal,
     );
-    await roll20.relayCommand({ action: "setMobPlan", tokenId, html: card });
+    await roll20.relayCommand({
+      action: "setMobPlan",
+      tokenId,
+      html: card,
+      plan: { name: token.name, shortTerm: shortTermPlan, mediumTerm: mediumTermPlan, longGoal: longTermGoal },
+    });
+    if (rtEnabled()) {
+      void rtWriteMobPlan(tokenId, { name: token.name, shortTerm: shortTermPlan, mediumTerm: mediumTermPlan, longGoal: longTermGoal });
+    }
   }
 
   const result: PlanResult = {
@@ -751,6 +760,32 @@ async function internalPlanToken(
   }
 
   return result;
+}
+
+// ─── Exported helpers ────────────────────────────────────────────────────────
+
+// Fire tactics planning for every eligible mob on a page — same logic as the
+// plan_all_tactics tool but callable internally (e.g., auto-triggered at combat
+// start from roll_initiative). Runs in background; whispers arrive as each
+// mob's cascading plan completes.
+export async function fireTacticsForPage(
+  pageId: string,
+  opts: { notes?: string; forceReplan?: boolean } = {},
+): Promise<void> {
+  const allTokens = await roll20.relayCommand<TokenData[]>({ action: "getTokens", pageId }) ?? [];
+  const mobs = allTokens.filter((t) =>
+    !t.controlledby && t.layer === "objects" && Number(t.bar1_max) > 0,
+  );
+  if (mobs.length === 0) return;
+  await Promise.allSettled(
+    mobs.map((mob) =>
+      internalPlanToken(mob.id, pageId, {
+        notes: opts.notes,
+        forceReplan: opts.forceReplan ?? false,
+        postToChat: true,
+      }),
+    ),
+  );
 }
 
 // ─── Tool Registration ────────────────────────────────────────────────────────

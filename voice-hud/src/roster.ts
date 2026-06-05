@@ -21,7 +21,7 @@ interface DdbChar { name?: string; characterName?: string; id?: number }
 let _ddbCache: DdbChar[] | null = null;
 export function clearRosterCache(): void { _ddbCache = null; }
 
-export async function buildRoster(mcp: McpRoll20): Promise<{ entries: RosterEntry[]; text: string; names: string[] }> {
+export async function buildRoster(mcp: McpRoll20): Promise<{ entries: RosterEntry[]; text: string; names: string[]; tokenById: Record<string, string> }> {
   let tokens: TokenLite[] = [];
 
   try { tokens = JSON.parse(await mcp.call("list_tokens", {})) as TokenLite[]; } catch { /* ignore */ }
@@ -79,5 +79,8 @@ export async function buildRoster(mcp: McpRoll20): Promise<{ entries: RosterEntr
 
   const text = `PLAYER CHARACTERS:\n${pcText}\n\nOTHER TOKENS ON THE MAP (monsters/NPCs — exact names, match the DM's targets to these):\n${othersText}`;
 
-  return { entries, text, names };
+  const tokenById: Record<string, string> = {};
+  tokens.forEach((t) => { if (t.id) tokenById[t.id] = (t.name || "").split("\n")[0].trim(); });
+
+  return { entries, text, names, tokenById };
 }
