@@ -20,7 +20,7 @@ import {
   getDatabase, ref, get, push, set, update, remove, serverTimestamp, query, limitToLast, onChildAdded, onValue,
   type Database, type DatabaseReference,
 } from "firebase/database";
-import { getPage } from "./browser.js";
+import { getPage, closeBrowser } from "./browser.js";
 import type { Page } from "playwright";
 import { getActiveCampaign } from "../registry/campaigns.js";
 import { resolveMarkerForState } from "./markers.js";
@@ -106,6 +106,9 @@ async function harvestCustomToken(campaignId: string): Promise<string> {
   if (!captured) throw new Error("roll20-rt: could not harvest a Firebase custom token from the editor (logged in?)");
   mkdirSync(path.dirname(TOKEN_CACHE), { recursive: true });
   writeFileSync(TOKEN_CACHE, JSON.stringify({ campaignId, customToken: captured, harvestedAt: Date.now() } as TokenCache), "utf-8");
+  // Token cached — browser no longer needed until a Mod-relay write comes in. Close it now
+  // so it doesn't sit as a visible window; it will reopen on demand for sendChat/writes.
+  closeBrowser().catch(() => {});
   return captured;
 }
 
@@ -323,8 +326,9 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
         return (Array.isArray(m) ? m : []).map((x: Record<string, unknown>) => ({ id: x.id, name: x.name, tag: x.tag }));
       }
       case "getTokens": {
-        if (!cmd.pageId) return NOT_HANDLED;
-        const g = await rtGet<Record<string, Record<string, unknown>>>(`graphics/page/${cmd.pageId}`);
+        const pid = (cmd.pageId as string) || (await rtGet<Record<string, unknown>>("campaign"))?.playerpageid as string;
+        if (!pid) return NOT_HANDLED;
+        const g = await rtGet<Record<string, Record<string, unknown>>>(`graphics/page/${pid}`);
         const profile = (cmd.profile as string) || "full";
         return Object.values(g || {}).map((t) => mapToken(t, profile));
       }

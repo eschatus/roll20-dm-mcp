@@ -1,6 +1,11 @@
 import http, { IncomingMessage } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import "dotenv/config";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -21,17 +26,36 @@ const PORT = Number(process.env.ROLL20_HTTP_PORT) || 39200;
 const HOST = process.env.ROLL20_HTTP_HOST || "127.0.0.1";
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
-// Shared-secret bearer token. Required: the server refuses to start without it,
-// so we never accidentally expose an unauthenticated MCP endpoint that can drive
-// the live Roll20 browser session.
-const AUTH_TOKEN = process.env.ROLL20_MCP_TOKEN;
-if (!AUTH_TOKEN) {
+// Shared-secret bearer token. Auto-generated on first run if not set.
+function bootstrapToken(): string {
+  const token = randomUUID();
+  // Write to .env
+  const envPath = resolve(ROOT, ".env");
+  let envContent = "";
+  try { envContent = readFileSync(envPath, "utf-8"); } catch {}
+  if (!/^ROLL20_MCP_TOKEN=.+/m.test(envContent)) {
+    if (envContent && !envContent.endsWith("\n")) envContent += "\n";
+    writeFileSync(envPath, envContent + `ROLL20_MCP_TOKEN=${token}\n`, "utf-8");
+  }
+  // Inject the bearer header into .mcp.json so Claude Code picks it up on next restart.
+  const mcpJsonPath = resolve(ROOT, ".mcp.json");
+  try {
+    const mcpJson = JSON.parse(readFileSync(mcpJsonPath, "utf-8"));
+    if (mcpJson?.mcpServers?.["roll20-dm"]) {
+      mcpJson.mcpServers["roll20-dm"].headers = { Authorization: `Bearer ${token}` };
+      writeFileSync(mcpJsonPath, JSON.stringify(mcpJson, null, 2) + "\n", "utf-8");
+    }
+  } catch {}
   console.error(
-    "[roll20-dm http] FATAL: ROLL20_MCP_TOKEN is not set. Refusing to start an " +
-      "unauthenticated MCP server. Set ROLL20_MCP_TOKEN in the environment/.env.",
+    "\n[roll20-dm] First-time setup: ROLL20_MCP_TOKEN generated and saved.\n" +
+    `[roll20-dm] Token: ${token}\n` +
+    "[roll20-dm] Written to .env and .mcp.json — restart Claude Code to pick up the new header.\n",
   );
-  process.exit(1);
+  process.env.ROLL20_MCP_TOKEN = token;
+  return token;
 }
+
+const AUTH_TOKEN = process.env.ROLL20_MCP_TOKEN || bootstrapToken();
 const AUTH_TOKEN_BUF = Buffer.from(AUTH_TOKEN, "utf8");
 
 // DNS-rebinding protection allowlists. A malicious web page could otherwise point

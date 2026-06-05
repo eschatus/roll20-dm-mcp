@@ -14,7 +14,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import path from "path";
-import { getPage } from "./browser.js";
+import { getPage, closeBrowser } from "./browser.js";
 
 const AUTH_SVC = "https://auth-service.dndbeyond.com/v1/cobalt-token";
 const CHAR_SVC = "https://character-service.dndbeyond.com/character/v5";
@@ -61,6 +61,8 @@ async function harvestCobalt(): Promise<string> {
   if (!cobalt) throw new Error("ddb-rt: CobaltSession cookie not found — log into D&D Beyond in the browser");
   writeCobaltCache(cobalt);
   _cobaltMem = cobalt;
+  // Cookie cached — close the browser now; it reopens on demand for any Mod-relay writes.
+  closeBrowser().catch(() => {});
   return cobalt;
 }
 

@@ -1,14 +1,17 @@
 // Per-campaign editable data for the HUD: proper-noun vocab (Whisper biasing),
-// nickname→entity aliases (for the agent), and durable DM notes. Persisted under
-// voice-hud/data/<slug>.json so it survives restarts. The wizard panel edits this.
+// nickname→entity aliases (for the agent), and durable DM notes.
 //
-// Token↔character↔DDB mappings remain authoritative in the main project's
-// data/characters.json (read via the MCP server); this store layers the
-// voice-specific extras on top.
+// Reads and writes the SHARED data/campaign-context.json (same file the MCP server
+// tools add_vocab/add_nickname/set_campaign_notes write). This guarantees the STT
+// biasing vocab and the agent's alias map stay in sync — the HUD, Claude Code, and
+// the agent all write one place.
 
 import * as fs from "fs";
 import * as path from "path";
-import { CONFIG } from "./config";
+
+// Shared file is at repo-root/data/campaign-context.json.
+// __dirname = voice-hud/dist at runtime → go up two levels.
+const CONTEXT_PATH = path.join(__dirname, "..", "..", "data", "campaign-context.json");
 
 export interface NicknameAlias {
   nickname: string;       // what the DM says, e.g. "the big guy", "Z"
@@ -22,32 +25,38 @@ export interface CampaignData {
   notes: string;              // durable free-text DM notebook
 }
 
-function fileFor(slug: string): string {
-  return path.join(CONFIG.dataDir, `${slug}.json`);
-}
+type ContextStore = Record<string, Omit<CampaignData, "slug">>;
 
-function empty(slug: string): CampaignData {
-  return { slug, vocab: [], nicknames: [], notes: "" };
-}
-
-export function loadCampaignData(slug: string): CampaignData {
+function readStore(): ContextStore {
   try {
-    const raw = fs.readFileSync(fileFor(slug), "utf-8");
-    const parsed = JSON.parse(raw) as Partial<CampaignData>;
-    return {
-      slug,
-      vocab: parsed.vocab ?? [],
-      nicknames: parsed.nicknames ?? [],
-      notes: parsed.notes ?? "",
-    };
+    return fs.existsSync(CONTEXT_PATH)
+      ? (JSON.parse(fs.readFileSync(CONTEXT_PATH, "utf-8")) as ContextStore)
+      : {};
   } catch {
-    return empty(slug);
+    return {};
   }
 }
 
+function writeStore(store: ContextStore): void {
+  const dir = path.dirname(CONTEXT_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(CONTEXT_PATH, JSON.stringify(store, null, 2), "utf-8");
+}
+
+export function loadCampaignData(slug: string): CampaignData {
+  const entry = readStore()[slug] ?? {};
+  return {
+    slug,
+    vocab: Array.isArray(entry.vocab) ? entry.vocab : [],
+    nicknames: Array.isArray(entry.nicknames) ? entry.nicknames : [],
+    notes: typeof entry.notes === "string" ? entry.notes : "",
+  };
+}
+
 export function saveCampaignData(data: CampaignData): void {
-  if (!fs.existsSync(CONFIG.dataDir)) fs.mkdirSync(CONFIG.dataDir, { recursive: true });
-  fs.writeFileSync(fileFor(data.slug), JSON.stringify(data, null, 2), "utf-8");
+  const store = readStore();
+  store[data.slug] = { vocab: data.vocab, nicknames: data.nicknames, notes: data.notes };
+  writeStore(store);
 }
 
 // Build the Whisper initial_prompt: campaign vocab + roster names + nicknames,
@@ -56,7 +65,10 @@ export function buildVocabPrompt(data: CampaignData, rosterNames: string[]): str
   const set = new Set<string>();
   for (const v of data.vocab) if (v.trim()) set.add(v.trim());
   for (const n of rosterNames) if (n.trim()) set.add(n.trim());
-  for (const a of data.nicknames) { if (a.nickname.trim()) set.add(a.nickname.trim()); if (a.target.trim()) set.add(a.target.trim()); }
+  for (const a of data.nicknames) {
+    if (a.nickname.trim()) set.add(a.nickname.trim());
+    if (a.target.trim()) set.add(a.target.trim());
+  }
   return Array.from(set).join(", ");
 }
 

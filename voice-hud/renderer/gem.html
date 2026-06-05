@@ -264,11 +264,12 @@
 
   .chip-input { display:flex; gap:6px; margin-bottom:10px; }
   .chip-input input { flex:1; }
-  input, textarea {
+  input, textarea, select {
     background:rgba(8,2,5,.8); border:1px solid rgba(150,60,80,.45); color:#f0dde3;
     border-radius:6px; padding:7px 9px; font-size:13px; font-family:inherit;
   }
-  input:focus, textarea:focus { outline:none; border-color:rgba(220,120,150,.8); }
+  input:focus, textarea:focus, select:focus { outline:none; border-color:rgba(220,120,150,.8); }
+  select { appearance:none; -webkit-appearance:none; cursor:pointer; }
   button.act {
     background:rgba(120,30,50,.55); border:1px solid rgba(220,120,150,.5); color:#ffe0e8;
     border-radius:6px; padding:7px 12px; cursor:pointer; font-size:13px;
@@ -354,6 +355,26 @@
   }
   #dictating.show { display:inline-block; }
   @keyframes pulse { 0%,100%{opacity:.55;} 50%{opacity:1;} }
+
+  /* ---- Config tab ---- */
+  .config-section { margin-bottom: 14px; }
+  .config-section-title { font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: #b98a98; margin: 0 0 8px; border-bottom: 1px solid rgba(150,40,70,.25); padding-bottom: 4px; }
+  .config-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .config-row label { min-width: 148px; font-size: 12.5px; color: #c9a9b4; flex-shrink: 0; }
+  .config-row input:not([type="checkbox"]), .config-row select { flex: 1; }
+  .config-row code { font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+    color: #b98a98; background: rgba(30,10,18,.5); border-radius: 3px; padding: 1px 4px; }
+
+  /* ---- Debug tab ---- */
+  .tab[data-tab="debug"] { height: 100%; display: none; flex-direction: column; }
+  .tab[data-tab="debug"].active { display: flex; }
+  #debug-log { flex: 1; overflow-y: auto; font-family: ui-monospace, Consolas, monospace;
+    font-size: 11px; line-height: 1.65; padding-right: 4px; color: #b09898; }
+  .log-line { padding: 0 4px; white-space: pre-wrap; word-break: break-all; }
+  .log-line.log-err { color: #ff9080; }
+  .log-line.log-ok  { color: #80d880; }
+  .log-ts { color: rgba(150,100,110,.55); margin-right: 6px; user-select: none; }
 
   /* ---- SVG jeweler's setting overlay — fixed, never scaled ---- */
   #gem-setting {
@@ -574,6 +595,8 @@
       <button data-tab="nick">Nicknames</button>
       <button data-tab="notes">DM Notes</button>
       <button data-tab="roster">Roster</button>
+      <button data-tab="config">Config</button>
+      <button data-tab="debug">Debug</button>
     </div>
     <div class="tabbody">
       <div class="tab active" data-tab="chat">
@@ -644,6 +667,68 @@
           <button class="act" id="theme-reset" style="align-self:end;">Reset</button>
         </div>
       </div>
+      <div class="tab" data-tab="config">
+        <p class="hint-line">Saved to <code>voice-hud/.env</code>. Settings marked ★ need a restart.</p>
+
+        <div class="config-section">
+          <div class="config-section-title">Push-to-talk ★</div>
+          <div class="config-row"><label>PTT key</label><input id="cfg-ptt-key" placeholder="CtrlRight" /></div>
+          <div class="config-row"><label>PTT mouse button</label><input id="cfg-ptt-btn" type="number" min="0" max="9" placeholder="0 = off" /></div>
+          <div class="config-row"><label>Confirm key</label><input id="cfg-confirm-key" placeholder="ShiftRight" /></div>
+        </div>
+
+        <div class="config-section">
+          <div class="config-section-title">Speech recognition ★</div>
+          <div class="config-row"><label>Model</label><input id="cfg-stt-model" placeholder="large-v3-turbo" /></div>
+          <div class="config-row"><label>Device</label>
+            <select id="cfg-stt-device"><option value="cuda">cuda</option><option value="cpu">cpu</option></select>
+          </div>
+          <div class="config-row"><label>Compute type</label>
+            <select id="cfg-stt-compute">
+              <option value="float16">float16</option>
+              <option value="int8_float16">int8_float16</option>
+              <option value="int8">int8</option>
+            </select>
+          </div>
+          <div class="config-row"><label>Partial interval (ms)</label><input id="cfg-partial-ms" type="number" min="200" max="5000" /></div>
+        </div>
+
+        <div class="config-section">
+          <div class="config-section-title">Network</div>
+          <div class="config-row"><label>MCP URL</label><input id="cfg-mcp-url" placeholder="http://127.0.0.1:39200/mcp" /></div>
+          <div class="config-row"><label>Ollama URL</label><input id="cfg-ollama-url" placeholder="http://127.0.0.1:11434/v1" /></div>
+        </div>
+
+        <div class="config-section">
+          <div class="config-section-title">Language model</div>
+          <div class="config-row"><label>Provider</label>
+            <select id="cfg-provider"><option value="anthropic">anthropic</option><option value="ollama">ollama</option></select>
+          </div>
+          <div class="config-row"><label>Cloud model</label><input id="cfg-model" placeholder="claude-haiku-4-5" /></div>
+          <div class="config-row"><label>Auto-escalate</label><input type="checkbox" id="cfg-auto-escalate" style="width:auto;" /></div>
+          <div class="config-row"><label>Ollama model</label><input id="cfg-ollama-model" placeholder="qwen2.5:7b-instruct" /></div>
+        </div>
+
+        <div class="config-section">
+          <div class="config-section-title">Audio</div>
+          <div class="config-row"><label>Whisper clip (ms)</label><input id="cfg-whisper-clip-ms" type="number" min="100" max="5000" /></div>
+        </div>
+
+        <div class="row" style="margin-top:4px;">
+          <button class="act" id="config-save-btn">Save config</button>
+          <span class="saved" id="config-saved-msg">saved ✓ (restart for ★ settings)</span>
+        </div>
+      </div>
+
+      <div class="tab" data-tab="debug">
+        <div class="chat-toolbar">
+          <span class="model-pick">main process log</span>
+          <label><input type="checkbox" id="debug-autoscroll" checked /> auto-scroll</label>
+          <button class="act" id="debug-clear" style="padding:3px 10px; font-size:11px;">Clear</button>
+        </div>
+        <div id="debug-log"></div>
+      </div>
+
     </div>
     <div class="savebar">
       <label style="display:flex;align-items:center;gap:7px;color:#c9a9b4;font-size:12.5px;-webkit-app-region:no-drag;cursor:pointer;">

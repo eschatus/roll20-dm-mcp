@@ -397,9 +397,114 @@ document.getElementById("quit").addEventListener("click", () => {
 function showTab(name) {
   document.querySelectorAll(".tabbar button").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
   document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
+  if (name === "debug") loadDebugHistory();
+  if (name === "config") loadConfig();
 }
 document.querySelectorAll(".tabbar button").forEach((b) => {
   b.addEventListener("click", () => showTab(b.dataset.tab));
+});
+
+// ---- debug log tab ----
+const DEBUG_MAX_LINES = 500;
+let debugAutoscroll = true;
+
+function fmtTs(ts) {
+  const d = new Date(ts);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
+function appendLogLine(entry) {
+  const log = document.getElementById("debug-log");
+  if (!log) return;
+  const line = document.createElement("div");
+  const lc = entry.text.toLowerCase();
+  const isErr = lc.includes("error") || lc.includes("failed") || lc.includes("fail:");
+  const isOk  = lc.includes(" ok") || lc.includes("connected") || lc.includes("attuned") || lc.includes("bound to");
+  line.className = "log-line" + (isErr ? " log-err" : isOk ? " log-ok" : "");
+  line.innerHTML = `<span class="log-ts">${fmtTs(entry.ts)}</span>${escapeHtml(entry.text)}`;
+  log.appendChild(line);
+  // trim oldest if over cap
+  while (log.childElementCount > DEBUG_MAX_LINES) log.removeChild(log.firstChild);
+  if (debugAutoscroll) log.scrollTop = log.scrollHeight;
+}
+
+async function loadDebugHistory() {
+  if (!window.dmw) return;
+  const log = document.getElementById("debug-log");
+  if (!log) return;
+  log.innerHTML = "";
+  try {
+    const history = await dmw.getLogHistory();
+    (history || []).forEach(appendLogLine);
+  } catch {}
+}
+
+document.getElementById("debug-autoscroll")?.addEventListener("change", (e) => {
+  debugAutoscroll = e.target.checked;
+});
+document.getElementById("debug-clear")?.addEventListener("click", () => {
+  const log = document.getElementById("debug-log");
+  if (log) log.innerHTML = "";
+});
+
+if (window.dmw && typeof dmw.onLog === "function") {
+  dmw.onLog((entry) => appendLogLine(entry));
+}
+
+// ---- config tab ----
+async function loadConfig() {
+  if (!window.dmw) return;
+  try {
+    const c = await dmw.getConfig();
+    if (!c) return;
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val ?? ""; };
+    const setChk = (id, val) => { const el = document.getElementById(id); if (el) el.checked = !!val; };
+    const setSel = (id, val) => { const el = document.getElementById(id); if (el) el.value = val ?? ""; };
+    set("cfg-ptt-key", c.pttKey);
+    set("cfg-ptt-btn", c.pttMouseButton || 0);
+    set("cfg-confirm-key", c.confirmKey);
+    set("cfg-stt-model", c.sttModel);
+    setSel("cfg-stt-device", c.sttDevice);
+    setSel("cfg-stt-compute", c.sttComputeType);
+    set("cfg-partial-ms", c.partialMs);
+    set("cfg-mcp-url", c.mcpUrl);
+    setSel("cfg-provider", c.provider);
+    set("cfg-model", c.model);
+    setChk("cfg-auto-escalate", c.autoEscalate);
+    set("cfg-ollama-url", c.ollamaUrl);
+    set("cfg-ollama-model", c.ollamaModel);
+    set("cfg-whisper-clip-ms", c.whisperClipMs);
+  } catch {}
+}
+
+document.getElementById("config-save-btn")?.addEventListener("click", async () => {
+  if (!window.dmw) return;
+  const get = (id) => document.getElementById(id)?.value ?? "";
+  const getNum = (id) => Number(document.getElementById(id)?.value) || 0;
+  const getChk = (id) => !!(document.getElementById(id)?.checked);
+  const updates = {
+    pttKey: get("cfg-ptt-key"),
+    pttMouseButton: getNum("cfg-ptt-btn"),
+    confirmKey: get("cfg-confirm-key"),
+    sttModel: get("cfg-stt-model"),
+    sttDevice: get("cfg-stt-device"),
+    sttComputeType: get("cfg-stt-compute"),
+    partialMs: getNum("cfg-partial-ms"),
+    mcpUrl: get("cfg-mcp-url"),
+    provider: get("cfg-provider"),
+    model: get("cfg-model"),
+    autoEscalate: getChk("cfg-auto-escalate"),
+    ollamaUrl: get("cfg-ollama-url"),
+    ollamaModel: get("cfg-ollama-model"),
+    whisperClipMs: getNum("cfg-whisper-clip-ms"),
+  };
+  const r = await dmw.setConfig(updates);
+  const msg = document.getElementById("config-saved-msg");
+  if (msg) { msg.classList.add("show"); setTimeout(() => msg.classList.remove("show"), 2500); }
+  if (r && !r.ok) console.error("[config] save failed:", r.error);
 });
 
 // ---- chat history (ledger) ----

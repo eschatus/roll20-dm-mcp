@@ -11,6 +11,8 @@ import * as path from "path";
 // overlap): update_token_hp is the SINGLE HP+conditions tool — the DDB-syncing
 // apply_damage/heal_character and batch_exec are intentionally excluded here.
 const LOCAL_TOOLS = [
+  // session
+  "list_campaigns", "active_campaign", "switch_campaign",
   // reads
   "list_tokens", "get_token", "get_turn_order", "find_tokens_in_range",
   "get_recent_chat", "get_dm_inbox",
@@ -41,6 +43,8 @@ const CLOUD_TOOLS = [
   "clear_turn_order", "update_turn_order", "inject_round_marker", // turn-order
   "sync_character_state", "remove_object",
   "get_mob_plans",  // read persisted tactical plans for HUD display
+  "ddb_get_character", "ddb_get_monster", "ddb_list_campaign_characters", "ddb_list_campaigns", // DDB reads
+  "add_vocab", "add_nickname", "remove_vocab", "remove_nickname", // STT vocab + alias editing
 ];
 
 export const CONFIG = {
@@ -89,8 +93,8 @@ export const CONFIG = {
   mcpUrl: process.env.DMW_MCP_URL || "http://127.0.0.1:39200/mcp",
 
   // --- HUD agent provider ---
-  // "ollama" (local, free, default) or "anthropic" (cloud). DMW_PROVIDER overrides.
-  provider: (process.env.DMW_PROVIDER || "ollama") as "ollama" | "anthropic",
+  // "anthropic" (cloud, default) or "ollama" (local). DMW_PROVIDER overrides.
+  provider: (process.env.DMW_PROVIDER || "anthropic") as "ollama" | "anthropic",
 
   // Anthropic (cloud) model — used when provider=anthropic or on auto-escalation.
   // Haiku 4.5 is cheap + reliable at narration parsing / multi-target tool use

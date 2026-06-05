@@ -16,6 +16,7 @@ export interface GemTheme {
 export interface AppSettings {
   agentSound: boolean; // play a random whisper clip when the agent responds
   theme: GemTheme;
+  provider?: "ollama" | "anthropic"; // persisted brain selection; falls back to DMW_PROVIDER env
 }
 
 const FILE = () => path.join(CONFIG.dataDir, "settings.json");

@@ -2,7 +2,10 @@
   "mcpServers": {
     "roll20-dm": {
       "type": "http",
-      "url": "http://127.0.0.1:39200/mcp"
+      "url": "http://127.0.0.1:39200/mcp",
+      "headers": {
+        "Authorization": "Bearer 4f6c1b30-b619-4b41-9f27-42a65927239f"
+      }
     },
     "roll20-dm-maps": {
       "type": "stdio",

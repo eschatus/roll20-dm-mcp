@@ -1,4 +1,5 @@
 import { getPage } from "./browser.js";
+import { ddbRtEnabled, rtGetRawCharacter, rtListCampaigns, rtGetCampaignCharacters } from "./ddb-rt.js";
 
 const DDB_CHARACTER_SERVICE = "https://character-service.dndbeyond.com/character/v5";
 const DDB_MONSTER_API = "https://www.dndbeyond.com/api/v5";
@@ -181,19 +182,18 @@ export async function getCharacterStats(ddbCharId: number): Promise<DdbCharacter
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function getRawCharacter(ddbCharId: number): Promise<any> {
-  const data = await ddbFetch<{ data: unknown }>(
-    `${DDB_CHARACTER_SERVICE}/character/${ddbCharId}`
-  );
+  if (ddbRtEnabled()) return rtGetRawCharacter(ddbCharId);
+  const data = await ddbFetch<{ data: unknown }>(`${DDB_CHARACTER_SERVICE}/character/${ddbCharId}`);
   return data.data;
 }
 
 export async function getCharacter(ddbCharId: number): Promise<DdbCharacter> {
+  if (ddbRtEnabled()) return rtGetRawCharacter(ddbCharId) as Promise<DdbCharacter>;
+
   // Try direct API first (works for own characters and public sheets).
   // Fall back to browser page interception for DM-accessible sheets that reject direct API auth.
   try {
-    const data = await ddbFetch<{ data: DdbCharacter }>(
-      `${DDB_CHARACTER_SERVICE}/character/${ddbCharId}`
-    );
+    const data = await ddbFetch<{ data: DdbCharacter }>(`${DDB_CHARACTER_SERVICE}/character/${ddbCharId}`);
     return data.data;
   } catch (err) {
     if (!String(err).includes("403")) throw err;
@@ -201,16 +201,10 @@ export async function getCharacter(ddbCharId: number): Promise<DdbCharacter> {
 
   const page = await getPage("ddb");
   const responsePromise = page.waitForResponse(
-    (resp) =>
-      resp.url().includes(`/character/${ddbCharId}`) &&
-      resp.request().method() === "GET" &&
-      resp.status() === 200,
+    (resp) => resp.url().includes(`/character/${ddbCharId}`) && resp.request().method() === "GET" && resp.status() === 200,
     { timeout: 20_000 }
   );
-  await page.goto(`https://www.dndbeyond.com/characters/${ddbCharId}`, {
-    waitUntil: "domcontentloaded",
-    timeout: 20_000,
-  });
+  await page.goto(`https://www.dndbeyond.com/characters/${ddbCharId}`, { waitUntil: "domcontentloaded", timeout: 20_000 });
   const response = await responsePromise;
   const json = await response.json() as { data: DdbCharacter };
   return json.data;
@@ -222,15 +216,11 @@ export interface DdbCampaignCharacter {
   characterAvatarUrl: string | null;
 }
 
-export async function getCampaignCharacters(
-  campaignId: string
-): Promise<DdbCampaignCharacter[]> {
-  const page = await getPage("ddb");
-  await page.goto(`https://www.dndbeyond.com/campaigns/${campaignId}`, {
-    waitUntil: "networkidle",
-    timeout: 30_000,
-  });
+export async function getCampaignCharacters(campaignId: string): Promise<DdbCampaignCharacter[]> {
+  if (ddbRtEnabled()) return rtGetCampaignCharacters(campaignId);
 
+  const page = await getPage("ddb");
+  await page.goto(`https://www.dndbeyond.com/campaigns/${campaignId}`, { waitUntil: "networkidle", timeout: 30_000 });
   return page.evaluate(() => {
     const results: { id: number; characterName: string; characterAvatarUrl: string | null }[] = [];
     document.querySelectorAll("a[href*='/characters/']").forEach((el) => {
@@ -241,23 +231,17 @@ export async function getCampaignCharacters(
       if (results.some((r) => r.id === id)) return;
       const nameEl = el.querySelector("[class*='name'], [class*='title'], h2, h3, span");
       const img = el.querySelector("img");
-      results.push({
-        id,
-        characterName: nameEl?.textContent?.trim() || el.textContent?.trim() || `Character ${id}`,
-        characterAvatarUrl: img?.src ?? null,
-      });
+      results.push({ id, characterName: nameEl?.textContent?.trim() || el.textContent?.trim() || `Character ${id}`, characterAvatarUrl: img?.src ?? null });
     });
     return results;
   });
 }
 
 export async function listCampaigns(): Promise<{ id: string; name: string }[]> {
-  const page = await getPage("ddb");
-  await page.goto("https://www.dndbeyond.com/my-campaigns", {
-    waitUntil: "networkidle",
-    timeout: 30_000,
-  });
+  if (ddbRtEnabled()) return rtListCampaigns();
 
+  const page = await getPage("ddb");
+  await page.goto("https://www.dndbeyond.com/my-campaigns", { waitUntil: "networkidle", timeout: 30_000 });
   return page.evaluate(() => {
     const campaigns: { id: string; name: string; playerCount: number }[] = [];
     document.querySelectorAll(".ddb-campaigns-list-item").forEach((card) => {

@@ -17,7 +17,10 @@ export class McpRoll20 {
   private tools: McpTool[] = [];
 
   async connect(): Promise<McpTool[]> {
-    const transport = new StreamableHTTPClientTransport(new URL(CONFIG.mcpUrl));
+    const token = process.env.ROLL20_MCP_TOKEN || "";
+    const transport = new StreamableHTTPClientTransport(new URL(CONFIG.mcpUrl), {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+    });
     this.client = new Client({ name: "dm-whisper-hud", version: "0.1.0" }, { capabilities: {} });
     await this.client.connect(transport);
     const list = await this.client.listTools();

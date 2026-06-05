@@ -61,4 +61,13 @@ contextBridge.exposeInMainWorld("dmw", {
   // RTDB push: player DM inbox items
   onInboxUpdate: (cb: (d: { count: number; item?: { who: string; content: string; type: string } }) => void) =>
     ipcRenderer.on("inbox-update", (_e, d) => cb(d)),
+
+  // Debug log stream from the main process
+  onLog: (cb: (entry: { level: string; text: string; ts: number }) => void) =>
+    ipcRenderer.on("log", (_e, entry) => cb(entry)),
+  getLogHistory: () => ipcRenderer.invoke("get-log-history"),
+
+  // Runtime config read/write (persisted to voice-hud/.env)
+  getConfig: () => ipcRenderer.invoke("get-config"),
+  setConfig: (updates: Record<string, unknown>) => ipcRenderer.invoke("set-config", updates),
 });

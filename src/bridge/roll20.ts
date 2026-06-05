@@ -203,6 +203,7 @@ const CLIENT_READS: Record<string, ClientRead> = {
     const playerId = C.get("playerpageid");
     const activeId = C.activePage ? C.activePage().id : null;
     const pid = a.pageId || playerId;                  // combat reads target the PLAYER page, not activePage
+    if (!pid) throw new Error("no player page set in Backbone → RT/Mod");
     if (pid !== playerId && pid !== activeId) throw new Error("page " + pid + " not loaded client-side → Mod");
     const pg = C.pages && C.pages.get ? C.pages.get(pid) : null;
     if (!pg || !pg.thegraphics || !pg.thegraphics.models) throw new Error("graphics not loaded for " + pid);
@@ -250,6 +251,7 @@ const CLIENT_READS: Record<string, ClientRead> = {
     const playerId = C.get("playerpageid");
     const activeId = C.activePage ? C.activePage().id : null;
     const pid = a.pageId || playerId;
+    if (!pid) throw new Error("no player page set in Backbone → RT/Mod");
     if (pid !== playerId && pid !== activeId) throw new Error("page " + pid + " not loaded client-side → Mod");
     const pg = C.pages && C.pages.get ? C.pages.get(pid) : null;
     if (!pg || !pg.thegraphics) throw new Error("graphics not loaded for " + pid);

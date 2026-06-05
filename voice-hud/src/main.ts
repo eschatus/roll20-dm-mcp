@@ -38,7 +38,7 @@ let gem: BrowserWindow | null = null;
 const ptt = new PttHook();
 let stt: SttEngine | null = null; // resolved by startStt() (walks the fallback chain)
 const mcp = new McpRoll20();
-const agent = new DmAgent(mcp);
+const agent = new DmAgent(mcp, loadSettings().provider ?? CONFIG.provider);
 
 type Mode = "ghost" | "expanded";
 let mode: Mode = "ghost";
@@ -72,6 +72,21 @@ let rosterTokenById: Record<string, string> = {};
 // Manual-drag state for the ✥ handle.
 let dragTimer: NodeJS.Timeout | null = null;
 let dragOffset: { dx: number; dy: number } | null = null;
+
+// --- Debug log forwarding ---
+interface LogEntry { level: string; text: string; ts: number; }
+const logBuffer: LogEntry[] = [];
+const LOG_BUFFER_MAX = 500;
+
+const _origConsoleError = console.error.bind(console);
+console.error = (...args: unknown[]) => {
+  _origConsoleError(...args);
+  const text = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+  const entry: LogEntry = { level: "info", text, ts: Date.now() };
+  logBuffer.push(entry);
+  if (logBuffer.length > LOG_BUFFER_MAX) logBuffer.shift();
+  send("log", entry);
+};
 
 // Horizontal cushion-cut gem: wider than tall. Window leaves margin for the
 // rim handles (above the gem) and the drop-shadow.
@@ -191,6 +206,7 @@ function wireClipHandler() {
     fs.writeFileSync(wavPath, Buffer.from(buf));
     try {
       if (!stt) throw new Error("STT not ready");
+      if (activeSlug) campaignData = loadCampaignData(activeSlug); // pick up add_vocab writes
       const vocab = buildVocabPrompt(campaignData, rosterNames);
       const t0 = Date.now();
       const result = await stt.transcribe(wavPath, vocab);
@@ -293,6 +309,10 @@ async function runAgent(transcript: string) {
     // Record the turn that was current when the DM just spoke, so the next
     // refreshRoster can tell whether turns have advanced since this narration.
     if (latestTurnId) lastNarratedTurnId = latestTurnId;
+    // Reload vocab from disk (agent may have called add_vocab/add_nickname) and
+    // refresh roster names so names discovered this turn are in STT next utterance.
+    campaignData = loadCampaignData(activeSlug);
+    refreshRoster({ silent: true }).catch(() => {});
   } catch (err) {
     send("agent", { kind: "error", text: (err as Error).message });
   } finally {
@@ -305,6 +325,23 @@ function shortArgs(args: unknown): string {
     const s = JSON.stringify(args);
     return s.length > 80 ? s.slice(0, 77) + "…" : s;
   } catch { return ""; }
+}
+
+// Write/merge key=value pairs into voice-hud/.env for persistence across restarts.
+function writeHudEnv(updates: Record<string, string>) {
+  const envPath = path.join(__dirname, "..", ".env");
+  let content = "";
+  try { content = fs.readFileSync(envPath, "utf-8"); } catch { /* file may not exist yet */ }
+  for (const [key, val] of Object.entries(updates)) {
+    const re = new RegExp(`^${key}=.*$`, "m");
+    if (re.test(content)) {
+      content = content.replace(re, `${key}=${val}`);
+    } else {
+      if (content && !content.endsWith("\n")) content += "\n";
+      content += `${key}=${val}\n`;
+    }
+  }
+  fs.writeFileSync(envPath, content, "utf-8");
 }
 
 // --- Campaign data wizard IPC (expanded panel) ---
@@ -331,6 +368,7 @@ function wireWizard() {
   ipcMain.handle("set-provider", (_e, name: "ollama" | "anthropic") => {
     const r = agent.switchProvider(name);
     send("agent", { kind: "info", text: r.ok ? `model → ${name}` : `swap refused: ${r.reason}` });
+    if (r.ok) { settings = { ...settings, provider: name }; saveSettings(settings); }
     return { ...r, active: agent.currentProvider() };
   });
 
@@ -357,6 +395,65 @@ function wireWizard() {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
+  });
+
+  // Debug log history (for populating the debug tab when it opens).
+  ipcMain.handle("get-log-history", () => logBuffer.slice());
+
+  // Config read: returns the live runtime CONFIG values the renderer can display/edit.
+  ipcMain.handle("get-config", () => ({
+    pttKey: CONFIG.pttKey,
+    pttMouseButton: CONFIG.pttMouseButton ?? 0,
+    confirmKey: CONFIG.confirmKey,
+    sttModel: CONFIG.stt.model,
+    sttDevice: CONFIG.stt.device,
+    sttComputeType: CONFIG.stt.computeType,
+    partialMs: CONFIG.partialMs,
+    mcpUrl: CONFIG.mcpUrl,
+    provider: CONFIG.provider,
+    model: CONFIG.model,
+    autoEscalate: CONFIG.autoEscalate,
+    ollamaUrl: CONFIG.ollamaUrl,
+    ollamaModel: CONFIG.ollamaModel,
+    whisperClipMs: CONFIG.whisperClipMs,
+  }));
+
+  // Config write: update CONFIG in memory (immediate) + persist to voice-hud/.env (restarts).
+  // Keys marked ★ in the UI (pttKey, confirmKey, stt.*) need a restart to fully take effect.
+  ipcMain.handle("set-config", (_e, updates: Record<string, unknown>) => {
+    const envMap: Record<string, string> = {
+      pttKey: "DMW_PTT_KEY", pttMouseButton: "DMW_PTT_BUTTON", confirmKey: "DMW_CONFIRM_KEY",
+      sttModel: "DMW_STT_MODEL", sttDevice: "DMW_STT_DEVICE", sttComputeType: "DMW_STT_COMPUTE",
+      partialMs: "DMW_PARTIAL_MS", mcpUrl: "DMW_MCP_URL", provider: "DMW_PROVIDER",
+      model: "DMW_MODEL", autoEscalate: "DMW_AUTO_ESCALATE",
+      ollamaUrl: "DMW_OLLAMA_URL", ollamaModel: "DMW_OLLAMA_MODEL",
+      whisperClipMs: "DMW_WHISPER_CLIP_MS",
+    };
+    const envUpdates: Record<string, string> = {};
+    for (const [key, val] of Object.entries(updates)) {
+      if (key === "pttKey"         && typeof val === "string")  CONFIG.pttKey = val;
+      if (key === "pttMouseButton" && typeof val === "number")  CONFIG.pttMouseButton = val || null;
+      if (key === "confirmKey"     && typeof val === "string")  CONFIG.confirmKey = val;
+      if (key === "sttModel"       && typeof val === "string")  CONFIG.stt.model = val;
+      if (key === "sttDevice"      && typeof val === "string")  CONFIG.stt.device = val;
+      if (key === "sttComputeType" && typeof val === "string")  CONFIG.stt.computeType = val;
+      if (key === "partialMs"      && typeof val === "number")  CONFIG.partialMs = val;
+      if (key === "mcpUrl"         && typeof val === "string")  CONFIG.mcpUrl = val;
+      if (key === "provider"       && (val === "ollama" || val === "anthropic")) CONFIG.provider = val;
+      if (key === "model"          && typeof val === "string")  CONFIG.model = val;
+      if (key === "autoEscalate"   && typeof val === "boolean") CONFIG.autoEscalate = val;
+      if (key === "ollamaUrl"      && typeof val === "string")  CONFIG.ollamaUrl = val;
+      if (key === "ollamaModel"    && typeof val === "string")  CONFIG.ollamaModel = val;
+      if (key === "whisperClipMs"  && typeof val === "number")  CONFIG.whisperClipMs = val;
+      if (envMap[key] !== undefined) {
+        let envVal = String(val);
+        if (typeof val === "boolean") envVal = val ? "1" : "0";
+        if (key === "pttMouseButton") envVal = String(val || "");
+        envUpdates[envMap[key]] = envVal;
+      }
+    }
+    try { writeHudEnv(envUpdates); return { ok: true }; }
+    catch (e) { return { ok: false, error: (e as Error).message }; }
   });
 }
 
@@ -569,16 +666,13 @@ export function setMode(next: Mode) {
     gem.focus();
   } else {
     gem.setFocusable(false);
-    // Back to the always-on-top ghost gem (fixed size, not resizable).
-    gem.setResizable(false);
     gem.setAlwaysOnTop(true, "screen-saver");
-    gem.setSize(GEM_W, GEM_H);
-    // Restore the gem to wherever it was before the ledger opened.
-    if (_gemBoundsBeforeExpand) {
-      gem.setPosition(_gemBoundsBeforeExpand.x, _gemBoundsBeforeExpand.y);
-    } else {
-      gem.setPosition(workArea.x + workArea.width - GEM_W - 24, workArea.y + workArea.height - GEM_H - 24);
-    }
+    // setBounds atomically resets position + size before locking resizable,
+    // avoiding the Windows quirk where setSize is ignored after setResizable(false).
+    const rx = _gemBoundsBeforeExpand?.x ?? workArea.x + workArea.width - GEM_W - 24;
+    const ry = _gemBoundsBeforeExpand?.y ?? workArea.y + workArea.height - GEM_H - 24;
+    gem.setBounds({ x: rx, y: ry, width: GEM_W, height: GEM_H });
+    gem.setResizable(false);
     setGhostClickThrough(true);
   }
   send("state", mode === "expanded" ? "expanded" : "idle");
