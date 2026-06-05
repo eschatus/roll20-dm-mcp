@@ -3,6 +3,8 @@ dist/
 .env
 .mcp.json
 data/
+src/**/*.js
+src/**/*.js.map
 .tmp-test-data/
 .claude/worktrees/
 .claude/settings.json
