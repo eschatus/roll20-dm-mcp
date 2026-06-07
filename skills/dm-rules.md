@@ -29,6 +29,8 @@ convenience would conflict with a rule below, the rule wins.
   (“next”, “advance”, “go to the next turn”). Finishing an action list is NOT permission to advance.
 - **`switch_campaign` then wait.** After `switch_campaign`, stop and wait for the DM to confirm
   before running any other tool.
+- **After `register_campaign`, immediately call `switch_campaign`** to activate the new campaign,
+  then wait for DM confirmation before doing anything else.
 - **Round Start markers** need a `formula:"+1"` field in the raw turn entry so they display and
   auto-increment correctly (`inject_round_marker` handles this).
 

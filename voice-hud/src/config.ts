@@ -46,6 +46,7 @@ const CLOUD_TOOLS = [
   "get_mob_plans",  // read persisted tactical plans for HUD display
   "ddb_get_character", "ddb_get_monster", "ddb_list_campaign_characters", "ddb_list_campaigns", // DDB reads
   "add_vocab", "add_nickname", "remove_vocab", "remove_nickname", // STT vocab + alias editing
+  "register_campaign", "remove_campaign",                         // campaign setup
 ];
 
 export const CONFIG = {
