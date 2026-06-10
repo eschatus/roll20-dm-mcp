@@ -57,11 +57,6 @@ export async function buildRoster(mcp: McpRoll20): Promise<{ entries: RosterEntr
       return { tokenName: name, characterName: match, represents: t.represents || undefined };
     });
 
-  const names = Array.from(new Set([
-    ...entries.map((e) => e.tokenName),
-    ...entries.map((e) => e.characterName || ""),
-  ].filter(Boolean)));
-
   const pcText = entries.length
     ? entries.map((e) => `- ${e.tokenName}${e.characterName ? ` → ${e.characterName}` : ""}`).join("\n")
     : "(no player tokens found on the current page)";
@@ -76,6 +71,12 @@ export async function buildRoster(mcp: McpRoll20): Promise<{ entries: RosterEntr
       .filter((n) => n && !pcIds.has(n.toLowerCase()))
   ));
   const othersText = others.length ? others.map((n) => `- ${n}`).join("\n") : "(none)";
+
+  const names = Array.from(new Set([
+    ...entries.map((e) => e.tokenName),
+    ...entries.map((e) => e.characterName || ""),
+    ...others,
+  ].filter(Boolean)));
 
   const text = `PLAYER CHARACTERS:\n${pcText}\n\nOTHER TOKENS ON THE MAP (monsters/NPCs — exact names, match the DM's targets to these):\n${othersText}`;
 
