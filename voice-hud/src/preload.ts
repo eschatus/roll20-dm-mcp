@@ -70,4 +70,7 @@ contextBridge.exposeInMainWorld("dmw", {
   // Runtime config read/write (persisted to voice-hud/.env)
   getConfig: () => ipcRenderer.invoke("get-config"),
   setConfig: (updates: Record<string, unknown>) => ipcRenderer.invoke("set-config", updates),
+
+  // Reconnect MCP (in case server wasn't up at HUD start)
+  reconnectMcp: () => ipcRenderer.invoke("reconnect-mcp"),
 });

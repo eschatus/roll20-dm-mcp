@@ -11,7 +11,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 import { buildCombatServer } from "./server-combat.js";
-import { rtEnabled, onRtdbEvent, startRtdbSubscriptions } from "./bridge/roll20-rt.js";
+import { onRtdbEvent, startRtdbSubscriptions } from "./bridge/roll20-rt.js";
 
 // Long-running HTTP MCP server. One process owns the shared Playwright browser
 // (via src/bridge/browser.ts singletons) and serves multiple clients — the Voice
@@ -129,11 +129,11 @@ const httpServer = http.createServer(async (req, res) => {
     const unsub = onRtdbEvent((e) => sendEvent(e.type, e));
     req.on("close", unsub);
 
-    if (rtEnabled()) {
-      startRtdbSubscriptions().catch((e) =>
-        sendEvent("error", { message: (e as Error).message })
-      );
-    }
+    // Start RTDB subscriptions unconditionally — combat-update/plan/inbox events
+    // are independent of the relay transport. rtEnabled() only gates the relay path.
+    startRtdbSubscriptions().catch((e) =>
+      sendEvent("error", { message: (e as Error).message })
+    );
     return;
   }
 

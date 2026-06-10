@@ -327,16 +327,17 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
       }
       case "getTokens": {
         const pid = (cmd.pageId as string) || (await rtGet<Record<string, unknown>>("campaign"))?.playerpageid as string;
-        if (!pid) return NOT_HANDLED;
+        if (!pid) throw new Error("getTokens: no player page in RTDB → Mod fallback");
         const g = await rtGet<Record<string, Record<string, unknown>>>(`graphics/page/${pid}`);
+        if (!g || Object.keys(g).length === 0) throw new Error(`getTokens: graphics/page/${pid} empty in RTDB → Mod fallback`);
         const profile = (cmd.profile as string) || "full";
-        return Object.values(g || {}).map((t) => mapToken(t, profile));
+        return Object.values(g).map((t) => mapToken(t, profile));
       }
       case "getTokenById": {
         const pid = (cmd.pageId as string) || (await rtGet<Record<string, unknown>>("campaign"))?.playerpageid as string;
-        if (!pid) return NOT_HANDLED;
+        if (!pid) throw new Error("getTokenById: no player page in RTDB → Mod global lookup");
         const t = await rtGet<Record<string, unknown> | null>(`graphics/page/${pid}/${cmd.tokenId}`);
-        if (!t) return NOT_HANDLED; // not on player/given page → let the Mod do a global lookup
+        if (!t) throw new Error(`getTokenById: token ${String(cmd.tokenId)} not on player page → Mod global lookup`);
         return {
           id: t.id, name: t.name || "", represents: t.represents || "", layer: t.layer,
           controlledby: t.controlledby || "", left: t.left, top: t.top, width: t.width, height: t.height,
@@ -655,5 +656,6 @@ export async function startRtdbSubscriptions(): Promise<void> {
 // Called from tactics.ts after plan_all_tactics completes, when RT transport is active.
 export async function rtWriteMobPlan(tokenId: string, plan: MobPlanData): Promise<void> {
   const conn = await getConn();
-  await update(ref(conn.db, `${conn.storagePath}/aibridge/mobPlans`), { [tokenId]: plan });
+  const safe = Object.fromEntries(Object.entries(plan).filter(([, v]) => v !== undefined));
+  await update(ref(conn.db, `${conn.storagePath}/aibridge/mobPlans`), { [tokenId]: safe });
 }

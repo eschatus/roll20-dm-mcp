@@ -206,7 +206,7 @@ const CLIENT_READS: Record<string, ClientRead> = {
     if (!pid) throw new Error("no player page set in Backbone → RT/Mod");
     if (pid !== playerId && pid !== activeId) throw new Error("page " + pid + " not loaded client-side → Mod");
     const pg = C.pages && C.pages.get ? C.pages.get(pid) : null;
-    if (!pg || !pg.thegraphics || !pg.thegraphics.models) throw new Error("graphics not loaded for " + pid);
+    if (!pg || !pg.thegraphics || !pg.thegraphics.models || pg.thegraphics.models.length === 0) throw new Error("graphics not loaded for " + pid + " → Mod");
     const profile = a.profile || "full";
     return pg.thegraphics.models.map((g: any) => {
       const s: any = { id: g.id, name: g.get("name"), represents: g.get("represents") || "", controlledby: g.get("controlledby") || "", layer: g.get("layer") };

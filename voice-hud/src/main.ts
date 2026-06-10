@@ -372,6 +372,23 @@ function wireWizard() {
     return { ...r, active: agent.currentProvider() };
   });
 
+  ipcMain.handle("reconnect-mcp", async () => {
+    try {
+      await mcp.close();
+      const tools = await mcp.connect();
+      console.error(`[mcp] reconnected — ${tools.length} tools`);
+      send("agent", { kind: "info", text: `reconnected to Roll20 (${tools.length} tools)` });
+      await refreshRoster();
+      connectEventStream();
+      return { ok: true, tools: tools.length };
+    } catch (err) {
+      const msg = (err as Error).message;
+      console.error(`[mcp] RECONNECT FAILED: ${msg}`);
+      send("agent", { kind: "error", text: "MCP reconnect failed: " + msg });
+      return { ok: false, error: msg };
+    }
+  });
+
   ipcMain.on("quit-app", () => {
     ptt.stop();
     stt?.stop();
@@ -560,7 +577,7 @@ let _gemBoundsBeforeExpand: { x: number; y: number } | null = null;
 
 // --- RTDB event stream (SSE from the MCP server, replaces polling) ---
 function connectEventStream() {
-  if (!process.env.ROLL20_MCP_TOKEN) return; // no token → RT transport not configured
+  if (!process.env.ROLL20_MCP_TOKEN) return; // no token → cannot authenticate to MCP server
   const baseUrl = CONFIG.mcpUrl.replace(/\/mcp$/, "");
   const url = new URL(baseUrl + "/events");
   const reqOpts = {

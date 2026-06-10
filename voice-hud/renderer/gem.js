@@ -507,6 +507,14 @@ document.getElementById("config-save-btn")?.addEventListener("click", async () =
   if (r && !r.ok) console.error("[config] save failed:", r.error);
 });
 
+document.getElementById("cfg-reconnect-btn")?.addEventListener("click", async () => {
+  const btn = document.getElementById("cfg-reconnect-btn");
+  if (btn) btn.textContent = "…";
+  const r = await window.dmw?.reconnectMcp();
+  if (btn) { btn.textContent = r?.ok ? `✓ ${r.tools}t` : "✗ failed"; }
+  setTimeout(() => { if (btn) btn.textContent = "Reconnect"; }, 2500);
+});
+
 // ---- chat history (ledger) ----
 const chatlog = document.getElementById("chatlog");
 function pushChat(kind, text) {
