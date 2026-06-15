@@ -798,6 +798,10 @@ on("chat:message", function (msg) {
           showplayers_name: true,
           showplayers_bar1: true,
         });
+        // createObj('graphic') returns undefined when imgsrc is missing or not a
+        // Roll20-hosted URL (external/marketplace/thumb URLs are silently refused).
+        // Guard so callers get an actionable message, not "Cannot read 'id' of undefined".
+        if (!token) throw new Error("createObj('graphic') returned undefined — imgsrc must be an uploaded Roll20 URL (https://s3.amazonaws.com/files.d20.io/.../max/... or /med/...), not an external/thumb URL");
         writeResult(nonce, { id: token.id });
         break;
       }

@@ -1,7 +1,7 @@
 import { Page } from "playwright";
 import { getPage, closeBrowser } from "./browser.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
-import { rtEnabled, rtRelayCommand } from "./roll20-rt.js";
+import { rtEnabled, rtRelayCommand, rtGet } from "./roll20-rt.js";
 import { READONLY_ACTIONS, newNonce } from "./actions.js";
 import { getHealth, recordSuccess, recordFailure, recordFallback } from "./transport-health.js";
 
@@ -530,7 +530,28 @@ export async function getTokens(pageId: string) {
 }
 
 export async function getCurrentPageId(): Promise<string> {
-  return evaluate(() => (window as any).Campaign.get("playerpageid") as string);
+  // Under rt, read the authoritative player page straight from RTDB — no browser.
+  // The browser path reads window.Campaign, which returns `false` (or a stale id)
+  // whenever the attached Chrome isn't sitting on THIS campaign; rt is the source
+  // of truth for ROLL20_TRANSPORT=rt and keeps the browserless path browserless.
+  if (rtEnabled()) {
+    try {
+      const c = await rtGet<{ playerpageid?: unknown }>("campaign");
+      const pid = c?.playerpageid;
+      if (typeof pid === "string" && pid) return pid;
+    } catch { /* fall through to the browser read */ }
+  }
+  const pid = await evaluate(() => (window as any).Campaign.get("playerpageid"));
+  // Never let a falsy non-string (Roll20 returns boolean `false` when no player page
+  // is set) escape as a "page id" — it silently mis-targets every relay call that
+  // defaults to it. Fail loudly with an actionable message instead.
+  if (typeof pid !== "string" || !pid) {
+    throw new Error(
+      "Could not resolve the current page id — Roll20 has no player page set (playerpageid is unset). " +
+      "Pass an explicit pageId, or set a player page in Roll20.",
+    );
+  }
+  return pid;
 }
 
 export async function takeScreenshot(outputPath: string): Promise<void> {
