@@ -873,28 +873,13 @@ async function _doStartRtdbSubscriptions(): Promise<void> {
   }
 }
 
-// Write a mob tactical plan to RTDB (so the gem HUD can display it via SSE).
-// Called fire-and-forget (`void`) from tactics.ts after planning. This is a best-effort HUD
-// convenience, NOT load-bearing — and a direct client write to the custom aibridge/* subtree is
-// denied by Roll20's RTDB rules on some shards (PERMISSION_DENIED). Swallow ALL failures here so
-// a denied/failed display write can never become an unhandled rejection that crashes the planning
-// flow (or the long-running server). The plan still reaches the GM via the Mod whisper.
-export async function rtWriteMobPlan(tokenId: string, plan: MobPlanData): Promise<void> {
-  try {
-    const conn = await getConn();
-    const safe = Object.fromEntries(Object.entries(plan).filter(([, v]) => v !== undefined));
-    await update(ref(conn.db, `${conn.storagePath}/aibridge/mobPlans`), { [tokenId]: safe });
-  } catch (e) {
-    console.error(`[roll20-rt] rtWriteMobPlan(${tokenId}) skipped: ${(e as Error).message} (HUD-display only; plan still whispered to GM)`);
-  }
-}
-
 // Deliver a mob plan to the gem HUD. The plan is generated in the same process that hosts the
-// SSE /events stream, so we broadcast it straight to connected clients — works on EVERY shard,
-// no RTDB write involved. We additionally attempt the RTDB write (guarded) so a HUD that connects
-// later can replay it via the aibridge/mobPlans subscription, on shards where that write is
-// permitted. The direct broadcast is why mob-plan cards now appear even where the write is denied.
+// SSE /events stream, so we broadcast it straight to connected clients. We do NOT write it to
+// RTDB: Roll20's security rules deny client writes to our custom aibridge/* subtree on EVERY
+// shard (verified PERMISSION_DENIED on roll20-99910 and roll20-99922), and the Mod's API sandbox
+// has no Firebase access, so neither side could ever populate that node. Cross-session/reconnect
+// replay, if needed, must come from the Mod via the getMobPlans relay action (servable on any
+// shard) — never a client RTDB write.
 export function publishMobPlan(tokenId: string, plan: MobPlanData): void {
   _broadcast({ type: "mob-plan", tokenId, plan });
-  if (rtEnabled()) void rtWriteMobPlan(tokenId, plan);
 }
