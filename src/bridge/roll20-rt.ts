@@ -888,3 +888,13 @@ export async function rtWriteMobPlan(tokenId: string, plan: MobPlanData): Promis
     console.error(`[roll20-rt] rtWriteMobPlan(${tokenId}) skipped: ${(e as Error).message} (HUD-display only; plan still whispered to GM)`);
   }
 }
+
+// Deliver a mob plan to the gem HUD. The plan is generated in the same process that hosts the
+// SSE /events stream, so we broadcast it straight to connected clients — works on EVERY shard,
+// no RTDB write involved. We additionally attempt the RTDB write (guarded) so a HUD that connects
+// later can replay it via the aibridge/mobPlans subscription, on shards where that write is
+// permitted. The direct broadcast is why mob-plan cards now appear even where the write is denied.
+export function publishMobPlan(tokenId: string, plan: MobPlanData): void {
+  _broadcast({ type: "mob-plan", tokenId, plan });
+  if (rtEnabled()) void rtWriteMobPlan(tokenId, plan);
+}

@@ -6,7 +6,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import * as roll20 from "../bridge/roll20.js";
 import * as ddb from "../bridge/dndbeyond.js";
-import { rtEnabled, rtWriteMobPlan } from "../bridge/roll20-rt.js";
+import { publishMobPlan } from "../bridge/roll20-rt.js";
 import { callModel as sharedCallModel, __setAnthropicForTest as llmSetAnthropicForTest } from "../llm.js";
 
 // ─── Doctrine Index (Ammann book) ────────────────────────────────────────────
@@ -719,9 +719,9 @@ export async function internalPlanToken(
       html: card,
       plan: { name: token.name, shortTerm: shortTermPlan, mediumTerm: mediumTermPlan, longGoal: longTermGoal },
     });
-    if (rtEnabled()) {
-      void rtWriteMobPlan(tokenId, { name: token.name, shortTerm: shortTermPlan, mediumTerm: mediumTermPlan, longGoal: longTermGoal });
-    }
+    // Push to the gem HUD: in-process SSE broadcast (works on every shard) plus best-effort RTDB
+    // persistence for reconnect replay where the shard allows it — publishMobPlan handles both.
+    publishMobPlan(tokenId, { name: token.name, shortTerm: shortTermPlan, mediumTerm: mediumTermPlan, longGoal: longTermGoal });
   }
 
   const result: PlanResult = {
