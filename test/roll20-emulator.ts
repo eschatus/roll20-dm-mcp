@@ -168,8 +168,17 @@ export class Roll20Emulator {
       return;
     }
 
-    // Inline-roll callback path (rollInitiativeForTokens / rollFormulas).
+    // Roll callback paths. Roll20 replaces a `/roll <expr>` message's content with
+    // the JSON roll result before invoking the callback; rollFormulas reads it via
+    // JSON.parse(ops[0].content). Inline `[[expr]]` rolls (rollInitiativeForTokens)
+    // instead arrive on ops[0].inlinerolls. Simulate both.
     if (typeof callback === "function") {
+      const rollMatch = /^\/roll\s+(.+)$/.exec(input.trim());
+      if (rollMatch) {
+        const res = this.evalExpr(rollMatch[1]);
+        callback([{ content: JSON.stringify(res), inlinerolls: [] }]);
+        return;
+      }
       const inlinerolls = this.evalInlineRolls(input);
       callback([{ inlinerolls, content: input }]);
     }
