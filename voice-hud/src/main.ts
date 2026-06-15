@@ -6,7 +6,7 @@
 // for a confirm (PTT tap = confirm, Esc = cancel). Per-campaign vocab/nicknames/
 // notes are editable via the wizard panel (expanded mode).
 
-import { app, BrowserWindow, ipcMain, screen } from "electron";
+import { app, BrowserWindow, ipcMain, screen, Menu } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as dotenv from "dotenv";
@@ -65,7 +65,13 @@ const combatPlans = new Map<string, CombatPlan>();
 let combatCurrentId = "";
 let combatCurrentName = "";
 let combatRound = 0;
-let inboxCount = 0;
+// DM inbox: player !dm queries/intents (+ rules escalations) pushed from the server via SSE.
+// We keep the full items here (not just a count) so the gem's Inbox tab can read and reply.
+interface InboxItem { key: string; who: string; playerid?: string; content: string; type: string; timestamp: number; handled?: boolean }
+const inboxItems: InboxItem[] = [];
+const INBOX_MAX = 50;
+function inboxCount(): number { return inboxItems.filter((i) => !i.handled).length; }
+function pushInbox(): void { send("inbox-update", { count: inboxCount(), items: inboxItems.slice(-INBOX_MAX) }); }
 // SWR guard: true while runAgent is running. refreshRoster stashes the built block
 // here instead of calling agent.setRoster mid-turn; runAgent's finally applies it.
 let _agentTurnActive = false;
@@ -118,6 +124,10 @@ function createGem() {
     },
   });
   gem.setAlwaysOnTop(true, "screen-saver");
+  // Register the standard edit accelerators (Ctrl+C/V/X/A/Z/Y). The window is frameless with no
+  // menu, so without this the renderer's inputs can't paste and selected text can't be copied.
+  // editMenu registers the accelerators app-wide; no visible menu bar appears on a frameless window.
+  Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: "editMenu" }]));
   gem.loadFile(path.join(__dirname, "..", "renderer", "gem.html"));
   setGhostClickThrough(true);
   // Null the reference on close so gem?.xxx never tries to use a destroyed object.
@@ -398,6 +408,34 @@ function wireWizard() {
     }
   });
 
+  // DM inbox: renderer asks for the current snapshot (on tab open / HUD start).
+  ipcMain.handle("get-inbox", () => ({ count: inboxCount(), items: inboxItems.slice(-INBOX_MAX) }));
+
+  // DM inbox: reply to a player and mark the item handled. Whispers via the server's
+  // whisper_player tool (the only path that can target a single player on any shard).
+  ipcMain.handle("reply-inbox", async (_e, p: { key: string; playerName: string; message: string }) => {
+    if (!p?.message?.trim()) return { ok: false, error: "empty message" };
+    try {
+      await mcp.call("whisper_player", { playerName: p.playerName, message: p.message });
+      const item = inboxItems.find((i) => i.key === p.key);
+      if (item) item.handled = true;
+      pushInbox();
+      return { ok: true };
+    } catch (err) {
+      const msg = (err as Error).message;
+      console.error(`[inbox] reply failed: ${msg}`);
+      return { ok: false, error: msg };
+    }
+  });
+
+  // DM inbox: dismiss an item without replying (mark handled).
+  ipcMain.handle("dismiss-inbox", (_e, key: string) => {
+    const item = inboxItems.find((i) => i.key === key);
+    if (item) item.handled = true;
+    pushInbox();
+    return { ok: true };
+  });
+
   ipcMain.on("quit-app", () => {
     ptt.stop();
     stt?.stop();
@@ -496,7 +534,8 @@ async function refreshRoster(opts: { silent?: boolean; force?: boolean } = {}) {
       combatCurrentId = "";
       combatCurrentName = "";
       combatRound = 0;
-      inboxCount = 0;
+      inboxItems.length = 0;
+      pushInbox();
       console.error(`[roster] campaign switched to ${activeSlug} — combat state reset`);
     }
 
@@ -688,8 +727,20 @@ function handleRtdbEvent(type: string, data: unknown) {
       });
     }
   } else if (type === "inbox-item") {
-    inboxCount++;
-    send("inbox-update", { count: inboxCount, item: (data as { item?: unknown }).item });
+    const it = (data as { item?: Partial<InboxItem> }).item;
+    if (it && it.content) {
+      inboxItems.push({
+        key: it.key || `dm-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+        who: it.who || "?",
+        playerid: it.playerid,
+        content: it.content,
+        type: it.type || "intent",
+        timestamp: it.timestamp || Date.now(),
+        handled: false,
+      });
+      if (inboxItems.length > INBOX_MAX) inboxItems.splice(0, inboxItems.length - INBOX_MAX);
+      pushInbox();
+    }
   }
 }
 

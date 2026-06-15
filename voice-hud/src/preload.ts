@@ -58,9 +58,13 @@ contextBridge.exposeInMainWorld("dmw", {
   // RTDB push: live combat state (turn order changes, tactical plans)
   onCombatUpdate: (cb: (d: { active: boolean; currentName: string; round: number; plan: { name: string; shortTerm: string; mediumTerm?: string; longGoal?: string } | null; allPlans: Record<string, { name: string; shortTerm: string; mediumTerm?: string; longGoal?: string }> }) => void) =>
     ipcRenderer.on("combat-update", (_e, d) => cb(d)),
-  // RTDB push: player DM inbox items
-  onInboxUpdate: (cb: (d: { count: number; item?: { who: string; content: string; type: string } }) => void) =>
+  // RTDB push: player DM inbox. count drives the badge; items is the full list for the Inbox tab.
+  onInboxUpdate: (cb: (d: { count: number; items?: Array<{ key: string; who: string; playerid?: string; content: string; type: string; timestamp: number; handled?: boolean }> }) => void) =>
     ipcRenderer.on("inbox-update", (_e, d) => cb(d)),
+  // DM inbox: fetch current snapshot, reply to a player (whispers + marks handled), or dismiss.
+  getInbox: () => ipcRenderer.invoke("get-inbox"),
+  replyInbox: (p: { key: string; playerName: string; message: string }) => ipcRenderer.invoke("reply-inbox", p),
+  dismissInbox: (key: string) => ipcRenderer.invoke("dismiss-inbox", key),
 
   // Debug log stream from the main process
   onLog: (cb: (entry: { level: string; text: string; ts: number }) => void) =>

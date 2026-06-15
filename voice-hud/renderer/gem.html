@@ -366,6 +366,28 @@
   .config-row code { font-family: ui-monospace, Consolas, monospace; font-size: 11px;
     color: #b98a98; background: rgba(30,10,18,.5); border-radius: 3px; padding: 1px 4px; }
 
+  /* ---- Inbox tab ---- */
+  .tab[data-tab="inbox"] { height:100%; display:none; flex-direction:column; }
+  .tab[data-tab="inbox"].active { display:flex; }
+  #inbox-list { flex:1; overflow:auto; display:flex; flex-direction:column; gap:8px; padding-right:6px; }
+  .inbox-tab-count { color:#ff6b6b; font-weight:bold; font-size:11px; }
+  .inbox-item { border:1px solid rgba(160,120,20,.28); border-radius:6px; padding:7px 10px; background:rgba(24,10,14,.55); }
+  .inbox-item.handled { opacity:.4; }
+  .inbox-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px; }
+  .inbox-who { color:#d4a820; font-weight:bold; font-size:13px; }
+  .inbox-type { font-size:10px; letter-spacing:1px; text-transform:uppercase; color:#9aa77a; }
+  .inbox-type.query { color:#e0a0a0; }
+  .inbox-body { color:#e8d8c0; font-size:13px; line-height:1.45; margin-bottom:7px; white-space:pre-wrap; word-wrap:break-word; }
+  .inbox-reply { display:flex; gap:5px; }
+  .inbox-reply input { flex:1; }
+  .inbox-reply button { padding:6px 10px; font-size:12px; flex-shrink:0; }
+  #inbox-empty { color:rgba(180,150,120,.5); font-style:italic; text-align:center; padding:20px; }
+
+  /* ---- copy/paste: the global user-select:none on <body> kills text selection; re-enable it
+     on readable text and editable fields so the DM can copy out of / paste into the gem ---- */
+  #chatlog, #inbox-list, .inbox-body, .msg, #debug-log { -webkit-user-select:text; user-select:text; cursor:text; }
+  #panel input, #panel textarea { -webkit-user-select:text; user-select:text; }
+
   /* ---- Debug tab ---- */
   .tab[data-tab="debug"] { height: 100%; display: none; flex-direction: column; }
   .tab[data-tab="debug"].active { display: flex; }
@@ -591,6 +613,7 @@
     </header>
     <div class="tabbar">
       <button data-tab="chat" class="active">Chat</button>
+      <button data-tab="inbox">Inbox <span id="inbox-tab-count" class="inbox-tab-count"></span></button>
       <button data-tab="vocab">Proper Nouns</button>
       <button data-tab="nick">Nicknames</button>
       <button data-tab="notes">DM Notes</button>
@@ -614,6 +637,11 @@
           <input id="chat-text" placeholder="Type to the gem… (Enter to send)" />
           <button class="act" id="chat-send">Send</button>
         </div>
+      </div>
+
+      <div class="tab" data-tab="inbox">
+        <div id="inbox-list"></div>
+        <div id="inbox-empty">No messages from players.</div>
       </div>
 
       <div class="tab" data-tab="vocab">

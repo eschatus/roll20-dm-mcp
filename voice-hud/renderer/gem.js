@@ -342,11 +342,18 @@ if (window.dmw) {
     // a pending snippet resolved — clear the indicator once all are in
     if (pendingDictations > 0) pendingDictations--;
     if (pendingDictations === 0) document.getElementById("dictating").classList.remove("show");
-    const inp = document.getElementById("chat-text");
-    if (!inp) return;
     const t = (d.text || "").trim();
     if (!t) return;
-    showTab("chat"); // make sure the chatbox is visible
+    // Route to a focused inbox reply when the Inbox tab is open; otherwise the chatbox.
+    const activeTab = document.querySelector(".tabbar button.active")?.dataset.tab;
+    let inp;
+    if (activeTab === "inbox" && inboxReplyTarget && document.body.contains(inboxReplyTarget)) {
+      inp = inboxReplyTarget;
+    } else {
+      inp = document.getElementById("chat-text");
+      showTab("chat"); // make sure the chatbox is visible
+    }
+    if (!inp) return;
     // ALWAYS append to whatever's there now (late arrivals never overwrite).
     inp.value = inp.value.trim() ? (inp.value.replace(/\s+$/, "") + " " + t) : t;
     inp.focus();
@@ -800,13 +807,65 @@ function updateInboxBadge(count) {
   }
 }
 
+// ---- DM Inbox tab ----
+let inboxReplyTarget = null; // focused inbox reply input — dictation target while the Inbox tab is open
+
+function renderInbox(items) {
+  const list = document.getElementById("inbox-list");
+  const empty = document.getElementById("inbox-empty");
+  const tabCount = document.getElementById("inbox-tab-count");
+  if (!list) return;
+  const sorted = (items || []).slice().sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  const unhandled = sorted.filter((i) => !i.handled).length;
+  if (tabCount) tabCount.textContent = unhandled ? `(${unhandled})` : "";
+  if (empty) empty.style.display = sorted.length ? "none" : "";
+  list.innerHTML = "";
+  for (const it of sorted) {
+    const card = document.createElement("div");
+    card.className = "inbox-item" + (it.handled ? " handled" : "");
+    const typeClass = it.type === "query" ? "query" : "";
+    card.innerHTML =
+      `<div class="inbox-head"><span class="inbox-who">${escapeHtml(it.who || "?")}</span>` +
+      `<span class="inbox-type ${typeClass}">${escapeHtml(it.type || "")}</span></div>` +
+      `<div class="inbox-body">${escapeHtml(it.content || "")}</div>`;
+    const reply = document.createElement("div");
+    reply.className = "inbox-reply";
+    const input = document.createElement("input");
+    input.placeholder = it.handled ? "replied — send another?" : "Whisper a reply…";
+    input.addEventListener("focus", () => { inboxReplyTarget = input; });
+    const sendBtn = document.createElement("button");
+    sendBtn.className = "act"; sendBtn.textContent = "Reply";
+    const dismissBtn = document.createElement("button");
+    dismissBtn.className = "act"; dismissBtn.textContent = "✓"; dismissBtn.title = "Dismiss without replying";
+    async function doSend() {
+      const msg = input.value.trim();
+      if (!msg) return;
+      sendBtn.disabled = true; sendBtn.textContent = "…";
+      const r = await dmw.replyInbox({ key: it.key, playerName: it.who, message: msg });
+      sendBtn.disabled = false; sendBtn.textContent = "Reply";
+      if (r && r.ok) input.value = "";        // server marks handled + pushes a fresh list → re-render
+      else sendBtn.textContent = "retry";
+    }
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") doSend(); });
+    sendBtn.addEventListener("click", doSend);
+    dismissBtn.addEventListener("click", () => dmw.dismissInbox(it.key));
+    reply.appendChild(input); reply.appendChild(sendBtn); reply.appendChild(dismissBtn);
+    card.appendChild(reply);
+    list.appendChild(card);
+  }
+}
+
 // Wire up the IPC events from main
 if (window.dmw) {
   if (typeof dmw.onCombatUpdate === "function") {
     dmw.onCombatUpdate((d) => updateCombatBand(d));
   }
   if (typeof dmw.onInboxUpdate === "function") {
-    dmw.onInboxUpdate((d) => updateInboxBadge(d.count));
+    dmw.onInboxUpdate((d) => { updateInboxBadge(d.count); if (d.items) renderInbox(d.items); });
+  }
+  // Populate the inbox from the current snapshot (items may predate the HUD/tab being opened).
+  if (typeof dmw.getInbox === "function") {
+    dmw.getInbox().then((d) => { if (d) { updateInboxBadge(d.count); renderInbox(d.items || []); } }).catch(() => {});
   }
 }
 
