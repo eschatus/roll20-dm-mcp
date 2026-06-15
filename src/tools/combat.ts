@@ -10,13 +10,17 @@ import {
   isPcToken, splitPcNpc, isDowned, resolveNamesToTokens,
 } from "./aoe.js";
 import { getLastPing } from "../bridge/roll20-rt.js";
+import {
+  type TurnEntry,
+  json,
+  tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId,
+} from "./combatHelpers.js";
 
 // ONE canonical condition table — Roll20 status marker tags for D&D 5e
-// conditions, keyed by natural-language / DDB condition name. Both the
-// name→marker lookup (toRoll20Marker) and the marker-tag→condition lookup
-// (RESERVED_MARKER_CONDITIONS, used by get_token_markers) are derived from this.
-// Keep in sync with ai-relay.js CONDITION_MARKERS (the Roll20 sandbox keeps its
-// own separate copy — do not assume they share this module).
+// conditions, keyed by natural-language / DDB condition name. The marker-tag→
+// condition lookup (RESERVED_MARKER_CONDITIONS, used by get_token_markers) is
+// derived from this. Keep in sync with ai-relay.js CONDITION_MARKERS (the Roll20
+// sandbox keeps its own separate copy — do not assume they share this module).
 const CONDITION_MARKERS: { name: string; marker: string; label?: string }[] = [
   { name: "dead",          marker: "Unconscious::4444317", label: "unconscious / dead" },
   { name: "unconscious",   marker: "Unconscious::4444317", label: "unconscious / dead" },
@@ -37,11 +41,6 @@ const CONDITION_MARKERS: { name: string; marker: string; label?: string }[] = [
   { name: "exhaustion",    marker: "Exhausted::4444322" },
 ];
 
-// name → marker tag
-const CONDITION_TO_MARKER: Record<string, string> = Object.fromEntries(
-  CONDITION_MARKERS.map((c) => [c.name, c.marker])
-);
-
 // marker tag → the 5e condition it represents (first name wins for shared markers,
 // e.g. Unconscious::… is shared by dead+unconscious). Used to flag RESERVED markers.
 const RESERVED_MARKER_CONDITIONS: Record<string, string> = (() => {
@@ -51,70 +50,6 @@ const RESERVED_MARKER_CONDITIONS: Record<string, string> = (() => {
   }
   return out;
 })();
-
-function toRoll20Marker(condition: string): string {
-  return CONDITION_TO_MARKER[condition.toLowerCase()] ?? condition.toLowerCase();
-}
-
-// Resolve a spoken name to a Roll20 token id. Registered characters win; otherwise
-// fuzzy-match against token names on the current page (case-insensitive, substring
-// either direction, whitespace-trimmed). Shared by the HP + condition primitives so
-// they accept names consistently (the agent never sees raw token IDs).
-// Cheap existence check against the current page's token list — avoids the 30s
-// relay hang when getTokenById is handed a nonexistent/hallucinated id.
-async function tokenIdExists(id: string): Promise<boolean> {
-  try {
-    const pageId = await roll20.getCurrentPageId();
-    const tokens = await roll20.relayCommand<{ id: string }[]>({ action: "getTokens", pageId });
-    return tokens.some((t) => t.id === id);
-  } catch {
-    return false;
-  }
-}
-
-async function resolveTokenByName(name: string): Promise<string | undefined> {
-  const r = await resolveToken(name);
-  return r.id;
-}
-
-// Richer resolve: returns the matched id, OR candidate names when the match is
-// ambiguous/missing so the agent can ask the DM "did you mean X / Y?" instead of
-// guessing a fake name. Matching: registry → exact → unique substring → else
-// collect the closest candidates.
-async function resolveToken(name: string, tokenList?: { id: string; name: string }[]): Promise<{ id?: string; candidates?: string[] }> {
-  const entry = registry.lookup(name);
-  if (entry?.roll20TokenId) return { id: entry.roll20TokenId };
-  try {
-    // Caller may pass a pre-fetched token list (batch resolution fetches once).
-    const tokens = tokenList ?? await (async () => {
-      const pageId = await roll20.getCurrentPageId();
-      return roll20.relayCommand<{ id: string; name: string }[]>({ action: "getTokens", pageId });
-    })();
-    const want = name.trim().toLowerCase();
-    const norm = (t: { name?: string }) => (t.name || "").split("\n")[0].trim();
-
-    const exact = tokens.find((t) => norm(t).toLowerCase() === want);
-    if (exact) return { id: exact.id };
-
-    const subs = tokens.filter((t) => {
-      const n = norm(t).toLowerCase();
-      return n && (n.includes(want) || want.includes(n));
-    });
-    if (subs.length === 1) return { id: subs[0].id };
-    if (subs.length > 1) return { candidates: subs.map(norm) };
-
-    // No substring hit — offer token-word overlap candidates (e.g. "the twisted"
-    // → every "Mage the Twisted"-ish name) so the agent can clarify.
-    const words = want.split(/\s+/).filter((w) => w.length > 2);
-    const near = tokens.filter((t) => {
-      const n = norm(t).toLowerCase();
-      return words.some((w) => n.includes(w));
-    }).map(norm);
-    return { candidates: Array.from(new Set(near)).slice(0, 8) };
-  } catch {
-    return {};
-  }
-}
 
 export function registerCombatTools(server: McpServer): void {
   server.tool(
@@ -153,12 +88,7 @@ export function registerCombatTools(server: McpServer): void {
       let charId: string | undefined;
       if (!resolvedTokenId) {
         if (!characterName) throw new Error("Provide characterName or tokenId");
-        const r = await resolveToken(characterName);
-        if (!r.id) {
-          const hint = r.candidates?.length ? ` Did you mean: ${r.candidates.join(", ")}?` : " No matching token.";
-          throw new Error(`Ambiguous target "${characterName}".${hint} Ask the DM to confirm, don't guess.`);
-        }
-        resolvedTokenId = r.id;
+        resolvedTokenId = await resolveTokenOrThrow(characterName);
       }
       // Resolve the linked character so condition STATE (active_conditions) syncs,
       // not just the sticker. toggleCondition handles both + the pseudo/custom tiers.
@@ -440,7 +370,6 @@ export function registerCombatTools(server: McpServer): void {
 
       // Roll20 turn order entry format: {id, pr (string), custom, _pageid}
       // _pageid is required — without it Roll20's tracker shows "no tokens on this stage"
-      type TurnEntry = { id: string; pr: string; custom: string; _pageid: string };
 
       let newEntries: TurnEntry[];
       let lines: string[];
@@ -556,27 +485,14 @@ export function registerCombatTools(server: McpServer): void {
       charSheetId: z.string().optional().describe("Target a character sheet directly by its Roll20 ID"),
     },
     async ({ attributeName, characterName, charSheetId }) => {
-      let resolvedCharId = charSheetId;
-      if (!resolvedCharId) {
-        if (!characterName) throw new Error("Provide characterName or charSheetId");
-        const entry = registry.lookup(characterName);
-        if (!entry) throw new Error(`Character not registered: ${characterName}`);
-        const tokenData = await roll20.relayCommand<{ represents: string } | null>({ action: "getTokenById", tokenId: entry.roll20TokenId });
-        if (!tokenData?.represents) throw new Error("Token has no linked character sheet");
-        resolvedCharId = tokenData.represents;
-      }
+      const resolvedCharId = await resolveCharSheetId(characterName, charSheetId);
       const attrs = await roll20.relayCommand<Record<string, { current: unknown; max: unknown }>>({
         action: "getCharacterAttributes",
         charId: resolvedCharId,
         names: [attributeName],
       });
       const attr = attrs[attributeName];
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({ charSheetId: resolvedCharId, attribute: attributeName, current: attr?.current ?? null, max: attr?.max ?? null }),
-        }],
-      };
+      return json({ charSheetId: resolvedCharId, attribute: attributeName, current: attr?.current ?? null, max: attr?.max ?? null }, false);
     }
   );
 
@@ -591,15 +507,7 @@ export function registerCombatTools(server: McpServer): void {
       charSheetId: z.string().optional().describe("Target a character sheet directly by its Roll20 ID"),
     },
     async ({ attributeName, value, max, characterName, charSheetId }) => {
-      let resolvedCharId = charSheetId;
-      if (!resolvedCharId) {
-        if (!characterName) throw new Error("Provide characterName or charSheetId");
-        const entry = registry.lookup(characterName);
-        if (!entry) throw new Error(`Character not registered: ${characterName}`);
-        const tokenData = await roll20.relayCommand<{ represents: string } | null>({ action: "getTokenById", tokenId: entry.roll20TokenId });
-        if (!tokenData?.represents) throw new Error("Token has no linked character sheet");
-        resolvedCharId = tokenData.represents;
-      }
+      const resolvedCharId = await resolveCharSheetId(characterName, charSheetId);
       const attrValue = max !== undefined ? { current: value, max } : value;
       const result = await roll20.relayCommand<{ updated: string[]; created: string[]; failed: string[] }>({
         action: "setCharacterAttributes",
@@ -607,12 +515,7 @@ export function registerCombatTools(server: McpServer): void {
         attributes: { [attributeName]: attrValue },
       });
       const status = result.updated.length ? "updated" : result.created.length ? "created" : "failed";
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({ charSheetId: resolvedCharId, attribute: attributeName, value, max, status }),
-        }],
-      };
+      return json({ charSheetId: resolvedCharId, attribute: attributeName, value, max, status }, false);
     }
   );
 
@@ -625,28 +528,13 @@ export function registerCombatTools(server: McpServer): void {
       names: z.array(z.string()).optional().describe("Attribute names to fetch (omit for all)"),
     },
     async ({ characterName, charSheetId, names }) => {
-      let resolvedCharId = charSheetId;
-
-      if (!resolvedCharId) {
-        if (!characterName) throw new Error("Provide characterName or charSheetId");
-        const entry = registry.lookup(characterName);
-        if (!entry) throw new Error(`Character not registered: ${characterName}`);
-
-        const tokenData = await roll20.relayCommand<{ id: string; represents: string } | null>({
-          action: "getTokenById",
-          tokenId: entry.roll20TokenId,
-        });
-        if (!tokenData?.represents) throw new Error("Token has no linked character sheet");
-        resolvedCharId = tokenData.represents;
-      }
-
+      const resolvedCharId = await resolveCharSheetId(characterName, charSheetId);
       const attrs = await roll20.relayCommand<Record<string, { current: unknown; max: unknown }>>({
         action: "getCharacterAttributes",
         charId: resolvedCharId,
         names,
       });
-
-      return { content: [{ type: "text", text: JSON.stringify({ charSheetId: resolvedCharId, attributes: attrs }, null, 2) }] };
+      return json({ charSheetId: resolvedCharId, attributes: attrs });
     }
   );
 
@@ -761,12 +649,7 @@ export function registerCombatTools(server: McpServer): void {
       if (resolvedTokenId && !(await tokenIdExists(resolvedTokenId))) resolvedTokenId = undefined;
       if (!resolvedTokenId) {
         if (!characterName) throw new Error("Provide characterName or tokenId");
-        const r = await resolveToken(characterName);
-        if (!r.id) {
-          const hint = r.candidates?.length ? ` Did you mean: ${r.candidates.join(", ")}?` : " No matching token on the page.";
-          throw new Error(`Ambiguous target "${characterName}".${hint} Ask the DM to confirm, don't guess.`);
-        }
-        resolvedTokenId = r.id;
+        resolvedTokenId = await resolveTokenOrThrow(characterName);
       }
       type TokenData = { bar1_value: number; bar1_max: number; name: string };
       const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId: resolvedTokenId });
@@ -1402,7 +1285,6 @@ export function registerCombatTools(server: McpServer): void {
       active: z.boolean().describe("true to inject the marker, false to remove it"),
     },
     async ({ active }) => {
-      type TurnEntry = { id: string; pr: string; custom: string; _pageid: string; formula?: string };
 
       const pageId = await roll20.getCurrentPageId();
       let current: TurnEntry[] = await roll20.relayCommand<TurnEntry[]>({ action: "getTurnOrder" });
@@ -1473,7 +1355,6 @@ export function registerCombatTools(server: McpServer): void {
         throw new Error("insert requires either name or tokenId");
       }
 
-      type TurnEntry = { id: string; pr: string; custom: string; _pageid: string };
 
       const pageId = await roll20.getCurrentPageId();
 
