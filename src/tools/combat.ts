@@ -1379,13 +1379,18 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "whisper_player",
-    "Whisper a message to a player by their Roll20 display name. Use to answer !dm queries.",
+    "Whisper a message to a player by their Roll20 display name (GM→player, not shown to the table). Use to answer !dm queries or reply to a DM-inbox item.",
     {
-      playerName: z.string().describe("Roll20 display name of the player to whisper"),
-      message: z.string().describe("Message content"),
+      playerName: z.string().describe("Roll20 display name of the player to whisper (or 'gm' for a self-whisper)"),
+      message: z.string().describe("Message content. Newlines are converted to <br>."),
     },
     async ({ playerName, message }) => {
-      const result = await roll20.relayCommand({ action: "whisperPlayer", playerName, message });
+      // Roll20 reports a GM's display name as "Name (GM)", but `/w` resolves by the BARE name —
+      // strip that suffix. Then quote multi-word names so the Mod's `/w <name> <msg>` targets
+      // correctly, and convert newlines. Matches the player-command whisper helper.
+      const bare = playerName.replace(/\s*\(GM\)\s*$/i, "").trim();
+      const target = bare === "gm" || !bare.includes(" ") ? bare : `"${bare}"`;
+      const result = await roll20.relayCommand({ action: "whisperPlayer", playerName: target, message: message.replace(/\n/g, "<br>") });
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     }
   );

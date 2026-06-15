@@ -1510,7 +1510,13 @@ on("chat:message", function (msg) {
 
       case "whisperPlayer": {
         if (!args.playerName || !args.message) throw new Error("whisperPlayer requires playerName and message");
-        sendChat("GM-AI-Bridge", "/w " + args.playerName + " " + args.message, null, { noarchive: true });
+        // Player-facing whisper: must be VISIBLE to the recipient, so (1) archive it (noarchive
+        // false) — a noarchive whisper flashes once and is gone, and a player not watching that
+        // instant never sees it; and (2) speak as a player-visible identity, NOT "GM-AI-Bridge",
+        // whose output the campaign's bridge-suppression CSS hides. The AIBRIDGE_RESULT to the GM
+        // (writeResult below) stays hidden as before.
+        var whisperSpeaker = args.speakAs || "The DM";
+        sendChat(whisperSpeaker, "/w " + args.playerName + " " + args.message, null, { noarchive: false });
         writeResult(nonce, { ok: true });
         break;
       }
@@ -1729,48 +1735,68 @@ on("chat:message", function (msg) {
       }
 
       case "rollFormulas": {
-        // Roll one or more dice formulas using Roll20's real dice engine.
-        // Step 1: roll silently via sendChat callback to get actual dice values from Roll20's RNG.
-        // Step 2: post a visible styled HTML message with the results (same path as narration).
-        // This guarantees visibility — inline-roll API messages render inconsistently in some CSS themes.
+        // Roll each formula for real but WITH a callback, so the raw Roll20 roll stays hidden — we only
+        // want the numbers. Then we post our OWN parchment card showing the real total + dice in ink.
+        // This avoids the uncolorable purple Roll20 inline-roll chip entirely, so the card looks fully
+        // "written on parchment". silent → the card is whispered to the GM.
         let rollNonce = nonce;
         let items = args.items || [];
         if (!items.length) { writeResult(rollNonce, []); break; }
-
-        let speaker = args.speakAs || "The Bones";
+        let defaultSpeaker = args.speakAs || "The Bones";
         let silent = args.silent === true;
-        // Build one inline roll expression per item for the silent callback roll.
-        let rollExpr = items.map(function(item) { return "[[" + item.formula + "]]"; }).join(" ");
+        let rollResults = new Array(items.length);
+        let rollRemaining = items.length;
+        let rollDone = false;
+        function finishRolls() {
+          if (rollDone) return;
+          rollDone = true;
+          writeResult(rollNonce, rollResults);
+        }
+        items.forEach(function(item, idx) {
+          sendChat(defaultSpeaker, "/roll " + item.formula, function(ops) {
+            var total = 0, dice = [];
+            try {
+              var pr = JSON.parse(ops[0].content);
+              total = pr.total;
+              (pr.rolls || []).forEach(function(r) { if (r.type === "R") (r.results || []).forEach(function(d) { dice.push(d.v); }); });
+            } catch (e) {}
+            rollResults[idx] = { label: item.label || "", formula: item.formula, total: total, dice: dice };
 
-        sendChat("GM-AI-Bridge", rollExpr, function(ops) {
-          let inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
-          let results = items.map(function(item, i) {
-            let roll = inlinerolls[i];
-            if (!roll) return { label: item.label || "", formula: item.formula, total: 0, dice: [], error: "no roll" };
-            let dice = [];
-            (roll.results.rolls || []).forEach(function(r) {
-              if (r.type === "R") (r.results || []).forEach(function(d) { dice.push(d.v); });
-            });
-            return { label: item.label || "", formula: item.formula, total: roll.results.total, dice: dice };
+            // nat-20 / nat-1 ink color for single d20 rolls
+            var inkTotal = "#2d1705";
+            if (dice.length === 1 && /d20/i.test(item.formula)) {
+              if (dice[0] === 20) inkTotal = "#0f5510";
+              else if (dice[0] === 1) inkTotal = "#7a0d0d";
+            }
+            var bd = dice.length
+              ? "<div style=\"color:#553913;font-size:0.72em;letter-spacing:0.06em;margin-top:4px;\">⚄ " + dice.join("&nbsp;·&nbsp;") + "</div>"
+              : "";
+            // Aged parchment: a SOLID opaque base color (so darkmode never shows through even if the
+            // sanitizer drops the gradient layers) with subtle mottling painted on via background-image.
+            var card = "<div style=\"background-color:#f3e6c4;"
+              + "background-image:radial-gradient(ellipse at 20% 25%,rgba(150,112,62,0.20),transparent 55%),"
+              + "radial-gradient(ellipse at 82% 78%,rgba(120,88,45,0.18),transparent 55%);"
+              + "border:1px solid #8a6a38;border-radius:5px;padding:9px 20px 11px;min-width:118px;text-align:center;"
+              + "font-family:'Palatino Linotype',Palatino,'Book Antiqua',serif;display:inline-block;"
+              + "box-shadow:inset 0 0 18px rgba(110,80,35,0.22),0 1px 3px rgba(0,0,0,0.45);\">"
+              + "<div style=\"color:#3d2407;font-size:0.82em;letter-spacing:0.1em;font-variant:small-caps;font-weight:bold;font-style:italic;margin:0 0 2px;\">🎲 " + esc(item.formula) + "</div>"
+              + "<div style=\"color:" + inkTotal + ";font-weight:bold;font-size:2em;line-height:1.05;\">" + total + "</div>"
+              + bd
+              + "</div>";
+            sendChat(item.label || defaultSpeaker, (silent ? "/w gm " : "") + card, null, { noarchive: false });
+
+            rollRemaining--;
+            if (rollRemaining === 0) finishRolls();
           });
-
-          // Post visible styled HTML unless silent.
-          if (!silent) {
-            let rows = results.map(function(r) {
-              if (r.error) return "<div><b style='color:#cc4444'>" + r.label + "</b>: ERROR</div>";
-              let diceHtml = r.dice.map(function(d) {
-                return "<span style='background:#150406;border:1px solid #8b0000;color:#ff5555;border-radius:2px;padding:1px 4px;font-family:\"Courier New\",monospace;font-size:0.9em;'>" + d + "</span>";
-              }).join(" + ");
-              let totalHtml = "<span style='color:#ff8866;font-weight:bold;font-size:1.1em;'>" + r.total + "</span>";
-              let labelHtml = r.label ? "<b style='color:#cc2200;font-variant:small-caps;'>" + r.label + "</b>: " : "";
-              return "<div style='margin:1px 0;'>" + labelHtml + diceHtml + (r.dice.length > 1 || r.formula.indexOf("+") >= 0 || r.formula.indexOf("-") >= 0 ? " = " + totalHtml : "") + "</div>";
-            });
-            let html = "<div style='font-family:\"Palatino Linotype\",Palatino,serif;padding:4px 6px;border-left:2px solid #8b0000;'>" + rows.join("") + "</div>";
-            sendChat(speaker, html, null, { noarchive: false });
+        });
+        // Safety: if a callback never fires (bad formula, etc.), don't hang the relay — time out.
+        setTimeout(function() {
+          if (rollDone) return;
+          for (var i = 0; i < items.length; i++) {
+            if (!rollResults[i]) rollResults[i] = { label: items[i].label || "", formula: items[i].formula, total: 0, dice: [], error: "no roll result (timeout)" };
           }
-
-          writeResult(rollNonce, results);
-        }, { noarchive: true });
+          finishRolls();
+        }, 4000);
         break;
       }
 

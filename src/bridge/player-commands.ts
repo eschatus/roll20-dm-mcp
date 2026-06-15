@@ -136,8 +136,10 @@ export function __resetGlobalBucketForTest(): void {
 // ─── Whisper helper ───────────────────────────────────────────────────────────
 
 async function whisper(who: string, message: string): Promise<void> {
-  // Quote multi-word display names so the Mod's `/w <name> <msg>` targets correctly.
-  const target = who === "gm" || !who.includes(" ") ? who : `"${who}"`;
+  // Roll20 reports a GM's display name as "Name (GM)", but `/w` resolves by the BARE name — strip
+  // the suffix. Then quote multi-word names so the Mod's `/w <name> <msg>` targets correctly.
+  const bare = who.replace(/\s*\(GM\)\s*$/i, "").trim();
+  const target = bare === "gm" || !bare.includes(" ") ? bare : `"${bare}"`;
   await roll20.relayCommand({
     action: "whisperPlayer",
     playerName: target,
