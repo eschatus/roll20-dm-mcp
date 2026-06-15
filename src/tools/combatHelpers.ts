@@ -25,6 +25,28 @@ export function json(value: unknown, pretty = true): ToolResult {
 // optional formula drives the round-marker auto-increment ("+1").
 export type TurnEntry = { id: string; pr: string; custom: string; _pageid: string; formula?: string };
 
+// ── Batch results ─────────────────────────────────────────────────────────────
+// One entry per op returned by the relay's batchExec action.
+export type BatchResult = { id: string | number; ok: boolean; data?: unknown; error?: string };
+
+// Index a (possibly ragged / out-of-order) batchExec response by op id. CRITICAL:
+// any id that was sent but is absent from the response is filled in as an explicit
+// failure — a short or dropped relay response must NEVER silently read as success.
+// (batch_exec itself does NOT use this — it reconciles positionally because its
+// op ids are model-supplied and may collide or be absent.)
+export function indexBatchResults(
+  results: BatchResult[] | null | undefined,
+  sentIds: (string | number)[],
+): Map<string, BatchResult> {
+  const byId = new Map<string, BatchResult>();
+  for (const r of results ?? []) byId.set(String(r.id), r);
+  for (const id of sentIds) {
+    const key = String(id);
+    if (!byId.has(key)) byId.set(key, { id, ok: false, error: "no result returned by relay" });
+  }
+  return byId;
+}
+
 // ── Token resolution ──────────────────────────────────────────────────────────
 
 // Cheap existence check against the current page's token list — avoids the 30s

@@ -11,8 +11,8 @@ import {
 } from "./aoe.js";
 import { getLastPing } from "../bridge/roll20-rt.js";
 import {
-  type TurnEntry,
-  text, json,
+  type TurnEntry, type BatchResult,
+  text, json, indexBatchResults,
   tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId,
 } from "./combatHelpers.js";
 
@@ -189,7 +189,6 @@ export function registerCombatTools(server: McpServer): void {
       })).min(1).max(50).describe("Operations to run. All execute in order; failures are per-op and don't abort the batch."),
     },
     async ({ ops }) => {
-      type BatchResult = { id: string | number; ok: boolean; data?: unknown; error?: string };
       // Actions that target a single token by id — these can be addressed by
       // characterName instead and resolved here.
       const TOKEN_ACTIONS = new Set(["setTokenBar", "setTokenProps", "toggleCondition", "syncConditionsToToken", "getTokenById"]);
@@ -711,23 +710,19 @@ export function registerCombatTools(server: McpServer): void {
         };
       });
 
-      type BatchResult = { id: string | number; ok: boolean; error?: string };
       const relayOps = ops.map(({ id, action, args }) => ({ id, action, args }));
       const results = await roll20.relayCommand<BatchResult[]>({ action: "batchExec", ops: relayOps });
-      const byId = new Map<string, BatchResult>();
-      for (const r of results ?? []) byId.set(String(r.id), r);
+      // indexBatchResults guarantees an entry per sent op (missing → failure).
+      const byId = indexBatchResults(results, ops.map((o) => o.id));
 
       const okLines: string[] = [];
       const failLines: string[] = [];
       for (const op of ops) {
-        const r = byId.get(op.id);
-        // Treat a missing result as a failure rather than silently counting it as success.
-        const ok = r ? r.ok : false;
-        if (ok) {
+        const r = byId.get(op.id)!;
+        if (r.ok) {
           okLines.push(`${op._name}: ${op._nv}${op._max ? "/" + op._max : ""}`);
         } else {
-          const reason = r?.error ?? "no result returned by relay";
-          failLines.push(`${op._name}: FAILED (${reason})`);
+          failLines.push(`${op._name}: FAILED (${r.error ?? "no result returned by relay"})`);
         }
       }
 
@@ -1020,9 +1015,15 @@ export function registerCombatTools(server: McpServer): void {
           });
         }
       }
-      type BatchResult = { id: string | number; ok: boolean; error?: string };
       const batch = ops.length ? await roll20.relayCommand<BatchResult[]>({ action: "batchExec", ops }) : [];
-      const failed = new Map((batch ?? []).filter((b) => !b.ok).map((b) => [String(b.id), b.error ?? "failed"]));
+      // Per-op result keyed by id; a sent op the relay didn't answer for becomes a
+      // failure (was previously a silent success). errOf → error string, or
+      // undefined when the op succeeded OR was never sent (e.g. no hp op for a 0-damage save).
+      const opRes = indexBatchResults(batch, ops.map((o) => o.id));
+      const errOf = (id: string): string | undefined => {
+        const r = opRes.get(id);
+        return r && !r.ok ? (r.error ?? "failed") : undefined;
+      };
 
       // ── DM report (numbers are fine here — this never reaches players) ──
       const lines = npcResults.map((r) => {
@@ -1030,8 +1031,8 @@ export function registerCombatTools(server: McpServer): void {
         const max = Number(r.token.bar1_max) || 0;
         const newHp = Math.max(0, cur - r.applied);
         const save = r.total !== undefined ? `save ${r.total} vs DC ${args.saveDc} ${r.saved ? "✓" : "✗"}` : "no save";
-        const hpErr = failed.get(`hp:${r.token.id}`);
-        const condErr = failed.get(`cond:${r.token.id}`);
+        const hpErr = errOf(`hp:${r.token.id}`);
+        const condErr = errOf(`cond:${r.token.id}`);
         const condNote = !r.saved && args.onFailCondition ? (condErr ? ` cond FAILED(${condErr})` : ` +${args.onFailCondition}`) : "";
         if (hpErr) return `${r.token.name}: ${save} → FAILED to apply (${hpErr})`;
         return `${r.token.name}: ${save} → −${r.applied}${max ? ` (${newHp}/${max})` : ""}${newHp === 0 && max > 0 ? " DOWN" : ""}${condNote}`;
