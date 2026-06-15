@@ -251,21 +251,22 @@ function handleChatChild(key: string | null, val: unknown, live: boolean): void 
     const who = (val as { who?: unknown })?.who;
     console.error(`[rt-debug] chat child key=${key} who=${JSON.stringify(who)} content=${String(content).slice(0, 120).replace(/\s+/g, " ")}`);
   }
-  // Only push !dm messages that arrive after the initial replay burst settles
+  // Surface !dm messages to the gem HUD once the initial replay burst settles. Broadcast straight
+  // to the SSE stream — the old aibridge/dmInbox RTDB write is denied on every shard (see
+  // publishInboxItem). (The Mod separately stashes !dm in its own state for the turn-hook line.)
   if (live && typeof content === "string" && content.startsWith("!dm ")) {
     const text = content.slice(4).trim();
     if (text) {
       const m = val as { who?: unknown; playerid?: unknown };
       const isQuery = /^(what|who|how|is|am|are|do|does|can|did|\?)/i.test(text) || text.endsWith("?");
-      void getConn().then((conn) =>
-        push(ref(conn.db, `${conn.storagePath}/aibridge/dmInbox`), {
-          who: String(m.who || ""),
-          playerid: String(m.playerid || ""),
-          content: text,
-          type: isQuery ? "query" : "intent",
-          timestamp: Date.now(),
-        })
-      ).catch(() => {});
+      publishInboxItem({
+        who: String(m.who || ""),
+        playerid: String(m.playerid || ""),
+        content: text,
+        type: isQuery ? "query" : "intent",
+        timestamp: Date.now(),
+        key: `dm-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+      });
     }
   }
   // Player commands (!tactics etc.) — same live-only guard as !dm so the
@@ -835,22 +836,10 @@ async function _doStartRtdbSubscriptions(): Promise<void> {
       _broadcast({ type: "combat-update", turnOrder: order, round: _currentRound });
     });
 
-    // Mob tactical plans (written by plan_all_tactics)
-    const plansPath = ref(conn.db, `${conn.storagePath}/aibridge/mobPlans`);
-    onValue(plansPath, (snap) => {
-      const all = snap.val() as Record<string, MobPlanData> | null;
-      if (!all) return;
-      for (const [tokenId, plan] of Object.entries(all)) {
-        if (plan?.name && plan?.shortTerm) _broadcast({ type: "mob-plan", tokenId, plan });
-      }
-    });
-
-    // DM inbox (written when !dm messages are detected in chat)
-    const inboxPath = ref(conn.db, `${conn.storagePath}/aibridge/dmInbox`);
-    onChildAdded(query(inboxPath, limitToLast(20)), (snap) => {
-      const item = snap.val() as Omit<DmInboxEntry, "key"> | null;
-      if (item?.content) _broadcast({ type: "inbox-item", item: { ...item, key: snap.key ?? "" } });
-    });
+    // NOTE: there are no aibridge/mobPlans or aibridge/dmInbox subscriptions here. Roll20's RTDB
+    // rules deny client writes to the custom aibridge/* subtree on every shard, so those nodes are
+    // never populated and a subscription would never fire. Mob plans and inbox items are delivered
+    // to the HUD by direct in-process SSE broadcast instead (publishMobPlan / publishInboxItem).
 
     // Map pings: the `broadcast` node is a single-value channel overwritten on each
     // shift+click ping (discovered via src/recon/ping-sniff.ts). Remember the latest
@@ -882,4 +871,11 @@ async function _doStartRtdbSubscriptions(): Promise<void> {
 // shard) — never a client RTDB write.
 export function publishMobPlan(tokenId: string, plan: MobPlanData): void {
   _broadcast({ type: "mob-plan", tokenId, plan });
+}
+
+// Deliver a DM-inbox item to the gem HUD. Same rationale as publishMobPlan: the aibridge/dmInbox
+// node is write-denied on every shard, so broadcast straight to the in-process SSE stream rather
+// than round-tripping through RTDB.
+export function publishInboxItem(item: DmInboxEntry): void {
+  _broadcast({ type: "inbox-item", item });
 }

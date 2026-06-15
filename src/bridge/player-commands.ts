@@ -3,7 +3,7 @@ import * as roll20 from "./roll20.js";
 import * as ddb from "./dndbeyond.js";
 import * as characters from "../registry/characters.js";
 import { lookupDoctrine, resolveTier, awarenessRadius, rangeBand, MODELS } from "../tools/tactics.js";
-import { setPlayerCommandListener, rtEnabled, rtUpdate, type PlayerChatCommand } from "./roll20-rt.js";
+import { setPlayerCommandListener, publishInboxItem, type PlayerChatCommand } from "./roll20-rt.js";
 import {
   callModel as sharedCallModel,
   extractJson as sharedExtractJson,
@@ -531,12 +531,12 @@ async function handleRules(cmd: PlayerChatCommand, arg: string): Promise<void> {
   const reason = typeof parsed?.reason === "string" ? parsed.reason : "couldn't answer with confidence";
   await whisper(cmd.who, "⚖️ Good question — that one needs the DM. I've passed it along.");
   await whisper("gm", `❓ Rules question from ${cmd.who}: "${arg}" (assistant unsure: ${reason})`);
-  if (rtEnabled()) {
-    const key = `rq-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-    await rtUpdate("aibridge/dmInbox", {
-      [key]: { who: cmd.who, playerid: cmd.playerid, content: `[rules] ${arg}`, type: "query", timestamp: Date.now() },
-    }).catch(() => {});
-  }
+  // Surface the escalation to the gem HUD inbox via in-process SSE broadcast (the aibridge/dmInbox
+  // RTDB write is denied on every shard).
+  publishInboxItem({
+    who: cmd.who, playerid: cmd.playerid, content: `[rules] ${arg}`,
+    type: "query", timestamp: Date.now(), key: `rq-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+  });
 }
 
 // ─── !help ────────────────────────────────────────────────────────────────────
