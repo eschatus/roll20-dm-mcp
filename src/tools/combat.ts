@@ -12,7 +12,7 @@ import {
 import { getLastPing } from "../bridge/roll20-rt.js";
 import {
   type TurnEntry,
-  json,
+  text, json,
   tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId,
 } from "./combatHelpers.js";
 
@@ -70,7 +70,7 @@ export function registerCombatTools(server: McpServer): void {
         reserved,
         available,
       };
-      return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
+      return json(out);
     }
   );
 
@@ -96,7 +96,7 @@ export function registerCombatTools(server: McpServer): void {
       charId = tok?.represents || undefined;
       const res = await roll20.relayCommand<{ tier?: string; marker?: string }>({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition, active });
       const tierNote = res?.tier === "custom" ? " (custom state — icon auto-assigned + tracked)" : res?.tier === "pseudo" ? " (pseudo-condition)" : "";
-      return { content: [{ type: "text", text: `${condition} ${active ? "applied to" : "cleared from"} ${characterName ?? resolvedTokenId}${tierNote}` }] };
+      return text(`${condition} ${active ? "applied to" : "cleared from"} ${characterName ?? resolvedTokenId}${tierNote}`);
     }
   );
 
@@ -106,8 +106,8 @@ export function registerCombatTools(server: McpServer): void {
     {},
     async () => {
       const states = await roll20.relayCommand<{ state: string; tag: string; tokens: { id: string; name: string }[] }[]>({ action: "getCustomStates" });
-      if (!states.length) return { content: [{ type: "text", text: "No custom states currently tracked." }] };
-      return { content: [{ type: "text", text: JSON.stringify(states, null, 2) }] };
+      if (!states.length) return text("No custom states currently tracked.");
+      return json(states);
     }
   );
 
@@ -123,20 +123,15 @@ export function registerCombatTools(server: McpServer): void {
         action: "getTokens",
         pageId: activePage,
       });
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(tokens.map((t) => ({
-            id: t.id,
-            name: t.name,
-            layer: t.layer,
-            controlledby: t.controlledby,
-            represents: t.represents,
-            hp: t.bar1_max ? `${t.bar1_value}/${t.bar1_max}` : null,
-            statusmarkers: t.statusmarkers || "",
-          })), null, 2),
-        }],
-      };
+      return json(tokens.map((t) => ({
+        id: t.id,
+        name: t.name,
+        layer: t.layer,
+        controlledby: t.controlledby,
+        represents: t.represents,
+        hp: t.bar1_max ? `${t.bar1_value}/${t.bar1_max}` : null,
+        statusmarkers: t.statusmarkers || "",
+      })));
     }
   );
 
@@ -151,12 +146,7 @@ export function registerCombatTools(server: McpServer): void {
         bar1_value: number; bar1_max: number; statusmarkers: string;
         layer: string; controlledby: string;
       }[]>({ action: "getSelection" });
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(selection, null, 2),
-        }],
-      };
+      return json(selection);
     }
   );
 
@@ -183,9 +173,7 @@ export function registerCombatTools(server: McpServer): void {
           ? `${r.label}: ERROR — ${r.error}`
           : `${r.label}: [${r.dice.join(", ")}] = **${r.total}**`
       );
-      return {
-        content: [{ type: "text", text: lines.join("\n") + "\n\n" + JSON.stringify(results) }],
-      };
+      return text(lines.join("\n") + "\n\n" + JSON.stringify(results));
     }
   );
 
@@ -288,9 +276,7 @@ export function registerCombatTools(server: McpServer): void {
       const failed = merged.filter((r) => !r.ok);
       const lines = merged.map((r) => (r.ok ? `✓ ${r.id}` : `✗ ${r.id}: ${r.error}`));
       const summary = `${merged.length - failed.length}/${merged.length} ops succeeded`;
-      return {
-        content: [{ type: "text", text: `${summary}\n${lines.join("\n")}\n\n${JSON.stringify(merged)}` }],
-      };
+      return text(`${summary}\n${lines.join("\n")}\n\n${JSON.stringify(merged)}`);
     }
   );
 
@@ -309,9 +295,8 @@ export function registerCombatTools(server: McpServer): void {
         style,
         speakAs: speakAs ?? "The Dark Powers",
       });
-      return {
-        content: [{ type: "text", text: `Narration sent (style: ${style})` }],
-      };
+      // NB: kept inline — this tool destructures a `text` param, which shadows the text() helper.
+      return { content: [{ type: "text", text: `Narration sent (style: ${style})` }] };
     }
   );
 
@@ -365,7 +350,7 @@ export function registerCombatTools(server: McpServer): void {
 
       if (combatants.length === 0) {
         const layers = [...new Set(tokens.map((t) => t.layer))];
-        return { content: [{ type: "text", text: `No tokens found on token layer. All graphic layers on this page: [${layers.join(", ")}]. Try list_tokens for full details.` }] };
+        return text(`No tokens found on token layer. All graphic layers on this page: [${layers.join(", ")}]. Try list_tokens for full details.`);
       }
 
       // Roll20 turn order entry format: {id, pr (string), custom, _pageid}
@@ -402,16 +387,11 @@ export function registerCombatTools(server: McpServer): void {
       // Auto-fire tactics at combat start — whisper cards arrive as each mob's plan completes.
       if (clearFirst) void fireTacticsForPage(activePage);
 
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            rolledFor: newEntries.length,
-            results: lines,
-            turnOrder: finalOrder.map((e) => ({ id: e.id, pr: e.pr })),
-          }),
-        }],
-      };
+      return json({
+        rolledFor: newEntries.length,
+        results: lines,
+        turnOrder: finalOrder.map((e) => ({ id: e.id, pr: e.pr })),
+      }, false);
     }
   );
 
@@ -424,7 +404,7 @@ export function registerCombatTools(server: McpServer): void {
         const camp = (window as any).Campaign;
         return camp ? camp.get("turnorder") : "Campaign not found";
       });
-      return { content: [{ type: "text", text: String(raw) }] };
+      return text(String(raw));
     }
   );
 
@@ -444,7 +424,7 @@ export function registerCombatTools(server: McpServer): void {
         name: e.id ? (nameMap.get(e.id) ?? e.custom ?? e.id) : (e.custom || "?"),
         initiative: e.pr,
       }));
-      return { content: [{ type: "text", text: JSON.stringify(resolved, null, 2) }] };
+      return json(resolved);
     }
   );
 
@@ -454,7 +434,7 @@ export function registerCombatTools(server: McpServer): void {
     {},
     async () => {
       await roll20.relayCommand({ action: "setTurnOrder", entries: [] });
-      return { content: [{ type: "text", text: "Turn order cleared." }] };
+      return text("Turn order cleared.");
     }
   );
 
@@ -466,13 +446,8 @@ export function registerCombatTools(server: McpServer): void {
       const result = await roll20.relayCommand<{ ok: boolean; current?: { id: string; pr: number; name: string }; note?: string }>({
         action: "advanceTurn",
       });
-      if (!result.ok) return { content: [{ type: "text", text: result.note ?? "Turn order is empty." }] };
-      return {
-        content: [{
-          type: "text",
-          text: `Now up: **${result.current!.name}** (initiative ${result.current!.pr})`,
-        }],
-      };
+      if (!result.ok) return text(result.note ?? "Turn order is empty.");
+      return text(`Now up: **${result.current!.name}** (initiative ${result.current!.pr})`);
     }
   );
 
@@ -607,24 +582,19 @@ export function registerCombatTools(server: McpServer): void {
         max: stats.hp.max,
       });
 
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            character: stats.name,
-            charSheetId: resolvedCharId,
-            level: stats.level,
-            classes: stats.classes,
-            hp: `${stats.hp.current}/${stats.hp.max}`,
-            ac: stats.armorClass,
-            initiativeBonus: stats.initiativeBonus,
-            passivePerception: stats.passivePerception,
-            updated: result.updated.length,
-            created: result.created.length,
-            failed: result.failed,
-          }, null, 2),
-        }],
-      };
+      return json({
+        character: stats.name,
+        charSheetId: resolvedCharId,
+        level: stats.level,
+        classes: stats.classes,
+        hp: `${stats.hp.current}/${stats.hp.max}`,
+        ac: stats.armorClass,
+        initiativeBonus: stats.initiativeBonus,
+        passivePerception: stats.passivePerception,
+        updated: result.updated.length,
+        created: result.created.length,
+        failed: result.failed,
+      });
     }
   );
 
@@ -689,9 +659,7 @@ export function registerCombatTools(server: McpServer): void {
         : addConditions?.length || removeConditions?.length
           ? ` | +[${(addConditions ?? []).join(", ")}] -[${(removeConditions ?? []).join(", ")}]`
           : "";
-      return {
-        content: [{ type: "text", text: `${token.name}: ${delta} HP → ${hpStr}${condNote}` }],
-      };
+      return text(`${token.name}: ${delta} HP → ${hpStr}${condNote}`);
     }
   );
 
@@ -769,7 +737,7 @@ export function registerCombatTools(server: McpServer): void {
         okLines.length ? okLines.join(" · ") : null,
         failLines.length ? `failed: ${failLines.join(" · ")}` : null,
       ].filter(Boolean).join(" | ");
-      return { content: [{ type: "text", text: `${summary}: ${body}` }] };
+      return text(`${summary}: ${body}`);
     }
   );
 
@@ -779,7 +747,7 @@ export function registerCombatTools(server: McpServer): void {
     { tokenId: z.string().describe("Roll20 token ID") },
     async ({ tokenId }) => {
       const token = await roll20.relayCommand({ action: "getTokenById", tokenId });
-      return { content: [{ type: "text", text: JSON.stringify(token, null, 2) }] };
+      return json(token);
     }
   );
 
@@ -817,7 +785,7 @@ export function registerCombatTools(server: McpServer): void {
         if (v !== undefined) props[k] = v;
       }
       await roll20.relayCommand({ action: "setTokenProps", tokenId, props });
-      return { content: [{ type: "text", text: `Updated token ${tokenId}: ${Object.keys(props).join(", ")}` }] };
+      return text(`Updated token ${tokenId}: ${Object.keys(props).join(", ")}`);
     }
   );
 
@@ -827,7 +795,7 @@ export function registerCombatTools(server: McpServer): void {
     { limit: z.number().int().min(1).max(100).default(30).describe("Number of recent messages to return") },
     async ({ limit }) => {
       const messages = await roll20.relayCommand({ action: "getRecentChat", limit });
-      return { content: [{ type: "text", text: JSON.stringify(messages, null, 2) }] };
+      return json(messages);
     }
   );
 
@@ -849,7 +817,7 @@ export function registerCombatTools(server: McpServer): void {
         pageId: activePage,
         layerFilter,
       });
-      return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+      return json(results);
     }
   );
 
@@ -983,7 +951,7 @@ export function registerCombatTools(server: McpServer): void {
         : "No PCs in the area.";
 
       if (args.dryRun) {
-        return { content: [{ type: "text", text: JSON.stringify({ wouldAffect: { npcs: npcs.map((n) => n.name), pcs: pcs.map((p) => p.name), skippedDown }, drawNote: drawNote || undefined }, null, 2) }] };
+        return json({ wouldAffect: { npcs: npcs.map((n) => n.name), pcs: pcs.map((p) => p.name), skippedDown }, drawNote: drawNote || undefined });
       }
 
       // ── Damage: one public roll for the whole effect ──
@@ -1069,20 +1037,15 @@ export function registerCombatTools(server: McpServer): void {
         return `${r.token.name}: ${save} → −${r.applied}${max ? ` (${newHp}/${max})` : ""}${newHp === 0 && max > 0 ? " DOWN" : ""}${condNote}`;
       });
 
-      return {
-        content: [{
-          type: "text",
-          text: [
-            `${args.label}: ${dmg} damage${args.saveAbility ? `, ${args.saveAbility.toUpperCase().slice(0, 3)} DC ${args.saveDc}${args.halfOnSave ? " half on save" : " negates on save"}` : ""}`,
-            ...lines,
-            pcNote,
-            drawNote,
-            skippedDown.length ? `Skipped (already down): ${skippedDown.join(", ")}` : "",
-            npcResults.some((r) => Number(r.token.bar1_max) > 0 && Math.max(0, (Number(r.token.bar1_value) || 0) - r.applied) === 0)
-              ? "Reminder: mark the fallen dead and move them to the map layer." : "",
-          ].filter(Boolean).join("\n"),
-        }],
-      };
+      return text([
+        `${args.label}: ${dmg} damage${args.saveAbility ? `, ${args.saveAbility.toUpperCase().slice(0, 3)} DC ${args.saveDc}${args.halfOnSave ? " half on save" : " negates on save"}` : ""}`,
+        ...lines,
+        pcNote,
+        drawNote,
+        skippedDown.length ? `Skipped (already down): ${skippedDown.join(", ")}` : "",
+        npcResults.some((r) => Number(r.token.bar1_max) > 0 && Math.max(0, (Number(r.token.bar1_value) || 0) - r.applied) === 0)
+          ? "Reminder: mark the fallen dead and move them to the map layer." : "",
+      ].filter(Boolean).join("\n"));
     }
   );
 
@@ -1126,7 +1089,7 @@ export function registerCombatTools(server: McpServer): void {
         heightFeet,
         color,
       });
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return json(result, false);
     }
   );
 
@@ -1141,7 +1104,7 @@ export function registerCombatTools(server: McpServer): void {
     async ({ name, zoneId, pageId }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
       const result = await roll20.relayCommand({ action: "clearZone", name, zoneId, pageId: activePage });
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return json(result, false);
     }
   );
 
@@ -1154,7 +1117,7 @@ export function registerCombatTools(server: McpServer): void {
     },
     async ({ objectId, objectType }) => {
       const result = await roll20.relayCommand({ action: "removeObject", objectId, objectType });
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return json(result, false);
     }
   );
 
@@ -1165,7 +1128,7 @@ export function registerCombatTools(server: McpServer): void {
     async ({ pageId }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
       const zones = await roll20.relayCommand({ action: "listZones", pageId: activePage });
-      return { content: [{ type: "text", text: JSON.stringify(zones, null, 2) }] };
+      return json(zones);
     }
   );
 
@@ -1178,7 +1141,7 @@ export function registerCombatTools(server: McpServer): void {
     },
     async ({ enabled, reset }) => {
       const result = await roll20.relayCommand({ action: "setTurnHook", enabled, reset });
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return json(result, false);
     }
   );
 
@@ -1189,7 +1152,7 @@ export function registerCombatTools(server: McpServer): void {
     async () => {
       const result = await roll20.relayCommand<{ enabled: boolean; round: number; firstTokenId: string | null }>({ action: "getTurnHookState" });
       const status = result.enabled ? `ENABLED (round ${result.round})` : "DISABLED";
-      return { content: [{ type: "text", text: `Turn hook: ${status}\n${JSON.stringify(result)}` }] };
+      return text(`Turn hook: ${status}\n${JSON.stringify(result)}`);
     }
   );
 
@@ -1199,7 +1162,7 @@ export function registerCombatTools(server: McpServer): void {
     {},
     async () => {
       const result = await roll20.relayCommand<Record<string, unknown>>({ action: "getMobPlans" });
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return json(result, false);
     }
   );
 
@@ -1231,12 +1194,7 @@ export function registerCombatTools(server: McpServer): void {
         conditions: effectiveConditions,
       });
 
-      return {
-        content: [{
-          type: "text",
-          text: `Synced ${characterName}: HP ${currentHp}/${maxHp}, conditions: [${effectiveConditions.join(", ") || "none"}]`,
-        }],
-      };
+      return text(`Synced ${characterName}: HP ${currentHp}/${maxHp}, conditions: [${effectiveConditions.join(", ") || "none"}]`);
     }
   );
 
@@ -1246,7 +1204,7 @@ export function registerCombatTools(server: McpServer): void {
     { type: z.enum(["intent", "query"]).optional().describe("Filter by type. Omit to get all.") },
     async ({ type }) => {
       const entries = await roll20.relayCommand({ action: "getDmInbox", type });
-      return { content: [{ type: "text", text: JSON.stringify(entries, null, 2) }] };
+      return json(entries);
     }
   );
 
@@ -1256,7 +1214,7 @@ export function registerCombatTools(server: McpServer): void {
     { playerName: z.string().optional().describe("Clear only this player's entries. Omit to flush all.") },
     async ({ playerName }) => {
       const result = await roll20.relayCommand({ action: "clearDmInbox", playerName });
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return json(result, false);
     }
   );
 
@@ -1274,7 +1232,7 @@ export function registerCombatTools(server: McpServer): void {
       const bare = playerName.replace(/\s*\(GM\)\s*$/i, "").trim();
       const target = bare === "gm" || !bare.includes(" ") ? bare : `"${bare}"`;
       const result = await roll20.relayCommand({ action: "whisperPlayer", playerName: target, message: message.replace(/\n/g, "<br>") });
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return json(result, false);
     }
   );
 
@@ -1294,7 +1252,7 @@ export function registerCombatTools(server: McpServer): void {
 
       if (active) {
         if (existing !== -1) {
-          return { content: [{ type: "text", text: "Round Start marker already present." }] };
+          return text("Round Start marker already present.");
         }
         const marker: TurnEntry = {
           id: "-1",
@@ -1312,7 +1270,7 @@ export function registerCombatTools(server: McpServer): void {
         current = (merged.turnorder ?? [marker, ...current]).slice();
       } else {
         if (existing === -1) {
-          return { content: [{ type: "text", text: "Round Start marker not found." }] };
+          return text("Round Start marker not found.");
         }
         // Removal can't be expressed as a merge upsert — filter and write back the remainder.
         current = current.filter((_, i) => i !== existing);
@@ -1323,17 +1281,12 @@ export function registerCombatTools(server: McpServer): void {
       current.sort((a, b) => Number(b.pr) - Number(a.pr));
 
       const action = active ? "Injected" : "Removed";
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            action,
-            markerPresent: active,
-            totalEntries: current.length,
-            turnOrder: current.map((e) => ({ id: e.id, name: e.custom || e.id, pr: e.pr })),
-          }, null, 2),
-        }],
-      };
+      return json({
+        action,
+        markerPresent: active,
+        totalEntries: current.length,
+        turnOrder: current.map((e) => ({ id: e.id, name: e.custom || e.id, pr: e.pr })),
+      });
     }
   );
 
@@ -1390,17 +1343,12 @@ export function registerCombatTools(server: McpServer): void {
             : `Removed ${tokenId}`;
 
       const resultOrder = modified.map((e) => ({ id: e.id, pr: e.pr }));
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            operation,
-            summary,
-            totalEntries: modified.length,
-            turnOrder: resultOrder,
-          }, null, 2),
-        }],
-      };
+      return json({
+        operation,
+        summary,
+        totalEntries: modified.length,
+        turnOrder: resultOrder,
+      });
     }
   );
 }
