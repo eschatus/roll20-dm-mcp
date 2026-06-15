@@ -588,7 +588,10 @@ interface PlanResult {
   debug?: { baseContext: string; prompt: string; rawResponse: string };
 }
 
-async function internalPlanToken(
+// Exported so the live test harness (src/recon/fake-combat-it.ts) can drive a
+// specific tier directly (e.g. force tier-5 Opus to verify the adaptive-thinking
+// path doesn't 400). Production callers go through the MCP tools / fireTacticsForPage.
+export async function internalPlanToken(
   tokenId: string,
   activePage: string,
   opts: PlanOptions,

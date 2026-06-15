@@ -71,7 +71,11 @@ export function rtEnabled(): boolean {
 // fresh, re-exchangeable custom token we intercept the request body — forcing a fresh sign-in by
 // clearing the firebase auth IndexedDB and reloading if the editor was already authenticated.
 
-interface TokenCache { campaignId: string; customToken: string; harvestedAt: number }
+// databaseURL is the campaign's actual Firebase RTDB instance. Roll20 shards campaigns across
+// multiple instances (roll20-99910, roll20-99922, …); a hardcoded URL only reads one shard, so
+// campaigns on another shard read empty and silently fall back to the Mod. Captured at harvest.
+interface TokenCache { campaignId: string; customToken: string; databaseURL: string; harvestedAt: number }
+interface HarvestResult { customToken: string; databaseURL: string }
 
 function readTokenCache(): TokenCache | null {
   try { return existsSync(TOKEN_CACHE) ? JSON.parse(readFileSync(TOKEN_CACHE, "utf-8")) : null; }
@@ -88,15 +92,26 @@ async function pollFor(get: () => string | null, ms: number): Promise<string | n
   return get();
 }
 
-async function harvestCustomToken(campaignId: string): Promise<string> {
+async function harvestCustomToken(campaignId: string): Promise<HarvestResult> {
   const page: Page = await getPage("roll20");
   let captured: string | null = null;
+  let capturedNs: string | null = null;
   const onReq = (req: import("playwright").Request) => {
     if (!req.url().includes("signInWithCustomToken")) return;
     try { const b = JSON.parse(req.postData() || "{}"); if (b.token) captured = b.token as string; }
     catch { /* not the body we want */ }
   };
+  // The editor opens its realtime socket against the campaign's actual RTDB instance
+  // (wss://…firebaseio.com/.ws?…&ns=roll20-XXXXX). Capture that namespace so we connect to the
+  // SAME shard the live client uses — see TokenCache.databaseURL.
+  const onWs = (ws: import("playwright").WebSocket) => {
+    const u = ws.url();
+    if (capturedNs || !/firebaseio/.test(u)) return;
+    const m = /[?&]ns=([^&]+)/.exec(u);
+    if (m) capturedNs = decodeURIComponent(m[1]);
+  };
   page.on("request", onReq);
+  page.on("websocket", onWs);
   const url = `https://app.roll20.net/editor/setcampaign/${campaignId}/`;
   try {
     // Pass 1: a normal load catches the case where the editor hasn't authed yet this session.
@@ -111,22 +126,31 @@ async function harvestCustomToken(campaignId: string): Promise<string> {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
       captured = await pollFor(() => captured, 25_000);
     }
+    // The realtime socket opens just after auth — give it a moment to reveal the namespace.
+    if (!capturedNs) capturedNs = await pollFor(() => capturedNs, 10_000);
   } finally {
     page.off("request", onReq);
+    page.off("websocket", onWs);
   }
   if (!captured) throw new Error("roll20-rt: could not harvest a Firebase custom token from the editor (logged in?)");
+  const databaseURL = capturedNs ? `https://${capturedNs}.firebaseio.com` : FIREBASE_CONFIG.databaseURL;
+  if (!capturedNs) console.error(`[roll20-rt] WARNING: no Firebase namespace detected for campaign ${campaignId}; falling back to ${FIREBASE_CONFIG.databaseURL} (reads will be empty if this campaign is on another shard)`);
   mkdirSync(path.dirname(TOKEN_CACHE), { recursive: true });
-  writeFileSync(TOKEN_CACHE, JSON.stringify({ campaignId, customToken: captured, harvestedAt: Date.now() } as TokenCache), "utf-8");
+  writeFileSync(TOKEN_CACHE, JSON.stringify({ campaignId, customToken: captured, databaseURL, harvestedAt: Date.now() } as TokenCache), "utf-8");
   // Token cached — browser no longer needed until a Mod-relay write comes in. Close it now
   // so it doesn't sit as a visible window; it will reopen on demand for sendChat/writes.
   closeBrowser().catch(() => {});
-  return captured;
+  return { customToken: captured, databaseURL };
 }
 
-async function getCustomToken(campaignId: string, forceFresh = false): Promise<string> {
+async function getCustomToken(campaignId: string, forceFresh = false): Promise<HarvestResult> {
   if (!forceFresh) {
     const c = readTokenCache();
-    if (c && c.campaignId === campaignId && Date.now() - c.harvestedAt < TOKEN_MAX_AGE_MS) return c.customToken;
+    // Require databaseURL too: a pre-shard-fix cache entry lacks it, so treat that as a miss and
+    // re-harvest to capture the namespace (otherwise we'd reconnect to the wrong shard).
+    if (c && c.campaignId === campaignId && c.databaseURL && Date.now() - c.harvestedAt < TOKEN_MAX_AGE_MS) {
+      return { customToken: c.customToken, databaseURL: c.databaseURL };
+    }
   }
   return harvestCustomToken(campaignId);
 }
@@ -137,6 +161,7 @@ interface RtConn {
   campaignId: string;
   app: FirebaseApp;
   db: Database;
+  databaseURL: string;
   user: User;
   chatRef: DatabaseReference;
   storagePath: string;
@@ -264,11 +289,13 @@ async function connect(): Promise<RtConn> {
   // Sign in with the cached custom token; if it's stale/invalid, re-harvest fresh and retry once.
   let app!: FirebaseApp;
   let cred!: Awaited<ReturnType<typeof signInWithCustomToken>>;
+  let databaseURL = FIREBASE_CONFIG.databaseURL;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const customToken = await getCustomToken(roll20CampaignId, attempt > 0);
+    const harvested = await getCustomToken(roll20CampaignId, attempt > 0);
+    databaseURL = harvested.databaseURL;
     app = initializeApp(FIREBASE_CONFIG, `roll20-rt-${roll20CampaignId}-${Date.now()}`);
     try {
-      cred = await signInWithCustomToken(getAuth(app), customToken);
+      cred = await signInWithCustomToken(getAuth(app), harvested.customToken);
       break;
     } catch (err) {
       await deleteApp(app).catch(() => {});
@@ -285,7 +312,8 @@ async function connect(): Promise<RtConn> {
   const userid = String(claims.userid || "");
   if (!storagePath || !playerid) throw new Error("roll20-rt: auth token missing currentcampaign/playerid claims");
 
-  const db = getDatabase(app);
+  // Connect to the campaign's actual RTDB shard (captured at harvest), not the config default.
+  const db = getDatabase(app, databaseURL);
   const chatRef = ref(db, `${storagePath}/chat`);
 
   // Listen for new chat children (limit window covers a burst of concurrent results; dedup by key).
@@ -299,7 +327,7 @@ async function connect(): Promise<RtConn> {
     handleChatChild(snap.key, snap.val(), live);
   });
 
-  return { campaignId: roll20CampaignId, app, db, user: cred.user, chatRef, storagePath, playerid, avatar: `/users/avatar/${userid}/30` };
+  return { campaignId: roll20CampaignId, app, db, databaseURL, user: cred.user, chatRef, storagePath, playerid, avatar: `/users/avatar/${userid}/30` };
 }
 
 async function getConn(): Promise<RtConn> {
@@ -644,7 +672,7 @@ export async function rtGet<T = unknown>(relPath: string, opts: { shallow?: bool
   const clean = relPath.replace(/^\/+|\/+$/g, "");
   if (opts.shallow) {
     const token = await conn.user.getIdToken();
-    const base = FIREBASE_CONFIG.databaseURL.replace(/\/+$/, "");
+    const base = conn.databaseURL.replace(/\/+$/, "");
     const url = `${base}/${conn.storagePath}/${clean}.json?shallow=true&auth=${encodeURIComponent(token)}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`rtGet shallow ${res.status}: ${await res.text().catch(() => "")}`);
@@ -846,9 +874,17 @@ async function _doStartRtdbSubscriptions(): Promise<void> {
 }
 
 // Write a mob tactical plan to RTDB (so the gem HUD can display it via SSE).
-// Called from tactics.ts after plan_all_tactics completes, when RT transport is active.
+// Called fire-and-forget (`void`) from tactics.ts after planning. This is a best-effort HUD
+// convenience, NOT load-bearing — and a direct client write to the custom aibridge/* subtree is
+// denied by Roll20's RTDB rules on some shards (PERMISSION_DENIED). Swallow ALL failures here so
+// a denied/failed display write can never become an unhandled rejection that crashes the planning
+// flow (or the long-running server). The plan still reaches the GM via the Mod whisper.
 export async function rtWriteMobPlan(tokenId: string, plan: MobPlanData): Promise<void> {
-  const conn = await getConn();
-  const safe = Object.fromEntries(Object.entries(plan).filter(([, v]) => v !== undefined));
-  await update(ref(conn.db, `${conn.storagePath}/aibridge/mobPlans`), { [tokenId]: safe });
+  try {
+    const conn = await getConn();
+    const safe = Object.fromEntries(Object.entries(plan).filter(([, v]) => v !== undefined));
+    await update(ref(conn.db, `${conn.storagePath}/aibridge/mobPlans`), { [tokenId]: safe });
+  } catch (e) {
+    console.error(`[roll20-rt] rtWriteMobPlan(${tokenId}) skipped: ${(e as Error).message} (HUD-display only; plan still whispered to GM)`);
+  }
 }
