@@ -11,7 +11,9 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 import { buildCombatServer } from "./server-combat.js";
-import { onRtdbEvent, startRtdbSubscriptions } from "./bridge/roll20-rt.js";
+import { onRtdbEvent, startRtdbSubscriptions, rtEnabled } from "./bridge/roll20-rt.js";
+import { startWatchdog } from "./bridge/sandbox-watchdog.js";
+import { initPlayerCommands } from "./bridge/player-commands.js";
 
 // Long-running HTTP MCP server. One process owns the shared Playwright browser
 // (via src/bridge/browser.ts singletons) and serves multiple clients — the Voice
@@ -127,7 +129,13 @@ const httpServer = http.createServer(async (req, res) => {
       try { res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* client gone */ }
     };
     const unsub = onRtdbEvent((e) => sendEvent(e.type, e));
-    req.on("close", unsub);
+    const keepaliveInterval = setInterval(() => {
+      try { res.write(":keepalive\n\n"); } catch { /* client gone */ }
+    }, 30_000);
+    req.on("close", () => {
+      unsub();
+      clearInterval(keepaliveInterval);
+    });
 
     // Start RTDB subscriptions unconditionally — combat-update/plan/inbox events
     // are independent of the relay transport. rtEnabled() only gates the relay path.
@@ -226,4 +234,11 @@ const httpServer = http.createServer(async (req, res) => {
 httpServer.listen(PORT, HOST, () => {
   // stderr so it never pollutes any stdio JSON-RPC consumer.
   console.error(`[roll20-dm http] MCP server listening on http://${HOST}:${PORT}/mcp`);
+  if (rtEnabled()) startWatchdog();
+  // Player chat commands (!tactics, !recall, …) ride the RTDB chat subscription,
+  // so start it at boot rather than waiting for the first HUD /events client.
+  initPlayerCommands();
+  startRtdbSubscriptions().catch((e) =>
+    console.error("[roll20-dm http] rtdb subscriptions failed at boot (will retry on HUD connect):", (e as Error).message),
+  );
 });

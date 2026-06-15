@@ -45,13 +45,57 @@ export function cleanChat(raw: unknown): string {
 export const PCHP_RE = /%%PCHP=({[\s\S]*?})%%/;
 export interface PcHpEntry { current: number; max: number; name: string; updated: number }
 export function parsePcHpBlock(gm: unknown): PcHpEntry | null {
-  const m = String(gm ?? "").match(PCHP_RE);
+  const raw = String(gm ?? "");
+  let m = raw.match(PCHP_RE);
+  if (!m) {
+    // Roll20 URL-encodes gmnotes when edited in the UI — try decoding and re-matching.
+    try {
+      const decoded = decodeURIComponent(raw);
+      m = decoded.match(PCHP_RE);
+    } catch {
+      // decodeURIComponent throws on malformed sequences — treat as no block.
+    }
+  }
   if (!m) return null;
   try { return JSON.parse(m[1]) as PcHpEntry; } catch { return null; }
 }
 export function writePcHpBlock(gm: unknown, entry: PcHpEntry): string {
   const base = String(gm ?? "").replace(PCHP_RE, "").replace(/\s+$/, "");
   return (base ? base + " " : "") + "%%PCHP=" + JSON.stringify(entry) + "%%";
+}
+
+// Map ping broadcast: the `broadcast` node under the campaign storage root is a single-value
+// channel overwritten on each shift+click ping with a JSON string like
+//   {"type":"ping","data":{"position":{"x":938.5,"y":-680.0},"focus":false,
+//    "page":"<pageid>","player":"<playerid>","ts":1781207868473}}
+// y uses Roll20's negated canvas convention (same as door objects) — we negate it back so
+// callers get normal page-pixel coordinates. Returns null for non-ping broadcast payloads.
+export interface MapPing {
+  x: number;
+  y: number;       // page coords (already un-negated)
+  rawY: number;    // as transmitted, for debugging
+  pageId: string;
+  player: string;
+  ts: number;
+  focus: boolean;
+}
+export function parseBroadcastPing(raw: unknown): MapPing | null {
+  if (typeof raw !== "string" || !raw) return null;
+  let msg: { type?: unknown; data?: Record<string, unknown> };
+  try { msg = JSON.parse(raw) as typeof msg; } catch { return null; }
+  if (msg?.type !== "ping" || !msg.data) return null;
+  const pos = msg.data.position as { x?: unknown; y?: unknown } | undefined;
+  const x = Number(pos?.x), rawY = Number(pos?.y);
+  if (!isFinite(x) || !isFinite(rawY)) return null;
+  return {
+    x,
+    y: -rawY,
+    rawY,
+    pageId: String(msg.data.page ?? ""),
+    player: String(msg.data.player ?? ""),
+    ts: Number(msg.data.ts) || 0,
+    focus: msg.data.focus === true,
+  };
 }
 
 // Project a raw graphics-node record to the tokenSummary shape, by profile (lean/status/full).

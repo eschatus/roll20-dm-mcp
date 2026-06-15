@@ -164,10 +164,11 @@ async function isLoggedIn(page: Page, site: Site): Promise<boolean> {
     if (site === "roll20") return !url.includes("/sessions/new");
     if (site === "ddb") return !url.includes("/login");
     return false;
-  } catch {
-    // Navigation failed — assume the existing session is still good rather than
-    // triggering a login flow that may also fail.
-    return true;
+  } catch (e) {
+    // Return true only if we're already on the target site — plausibly still live.
+    // Otherwise re-throw so the caller surfaces a real connectivity error.
+    if (page.url().startsWith(SITE_URLS[site])) return true;
+    throw e as Error;
   }
 }
 

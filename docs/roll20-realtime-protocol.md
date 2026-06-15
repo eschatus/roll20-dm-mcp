@@ -132,3 +132,25 @@ signaling). Not used for chat or object state; irrelevant to the relay.
   `/<storagePath>/pages/<pageId>/…` instead of Backbone — map those paths in a follow-up capture.
 - Token refresh loop (~55 min) via securetoken endpoint.
 - DDB is separately ~90% browserless already (CobaltSession bearer) — do it after.
+
+## Map pings: the `broadcast` channel (discovered 2026-06-11, src/recon/ping-sniff.ts)
+
+Shift+click map pings transit the campaign RTDB as a **put to
+`<storagePath>/broadcast`** — a single-value channel overwritten on every ping
+(not a push list). Payload is a JSON *string*:
+
+```json
+{"type":"ping","data":{"position":{"x":938.5,"y":-680.0},"focus":false,
+ "page":"<pageid>","player":"<playerid>","ts":1781207868473}}
+```
+
+- `position` is page pixels with Roll20's negated-y canvas convention (same as
+  door objects); negate y to get normal page coordinates.
+- `focus` distinguishes plain ping from ping-and-pull-view.
+- Holding the ping emits a fresh put every ~2s.
+- Readable with our existing custom-token auth — `parseBroadcastPing`
+  (rt-helpers.ts) + an `onValue` in `startRtdbSubscriptions` feed
+  `getLastPing()`, which powers `resolve_aoe atPing:true` ("fireball where I
+  pinged"). Note: the name-guess probe (src/recon/ping-probe.ts) found rules are
+  default-deny per path — root listing is 401, so unknown node names can only be
+  found by sniffing frames, not guessing.

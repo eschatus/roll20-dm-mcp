@@ -8,8 +8,8 @@ import * as path from "path";
 // Local models see only these live-combat tools (~15); map/vision/prep/journal
 // tools are hidden (the MCP server still serves all 60 to Claude Code / map prep).
 // Deduplicated to exactly ONE tool per job (small models pick badly when tools
-// overlap): update_token_hp is the SINGLE HP+conditions tool — the DDB-syncing
-// apply_damage/heal_character and batch_exec are intentionally excluded here.
+// overlap): update_token_hp is the SINGLE HP+conditions tool — batch_exec is
+// intentionally excluded here.
 const LOCAL_TOOLS = [
   // session
   "list_campaigns", "active_campaign", "switch_campaign",
@@ -38,7 +38,6 @@ const LOCAL_TOOLS = [
 const CLOUD_TOOLS = [
   ...LOCAL_TOOLS,
   "batch_exec",                                   // one round-trip for bulk edits
-  "apply_damage", "heal_character", "ddb_update_hp", // DDB-syncing HP
   "get_token_markers", "get_selection", "list_custom_states", // richer reads
   "clear_turn_order", "update_turn_order", "inject_round_marker", // turn-order
   "set_turn_hook", "check_turn_hook", "plan_all_tactics", "plan_tactics", // combat start/round hooks

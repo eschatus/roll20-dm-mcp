@@ -4,6 +4,12 @@ import * as registry from "../registry/characters.js";
 import * as ddb from "../bridge/dndbeyond.js";
 import * as roll20 from "../bridge/roll20.js";
 import { fireTacticsForPage } from "./tactics.js";
+import {
+  SAVE_ABILITIES, type SaveAbility, type AoeToken,
+  saveAttrNames, resolveSaveBonus, damageOnSave,
+  isPcToken, splitPcNpc, isDowned, resolveNamesToTokens,
+} from "./aoe.js";
+import { getLastPing } from "../bridge/roll20-rt.js";
 
 // ONE canonical condition table — Roll20 status marker tags for D&D 5e
 // conditions, keyed by natural-language / DDB condition name. Both the
@@ -111,113 +117,6 @@ async function resolveToken(name: string, tokenList?: { id: string; name: string
 }
 
 export function registerCombatTools(server: McpServer): void {
-  server.tool(
-    "apply_damage",
-    "Apply damage (and optional conditions) to a registered character on Roll20. Roll20-only — D&D Beyond is read-only and is NOT written. Reads the token's bar1 HP, subtracts damage, then applies each requested condition, reporting per-condition success/failure.",
-    {
-      characterName: z.string(),
-      damage: z.number().int().min(0),
-      conditions: z.array(z.string()).optional(),
-    },
-    async ({ characterName, damage, conditions = [] }) => {
-      const entry = registry.lookup(characterName);
-      if (!entry) throw new Error(`Character not registered: ${characterName}. Use create_pc_token first.`);
-
-      const { roll20TokenId } = entry;
-
-      // Read current HP from the Roll20 token bar (DDB is read-only — not the source of truth here).
-      type TokenData = { bar1_value: number; bar1_max: number } | null;
-      const token = await roll20.relayCommand<TokenData>({ action: "getTokenById", tokenId: roll20TokenId });
-      if (!token) throw new Error(`Token not found for ${characterName} (id ${roll20TokenId})`);
-      const maxHp = Number(token.bar1_max) || 0;
-      const currentHp = Number(token.bar1_value) || 0;
-      const newHp = Math.max(0, currentHp - damage);
-
-      // Update HP first, then each condition — report per-condition outcome so partial
-      // failure is visible rather than collapsing to a single boolean.
-      let hpUpdated = false;
-      let hpError: string | undefined;
-      try {
-        await roll20.relayCommand({ action: "setTokenBar", tokenId: roll20TokenId, value: newHp, max: maxHp || undefined });
-        hpUpdated = true;
-      } catch (err) {
-        hpError = err instanceof Error ? err.message : String(err);
-      }
-
-      const conditionResults: { condition: string; applied: boolean; error?: string }[] = [];
-      for (const condition of conditions) {
-        try {
-          await roll20.relayCommand({
-            action: "setStatusMarker",
-            tokenId: roll20TokenId,
-            marker: toRoll20Marker(condition),
-            active: true,
-          });
-          conditionResults.push({ condition, applied: true });
-        } catch (err) {
-          conditionResults.push({ condition, applied: false, error: err instanceof Error ? err.message : String(err) });
-        }
-      }
-
-      const conditionsApplied = conditionResults.filter((c) => c.applied).map((c) => c.condition);
-      const conditionsFailed = conditionResults.filter((c) => !c.applied).map((c) => c.condition);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              character: characterName,
-              damageTaken: damage,
-              newHp,
-              maxHp,
-              roll20Updated: hpUpdated,
-              hpUpdated,
-              conditionsApplied,
-              conditionsFailed,
-              conditionResults,
-              ...(hpError ? { hpError } : {}),
-            }),
-          },
-        ],
-      };
-    }
-  );
-
-  server.tool(
-    "heal_character",
-    "Heal a character by amount on Roll20. Roll20-only — D&D Beyond is read-only and is NOT written. Reads the token's bar1 HP and adds the amount (clamped to max).",
-    {
-      characterName: z.string(),
-      amount: z.number().int().min(0),
-    },
-    async ({ characterName, amount }) => {
-      const entry = registry.lookup(characterName);
-      if (!entry) throw new Error(`Character not registered: ${characterName}`);
-
-      const { roll20TokenId } = entry;
-
-      // Read current HP from the Roll20 token bar (DDB is read-only — not written here).
-      type TokenData = { bar1_value: number; bar1_max: number } | null;
-      const token = await roll20.relayCommand<TokenData>({ action: "getTokenById", tokenId: roll20TokenId });
-      if (!token) throw new Error(`Token not found for ${characterName} (id ${roll20TokenId})`);
-      const maxHp = Number(token.bar1_max) || 0;
-      const currentHp = Number(token.bar1_value) || 0;
-      const newHp = maxHp ? Math.min(maxHp, currentHp + amount) : currentHp + amount;
-
-      await roll20.relayCommand({ action: "setTokenBar", tokenId: roll20TokenId, value: newHp, max: maxHp || undefined });
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `${characterName} healed ${amount} HP → now at ${newHp}/${maxHp}`,
-          },
-        ],
-      };
-    }
-  );
-
   server.tool(
     "get_token_markers",
     "List the campaign's token markers, split into RESERVED (tied to a mechanical condition — apply/clear with set_token_marker by condition name; it also tracks state) and AVAILABLE (free for ad-hoc visual use: buffs, concentration, GM annotations — apply by tag via set_token_props/batch_exec statusmarkers). Use this to find the correct name::id tag. NOTE: 'bloodied' is NOT a real marker (renders nothing) — use the Wounded marker. The built-in color dots (red/blue/green/brown/purple/pink/yellow) and 'dead' (renders as a red X over the whole token) are always available but not listed here.",
@@ -496,8 +395,9 @@ export function registerCombatTools(server: McpServer): void {
       flatInit: z.number().int().optional().describe("If set, place all matched tokens at this fixed initiative value instead of rolling."),
       nameFilter: z.string().optional().describe("Case-insensitive substring filter on token names. E.g. 'goblin' matches 'Goblin 1', 'Goblin Archer', etc."),
       publicRoll: z.boolean().default(true).describe("If true (default), posts a public gothic initiative card to chat showing all rolled tokens sorted by result. Pass false to roll silently."),
+      nearPcsFeet: z.number().optional().describe("Only include NPCs within this many feet of any PC token — use at combat start so distant mobs elsewhere on the map don't join the fight. 60-90 is a good default when the DM just says 'roll inits'."),
     },
-    async ({ pageId, npcOnly, clearFirst, flatInit, nameFilter, publicRoll }) => {
+    async ({ pageId, npcOnly, clearFirst, flatInit, nameFilter, publicRoll, nearPcsFeet }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
 
       const tokens = await roll20.relayCommand<{ id: string; name: string; layer: string; controlledby: string }[]>({
@@ -505,12 +405,31 @@ export function registerCombatTools(server: McpServer): void {
         pageId: activePage,
       });
 
+      // Proximity gate: union of findTokensInRange around each PC token. Reuses
+      // the Mod's page-scale-aware geometry instead of reimplementing it here.
+      let nearIds: Set<string> | null = null;
+      if (nearPcsFeet !== undefined && nearPcsFeet > 0) {
+        const pcTokens = tokens.filter((t) => isPcToken(t) && (t.layer === "tokens" || t.layer === "objects"));
+        nearIds = new Set(pcTokens.map((t) => t.id)); // PCs always count as "near"
+        for (const pc of pcTokens) {
+          const nearby = await roll20.relayCommand<{ id: string }[]>({
+            action: "findTokensInRange",
+            centerTokenId: pc.id,
+            radiusFeet: nearPcsFeet,
+            pageId: activePage,
+            layerFilter: "objects",
+          }).catch(() => [] as { id: string }[]);
+          for (const n of nearby ?? []) nearIds.add(n.id);
+        }
+      }
+
       const TOKEN_LAYERS = new Set(["tokens", "objects"]);
       const needle = nameFilter?.toLowerCase();
       const combatants = tokens.filter((t) => {
         if (!TOKEN_LAYERS.has(t.layer)) return false;
         if (npcOnly && t.controlledby && t.controlledby.trim() !== "") return false;
         if (needle && !t.name.toLowerCase().includes(needle)) return false;
+        if (nearIds && !nearIds.has(t.id)) return false;
         return true;
       });
 
@@ -823,7 +742,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "update_token_hp",
-    "The HIT POINTS primitive. Apply damage, healing, or set HP on any Roll20 token by ID (no character sheet/DDB needed). Reads bar1, computes, writes back. For CONDITIONS (poisoned, prone, dead, etc.) use set_token_marker instead — not this. (The condition args here are legacy/bulk-only.)",
+    "The SINGLE HP primitive — replaces the old apply_damage and heal_character tools. Apply damage (clamps at 0), healing (clamps at bar1_max), or set HP to an exact value on ANY Roll20 token: registered PCs (looked up by name via the character registry), NPCs, or any on-map token resolved by fuzzy name. Roll20-only — D&D Beyond is read-only and is NOT written. Reads bar1, computes, writes back. For CONDITIONS (poisoned, prone, dead, etc.) use set_token_marker instead — not this. (The condition args here are legacy/bulk-only.)",
     {
       characterName: z.string().optional().describe("USE THIS. The token/character name exactly as it appears on the map, e.g. 'Brie Mossfrond', 'Skeleton the Armored'. Resolved to the token automatically."),
       tokenId: z.string().optional().describe("Internal Roll20 ID only. Do NOT invent or guess this — if you don't have a real ID from a prior tool result, use characterName instead."),
@@ -1048,6 +967,239 @@ export function registerCombatTools(server: McpServer): void {
         layerFilter,
       });
       return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+    }
+  );
+
+  // One-call AoE resolution: target → NPC saves (real Roll20 dice, public) →
+  // damage applied (half on save) → conditions on failure. PCs in the area are
+  // REPORTED ONLY — they roll their own saves via Beyond20 and their HP/bars are
+  // never touched here.
+  server.tool(
+    "resolve_aoe",
+    "Resolve an area-of-effect spell in ONE call: finds targets, rolls NPC saving throws publicly via Roll20's dice engine, applies damage (half on save by default), and optionally applies a condition to NPCs that fail. PCs caught in the area are listed in the report but NEVER auto-rolled or damaged — players roll their own saves. Target via ONE of: atPing + radiusFeet (centered on the GM's last shift+click map ping — the natural 'fireball lands THERE' gesture; draws a visible zone at the spot), centerTokenName/centerTokenId + radiusFeet (sphere/emanation), zoneName/zoneId (existing create_zone area), or targetNames (explicit list — use for cones/lines you judge by eye). Use dryRun:true to preview who's affected without rolling anything.",
+    {
+      label: z.string().describe("Effect name for chat roll labels, e.g. 'Fireball (Strahd)'"),
+      atPing: z.boolean().default(false).describe("Center on the most recent shift+click map ping (within the last 3 minutes). Requires radiusFeet. Creates a visible zone named after the label — clear it later with clear_zone."),
+      centerTokenName: z.string().optional().describe("Token name at the center (resolved exact-then-substring)"),
+      centerTokenId: z.string().optional(),
+      radiusFeet: z.number().optional().describe("Radius in feet when centering on a token or ping"),
+      includeCenter: z.boolean().default(false).describe("Include the center token itself (false = emanation excludes caster)"),
+      zoneName: z.string().optional().describe("Resolve against a named zone from create_zone"),
+      zoneId: z.string().optional(),
+      targetNames: z.array(z.string()).optional().describe("Explicit target names — for cones/lines or hand-picked targets"),
+      excludeNames: z.array(z.string()).optional().describe("Names to exempt, e.g. allies dodging around the Web"),
+      saveAbility: z.enum(SAVE_ABILITIES).optional().describe("Saving throw ability. Omit for no-save effects (e.g. Magic Missile volley)"),
+      saveDc: z.number().int().optional().describe("Save DC. Required when saveAbility is set"),
+      damageFormula: z.string().optional().describe("Dice formula rolled ONCE publicly for the whole effect, e.g. '8d6'"),
+      damage: z.number().int().min(0).optional().describe("Flat damage instead of rolling"),
+      halfOnSave: z.boolean().default(true).describe("true = save takes half (Fireball); false = save negates"),
+      onFailCondition: z.string().optional().describe("Condition applied to NPCs that FAIL, e.g. 'restrained', 'prone'"),
+      draw: z.enum(["zone", "aura", "none"]).default("zone").describe("Visual for the area: 'zone' (default) draws a circle on the map at the blast point — clear with clear_zone when it ends; 'aura' (token-centered mode only) sets a player-visible aura on the center token instead — right for emanations like Spirit Guardians that move with the caster; 'none' skips the visual. Ignored for zoneName/targetNames modes (nothing new to draw)."),
+      color: z.string().default("#cc0000").describe("Zone/aura color as #hex"),
+      dryRun: z.boolean().default(false).describe("Preview targets only — no rolls, no damage (atPing still draws its zone so you can see the spot)"),
+      pageId: z.string().optional(),
+    },
+    async (args) => {
+      const activePage = args.pageId ?? (await roll20.getCurrentPageId());
+      if (args.saveAbility && args.saveDc === undefined) throw new Error("saveDc is required when saveAbility is set");
+      if (!args.dryRun && args.damageFormula === undefined && args.damage === undefined && !args.onFailCondition) {
+        throw new Error("Provide damageFormula, damage, or onFailCondition (or set dryRun:true to just preview targets)");
+      }
+
+      const all = await roll20.relayCommand<(AoeToken & { layer: string; left?: number; top?: number })[]>({ action: "getTokens", pageId: activePage });
+      const byId = new Map(all.map((t) => [t.id, t]));
+      const TOKEN_LAYERS = new Set(["tokens", "objects"]);
+
+      // ── Targeting: one of four modes ──
+      let targetIds: string[] = [];
+      let centerId: string | undefined;
+      let drawNote = "";
+      if (args.atPing) {
+        if (args.radiusFeet === undefined) throw new Error("radiusFeet is required with atPing");
+        const ping = getLastPing();
+        if (!ping) throw new Error("No recent map ping seen. Shift+click the spot in Roll20, then call again (rt transport must be connected).");
+        const pingPage = ping.pageId || activePage;
+        // The zone doubles as the visible AoE marker at the pinged spot.
+        const zone = await roll20.relayCommand<{ id: string; name: string }>({
+          action: "createZone", pageId: pingPage, name: args.label, shape: "circle",
+          centerX: ping.x, centerY: ping.y, radiusFeet: args.radiusFeet, color: args.color,
+        });
+        const inZone = await roll20.relayCommand<{ id: string }[]>({ action: "findTokensInZone", zoneId: zone.id, pageId: pingPage });
+        targetIds = (inZone ?? []).map((t) => t.id);
+        drawNote = `Centered on map ping (${Math.round(ping.x)}, ${Math.round(ping.y)}); zone '${zone.name}' drawn — clear_zone when the effect ends.`;
+      } else if (args.targetNames?.length) {
+        const { matched, missed } = resolveNamesToTokens(args.targetNames, all);
+        if (missed.length) throw new Error(`No token matched: ${missed.join(", ")}`);
+        targetIds = matched.map((t) => t.id);
+      } else if (args.zoneName || args.zoneId) {
+        let zid = args.zoneId;
+        if (!zid) {
+          const zones = await roll20.relayCommand<{ id: string; name: string }[]>({ action: "listZones", pageId: activePage });
+          const w = args.zoneName!.toLowerCase();
+          const z = zones.find((x) => x.name.toLowerCase().includes(w));
+          if (!z) throw new Error(`No zone matching '${args.zoneName}'. Active zones: ${zones.map((x) => x.name).join(", ") || "none"}`);
+          zid = z.id;
+        }
+        const inZone = await roll20.relayCommand<{ id: string }[]>({ action: "findTokensInZone", zoneId: zid, pageId: activePage });
+        targetIds = (inZone ?? []).map((t) => t.id);
+      } else if (args.centerTokenName || args.centerTokenId) {
+        if (args.radiusFeet === undefined) throw new Error("radiusFeet is required when centering on a token");
+        centerId = args.centerTokenId;
+        if (!centerId) {
+          const { matched, missed } = resolveNamesToTokens([args.centerTokenName!], all);
+          if (missed.length) throw new Error(`No token matched center '${args.centerTokenName}'`);
+          centerId = matched[0].id;
+        }
+        const nearby = await roll20.relayCommand<{ id: string }[]>({
+          action: "findTokensInRange", centerTokenId: centerId, radiusFeet: args.radiusFeet,
+          pageId: activePage, layerFilter: "objects",
+        });
+        targetIds = (nearby ?? []).map((t) => t.id);
+        if (args.includeCenter) targetIds.push(centerId);
+
+        // Visual for token-centered blasts: a zone at the blast point (fixed
+        // areas), or a player-visible aura that moves with the token (emanations
+        // like Spirit Guardians — table convention is aura, not zone).
+        const center = byId.get(centerId);
+        if (args.draw === "zone" && !args.dryRun && center?.left !== undefined) {
+          const zone = await roll20.relayCommand<{ id: string; name: string }>({
+            action: "createZone", pageId: activePage, name: args.label, shape: "circle",
+            centerX: center.left, centerY: center.top, radiusFeet: args.radiusFeet, color: args.color,
+          });
+          drawNote = `Zone '${zone.name}' drawn at ${center.name}'s position — clear_zone when the effect ends.`;
+        } else if (args.draw === "aura" && !args.dryRun) {
+          await roll20.relayCommand({
+            action: "setTokenProps", tokenId: centerId,
+            props: { aura1_radius: args.radiusFeet, aura1_color: args.color, showplayers_aura1: true },
+          });
+          drawNote = `Aura set on ${center?.name ?? "the center token"} (moves with the token) — clear with set_token_props aura1_radius 0.`;
+        }
+      } else {
+        throw new Error("Target via atPing, centerTokenName/centerTokenId + radiusFeet, zoneName/zoneId, or targetNames");
+      }
+
+      // ── Filter: token layers only, no corpses, exclusions, center handling ──
+      const excludeIds = new Set<string>();
+      if (args.excludeNames?.length) {
+        for (const t of resolveNamesToTokens(args.excludeNames, all).matched) excludeIds.add(t.id);
+      }
+      if (centerId && !args.includeCenter) excludeIds.add(centerId);
+
+      const skippedDown: string[] = [];
+      const targets: AoeToken[] = [];
+      for (const id of new Set(targetIds)) {
+        const t = byId.get(id);
+        if (!t || !TOKEN_LAYERS.has(t.layer) || excludeIds.has(id) || !t.name) continue;
+        if (isDowned(t)) { skippedDown.push(t.name); continue; }
+        targets.push(t);
+      }
+      const { pcs, npcs } = splitPcNpc(targets);
+
+      const pcNote = pcs.length
+        ? `PCs in the area — they roll their own saves${args.saveAbility ? ` (${args.saveAbility.toUpperCase().slice(0, 3)} DC ${args.saveDc})` : ""}: ${pcs.map((p) => p.name).join(", ")}`
+        : "No PCs in the area.";
+
+      if (args.dryRun) {
+        return { content: [{ type: "text", text: JSON.stringify({ wouldAffect: { npcs: npcs.map((n) => n.name), pcs: pcs.map((p) => p.name), skippedDown }, drawNote: drawNote || undefined }, null, 2) }] };
+      }
+
+      // ── Damage: one public roll for the whole effect ──
+      let dmg = args.damage ?? 0;
+      if (args.damageFormula) {
+        const dmgRoll = await roll20.relayCommand<{ total: number; error?: string }[]>({
+          action: "rollFormulas",
+          items: [{ label: `${args.label} — damage`, formula: args.damageFormula }],
+          speakAs: "The Bones", silent: false,
+        });
+        if (dmgRoll?.[0]?.error || dmgRoll?.[0]?.total === undefined) throw new Error(`Damage roll failed: ${dmgRoll?.[0]?.error ?? "no result"}`);
+        dmg = dmgRoll[0].total;
+      }
+
+      // ── NPC saves: bonus per unique sheet (mobs share), one public batch roll ──
+      type NpcResult = { token: AoeToken; bonus: number; source: string; total?: number; saved: boolean; applied: number };
+      const npcResults: NpcResult[] = [];
+      if (args.saveAbility && npcs.length) {
+        const bonusByChar = new Map<string, { bonus: number; source: string }>();
+        for (const npc of npcs) {
+          const charId = npc.represents || "";
+          if (charId && !bonusByChar.has(charId)) {
+            const attrs = await roll20.relayCommand<Record<string, { current: unknown }>>({
+              action: "getCharacterAttributes", charId, names: saveAttrNames(args.saveAbility),
+            }).catch(() => null);
+            bonusByChar.set(charId, resolveSaveBonus(attrs, args.saveAbility));
+          }
+          const b = charId ? bonusByChar.get(charId)! : { bonus: 0, source: "none" };
+          npcResults.push({ token: npc, ...b, saved: false, applied: 0 });
+        }
+        const abilityLabel = args.saveAbility.toUpperCase().slice(0, 3);
+        const saveRolls = await roll20.relayCommand<{ label: string; total: number; error?: string }[]>({
+          action: "rollFormulas",
+          items: npcResults.map((r) => ({
+            label: `${r.token.name} — ${abilityLabel} save vs ${args.label}`,
+            formula: `1d20${r.bonus >= 0 ? "+" : ""}${r.bonus}`,
+          })),
+          speakAs: "The Bones", silent: false,
+        });
+        for (let i = 0; i < npcResults.length; i++) {
+          const roll = saveRolls?.[i];
+          npcResults[i].total = roll?.total;
+          npcResults[i].saved = roll?.total !== undefined && roll.total >= args.saveDc!;
+        }
+      } else {
+        for (const npc of npcs) npcResults.push({ token: npc, bonus: 0, source: "none", saved: false, applied: 0 });
+      }
+
+      // ── Apply: HP deltas + fail conditions in one batch ──
+      type Op = { id: string; action: string; args: Record<string, unknown> };
+      const ops: Op[] = [];
+      for (const r of npcResults) {
+        r.applied = damageOnSave(r.saved, dmg, args.halfOnSave);
+        if (r.applied > 0) {
+          const cur = Number(r.token.bar1_value) || 0;
+          const max = Number(r.token.bar1_max) || 0;
+          ops.push({
+            id: `hp:${r.token.id}`, action: "setTokenBar",
+            args: { tokenId: r.token.id, value: Math.max(0, cur - r.applied), max: max || undefined },
+          });
+        }
+        if (!r.saved && args.onFailCondition) {
+          ops.push({
+            id: `cond:${r.token.id}`, action: "toggleCondition",
+            args: { tokenId: r.token.id, charId: r.token.represents || undefined, condition: args.onFailCondition, active: true },
+          });
+        }
+      }
+      type BatchResult = { id: string | number; ok: boolean; error?: string };
+      const batch = ops.length ? await roll20.relayCommand<BatchResult[]>({ action: "batchExec", ops }) : [];
+      const failed = new Map((batch ?? []).filter((b) => !b.ok).map((b) => [String(b.id), b.error ?? "failed"]));
+
+      // ── DM report (numbers are fine here — this never reaches players) ──
+      const lines = npcResults.map((r) => {
+        const cur = Number(r.token.bar1_value) || 0;
+        const max = Number(r.token.bar1_max) || 0;
+        const newHp = Math.max(0, cur - r.applied);
+        const save = r.total !== undefined ? `save ${r.total} vs DC ${args.saveDc} ${r.saved ? "✓" : "✗"}` : "no save";
+        const hpErr = failed.get(`hp:${r.token.id}`);
+        const condErr = failed.get(`cond:${r.token.id}`);
+        const condNote = !r.saved && args.onFailCondition ? (condErr ? ` cond FAILED(${condErr})` : ` +${args.onFailCondition}`) : "";
+        if (hpErr) return `${r.token.name}: ${save} → FAILED to apply (${hpErr})`;
+        return `${r.token.name}: ${save} → −${r.applied}${max ? ` (${newHp}/${max})` : ""}${newHp === 0 && max > 0 ? " DOWN" : ""}${condNote}`;
+      });
+
+      return {
+        content: [{
+          type: "text",
+          text: [
+            `${args.label}: ${dmg} damage${args.saveAbility ? `, ${args.saveAbility.toUpperCase().slice(0, 3)} DC ${args.saveDc}${args.halfOnSave ? " half on save" : " negates on save"}` : ""}`,
+            ...lines,
+            pcNote,
+            drawNote,
+            skippedDown.length ? `Skipped (already down): ${skippedDown.join(", ")}` : "",
+            npcResults.some((r) => Number(r.token.bar1_max) > 0 && Math.max(0, (Number(r.token.bar1_value) || 0) - r.applied) === 0)
+              ? "Reminder: mark the fallen dead and move them to the map layer." : "",
+          ].filter(Boolean).join("\n"),
+        }],
+      };
     }
   );
 

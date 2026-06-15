@@ -1,8 +1,43 @@
 import { describe, it, expect } from "vitest";
 import {
   parseAibridge, cleanChat, parsePcHpBlock, writePcHpBlock,
-  mapToken, parseTurnorder, stripUndefWrite,
+  mapToken, parseTurnorder, stripUndefWrite, parseBroadcastPing,
 } from "./rt-helpers.js";
+
+describe("parseBroadcastPing", () => {
+  // Captured live by src/recon/ping-sniff.ts (Beyond Phandelver, 2026-06-11).
+  const LIVE_PAYLOAD = JSON.stringify({
+    type: "ping",
+    data: {
+      position: { x: 938.5, y: -680.0000036621094 },
+      focus: false,
+      page: "-NbQVmQe8XItL3tk3g5f",
+      player: "-OkALyGu02rkgCeggYHY",
+      ts: 1781207868473,
+    },
+  });
+
+  it("parses the live payload shape and un-negates y", () => {
+    const ping = parseBroadcastPing(LIVE_PAYLOAD);
+    expect(ping).toMatchObject({
+      x: 938.5,
+      y: 680.0000036621094,
+      rawY: -680.0000036621094,
+      pageId: "-NbQVmQe8XItL3tk3g5f",
+      player: "-OkALyGu02rkgCeggYHY",
+      ts: 1781207868473,
+      focus: false,
+    });
+  });
+
+  it("rejects non-ping broadcasts, garbage, and missing positions", () => {
+    expect(parseBroadcastPing(JSON.stringify({ type: "cursor", data: { position: { x: 1, y: 2 } } }))).toBeNull();
+    expect(parseBroadcastPing(JSON.stringify({ type: "ping", data: {} }))).toBeNull();
+    expect(parseBroadcastPing("not json")).toBeNull();
+    expect(parseBroadcastPing(null)).toBeNull();
+    expect(parseBroadcastPing(42)).toBeNull();
+  });
+});
 
 describe("parseAibridge", () => {
   const wrap = (json: string) => `<div style='display:none'>AIBRIDGE_RESULT:${json}</div>`;
@@ -86,6 +121,21 @@ describe("parsePcHpBlock / writePcHpBlock", () => {
     expect((twice.match(/%%PCHP=/g) || []).length).toBe(1);
     expect(parsePcHpBlock(twice)!.current).toBe(5);
     expect(twice.startsWith("note ")).toBe(true);
+  });
+  it("parses a URL-encoded block (Roll20 UI edits encode gmnotes)", () => {
+    const plain = writePcHpBlock("some notes", entry);
+    const encoded = encodeURIComponent(plain);
+    expect(parsePcHpBlock(encoded)).toEqual(entry);
+  });
+  it("returns null for garbage that is neither plain nor decodable block", () => {
+    expect(parsePcHpBlock("%%PCHP={not valid json}%%")).toBeNull();
+    expect(parsePcHpBlock(encodeURIComponent("no block here at all"))).toBeNull();
+  });
+  it("write-then-parse round-trip is unchanged (plain, no encoding)", () => {
+    const written = writePcHpBlock("gm text", entry);
+    expect(parsePcHpBlock(written)).toEqual(entry);
+    // Also verify encoding the written string round-trips
+    expect(parsePcHpBlock(encodeURIComponent(written))).toEqual(entry);
   });
 });
 

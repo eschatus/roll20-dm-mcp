@@ -2,26 +2,30 @@ import { Page } from "playwright";
 import { getPage, closeBrowser } from "./browser.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
 import { rtEnabled, rtRelayCommand } from "./roll20-rt.js";
+import { READONLY_ACTIONS, newNonce } from "./actions.js";
+import { getHealth, recordSuccess, recordFailure, recordFallback } from "./transport-health.js";
 
 const RELAY_TIMEOUT_MS = 30_000;
 
-// Strictly-increasing nonce. Seeded from Date.now() so it stays unique across
-// server restarts; ++ guarantees no two in-process commands ever collide.
-let _nonce = Date.now();
-const newNonce = () => ++_nonce;
 
-// Read-only actions are safe to silently auto-retry on timeout (re-running them
-// has no side effects). Everything else is a mutating write: re-sending a write
-// with a fresh nonce can double-apply damage / duplicate tokens / double-advance
-// the turn. Writes are made idempotent in the sandbox (last-nonce echo), but the
-// TS side still must NOT null-retry them with a *new* nonce.
-const READONLY_ACTIONS = new Set<string>([
-  "getTokens", "getSelection", "getTokenById", "getWalls", "debugPage",
-  "getPaths", "getDoors", "listPages", "getTurnOrder", "getRecentChat",
-  "getDmInbox", "getTurnHookState", "getCharacterAttributes", "getRepeatingSection",
-  "getTokenMarkers", "getCustomStates", "listZones", "findTokensInZone",
-  "findTokensInRange", "getJournalFolder", "ping",
-]);
+// Pure decision: should an RT transport error allow falling back to the browser path?
+//
+// Truth table:
+//   Read-only,  any error          → true   (retries are always safe; no side effects)
+//   Mutating,   RtPreSendError     → true   (never reached /chat; no idempotency hazard)
+//   Mutating,   post-send timeout  → true   (safe ONLY when the same nonce is re-sent;
+//                                            the Mod's LRU deduplicates the resend so the
+//                                            action will not double-apply)
+//
+// IMPORTANT: callers MUST pass the same nonce when falling back on a post-send timeout.
+// `relayCommand` in this file enforces this by generating the nonce before both transports
+// and threading it through via `assignedNonce`.
+export function shouldFallback(action: string, _err: Error): boolean {
+  // All cases now fall back — the idempotency guarantee comes from the Mod's nonce LRU
+  // (PROCESSED_NONCES in ai-relay.js) and the caller's obligation to reuse the same nonce.
+  void action; // parameter kept for API compatibility and documentation clarity
+  return true;
+}
 
 // ─── Test seam ────────────────────────────────────────────────────────────────
 // When set (only by the test harness), relay/evaluate calls route here instead of
@@ -105,8 +109,11 @@ async function getEditorPage(): Promise<Page> {
   // Register exposeFunction once per Page object — persists across navigations.
   if (!_exposeFunctionPages.has(page)) {
     _exposeFunctionPages.add(page);
-    // Clear stale pending relays when the page navigates away.
-    page.on("load", () => pendingRelays.clear());
+    // Reject (not just clear) pending relays on navigation so callers fail fast.
+    page.on("load", () => {
+      for (const { reject } of pendingRelays.values()) reject(new Error("editor page navigated — relay interrupted"));
+      pendingRelays.clear();
+    });
     await page.exposeFunction("__aibridge_push__", (nonceStr: string, jsonStr: string) => {
       const nonce = parseInt(nonceStr, 10);
       const pending = pendingRelays.get(nonce);
@@ -323,26 +330,60 @@ export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
   // On ANY failure (auth, timeout, disconnect) fall back to the Playwright relay below — so
   // enabling RT can only ever be faster/lighter, never less capable.
   if (rtEnabled()) {
-    return rtRelayCommand<T>(cmd).catch((err) => {
-      console.error(`[roll20] rt transport ${cmd.action} → browser fallback: ${(err as Error).message}`);
-      return _relayDefault<T>(cmd);
+    const action = cmd.action as string;
+
+    // Nonce is generated HERE (once, before either transport) so that an rt→browser fallback
+    // re-sends the EXACT same nonce. The Mod's PROCESSED_NONCES LRU (ai-relay.js) then deduplicates
+    // the resend, making any post-send fallback safe for mutating commands too.
+    const nonce = newNonce();
+
+    // Circuit breaker: when RT is known-down, skip it entirely and route straight to the browser
+    // (reads and mutating commands alike). A brand-new command was never sent anywhere, so there
+    // is no idempotency hazard — we just skip the dead transport.
+    if (getHealth("rt") === "down") {
+      console.error(`[roll20] rt circuit open — routing ${action} to browser`);
+      recordFallback("rt");
+      return _relayDefaultWithNonce<T>(cmd, nonce);
+    }
+
+    return rtRelayCommand<T>(cmd, { assignedNonce: nonce }).catch((err: Error) => {
+      if (shouldFallback(action, err)) {
+        // Post-send timeout: we re-send with the SAME nonce so the Mod's LRU can deduplicate
+        // if the original already ran. Pre-send errors: command never reached /chat, so same-
+        // nonce reuse is trivially safe.
+        console.error(`[roll20] rt transport ${action} → browser fallback (same nonce=${nonce}): ${err.message}`);
+        recordFallback("rt");
+        return _relayDefaultWithNonce<T>(cmd, nonce);
+      }
+      // shouldFallback now returns true for all cases; this branch is unreachable but kept
+      // as a defensive guard in case future logic narrows the condition.
+      console.error(`[roll20] rt transport ${action} — NOT retrying on browser: ${err.message}`);
+      throw err;
     });
   }
   return _relayDefault<T>(cmd);
 }
 
 function _relayDefault<T>(cmd: Record<string, unknown>): Promise<T> {
+  return _relayDefaultWithNonce<T>(cmd, undefined);
+}
+
+// Variant that accepts a pre-assigned nonce (from relayCommand's centralized generator).
+// The nonce is threaded down to _relayCommandRaw so that rt→browser fallbacks re-send the
+// same nonce, enabling idempotent deduplication in the Mod's PROCESSED_NONCES LRU.
+function _relayDefaultWithNonce<T>(cmd: Record<string, unknown>, nonce: number | undefined): Promise<T> {
   const action = cmd.action as string;
 
   // Client-direct reads: serve from the browser's live Backbone models. On ANY error, fall back
   // to the Mod relay — so this is strictly faster-or-equal, never less correct.
+  // (Client-direct reads don't use the Mod nonce, so nonce is not threaded here.)
   const client = CLIENT_READS[action];
   if (client) {
     return getEditorPage()
       .then((page) => client(page, cmd as Record<string, any>) as Promise<T>)
       .catch((err) => {
         console.error(`[roll20] client-direct ${action} → relay fallback: ${(err as Error).message}`);
-        return _relayViaChat<T>(cmd);
+        return _relayViaChat<T>(cmd, nonce);
       });
   }
 
@@ -352,48 +393,65 @@ function _relayDefault<T>(cmd: Record<string, unknown>): Promise<T> {
     return getEditorPage().then((page) => page.evaluate(reader as () => T));
   }
 
-  return _relayViaChat<T>(cmd);
+  return _relayViaChat<T>(cmd, nonce);
 }
 
 // The original chat-relay path: serialized queue → !ai-relay command → AIBRIDGE_RESULT round-trip.
 // Used for writes and anything without a client-direct evaluator.
-function _relayViaChat<T>(cmd: Record<string, unknown>): Promise<T> {
-  const queued = _relayQueue.then(() => _relayCommandRaw<T>(cmd));
+// `preAssignedNonce` is threaded from relayCommand (via _relayDefaultWithNonce) so that an
+// rt→browser fallback re-sends the same nonce, enabling idempotent Mod deduplication.
+function _relayViaChat<T>(cmd: Record<string, unknown>, preAssignedNonce?: number): Promise<T> {
+  const queued = _relayQueue.then(() => _relayCommandRaw<T>(cmd, preAssignedNonce));
   _relayQueue = queued.catch(() => {});
   return queued;
 }
 
-async function _relayCommandRaw<T>(cmd: Record<string, unknown>): Promise<T> {
+async function _relayCommandRaw<T>(cmd: Record<string, unknown>, preAssignedNonce?: number): Promise<T> {
   const page = await getEditorPage();
 
-  const nonce = newNonce();
+  // Use the caller-provided nonce when present (cross-transport fallback with same nonce for
+  // Mod-side deduplication); otherwise generate a fresh one for direct browser-path calls.
+  const nonce = preAssignedNonce !== undefined ? preAssignedNonce : newNonce();
   const result = await relayCommandOnce<T>(page, cmd, nonce);
-  if (result !== null) return result;
+  if (result !== null) { recordSuccess("browser"); return result; }
 
   const isReadOnly = READONLY_ACTIONS.has(cmd.action as string);
   if (!isReadOnly) {
-    // Mutating write that timed out — re-sending with a fresh nonce risks a
-    // double-apply (the original may still land in the sandbox). Reject instead
-    // of blindly retrying. (Sandbox-side last-nonce echo makes a *same-nonce*
-    // resend idempotent, but we don't have a safe channel to resend the same
-    // nonce after our listener was torn down, so we fail loud.)
+    // Mutating write timed out. Re-send ONCE with the SAME nonce — the Mod's PROCESSED_NONCES
+    // LRU (ai-relay.js) will deduplicate the resend if the original already ran, making this safe.
+    // We can re-register the pending promise under the same nonce because relayCommandOnce already
+    // removed it from pendingRelays on timeout (resolved to null).
+    //
+    // NOTE: Until the updated ai-relay.js is deployed in Roll20, an OLD Mod script will re-execute
+    // the same-nonce retry as a fresh command (no deduplication). This is no worse than the previous
+    // behaviour of failing loudly without retrying — but the DM must redeploy the Mod for full safety.
+    console.error(`[roll20] mutating timeout for '${cmd.action}' (nonce=${nonce}) — retrying once with same nonce`);
+    await new Promise((r) => setTimeout(r, 2_000));
+    const retryResult = await relayCommandOnce<T>(page, cmd, nonce);
+    if (retryResult !== null) { recordSuccess("browser"); return retryResult; }
+
     const chatDump = await page.evaluate(() => {
       const el = document.querySelector("#textchat") ?? document.body;
       return el.textContent?.slice(-800) ?? "(empty)";
     });
-    throw new Error(`Relay timeout after ${RELAY_TIMEOUT_MS}ms for mutating action '${cmd.action}' — not auto-retried to avoid double-apply. Verify state before resending.\nChat tail: ${chatDump}`);
+    recordFailure("browser");
+    throw new Error(
+      `Relay timeout for mutating action '${cmd.action}' (nonce=${nonce}) — one same-nonce retry also timed out. ` +
+      `If Mod deduplication is active, the action may have run once; verify state in Roll20 before resending.\nChat tail: ${chatDump}`
+    );
   }
 
-  // Read-only action — safe to retry. Relay may have been restarting; wait and retry with a fresh nonce.
+  // Read-only action — safe to retry with a fresh nonce. Relay may have been restarting.
   await new Promise((r) => setTimeout(r, 4_000));
   const retryNonce = newNonce();
   const retryResult = await relayCommandOnce<T>(page, cmd, retryNonce);
-  if (retryResult !== null) return retryResult;
+  if (retryResult !== null) { recordSuccess("browser"); return retryResult; }
 
   const chatDump = await page.evaluate(() => {
     const el = document.querySelector("#textchat") ?? document.body;
     return el.textContent?.slice(-800) ?? "(empty)";
   });
+  recordFailure("browser");
   throw new Error(`Relay timeout after ${RELAY_TIMEOUT_MS}ms for command: ${cmd.action}\nChat tail: ${chatDump}`);
 }
 

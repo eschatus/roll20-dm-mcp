@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import * as roll20 from "../bridge/roll20.js";
 import * as ddb from "../bridge/dndbeyond.js";
 import { rtEnabled, rtWriteMobPlan } from "../bridge/roll20-rt.js";
+import { callModel as sharedCallModel, __setAnthropicForTest as llmSetAnthropicForTest } from "../llm.js";
 
 // ─── Doctrine Index (Ammann book) ────────────────────────────────────────────
 
@@ -20,7 +21,7 @@ try {
   // not available — doctrine lookups will silently return nothing
 }
 
-function lookupDoctrine(creatureName: string): string | undefined {
+export function lookupDoctrine(creatureName: string): string | undefined {
   const n = creatureName.toLowerCase().trim();
   if (doctrineIndex[n]) return doctrineIndex[n];
 
@@ -107,7 +108,7 @@ interface TurnOrderEntry {
 export const MODELS = {
   haiku: "claude-haiku-4-5-20251001",
   sonnet: "claude-sonnet-4-6",
-  opus: "claude-opus-4-7",
+  opus: "claude-opus-4-8",
 } as const;
 
 // ─── Tier Config ──────────────────────────────────────────────────────────────
@@ -282,16 +283,14 @@ function addEntry(state: TacticalState, round: number, summary: string): void {
 }
 
 // ─── Anthropic Client ─────────────────────────────────────────────────────────
+//
+// The client and callModel are now provided by src/llm.ts.
+// The __setAnthropicForTest export is kept here so existing test imports
+// (and any external callers) continue to compile and work — it delegates to
+// the shared llm.ts seam which actually owns the client instance.
 
-let anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-  defaultHeaders: { "anthropic-beta": "prompt-caching-2024-07-31" },
-});
-
-// Test seam: swap in a mock client (deterministic canned plans) so the full
-// tactics pipeline can run in CI without real API calls. Production never calls this.
 export function __setAnthropicForTest(client: Pick<Anthropic, "messages">): void {
-  anthropic = client as Anthropic;
+  llmSetAnthropicForTest(client);
 }
 
 const TACTICS_SYSTEM_PROMPT = `You are the tactical AI for a D&D 5e dungeon master. Your job is to recommend the best action sequence for a creature's turn. Recommendations must reflect how this specific creature actually behaves — not generic "smart monster" advice.
@@ -346,29 +345,8 @@ async function callAI(
   userContent: string,
   maxTokens: number,
 ): Promise<string> {
-  const systemBlock = {
-    type: "text" as const,
-    text: TACTICS_SYSTEM_PROMPT,
-    cache_control: { type: "ephemeral" as const },
-  };
-
-  const params: Anthropic.MessageCreateParams = {
-    model,
-    max_tokens: thinkingBudget !== null ? thinkingBudget + maxTokens : maxTokens,
-    system: [systemBlock],
-    messages: [{ role: "user", content: userContent }],
-  };
-
-  if (thinkingBudget !== null) {
-    (params as unknown as Record<string, unknown>).thinking = { type: "enabled", budget_tokens: thinkingBudget };
-    params.temperature = 1;
-  }
-
-  const response = await anthropic.messages.create(params);
-  for (const block of response.content) {
-    if (block.type === "text") return block.text.trim();
-  }
-  return "(no response)";
+  const result = await sharedCallModel(model, TACTICS_SYSTEM_PROMPT, userContent, maxTokens, thinkingBudget);
+  return result || "(no response)";
 }
 
 // ─── Context Builders ─────────────────────────────────────────────────────────

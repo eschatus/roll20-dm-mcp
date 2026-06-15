@@ -12,7 +12,7 @@ import { CONFIG } from "./config";
 
 // Tools that mutate the live tabletop — these require DM confirmation.
 const WRITE_TOOLS = new Set<string>([
-  "apply_damage", "heal_character", "update_token_hp", "set_token_marker",
+  "update_token_hp", "set_token_marker",
   "set_token_props", "set_character_attribute", "full_sync_character",
   "sync_character_state", "ddb_update_hp", "batch_exec", "send_narration",
   "roll_dice", "roll_initiative", "advance_turn", "clear_turn_order",

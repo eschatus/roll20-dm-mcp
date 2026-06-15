@@ -148,16 +148,18 @@ describe("a full round of combat", () => {
 
   it("applies single-target damage + a condition, then heals, then poisons", async () => {
     // A PC strikes the captain and frightens it.
-    const dmg = await h.callTool("apply_damage", { characterName: "Hobgoblin Captain", damage: 10, conditions: ["frightened"] });
-    const dj = dmg.json as { newHp: number; conditionsApplied: string[]; conditionsFailed: string[] };
-    expect(dj.newHp).toBe(29); // 39 - 10
-    expect(dj.conditionsApplied).toContain("frightened");
-    expect(dj.conditionsFailed).toHaveLength(0);
+    // update_token_hp covers the same damage+condition path as the removed apply_damage tool,
+    // resolving registered characters by name and accepting addConditions for bulk condition writes.
+    const dmg = await h.callTool("update_token_hp", { characterName: "Hobgoblin Captain", damage: 10, addConditions: ["frightened"] });
+    // Response is plain text: "<name>: -<damage> HP → <new>/<max> | +[frightened] -[]"
+    expect(dmg.text).toMatch(/Hobgoblin Captain/);
+    expect(Number(h.emu.tokenProps(w.npcs.captain.id).bar1_value)).toBe(29); // 39 - 10
     expect(String(h.emu.tokenProps(w.npcs.captain.id).statusmarkers)).toMatch(/Feared|Frightened/i);
 
     // The cleric heals herself (clamped to max).
+    // update_token_hp heal path matches the removed heal_character: clamps at bar1_max.
     const woundedCleric = Number(h.emu.tokenProps(w.pcs.cleric.id).bar1_value);
-    await h.callTool("heal_character", { characterName: "Mother Vance", amount: 100 });
+    await h.callTool("update_token_hp", { characterName: "Mother Vance", heal: 100 });
     expect(Number(h.emu.tokenProps(w.pcs.cleric.id).bar1_value)).toBe(24); // clamped to max, not woundedCleric+100
     expect(Number(h.emu.tokenProps(w.pcs.cleric.id).bar1_value)).toBeGreaterThan(woundedCleric);
 

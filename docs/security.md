@@ -18,6 +18,8 @@ This document catalogs the attack surfaces in this project and the mitigations i
 
 **Recommended `BROWSER_USER_DATA_DIR`:** `%APPDATA%\roll20-dm-mcp\browser-session` on Windows
 
+**CDP debug port (accepted tradeoff):** the persistent browser always launches with `--remote-debugging-port` (default 9222, see `src/bridge/browser.ts`) so that server restarts and sibling processes can reattach instead of fighting over the profile lock. CDP has **no authentication** — any local process can connect to `localhost:9222` and drive the browser, including the logged-in Roll20/DDB sessions. This is equivalent in blast radius to reading `userDataDir` directly, but it is a *live* channel. Acceptable on a single-user machine; if that assumption ever changes, gate the port behind a firewall rule or set `BROWSER_DEBUG_PORT` to 0 and accept losing CDP reattach.
+
 ---
 
 ## 2. `cobalt` cookie scope
@@ -46,6 +48,8 @@ This document catalogs the attack surfaces in this project and the mitigations i
 **Mitigations in place:**
 - Tool results return structured JSON. Claude receives the data as a tool result, not as part of the conversation narrative — this provides some natural sandboxing
 - Character names in the registry are stored and retrieved as-is but used only as lookup keys; they are not embedded in instructions
+
+**Player-command channel (additional surface):** the `!tactics` / `!recall` / `!rules` / `!dm` commands (`src/bridge/player-commands.ts`) put **player-authored text** directly into LLM prompts, and `!dm` notes land in the dmInbox that surfaces in the DM-facing assistant's context. Stakes are low (outputs are whispers and qualitative advice; handlers are read-only), but treat dmInbox content as untrusted data, never as instructions. Cost abuse is bounded by per-player cooldowns plus a global token bucket and a concurrent-in-flight cap (the per-player cooldown alone is spoofable, since `playerid` is a client-written chat field).
 
 **Recommended additional mitigations:**
 - Strip any content that looks like instructions from character names before embedding in tool descriptions: reject names containing "ignore", "system", "instruction", "previous" etc.
@@ -90,7 +94,7 @@ This document catalogs the attack surfaces in this project and the mitigations i
 - Result whispers use `/w gm`, so command output is not visible to players.
 - The relay dispatches only the hardcoded `action` strings in its `switch` statement (no `eval` / shell exec — see §5).
 
-**Action item:** Confirm the `playerIsGM` sender check is present and enabled in the deployed `ai-relay.js`. Because Roll20 chat is a shared, player-writable channel, this check — not attribute visibility — is what keeps players from driving the relay.
+**Status (verified):** the sender check is present in `mod-scripts/ai-relay.js` — `senderIsGM()` uses `playerIsGM()` when available and falls back to the campaign `_gms` list. Because Roll20 chat is a shared, player-writable channel, this check — not attribute visibility — is what keeps players from driving the relay. Re-verify after any Mod redeploy.
 
 ---
 

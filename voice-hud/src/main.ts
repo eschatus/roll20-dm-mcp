@@ -66,6 +66,10 @@ let combatCurrentId = "";
 let combatCurrentName = "";
 let combatRound = 0;
 let inboxCount = 0;
+// SWR guard: true while runAgent is running. refreshRoster stashes the built block
+// here instead of calling agent.setRoster mid-turn; runAgent's finally applies it.
+let _agentTurnActive = false;
+let _pendingRosterBlock: string | null = null;
 // Token id→name map (updated from roster, consumed by RTDB event handler)
 let rosterTokenById: Record<string, string> = {};
 
@@ -291,11 +295,11 @@ function wireClipHandler() {
 async function runAgent(transcript: string) {
   send("state", "thinking");
   console.error(`[agent] turn start: "${transcript.slice(0, 80)}"`);
+  _agentTurnActive = true;
   try {
-    // Keep the roster current every turn (cheap — DDB list is cached, only
-    // list_tokens re-runs). Also fetches the current turn order to build the
-    // COMBAT STATE header — Haiku sees whose turn it is and whether turns advanced.
-    await refreshRoster({ silent: true });
+    // SWR: fire roster refresh in the background so the LLM starts immediately.
+    // If the refresh lands mid-turn, refreshRoster stashes the block; we apply it below.
+    refreshRoster({ silent: true }).catch((e) => console.error("[roster] pre-turn refresh failed:", (e as Error).message));
     await agent.handle(transcript, {
       onText: (text) => { console.error(`[agent] say: ${text.slice(0, 80)}`); send("agent", { kind: "say", text }); },
       onToolStart: (name, args) => { console.error(`[agent] tool → ${name}(${shortArgs(args)})`); send("agent", { kind: "tool", text: `${name}(${shortArgs(args)})` }); },
@@ -316,6 +320,11 @@ async function runAgent(transcript: string) {
   } catch (err) {
     send("agent", { kind: "error", text: (err as Error).message });
   } finally {
+    _agentTurnActive = false;
+    if (_pendingRosterBlock !== null) {
+      agent.setRoster(_pendingRosterBlock);
+      _pendingRosterBlock = null;
+    }
     if (!pendingConfirm) send("state", "idle");
   }
 }
@@ -477,6 +486,20 @@ function wireWizard() {
 async function refreshRoster(opts: { silent?: boolean; force?: boolean } = {}) {
   try {
     if (opts.force) clearRosterCache();
+
+    // Detect campaign switch and reset combat state so stale turn/plan data doesn't bleed over.
+    const currentSlug = readActiveSlug();
+    if (currentSlug && currentSlug !== activeSlug) {
+      activeSlug = currentSlug;
+      campaignData = loadCampaignData(activeSlug);
+      combatPlans.clear();
+      combatCurrentId = "";
+      combatCurrentName = "";
+      combatRound = 0;
+      inboxCount = 0;
+      console.error(`[roster] campaign switched to ${activeSlug} — combat state reset`);
+    }
+
     const { text, names, tokenById } = await buildRoster(mcp);
     rosterNames = names;
 
@@ -514,7 +537,11 @@ async function refreshRoster(opts: { silent?: boolean; force?: boolean } = {}) {
     if (campaignData.notes?.trim()) {
       block += "\n\nCampaign notes:\n" + campaignData.notes.trim();
     }
-    agent.setRoster(block);
+    if (_agentTurnActive) {
+      _pendingRosterBlock = block;
+    } else {
+      agent.setRoster(block);
+    }
     if (!opts.silent) send("agent", { kind: "info", text: `roster: ${names.length} names` });
   } catch (err) {
     send("agent", { kind: "error", text: "roster build failed: " + (err as Error).message });
@@ -576,8 +603,15 @@ app.on("window-all-closed", () => {
 let _gemBoundsBeforeExpand: { x: number; y: number } | null = null;
 
 // --- RTDB event stream (SSE from the MCP server, replaces polling) ---
+let _eventsReq: import("http").ClientRequest | null = null;
+let _eventsGen = 0;
+
 function connectEventStream() {
   if (!process.env.ROLL20_MCP_TOKEN) return; // no token → cannot authenticate to MCP server
+
+  const gen = ++_eventsGen;
+  _eventsReq?.destroy();
+
   const baseUrl = CONFIG.mcpUrl.replace(/\/mcp$/, "");
   const url = new URL(baseUrl + "/events");
   const reqOpts = {
@@ -596,9 +630,10 @@ function connectEventStream() {
   const req = http.request(reqOpts, (res) => {
     if (res.statusCode !== 200) {
       console.error(`[events] SSE ${res.statusCode} — retrying in 10s`);
-      if (!appQuitting) setTimeout(connectEventStream, 10_000);
+      if (gen === _eventsGen && !appQuitting) setTimeout(connectEventStream, 10_000);
       return;
     }
+    console.error(`[events] connected (gen ${gen})`);
     let buf = "";
     let evtType = "";
     res.on("data", (chunk: Buffer) => {
@@ -613,10 +648,11 @@ function connectEventStream() {
         }
       }
     });
-    res.on("end", () => { if (!appQuitting) { console.error("[events] SSE closed — reconnecting in 3s"); setTimeout(connectEventStream, 3_000); } });
-    res.on("error", (e: Error) => { if (!appQuitting) { console.error("[events] SSE error:", e.message); setTimeout(connectEventStream, 5_000); } });
+    res.on("end", () => { if (gen === _eventsGen && !appQuitting) { console.error("[events] SSE closed — reconnecting in 3s"); setTimeout(connectEventStream, 3_000); } });
+    res.on("error", (e: Error) => { if (gen === _eventsGen && !appQuitting) { console.error("[events] SSE error:", e.message); setTimeout(connectEventStream, 5_000); } });
   });
-  req.on("error", (e: Error) => { if (!appQuitting) { console.error("[events] SSE connect error:", e.message); setTimeout(connectEventStream, 5_000); } });
+  req.on("error", (e: Error) => { if (gen === _eventsGen && !appQuitting) { console.error("[events] SSE connect error:", e.message); setTimeout(connectEventStream, 5_000); } });
+  _eventsReq = req;
   req.end();
 }
 
