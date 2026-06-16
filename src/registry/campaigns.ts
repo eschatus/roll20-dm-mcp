@@ -1,5 +1,13 @@
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, renameSync } from "fs";
 import path from "path";
+
+// Atomic write: rename over the target so a concurrent reader never observes the
+// truncated window that plain writeFileSync opens (→ "Unexpected end of JSON input").
+function atomicWrite(filePath: string, contents: string): void {
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, contents, "utf-8");
+  renameSync(tmp, filePath);
+}
 
 // Data dir is overridable via ROLL20_DATA_DIR so tests (and relocated installs)
 // don't read/write the real ./data files.
@@ -30,11 +38,13 @@ let _activeCampaignSlug: string | null = null;
 
 function load(): CampaignStore {
   if (!existsSync(CAMPAIGNS_PATH)) return {};
-  return JSON.parse(readFileSync(CAMPAIGNS_PATH, "utf-8")) as CampaignStore;
+  const raw = readFileSync(CAMPAIGNS_PATH, "utf-8");
+  if (raw.trim() === "") return {}; // mid-write / never-finished → no campaigns yet
+  return JSON.parse(raw) as CampaignStore;
 }
 
 function save(store: CampaignStore): void {
-  writeFileSync(CAMPAIGNS_PATH, JSON.stringify(store, null, 2), "utf-8");
+  atomicWrite(CAMPAIGNS_PATH, JSON.stringify(store, null, 2));
 }
 
 export function toSlug(name: string): string {
@@ -86,7 +96,7 @@ export function setActiveCampaign(slugOrName: string): CampaignEntry {
   }
 
   _activeCampaignSlug = resolved;
-  writeFileSync(ACTIVE_CAMPAIGN_PATH, JSON.stringify({ slug: resolved }, null, 2), "utf-8");
+  atomicWrite(ACTIVE_CAMPAIGN_PATH, JSON.stringify({ slug: resolved }, null, 2));
   return store[resolved];
 }
 
