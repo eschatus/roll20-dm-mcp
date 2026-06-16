@@ -822,7 +822,7 @@ export function registerCombatTools(server: McpServer): void {
   // never touched here.
   server.tool(
     "resolve_aoe",
-    "Resolve an area-of-effect spell in ONE call: finds targets, rolls NPC saving throws publicly via Roll20's dice engine, applies damage (half on save by default), and optionally applies a condition to NPCs that fail. PCs caught in the area are listed in the report but NEVER auto-rolled or damaged — players roll their own saves. Target via ONE of: atPing + radiusFeet (centered on the GM's last shift+click map ping — the natural 'fireball lands THERE' gesture; draws a visible zone at the spot), centerTokenName/centerTokenId + radiusFeet (sphere/emanation), zoneName/zoneId (existing create_zone area), or targetNames (explicit list — use for cones/lines you judge by eye). Use dryRun:true to preview who's affected without rolling anything.",
+    "Resolve an area-of-effect spell in ONE call: finds targets, rolls NPC saving throws publicly via Roll20's dice engine, applies damage (half on save by default), and optionally applies a condition to NPCs that fail. PCs caught in the area are listed in the report but NEVER auto-rolled or damaged — players roll their own saves. For HEALING AoEs (Mass Cure Wounds, Healing Spirit, etc.) set healing:true: the formula is applied as positive HP to every resolved target (PCs included, via adjustPcHp), with no saves or conditions — pair it with targetNames to pick the allies. Target via ONE of: atPing + radiusFeet (centered on the GM's last shift+click map ping — the natural 'fireball lands THERE' gesture; draws a visible zone at the spot), centerTokenName/centerTokenId + radiusFeet (sphere/emanation), zoneName/zoneId (existing create_zone area), or targetNames (explicit list — use for cones/lines you judge by eye). Use dryRun:true to preview who's affected without rolling anything.",
     {
       label: z.string().describe("Effect name for chat roll labels, e.g. 'Fireball (Strahd)'"),
       atPing: z.boolean().default(false).describe("Center on the most recent shift+click map ping (within the last 3 minutes). Requires radiusFeet. Creates a visible zone named after the label — clear it later with clear_zone."),
@@ -836,8 +836,9 @@ export function registerCombatTools(server: McpServer): void {
       excludeNames: z.array(z.string()).optional().describe("Names to exempt, e.g. allies dodging around the Web"),
       saveAbility: z.enum(SAVE_ABILITIES).optional().describe("Saving throw ability. Omit for no-save effects (e.g. Magic Missile volley)"),
       saveDc: z.number().int().optional().describe("Save DC. Required when saveAbility is set"),
-      damageFormula: z.string().optional().describe("Dice formula rolled ONCE publicly for the whole effect, e.g. '8d6'"),
-      damage: z.number().int().min(0).optional().describe("Flat damage instead of rolling"),
+      damageFormula: z.string().optional().describe("Dice formula rolled ONCE publicly for the whole effect, e.g. '8d6'. With healing:true this is the HEAL formula, e.g. '5d8' for Mass Cure Wounds."),
+      damage: z.number().int().min(0).optional().describe("Flat damage (or, with healing:true, flat healing) instead of rolling"),
+      healing: z.boolean().default(false).describe("true = restore HP instead of dealing it. The formula/flat amount is applied as POSITIVE HP to every resolved target (PCs route through adjustPcHp; NPCs write bar1). No saving throws, no conditions; downed creatures ARE included so you can heal them up. Use targetNames to hand-pick the allies you're healing (e.g. Mass Cure Wounds)."),
       halfOnSave: z.boolean().default(true).describe("true = save takes half (Fireball); false = save negates"),
       onFailCondition: z.string().optional().describe("Condition applied to NPCs that FAIL, e.g. 'restrained', 'prone'"),
       draw: z.enum(["zone", "aura", "none"]).default("zone").describe("Visual for the area: 'zone' (default) draws a circle on the map at the blast point — clear with clear_zone when it ends; 'aura' (token-centered mode only) sets a player-visible aura on the center token instead — right for emanations like Spirit Guardians that move with the caster; 'none' skips the visual. Ignored for zoneName/targetNames modes (nothing new to draw)."),
@@ -848,6 +849,12 @@ export function registerCombatTools(server: McpServer): void {
     async (args) => {
       const activePage = args.pageId ?? (await roll20.getCurrentPageId());
       if (args.saveAbility && args.saveDc === undefined) throw new Error("saveDc is required when saveAbility is set");
+      if (args.healing && (args.saveAbility || args.onFailCondition)) {
+        throw new Error("healing:true takes no saveAbility/onFailCondition — healing isn't saved against and applies no conditions");
+      }
+      if (args.healing && args.damageFormula === undefined && args.damage === undefined && !args.dryRun) {
+        throw new Error("healing:true needs a damageFormula (e.g. '5d8') or flat damage amount to restore (or set dryRun:true to preview targets)");
+      }
       if (!args.dryRun && args.damageFormula === undefined && args.damage === undefined && !args.onFailCondition) {
         throw new Error("Provide damageFormula, damage, or onFailCondition (or set dryRun:true to just preview targets)");
       }
@@ -936,10 +943,59 @@ export function registerCombatTools(server: McpServer): void {
       for (const id of new Set(targetIds)) {
         const t = byId.get(id);
         if (!t || !TOKEN_LAYERS.has(t.layer) || excludeIds.has(id) || !t.name) continue;
-        if (isDowned(t)) { skippedDown.push(t.name); continue; }
+        // Healing brings creatures up FROM 0, so downed targets stay in; damage skips corpses.
+        if (!args.healing && isDowned(t)) { skippedDown.push(t.name); continue; }
         targets.push(t);
       }
       const { pcs, npcs } = splitPcNpc(targets);
+
+      // ── Healing: no saves, no conditions — restore HP to every resolved
+      // target. Unlike damage, PCs are NOT spectators here: heal them via
+      // adjustPcHp (Beyond20 owns their visible bar). NPCs write bar1 directly.
+      if (args.healing) {
+        if (args.dryRun) {
+          return json({ wouldHeal: { pcs: pcs.map((p) => p.name), npcs: npcs.map((n) => n.name) }, drawNote: drawNote || undefined });
+        }
+        let heal = args.damage ?? 0;
+        if (args.damageFormula) {
+          const healRoll = await roll20.relayCommand<{ total: number; error?: string }[]>({
+            action: "rollFormulas",
+            items: [{ label: `${args.label} — healing`, formula: args.damageFormula }],
+            speakAs: "The Bones", silent: false,
+          });
+          if (healRoll?.[0]?.error || healRoll?.[0]?.total === undefined) throw new Error(`Healing roll failed: ${healRoll?.[0]?.error ?? "no result"}`);
+          heal = healRoll[0].total;
+        }
+
+        type Op = { id: string; action: string; args: Record<string, unknown> };
+        const ops: Op[] = [];
+        for (const n of npcs) {
+          const cur = Number(n.bar1_value) || 0;
+          const max = Number(n.bar1_max) || 0;
+          ops.push({ id: `heal:${n.id}`, action: "setTokenBar", args: { tokenId: n.id, value: max ? Math.min(max, cur + heal) : cur + heal, max: max || undefined } });
+        }
+        for (const p of pcs) {
+          ops.push({ id: `heal:${p.id}`, action: "adjustPcHp", args: { tokenId: p.id, heal } });
+        }
+        const batch = ops.length ? await roll20.relayCommand<BatchResult[]>({ action: "batchExec", ops }) : [];
+        const opRes = indexBatchResults(batch, ops.map((o) => o.id));
+
+        const healLines = [...pcs, ...npcs].map((t) => {
+          const r = opRes.get(`heal:${t.id}`);
+          if (r && !r.ok) return `${t.name}: heal FAILED (${r.error ?? "failed"})`;
+          // adjustPcHp returns the new {current,max}; for NPCs we computed it ourselves.
+          const data = r?.data as { current?: number; max?: number } | undefined;
+          const max = Number(t.bar1_max) || data?.max || 0;
+          const newHp = data?.current ?? (max ? Math.min(max, (Number(t.bar1_value) || 0) + heal) : (Number(t.bar1_value) || 0) + heal);
+          return `${t.name}: +${heal}${max ? ` (${newHp}/${max})` : ` (→${newHp})`}`;
+        });
+
+        return text([
+          `${args.label}: +${heal} healing to ${[...pcs, ...npcs].length} target(s)`,
+          ...healLines,
+          drawNote,
+        ].filter(Boolean).join("\n"));
+      }
 
       const pcNote = pcs.length
         ? `PCs in the area — they roll their own saves${args.saveAbility ? ` (${args.saveAbility.toUpperCase().slice(0, 3)} DC ${args.saveDc})` : ""}: ${pcs.map((p) => p.name).join(", ")}`
