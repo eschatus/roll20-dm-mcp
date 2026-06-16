@@ -160,13 +160,34 @@ export interface PageToken {
   statusmarkers?: string;
 }
 
+// Score a token name against a player's display name by counting word-level
+// prefix overlaps in either direction. "Eli Yola" vs the display name
+// "Elias Martinez de Castillo Yolanda" → 2 (eli⊂elias, yola⊂yolanda), while
+// "Alton Rhusc"/"Rigan Mor" score 0. Single-letter words are ignored so stray
+// initials don't create false ties.
+export function nameAffinity(tokenName: string, who: string): number {
+  const norm = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length >= 2);
+  const wWords = norm(who);
+  if (!wWords.length) return 0;
+  let score = 0;
+  for (const tw of norm(tokenName)) {
+    if (wWords.some((ww) => ww.startsWith(tw) || tw.startsWith(ww))) score++;
+  }
+  return score;
+}
+
 // Find the token this player controls on the player page. "all"-controlled
 // tokens are not anyone's PC. With multiple matches (familiars, mounts), prefer
-// a token registered in the characters registry.
+// a token registered in the characters registry; when several registered tokens
+// match (one player running multiple PCs), break the tie by fuzzy-matching the
+// player's display name (`who`) against token names before falling back to the
+// first candidate.
 export function pickPcToken(
   tokens: PageToken[],
   playerid: string,
   isRegistered: (name: string) => boolean,
+  who?: string,
 ): PageToken | null {
   const mine = tokens.filter((t) => {
     if ((t.layer ?? "objects") !== "objects") return false;
@@ -175,13 +196,25 @@ export function pickPcToken(
   });
   if (mine.length === 0) return null;
   if (mine.length === 1) return mine[0];
-  return mine.find((t) => isRegistered(t.name)) ?? mine[0];
+
+  const registered = mine.filter((t) => isRegistered(t.name));
+  const pool = registered.length ? registered : mine;
+  if (who && pool.length > 1) {
+    let best = pool[0];
+    let bestScore = nameAffinity(best.name, who);
+    for (const t of pool.slice(1)) {
+      const s = nameAffinity(t.name, who);
+      if (s > bestScore) { best = t; bestScore = s; }
+    }
+    if (bestScore > 0) return best;
+  }
+  return pool[0];
 }
 
-async function findPcToken(playerid: string): Promise<PageToken | null> {
+async function findPcToken(playerid: string, who?: string): Promise<PageToken | null> {
   // No pageId → the transport resolves the player page itself.
   const tokens = (await roll20.relayCommand<PageToken[]>({ action: "getTokens" })) ?? [];
-  return pickPcToken(tokens, playerid, (name) => characters.lookup(name) !== null);
+  return pickPcToken(tokens, playerid, (name) => characters.lookup(name) !== null, who);
 }
 
 interface PcStats {
@@ -257,7 +290,7 @@ RULES:
 - Plain text only. No markdown, no lists, no headers.`;
 
 async function handleTactics(cmd: PlayerChatCommand): Promise<void> {
-  const token = await findPcToken(cmd.playerid);
+  const token = await findPcToken(cmd.playerid, cmd.who);
   if (!token) {
     await whisper(cmd.who, "🧠 I can't find a token you control on the current page.");
     return;
@@ -345,7 +378,7 @@ async function handleRecall(cmd: PlayerChatCommand, arg: string): Promise<void> 
     await whisper(cmd.who, "📖 Usage: !recall <creature name> — e.g. !recall vampire spawn");
     return;
   }
-  const token = await findPcToken(cmd.playerid);
+  const token = await findPcToken(cmd.playerid, cmd.who);
   if (!token) {
     await whisper(cmd.who, "📖 I can't find a token you control on the current page.");
     return;
@@ -477,7 +510,7 @@ export function extractDdbOptionFacts(raw: any): { slots: string[]; abilities: s
 }
 
 async function handleOptions(cmd: PlayerChatCommand): Promise<void> {
-  const token = await findPcToken(cmd.playerid);
+  const token = await findPcToken(cmd.playerid, cmd.who);
   if (!token) {
     await whisper(cmd.who, "⚔️ I can't find a token you control on the current page.");
     return;

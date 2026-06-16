@@ -4,6 +4,7 @@ import {
   cooldownRemaining,
   __resetCooldownsForTest,
   pickPcToken,
+  nameAffinity,
   woundState,
   filterRecapEntries,
   crToDc,
@@ -95,6 +96,44 @@ describe("pickPcToken", () => {
     expect(pickPcToken(tokens, "-PL1", (n) => n === "Leolen")?.id).toBe("pc");
     // falls back to first when nothing is registered
     expect(pickPcToken(tokens, "-PL1", () => false)?.id).toBe("fam");
+  });
+
+  it("breaks a multi-registered tie by fuzzy-matching the player's display name", () => {
+    // One player controls three registered PCs — the right one is chosen by `who`.
+    const tokens = [
+      tok({ id: "eli", name: "Eli Yola", controlledby: "-PL1" }),
+      tok({ id: "alt", name: "Alton Rhusc", controlledby: "-PL1" }),
+      tok({ id: "rig", name: "Rigan Mor", controlledby: "-PL1" }),
+    ];
+    const reg = () => true;
+    expect(pickPcToken(tokens, "-PL1", reg, "Elias Martinez de Castillo Yolanda")?.id).toBe("eli");
+    expect(pickPcToken(tokens, "-PL1", reg, "Alton Rhuscanthe")?.id).toBe("alt");
+    expect(pickPcToken(tokens, "-PL1", reg, "Rigan of the Mor")?.id).toBe("rig");
+  });
+
+  it("falls back to the first registered token when `who` matches nothing", () => {
+    const tokens = [
+      tok({ id: "eli", name: "Eli Yola", controlledby: "-PL1" }),
+      tok({ id: "alt", name: "Alton Rhusc", controlledby: "-PL1" }),
+    ];
+    // No affinity → preserve legacy first-registered behavior.
+    expect(pickPcToken(tokens, "-PL1", () => true, "Some Unrelated Name")?.id).toBe("eli");
+    // No `who` supplied at all → first registered.
+    expect(pickPcToken(tokens, "-PL1", () => true)?.id).toBe("eli");
+  });
+});
+
+describe("nameAffinity", () => {
+  it("counts word-prefix overlaps in either direction", () => {
+    expect(nameAffinity("Eli Yola", "Elias Martinez de Castillo Yolanda")).toBe(2);
+    expect(nameAffinity("Alton Rhusc", "Elias Martinez de Castillo Yolanda")).toBe(0);
+    expect(nameAffinity("Rigan Mor", "Elias Martinez de Castillo Yolanda")).toBe(0);
+  });
+
+  it("ignores punctuation and single-letter words", () => {
+    expect(nameAffinity("Eli, Yola!", "Elias Yolanda")).toBe(2); // punctuation stripped
+    expect(nameAffinity("R Eli", "Elias")).toBe(1); // stray initial "r" dropped, eli⊂elias
+    expect(nameAffinity("Eli", "")).toBe(0);
   });
 });
 
