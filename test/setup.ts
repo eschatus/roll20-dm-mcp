@@ -5,7 +5,15 @@
 import * as fs from "fs";
 import * as path from "path";
 
-const dataDir = path.resolve(process.env.ROLL20_DATA_DIR ?? "./.tmp-test-data");
+// Vitest runs test files across parallel worker processes. If they all share one
+// data dir, concurrent register()/save() churn on the same JSON file races and a
+// reader can catch a truncated write ("Unexpected end of JSON input"). Give each
+// worker process its own dir (keyed by pid) so the file-based registries never
+// collide across workers. An explicitly-provided ROLL20_DATA_DIR (live-eval, a
+// single file) is respected as-is.
+const dataDir = process.env.ROLL20_DATA_DIR
+  ? path.resolve(process.env.ROLL20_DATA_DIR)
+  : path.resolve(".tmp-test-data", `w${process.pid}`);
 process.env.ROLL20_DATA_DIR = dataDir;
 fs.mkdirSync(dataDir, { recursive: true });
 
