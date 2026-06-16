@@ -244,36 +244,69 @@ function setDefaultTokenForChar(t, args) {
 // --- Helpers ---
 
 // Epithet word banks for disambiguating duplicate-named tokens at initiative roll time.
-// Matched by substring against the token name (case-insensitive).
+// Matched by substring against the token name (case-insensitive), in declaration order,
+// so MORE SPECIFIC keys must come BEFORE the generic ones they contain
+// (e.g. "direwolf"/"werewolf"/"d/wolf"/"wolf"; "hobgoblin"/"goblin"). nextEpithetName()
+// guarantees uniqueness even when a group is larger than its bank, so banks no longer
+// need to be sized to the worst-case mob count — but wider banks give nicer single-word
+// names before the two-adjective / numeric fallbacks kick in.
 const MONSTER_EPITHETS = {
-  goblin:    ["Sniveling","Savage","One-Eyed","Stinking","Cowardly","Bold","Gap-Toothed"],
-  hobgoblin: ["Scarred","Disciplined","Ruthless","Iron-Fisted","Veteran","Grim"],
-  bugbear:   ["Hulking","Sneaking","Slavering","Brutal","Heavy-Handed"],
-  orc:       ["Berserk","Scarred","Bloodied","Raging","Brutal","Wailing"],
-  gnoll:     ["Cackling","Slavering","Mangy","Frenzied","Bone-Crunching"],
-  kobold:    ["Scurrying","Trap-Setting","Yapping","Scaled","Venomous"],
-  zombie:    ["Shambling","Rotting","Bloated","Wailing","Ancient","Lurching"],
-  ghoul:     ["Ravenous","Clawing","Foul","Swift","Gibbering"],
-  ghast:     ["Reeking","Ancient","Savage","Wretched"],
-  skeleton:  ["Brittle","Cursed","Clacking","Headless","Armored","Ancient"],
-  specter:   ["Wailing","Pale","Shrieking","Vengeful","Keening"],
-  wraith:    ["Ancient","Hungry","Silent","Seething","Cold"],
-  vampire:   ["Pale","Ancient","Wrathful","Charming","Bloodthirsty"],
-  wolf:      ["Hungry","Scarred","Black","Limping","Snarling","Gaunt"],
-  werewolf:  ["Howling","Feral","Maddened","Hulking","Slavering"],
-  rat:       ["Diseased","Scuttling","Mangy","Bloated","Foul"],
-  bat:       ["Screeching","Swooping","Blood-Mad","Pale"],
-  spider:    ["Bloated","Venomous","Ancient","Lurking","Bristling"],
-  cultist:   ["Zealous","Frenzied","Devoted","Screaming","Hollow-Eyed"],
-  guard:     ["Nervous","Grizzled","Corrupt","Loyal","Sweating"],
-  bandit:    ["Scarred","Desperate","Cunning","Ruthless","Limping"],
-  troll:     ["Regenerating","Stinking","Ancient","Howling","Massive"],
-  ogre:      ["Bellowing","Stupid","Hungry","Scarred","Club-Fisted"],
+  // --- humanoids ---
+  hobgoblin: ["Scarred","Disciplined","Ruthless","Iron-Fisted","Veteran","Grim","Banner-Bearing","Cruel","Stern","Watchful","Helmed","Drilled"],
+  goblin:    ["Sniveling","Savage","One-Eyed","Stinking","Cowardly","Bold","Gap-Toothed","Scrawny","Twitchy","Knock-Kneed","Shrieking","Pot-Helmed","Warty","Quick-Fingered"],
+  bugbear:   ["Hulking","Sneaking","Slavering","Brutal","Heavy-Handed","Shaggy","Lumbering","Red-Eyed","Cudgel-Swinging","Silent-Footed"],
+  orc:       ["Berserk","Scarred","Bloodied","Raging","Brutal","Wailing","Tusked","Iron-Jawed","Snarling","Battle-Mad","Grey-Skinned","Spittle-Flecked"],
+  gnoll:     ["Cackling","Slavering","Mangy","Frenzied","Bone-Crunching","Hyena-Laughed","Famished","Lope-Backed","Blood-Matted","Yipping"],
+  kobold:    ["Scurrying","Trap-Setting","Yapping","Scaled","Venomous","Skittering","Pack-Minded","Snare-Eyed","Underfoot","Hissing"],
+  cultist:   ["Zealous","Frenzied","Devoted","Screaming","Hollow-Eyed","Robed","Chanting","Glassy-Eyed","Scarified","Rapturous","Trembling","Marked"],
+  guard:     ["Nervous","Grizzled","Corrupt","Loyal","Sweating","Bored","Halberd-Bearing","Stout","Weary","Green","Dutiful","Bribed"],
+  bandit:    ["Scarred","Desperate","Cunning","Ruthless","Limping","Masked","Light-Fingered","Hard-Bitten","Toothless","Jittery","Greedy","Road-Worn"],
+  // --- beasts ---
+  direwolf:  ["Hungry","Scarred","Black","Limping","Snarling","Gaunt","Shaggy","Alpha","Yellow-Eyed","Frost-Furred","Ravening","Lean","Grey-Maned","Notch-Eared","Pale-Pelted","Storm-Grey","Wild-Eyed","Lop-Eared"],
+  werewolf:  ["Howling","Feral","Maddened","Hulking","Slavering","Moon-Touched","Blood-Mad","Cursed","Lank-Haired","Wild-Eyed"],
+  wolf:      ["Hungry","Scarred","Black","Limping","Snarling","Gaunt","Shaggy","Lean","Yellow-Eyed","Ravening","Grey-Maned","Notch-Eared","Lop-Eared","Wild-Eyed"],
+  boar:      ["Bristling","Tusked","Charging","Squealing","Mud-Caked","Furious","Razor-Backed","Stout"],
+  bear:      ["Towering","Shaggy","Maddened","Hungry","Scarred","Roaring","Lumbering","Brown","Hoary"],
+  rat:       ["Diseased","Scuttling","Mangy","Bloated","Foul","Red-Eyed","Twitching","Sewer-Bred","Plague-Borne"],
+  bat:       ["Screeching","Swooping","Blood-Mad","Pale","Leather-Winged","Darting","Shrill","Cave-Born"],
+  spider:    ["Bloated","Venomous","Ancient","Lurking","Bristling","Hairy","Many-Eyed","Web-Spinning","Skittering","Pale-Bellied"],
+  snake:     ["Coiling","Hissing","Venomous","Patient","Banded","Cold-Eyed","Sinuous","Striking"],
+  serpent:   ["Coiling","Hissing","Venomous","Patient","Banded","Cold-Eyed","Sinuous","Striking"],
+  crocodile: ["Lurking","Ancient","Patient","Scaled","Cold-Eyed","Death-Rolling","Mud-Slick"],
+  lizard:    ["Darting","Scaled","Hissing","Cold-Blooded","Frilled","Snapping"],
+  // --- undead ---
+  zombie:    ["Shambling","Rotting","Bloated","Wailing","Ancient","Lurching","Maggot-Ridden","Slack-Jawed","Grasping","Grey-Fleshed","Dripping","Moaning"],
+  skeleton:  ["Brittle","Cursed","Clacking","Headless","Armored","Ancient","Rust-Bound","Grinning","Hollow","Crook-Boned","Gilded","Crumbling"],
+  ghoul:     ["Ravenous","Clawing","Foul","Swift","Gibbering","Grave-Stained","Hunched","Pallid","Slavering","Long-Nailed"],
+  ghast:     ["Reeking","Ancient","Savage","Wretched","Stench-Wrapped","Carrion-Fed","Withered","Foul-Breathed"],
+  specter:   ["Wailing","Pale","Shrieking","Vengeful","Keening","Flickering","Cold","Hollow-Voiced","Drifting"],
+  wraith:    ["Ancient","Hungry","Silent","Seething","Cold","Shrouded","Soul-Chilling","Black-Robed","Drifting"],
+  vampire:   ["Pale","Ancient","Wrathful","Charming","Bloodthirsty","Velvet-Clad","Crimson-Eyed","Silken","Imperious","Famished"],
+  mummy:     ["Withered","Bandaged","Ancient","Shuffling","Dust-Wreathed","Cursed","Hollow-Eyed","Reeking"],
+  ghost:     ["Wailing","Mournful","Translucent","Restless","Drifting","Cold","Sorrowful","Faded"],
+  // --- giants & big brutes ---
+  troll:     ["Regenerating","Stinking","Ancient","Howling","Massive","Knobbly","Green-Hided","Drooling","Loping","Warty"],
+  ogre:      ["Bellowing","Stupid","Hungry","Scarred","Club-Fisted","Pot-Bellied","Slack-Jawed","Boil-Covered","Lumbering","Foul-Breathed"],
+  giant:     ["Towering","Thunderous","Ancient","Furious","Crag-Browed","Boulder-Fisted","Hoary","Bellowing"],
+  golem:     ["Ponderous","Tireless","Cracked","Grinding","Implacable","Rune-Marked","Hulking","Silent"],
+  gargoyle:  ["Grinning","Stone-Winged","Lurking","Ancient","Cracked","Leering","Slate-Grey"],
+  // --- fiends & monstrosities ---
+  imp:       ["Cackling","Spiteful","Darting","Sulfurous","Needle-Tailed","Sly","Whispering"],
+  demon:     ["Ravening","Howling","Sulfurous","Fanged","Wrathful","Many-Limbed","Seething","Blasphemous"],
+  devil:     ["Cold-Eyed","Scheming","Barbed","Imperious","Smoldering","Honey-Tongued","Cruel"],
+  mephit:    ["Hissing","Darting","Crackling","Spiteful","Vaporous","Sputtering"],
+  elemental: ["Roiling","Churning","Howling","Surging","Raging","Unbound","Whirling","Seething"],
+  dragon:    ["Ancient","Wrathful","Gleaming-Scaled","Smoldering","Imperious","Vast","Hoary","Cruel"],
+  harpy:     ["Shrieking","Foul","Beguiling","Filth-Feathered","Sharp-Taloned","Wailing"],
+  hag:       ["Cackling","Crook-Backed","Warty","Spiteful","Hungry","Yellow-Toothed","Whispering"],
 };
 const GENERIC_EPITHETS = [
   "Wrathful","Skulking","Wretched","Ravenous","Frenzied","Ancient","Withered",
   "Relentless","Cunning","Desperate","Scarred","Hungry","Pale","Lurking","Maddened",
   "Bloodied","Howling","Silent","Swift","Hollow-Eyed","Twisted","Gaunt",
+  "Snarling","Vicious","Grim","Foul","Reeking","Savage","Lean","Crooked",
+  "Wild-Eyed","Slavering","Limping","Battered","Restless","Seething","Brazen",
+  "Furtive","Ragged","Stinking","Grasping","Feral","Wary","Sullen","Spiteful",
 ];
 
 // Draw a circle as a 36-point polygon path. Returns Roll20 path string.
@@ -299,6 +332,50 @@ function getMonsterEpithets(tokenName) {
     if (lower.indexOf(keys[i]) !== -1) return MONSTER_EPITHETS[keys[i]];
   }
   return GENERIC_EPITHETS;
+}
+
+// Fisher-Yates shuffle (returns a new array) so epithet assignment varies between rolls.
+function shuffled(arr) {
+  let a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    let j = Math.floor(Math.random() * (i + 1));
+    let t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+
+// Produce a name "<baseName> the <Epithet>" that is GUARANTEED unique within `used`
+// (a map of full-name -> true that the caller threads across the whole group), no matter
+// how large the group is relative to the epithet bank. Escalation, cheapest first:
+//   1) a single unused adjective                      -> "Direwolf the Hungry"
+//   2) two distinct adjectives                        -> "Direwolf the Hungry Gaunt"
+//   3) numeric suffix (last-resort, always succeeds)  -> "Direwolf the Hungry #2"
+// `used` is mutated to reserve the returned name.
+function nextEpithetName(baseName, pool, used) {
+  // 1) single adjective, randomized
+  let singles = shuffled(pool);
+  for (let i = 0; i < singles.length; i++) {
+    let cand = baseName + " the " + singles[i];
+    if (!used[cand]) { used[cand] = true; return cand; }
+  }
+  // 2) two distinct adjectives, randomized pairing
+  let firsts = shuffled(pool);
+  for (let a = 0; a < firsts.length; a++) {
+    let seconds = shuffled(pool);
+    for (let b = 0; b < seconds.length; b++) {
+      if (seconds[b] === firsts[a]) continue;
+      let cand = baseName + " the " + firsts[a] + " " + seconds[b];
+      if (!used[cand]) { used[cand] = true; return cand; }
+    }
+  }
+  // 3) numeric suffix — cannot collide, terminates the loop in all cases
+  let stem = baseName + " the " + (pool[0] || "Nameless");
+  let n = 2;
+  while (true) {
+    let cand = stem + " #" + n;
+    if (!used[cand]) { used[cand] = true; return cand; }
+    n++;
+  }
 }
 
 // TIER 1a — true 5e conditions. These are the ONLY markers swept by
@@ -1330,20 +1407,19 @@ on("chat:message", function (msg) {
           nameCounts[n] = (nameCounts[n] || 0) + 1;
         });
 
-        // Pass 2: rename duplicates with epithets drawn from monster-type word banks
-        let usedEpithets = {};
+        // Pass 2: rename duplicates with epithets drawn from monster-type word banks.
+        // nextEpithetName() threads `usedNames` across the whole batch and guarantees a
+        // unique final name even for large groups (e.g. 30 direwolves), escalating from a
+        // single adjective to a two-adjective combo to a numeric suffix as needed.
+        let usedNames = {};
         (args.tokenIds || []).forEach(function(tokenId) {
           let token = getObj("graphic", tokenId);
           if (!token) return;
           let baseName = token.get("name");
           if ((nameCounts[baseName] || 0) <= 1) return;
-          if (!usedEpithets[baseName]) usedEpithets[baseName] = [];
           let pool = getMonsterEpithets(baseName);
-          let available = pool.filter(function(e) { return usedEpithets[baseName].indexOf(e) === -1; });
-          if (!available.length) available = pool;
-          let chosen = available[Math.floor(Math.random() * available.length)];
-          usedEpithets[baseName].push(chosen);
-          token.set({ name: baseName + " the " + chosen, tooltip: baseName + " the " + chosen, showname: true, showplayers_name: true });
+          let newName = nextEpithetName(baseName, pool, usedNames);
+          token.set({ name: newName, tooltip: newName, showname: true, showplayers_name: true });
         });
 
         // Pass 3: gather init bonuses (synchronous), then roll via Roll20's real dice engine

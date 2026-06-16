@@ -12,6 +12,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { setupHarness, seedWarband, type Harness, type Warband } from "./harness.js";
+import * as characters from "../src/registry/characters.js";
 
 let h: Harness;
 let w: Warband;
@@ -174,5 +175,37 @@ describe("a full round of combat", () => {
 
     const adv = await h.callTool("advance_turn", {});
     expect(adv.text).toMatch(/Now up:/);
+  });
+});
+
+// Regression for #8: a large same-type group must get UNIQUE epithet names, even
+// when the count far exceeds the per-type word bank (Bill's ~30 direwolves).
+describe("epithet disambiguation scales to large groups", () => {
+  let hh: Harness;
+
+  beforeAll(() => {
+    hh = setupHarness({ seed: 7 });
+    const pageId = hh.emu.createPage("Wolf Pack");
+    hh.emu.setPlayerPage(pageId);
+    for (let i = 0; i < 30; i++) {
+      const charId = hh.emu.createCharacter("Direwolf", {}, "");
+      const tok = hh.emu.createToken({
+        pageid: pageId, name: "Direwolf", represents: charId, controlledby: "",
+        bar1_value: 37, bar1_max: 37, left: 70 + i * 10, top: 70,
+      });
+      characters.register("Direwolf", tok.id, 0);
+    }
+  });
+  afterAll(() => hh.teardown());
+
+  it("gives 30 same-named direwolves 30 distinct names", async () => {
+    const { json } = await hh.callTool("roll_initiative", { npcOnly: true, clearFirst: true, publicRoll: false });
+    const res = json as { rolledFor: number; turnOrder: Array<{ id: string; pr: string }> };
+    expect(res.rolledFor).toBe(30);
+
+    const names = res.turnOrder.map((e) => hh.emu.tokenProps(e.id).name as string);
+    // All renamed off the base, and every final name is unique.
+    expect(names.every((n) => n.startsWith("Direwolf the "))).toBe(true);
+    expect(new Set(names).size).toBe(30);
   });
 });
