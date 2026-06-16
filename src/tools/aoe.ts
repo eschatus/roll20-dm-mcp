@@ -86,6 +86,15 @@ export function isDowned(t: AoeToken): boolean {
   return max > 0 && Number(t.bar1_value) <= 0;
 }
 
+// A token has a usable HP bar iff bar1_max is a positive number — the same test
+// list_tokens uses to decide hp is null. NPCs dropped on the map without bar1
+// configured have no bar to write, so damage/healing silently no-ops; callers
+// should surface "no HP bar" instead of pretending a 0 was applied.
+export function hasHpBar(t: { bar1_max?: number | string }): boolean {
+  const max = Number(t.bar1_max);
+  return isFinite(max) && max > 0;
+}
+
 // Resolve target names against the page token list: exact (case-insensitive)
 // first, then substring. Returns misses so the caller can report them.
 export function resolveNamesToTokens(

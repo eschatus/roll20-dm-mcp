@@ -7,7 +7,7 @@ import { fireTacticsForPage } from "./tactics.js";
 import {
   SAVE_ABILITIES, type SaveAbility, type AoeToken,
   saveAttrNames, resolveSaveBonus, damageOnSave,
-  isPcToken, splitPcNpc, isDowned, resolveNamesToTokens,
+  isPcToken, splitPcNpc, isDowned, resolveNamesToTokens, hasHpBar,
 } from "./aoe.js";
 import { getLastPing } from "../bridge/roll20-rt.js";
 import {
@@ -50,6 +50,27 @@ const RESERVED_MARKER_CONDITIONS: Record<string, string> = (() => {
   }
   return out;
 })();
+
+// Average HP from the DDB compendium, keyed by lowercased monster name so a mob
+// of identical tokens is a single lookup. Misses (unknown monster, network) cache
+// as null so we don't retry them all session. Falls back to stripping a duplicate
+// epithet (" the Savage") when the direct name search misses.
+const monsterHpCache = new Map<string, number | null>();
+async function resolveMonsterAvgHp(name: string): Promise<number | null> {
+  const key = name.toLowerCase().trim();
+  if (monsterHpCache.has(key)) return monsterHpCache.get(key)!;
+  let hp: number | null = null;
+  for (const candidate of [name, name.replace(/\s+the\s+\S+$/i, "")]) {
+    try {
+      const m = await ddb.getMonster(candidate);
+      const avg = Number(m.averageHitPoints);
+      if (isFinite(avg) && avg > 0) { hp = avg; break; }
+    } catch { /* try next candidate */ }
+    if (candidate === name && !/\s+the\s+\S+$/i.test(name)) break; // no epithet to strip
+  }
+  monsterHpCache.set(key, hp);
+  return hp;
+}
 
 export function registerCombatTools(server: McpServer): void {
   server.tool(
@@ -301,7 +322,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "roll_initiative",
-    "Roll initiative for tokens on the current (or specified) page and load results into Roll20's turn order tracker. Use flatInit to place matched tokens at a fixed value instead of rolling. Use nameFilter to target a subset by name (e.g. 'goblin').",
+    "Roll initiative for tokens on the current (or specified) page and load results into Roll20's turn order tracker. Use flatInit to place matched tokens at a fixed value instead of rolling. Use nameFilter to target a subset by name (e.g. 'goblin'). NPCs dropped on the map without an HP bar are auto-initialized from DDB average HP at this point (disable with initHp:false) so AoE/damage actually lands.",
     {
       pageId: z.string().optional().describe("Page to roll for. Defaults to the current player page."),
       npcOnly: z.boolean().default(true).describe("If true, skip tokens whose controlledby field contains a player ID (i.e. PC tokens)."),
@@ -310,11 +331,12 @@ export function registerCombatTools(server: McpServer): void {
       nameFilter: z.string().optional().describe("Case-insensitive substring filter on token names. E.g. 'goblin' matches 'Goblin 1', 'Goblin Archer', etc."),
       publicRoll: z.boolean().default(true).describe("If true (default), posts a public gothic initiative card to chat showing all rolled tokens sorted by result. Pass false to roll silently."),
       nearPcsFeet: z.number().optional().describe("Only include NPCs within this many feet of any PC token — use at combat start so distant mobs elsewhere on the map don't join the fight. 60-90 is a good default when the DM just says 'roll inits'."),
+      initHp: z.boolean().default(true).describe("Auto-initialize bar1/bar1_max from DDB average HP for any NPC combatant with no HP bar set (bar1_max unset → hp:null). PCs are never touched. Set false to skip the DDB lookups."),
     },
-    async ({ pageId, npcOnly, clearFirst, flatInit, nameFilter, publicRoll, nearPcsFeet }) => {
+    async ({ pageId, npcOnly, clearFirst, flatInit, nameFilter, publicRoll, nearPcsFeet, initHp }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
 
-      const tokens = await roll20.relayCommand<{ id: string; name: string; layer: string; controlledby: string }[]>({
+      const tokens = await roll20.relayCommand<{ id: string; name: string; layer: string; controlledby: string; bar1_value?: number | string; bar1_max?: number | string }[]>({
         action: "getTokens",
         pageId: activePage,
       });
@@ -350,6 +372,29 @@ export function registerCombatTools(server: McpServer): void {
       if (combatants.length === 0) {
         const layers = [...new Set(tokens.map((t) => t.layer))];
         return text(`No tokens found on token layer. All graphic layers on this page: [${layers.join(", ")}]. Try list_tokens for full details.`);
+      }
+
+      // Auto-init HP bars for NPC combatants placed without one (bar1_max unset →
+      // hp:null → damage/AoE silently no-ops). Look up average HP from DDB by the
+      // token's (pre-epithet) name, one lookup per unique name, then write bar1 in
+      // a single batch. PCs are never touched (Beyond20 owns their bars). Must run
+      // BEFORE rollInitiativeForTokens, which renames duplicates with epithets.
+      const hpInit = { set: [] as string[], missed: [] as string[] };
+      if (initHp) {
+        const needHp = combatants.filter((t) => !isPcToken(t) && !hasHpBar(t));
+        if (needHp.length) {
+          const avgByName = new Map<string, number | null>();
+          for (const nm of new Set(needHp.map((t) => t.name))) avgByName.set(nm, await resolveMonsterAvgHp(nm));
+          const ops = needHp
+            .filter((t) => (avgByName.get(t.name) ?? 0) > 0)
+            .map((t) => ({ id: `hpinit:${t.id}`, action: "setTokenBar", args: { tokenId: t.id, value: avgByName.get(t.name)!, max: avgByName.get(t.name)! } }));
+          if (ops.length) await roll20.relayCommand({ action: "batchExec", ops });
+          for (const t of needHp) {
+            const hp = avgByName.get(t.name);
+            if (hp && hp > 0) hpInit.set.push(`${t.name} → ${hp}`);
+            else hpInit.missed.push(t.name);
+          }
+        }
       }
 
       // Roll20 turn order entry format: {id, pr (string), custom, _pageid}
@@ -390,6 +435,8 @@ export function registerCombatTools(server: McpServer): void {
         rolledFor: newEntries.length,
         results: lines,
         turnOrder: finalOrder.map((e) => ({ id: e.id, pr: e.pr })),
+        ...(hpInit.set.length ? { hpInitialized: hpInit.set } : {}),
+        ...(hpInit.missed.length ? { hpLookupFailed: hpInit.missed } : {}),
       }, false);
     }
   );
@@ -624,6 +671,12 @@ export function registerCombatTools(server: McpServer): void {
       const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId: resolvedTokenId });
       if (!token) throw new Error(`Token not found: ${characterName ?? tokenId}`);
 
+      // No HP bar (bar1_max unset → hp:null): damage/healing has nothing to write
+      // and would silently no-op. setHp is allowed — it establishes a value.
+      if (setHp === undefined && (damage !== undefined || heal !== undefined) && !hasHpBar(token)) {
+        return text(`${token.name}: no HP bar set (bar1_max is empty) — ${damage !== undefined ? "damage" : "healing"} not applied. Roll initiative to auto-init NPC HP from DDB, set the bar in Roll20, or use setHp to establish one.`);
+      }
+
       const maxHp = Number(token.bar1_max) || 0;
       const currentHp = Number(token.bar1_value) || 0;
 
@@ -695,6 +748,14 @@ export function registerCombatTools(server: McpServer): void {
       }
       if (!targets.length) throw new Error(`No tokens matched ${nameMatch ? `'${nameMatch}'` : (names || []).join(", ")}`);
 
+      // Split off tokens with no HP bar (bar1_max unset) — writing to them silently
+      // no-ops, so report them as not-applied instead of a phantom success.
+      const noBar = targets.filter((t) => !hasHpBar(t));
+      targets = targets.filter((t) => hasHpBar(t));
+      if (!targets.length) {
+        return text(`${damage !== undefined ? "−" + damage : "+" + heal} applied to 0/${noBar.length}: no HP bar — ${noBar.map((t) => (t.name || "").split("\n")[0].trim()).join(", ")} (roll initiative to auto-init NPC HP, or set bar1 in Roll20).`);
+      }
+
       // Tag each op with the target token id so the per-op batch result can be
       // matched back to a token and any failure surfaced (don't blindly report all OK).
       const ops = targets.map((t) => {
@@ -727,10 +788,11 @@ export function registerCombatTools(server: McpServer): void {
       }
 
       const verb = damage !== undefined ? `−${damage}` : `+${heal}`;
-      const summary = `${verb} applied to ${okLines.length}/${targets.length}`;
+      const summary = `${verb} applied to ${okLines.length}/${targets.length + noBar.length}`;
       const body = [
         okLines.length ? okLines.join(" · ") : null,
         failLines.length ? `failed: ${failLines.join(" · ")}` : null,
+        noBar.length ? `no HP bar: ${noBar.map((t) => (t.name || "").split("\n")[0].trim()).join(", ")}` : null,
       ].filter(Boolean).join(" | ");
       return text(`${summary}: ${body}`);
     }
@@ -1018,7 +1080,7 @@ export function registerCombatTools(server: McpServer): void {
       }
 
       // ── NPC saves: bonus per unique sheet (mobs share), one public batch roll ──
-      type NpcResult = { token: AoeToken; bonus: number; source: string; total?: number; saved: boolean; applied: number };
+      type NpcResult = { token: AoeToken; bonus: number; source: string; total?: number; saved: boolean; applied: number; noBar?: boolean };
       const npcResults: NpcResult[] = [];
       if (args.saveAbility && npcs.length) {
         const bonusByChar = new Map<string, { bonus: number; source: string }>();
@@ -1056,7 +1118,12 @@ export function registerCombatTools(server: McpServer): void {
       const ops: Op[] = [];
       for (const r of npcResults) {
         r.applied = damageOnSave(r.saved, dmg, args.halfOnSave);
-        if (r.applied > 0) {
+        if (r.applied > 0 && !hasHpBar(r.token)) {
+          // No HP bar (bar1_max unset) → writing would silently no-op. Flag it so
+          // the report says "no HP bar" rather than a phantom −X. A fail-condition
+          // can still apply below.
+          r.noBar = true;
+        } else if (r.applied > 0) {
           const cur = Number(r.token.bar1_value) || 0;
           const max = Number(r.token.bar1_max) || 0;
           ops.push({
@@ -1090,6 +1157,7 @@ export function registerCombatTools(server: McpServer): void {
         const hpErr = errOf(`hp:${r.token.id}`);
         const condErr = errOf(`cond:${r.token.id}`);
         const condNote = !r.saved && args.onFailCondition ? (condErr ? ` cond FAILED(${condErr})` : ` +${args.onFailCondition}`) : "";
+        if (r.noBar) return `${r.token.name}: ${save} → ${r.applied} damage NOT applied (no HP bar — roll initiative to auto-init, or set bar1)${condNote}`;
         if (hpErr) return `${r.token.name}: ${save} → FAILED to apply (${hpErr})`;
         return `${r.token.name}: ${save} → −${r.applied}${max ? ` (${newHp}/${max})` : ""}${newHp === 0 && max > 0 ? " DOWN" : ""}${condNote}`;
       });
