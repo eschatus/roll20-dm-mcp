@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerCampaignTools } from "./tools/campaigns.js";
 import { registerCombatTools } from "./tools/combat.js";
 import { registerDdbTools } from "./tools/ddb.js";
-import { registerVisionTools } from "./tools/vision.js";
+import { registerScreenshotTool } from "./tools/vision.js";
 import { registerTacticsTools } from "./tools/tactics.js";
 import { registerJournalTools } from "./tools/journal.js";
 
@@ -18,7 +18,10 @@ export function buildCombatServer(): McpServer {
   registerCampaignTools(server);
   registerCombatTools(server);
   registerDdbTools(server);
-  registerVisionTools(server);
+  // Map/wall authoring (analyze_battlemap, walls, decorate_openings) lives ONLY on
+  // the roll20-dm-maps server now. Combat keeps just screenshot_roll20 so it can see
+  // the board, plus zones + find_tokens_in_range (in registerCombatTools) for AoE.
+  registerScreenshotTool(server);
   registerTacticsTools(server);
   registerJournalTools(server);
 
