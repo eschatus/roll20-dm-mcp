@@ -20,3 +20,6 @@ voice-hud/stt/.venv/
 
 # test scratch
 .tmp-test-data/
+src/recon/ddb-ac-diag.ts
+.gitignore
+src/recon/ddb-ac-network-diag.ts

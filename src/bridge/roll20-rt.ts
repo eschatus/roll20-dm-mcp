@@ -409,6 +409,13 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
         }
         return out;
       }
+      case "listPages": {
+        const pages = await rtGet<Record<string, Record<string, unknown>>>("pages");
+        if (!pages) throw new Error("listPages: no pages in RTDB → Mod fallback");
+        return Object.values(pages).map((p) => ({
+          id: p.id, name: p.name, width: p.width, height: p.height,
+        }));
+      }
       case "getTurnOrder": {
         const campaign = await rtGet<Record<string, unknown>>("campaign");
         return parseTurnorder(campaign?.turnorder);
@@ -487,14 +494,67 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
 
 // --- Direct RTDB writes (token props/bars/markers straight to graphics/page/<id>, like the UI) ---
 // Validated: accepted by rules, persisted, and propagated to all clients (incl. the Mod's getObj).
-// Only side-effect-free token writes go here; conditions (attr sync), adjustPcHp (Mod state),
-// batchExec, createObj, dice, and narration stay on the Mod. Falls back to the Mod when the
-// token's page can't be resolved client-side.
+// Token writes are proven; map-object writes (walls/doors/windows) are likely valid — same RTDB auth,
+// same collection pattern as graphics. Falls back to the Mod on any error so the caller is unaffected.
 async function tryDirectWrite(cmd: Record<string, unknown>): Promise<unknown | typeof NOT_HANDLED> {
   if (cmd.__forceMod) return NOT_HANDLED;
   const action = cmd.action as string;
   try {
     switch (action) {
+      // createWalls and createPolylines: RTDB direct writes to both pathv2/page/ and paths/page/
+      // are rejected by Roll20's Firebase rules. Always use the Mod relay (which creates proper
+      // pathv2 UDL barriers via createObj("pathv2", { shape:"pol", points:JSON.stringify([...]) })).
+      case "createWalls":
+      case "createPolylines":
+        return NOT_HANDLED;
+      case "createDLDoors": {
+        const doors = cmd.doors as Array<{ x: number; y: number; x0: number; y0: number; x1: number; y1: number; color?: string }> | undefined;
+        const pageId = cmd.pageId as string | undefined;
+        if (!Array.isArray(doors) || !doors.length || !pageId) return NOT_HANDLED;
+        const conn = await getConn();
+        const baseRef = ref(conn.db, `${conn.storagePath}/doors/page/${pageId}`);
+        const results = await Promise.all(doors.map(async (d) => {
+          const doorRef = push(baseRef);
+          await set(doorRef, stripUndefWrite({
+            pageid: pageId,
+            x: d.x, y: d.y,
+            path: { handle0: { x: d.x0, y: d.y0 }, handle1: { x: d.x1, y: d.y1 } },
+            color: d.color || "#FF0000",
+            isOpen: false, isLocked: false, isSecret: false,
+          }));
+          return { id: doorRef.key };
+        }));
+        return results;
+      }
+      case "createDLWindows": {
+        const windows = cmd.windows as Array<{ x: number; y: number; x0: number; y0: number; x1: number; y1: number; color?: string }> | undefined;
+        const pageId = cmd.pageId as string | undefined;
+        if (!Array.isArray(windows) || !windows.length || !pageId) return NOT_HANDLED;
+        const conn = await getConn();
+        const baseRef = ref(conn.db, `${conn.storagePath}/windows/page/${pageId}`);
+        const results = await Promise.all(windows.map(async (w) => {
+          const winRef = push(baseRef);
+          await set(winRef, stripUndefWrite({
+            pageid: pageId,
+            x: w.x, y: w.y,
+            path: { handle0: { x: w.x0, y: w.y0 }, handle1: { x: w.x1, y: w.y1 } },
+            color: w.color || "#00FFFF",
+            isOpen: false, isLocked: false, isSecret: false,
+          }));
+          return { id: winRef.key };
+        }));
+        return results;
+      }
+      case "clearDLOpenings": {
+        const pageId = cmd.pageId as string | undefined;
+        if (!pageId) return NOT_HANDLED;
+        const conn = await getConn();
+        await Promise.all([
+          remove(ref(conn.db, `${conn.storagePath}/doors/page/${pageId}`)),
+          remove(ref(conn.db, `${conn.storagePath}/windows/page/${pageId}`)),
+        ]);
+        return { removed: "all" };
+      }
       case "setTokenBar": {
         const v = Number(cmd.value);
         if (!Number.isFinite(v)) return NOT_HANDLED; // let the Mod throw its descriptive error

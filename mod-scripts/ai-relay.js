@@ -759,10 +759,14 @@ on("chat:message", function (msg) {
   try {
     switch (action) {
       case "getTokens": {
-        // profile: "lean" | "status" | "full" (default). imgsrc dropped from all — no caller reads it.
+        // profile: "lean" | "status" | "full" (default). imgsrc included for map-layer graphics.
         const profile = args.profile || "full";
         const tokens = findObjs({ _type: "graphic", _pageid: args.pageId });
-        writeResult(nonce, tokens.map((t) => tokenSummary(t, profile)));
+        writeResult(nonce, tokens.map(function(t) {
+          let s = tokenSummary(t, profile);
+          if (t.get("layer") === "map") s.imgsrc = t.get("imgsrc");
+          return s;
+        }));
         break;
       }
 
@@ -936,25 +940,47 @@ on("chat:message", function (msg) {
       }
 
       case "getWalls": {
-        // Read pathv2 DL barrier objects (Latest VTT Engine / UDL) from a page.
-        // Default to a metadata summary (count + bbox); raw point arrays are huge — pass
-        // includePoints:true only when geometry is actually needed (placement verification).
+        // Read DL barrier objects from a page.
+        // Latest Engine UDL: pathv2 objects with barrierType set.
+        // Legacy DL: path objects on the walls layer (with or without barrierType).
+        // Returns both so this works regardless of which DL mode the campaign uses.
         let includePoints = args.includePoints === true;
-        let walls = findObjs({ _type: "pathv2", _pageid: args.pageId, layer: "walls" });
-        writeResult(nonce, walls.map(function(w) {
-          let pts = w.get("points");
-          let base = {
+        // pathv2 (Latest Engine / UDL)
+        let pathv2Walls = findObjs({ _type: "pathv2", _pageid: args.pageId, layer: "walls" });
+        // path objects on walls layer (Legacy DL, or RTDB-direct diagnostic writes)
+        let pathWalls = findObjs({ _type: "path", _pageid: args.pageId, layer: "walls" });
+        let allWalls = pathv2Walls.map(function(w) {
+          let ptsStr = w.get("points") || "[]";
+          let pts;
+          try { pts = JSON.parse(ptsStr); } catch(e) { pts = []; }
+          let cx = w.get("x"), cy = w.get("y");
+          let result = {
             id: w.id,
-            x: w.get("x"),
-            y: w.get("y"),
+            kind: "pathv2",
+            x: cx,
+            y: cy,
             barrierType: w.get("barrierType"),
             shape: w.get("shape"),
             pointCount: Array.isArray(pts) ? pts.length : 0,
-            bbox: bboxOf(pts),
           };
-          if (includePoints) base.points = pts;
-          return base;
+          // includePoints: true → return absolute page pixel coordinates
+          if (includePoints && Array.isArray(pts)) {
+            result.points = pts.map(function(p) { return [Math.round(p[0] + cx), Math.round(p[1] + cy)]; });
+          }
+          return result;
+        }).concat(pathWalls.map(function(p) {
+          return {
+            id: p.id,
+            kind: "path",
+            left: p.get("left"),
+            top: p.get("top"),
+            width: p.get("width"),
+            height: p.get("height"),
+            stroke: p.get("stroke"),
+            barrierType: p.get("barrierType"),
+          };
         }));
+        writeResult(nonce, allWalls);
         break;
       }
 
@@ -976,29 +1002,43 @@ on("chat:message", function (msg) {
       }
 
       case "createWalls": {
-        // Create path objects on the walls layer with a custom stroke color.
-        // path objects respect stroke color in the DL editor; pathv2 does not.
-        // Each wall: { x1, y1, x2, y2, stroke? } in page pixel coordinates.
+        // Create DL barriers. Latest Engine UDL → pathv2 with shape:"pol".
+        // Roll20 pathv2 shape discriminator is a short string: "pol"=polygon, "free","eli","rec".
+        // Points go in the `path` field as [[x,y],...] relative to the x,y center.
+        // If createObj("pathv2") returns undefined, fall back to legacy path (yellow).
         let wallResults = (args.walls || []).map(function(w) {
-          let minX = Math.min(w.x1, w.x2);
-          let minY = Math.min(w.y1, w.y2);
-          let wallObj = createObj("path", {
+          let cx = (w.x1 + w.x2) / 2;
+          let cy = (w.y1 + w.y2) / 2;
+          let wallObj = createObj("pathv2", {
+            pageid: args.pageId,
+            layer: "walls",
+            x: cx,
+            y: cy,
+            width: Math.max(Math.abs(w.x2 - w.x1), 1),
+            height: Math.max(Math.abs(w.y2 - w.y1), 1),
+            shape: "pol",
+            barrierType: args.barrierType || "wall",
+            points: JSON.stringify([[w.x1 - cx, w.y1 - cy], [w.x2 - cx, w.y2 - cy]]),
+            stroke: args.stroke || "#0044FF",
+            controlledby: "",
+          });
+          if (wallObj) return { id: wallObj.id, kind: "pathv2" };
+          // Fall back to legacy path (visible as yellow — UDL won't block but at least DM can see)
+          let minX = Math.min(w.x1, w.x2), minY = Math.min(w.y1, w.y2);
+          let legacyObj = createObj("path", {
             pageid: args.pageId,
             layer: "walls",
             path: JSON.stringify([["M", w.x1 - minX, w.y1 - minY], ["L", w.x2 - minX, w.y2 - minY]]),
-            left: (w.x1 + w.x2) / 2,
-            top:  (w.y1 + w.y2) / 2,
-            width:  Math.abs(w.x2 - w.x1),
-            height: Math.abs(w.y2 - w.y1),
-            stroke: w.stroke || args.stroke || "#FFFF00",
+            left: cx, top: cy,
+            width: Math.max(Math.abs(w.x2 - w.x1), 1),
+            height: Math.max(Math.abs(w.y2 - w.y1), 1),
+            barrierType: args.barrierType || "wall",
+            stroke: "#FFFF00",
             stroke_width: 5,
             fill: "transparent",
-            rotation: 0,
-            scaleX: 1,
-            scaleY: 1,
-            controlledby: "",
+            rotation: 0, scaleX: 1, scaleY: 1, controlledby: "",
           });
-          return wallObj ? { id: wallObj.id } : { error: "createObj('path') returned undefined" };
+          return legacyObj ? { id: legacyObj.id, kind: "path-fallback" } : { error: "createObj failed for both pathv2 and path" };
         });
         writeResult(nonce, wallResults);
         break;
@@ -1271,10 +1311,39 @@ on("chat:message", function (msg) {
 
       case "createPolylines": {
         // Create one path object per polyline from an ordered list of absolute-pixel points.
+        // Walls layer → pathv2 UDL barrier (Latest VTT Engine). Other layers → legacy path.
         // Each polyline: { points: [[x,y], ...], stroke?, stroke_width?, closed?, layer? }
         let polylineResults = (args.polylines || []).map(function(pl) {
           let pts = pl.points || [];
           if (pts.length < 2) return { error: "Need at least 2 points" };
+          let layer = pl.layer || args.layer || "walls";
+          if (layer === "walls") {
+            // Anchor at first point — Roll20 natively stores pathv2 with x,y = first drawn point
+            // and all other points relative to it. Passing a bounding-box center causes Roll20 to
+            // re-anchor internally to an approximate first point, but imprecisely, shifting the
+            // entire wall to the wrong position.
+            let cx = pts[0][0];
+            let cy = pts[0][1];
+            let xs = pts.map(function(p) { return p[0]; });
+            let ys = pts.map(function(p) { return p[1]; });
+            let minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+            let minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+            let relPts = pts.map(function(p) { return [p[0] - cx, p[1] - cy]; });
+            let wallObj = createObj("pathv2", {
+              pageid: args.pageId,
+              layer: "walls",
+              x: cx,
+              y: cy,
+              width: Math.max(maxX - minX, 1),
+              height: Math.max(maxY - minY, 1),
+              shape: "pol",
+              barrierType: "wall",
+              points: JSON.stringify(relPts),
+              stroke: pl.stroke || args.stroke || "#0044FF",
+              controlledby: "",
+            });
+            return wallObj ? { id: wallObj.id, pointCount: pts.length } : { error: "createObj('pathv2') returned undefined" };
+          }
           let minX = Math.min.apply(null, pts.map(function(p) { return p[0]; }));
           let minY = Math.min.apply(null, pts.map(function(p) { return p[1]; }));
           let maxX = Math.max.apply(null, pts.map(function(p) { return p[0]; }));
@@ -1285,7 +1354,7 @@ on("chat:message", function (msg) {
           if (pl.closed) pathCmds.push(["Z"]);
           let pathObj = createObj("path", {
             pageid: args.pageId,
-            layer: pl.layer || args.layer || "walls",
+            layer: layer,
             path: JSON.stringify(pathCmds),
             left: (minX + maxX) / 2,
             top: (minY + maxY) / 2,

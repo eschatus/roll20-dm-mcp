@@ -109,6 +109,7 @@ export function mapToken(g: Record<string, unknown>, profile: string): Record<st
   s.bar1_value = g.bar1_value; s.bar1_max = g.bar1_max; s.statusmarkers = g.statusmarkers || "";
   if (profile === "status") return s;
   s.left = g.left; s.top = g.top; s.width = g.width; s.height = g.height;
+  if (g.layer === "map") s.imgsrc = g.imgsrc;
   return s;
 }
 

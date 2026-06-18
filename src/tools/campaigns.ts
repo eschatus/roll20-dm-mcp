@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as campaigns from "../registry/campaigns.js";
 import { reconnectRoll20 } from "../bridge/roll20.js";
+import { readModConsole, deployModScript, modEditorUrl, dumpModPageStructure } from "../bridge/mod-editor.js";
 
 export function registerCampaignTools(server: McpServer): void {
   server.tool(
@@ -150,6 +151,49 @@ export function registerCampaignTools(server: McpServer): void {
           content: [{ type: "text", text: `Reconnect failed: ${(err as Error).message}. If the profile is locked, close stray Chromium windows and retry, or restart the MCP server.` }],
         };
       }
+    }
+  );
+
+  server.tool(
+    "dump_mod_page_structure",
+    "Debug: dump all id/class selectors from the Roll20 Mod editor page to find the right console/editor selectors.",
+    {},
+    async () => {
+      const { roll20CampaignId } = campaigns.getActiveCampaign();
+      const dump = await dumpModPageStructure(roll20CampaignId);
+      return { content: [{ type: "text", text: dump }] };
+    }
+  );
+
+  server.tool(
+    "read_mod_console",
+    "Read recent lines from the Roll20 Mod Output Console (API editor page). Returns log() output from the sandbox. Opens the API editor in a separate browser page — does not disturb the game session.",
+    {},
+    async () => {
+      const { roll20CampaignId } = campaigns.getActiveCampaign();
+      const lines = await readModConsole(roll20CampaignId);
+      return {
+        content: [{ type: "text", text: lines.length ? lines.join("\n") : "(console empty)" }],
+      };
+    }
+  );
+
+  server.tool(
+    "deploy_mod_script",
+    "Deploy the local ai-relay.js to Roll20 via browser automation: opens the API editor in a background page, sets the CodeMirror content, and clicks Save. Does not disturb the active game session.",
+    {
+      scriptPath: z
+        .string()
+        .optional()
+        .describe("Absolute path to the relay script. Defaults to mod-scripts/ai-relay.js in the repo root."),
+    },
+    async ({ scriptPath }) => {
+      const { roll20CampaignId } = campaigns.getActiveCampaign();
+      const resolvedPath = scriptPath ?? (await import("path")).default.resolve("mod-scripts/ai-relay.js");
+      const result = await deployModScript(roll20CampaignId, resolvedPath);
+      return {
+        content: [{ type: "text", text: `Deployed ${result.linesWritten} lines to campaign ${roll20CampaignId}.` }],
+      };
     }
   );
 }

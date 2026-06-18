@@ -7,6 +7,7 @@ import { registerCampaignContextTools } from "./tools/campaignContext.js";
 import { registerMapTools } from "./tools/maps.js";
 import { registerTokenTools } from "./tools/tokens.js";
 import { registerVisionTools } from "./tools/vision.js";
+import { registerBatchTools } from "./tools/batch.js";
 
 const server = new McpServer({
   name: "roll20-dm-maps",
@@ -18,6 +19,7 @@ registerCampaignContextTools(server);
 registerMapTools(server);
 registerTokenTools(server);
 registerVisionTools(server);
+registerBatchTools(server);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

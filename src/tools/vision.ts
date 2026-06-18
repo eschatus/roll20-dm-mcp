@@ -18,9 +18,9 @@ const MAX_TOKENS_HARD_LIMIT = 50_000;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Point = [number, number];
+export type Point = [number, number];
 
-interface Wall {
+export interface Wall {
   from: Point;
   to: Point;
   color?: string;       // optional per-wall color override
@@ -33,7 +33,7 @@ interface Opening {
   angleDeg: number;
 }
 
-interface MapAnalysis {
+export interface MapAnalysis {
   gridSizePx: number;
   gridOffsetX: number;
   gridOffsetY: number;
@@ -59,7 +59,7 @@ interface Room {
   isDeadSpace: boolean;
 }
 
-interface ImageInfo {
+export interface ImageInfo {
   buffer: Buffer;
   mediaType: "image/png" | "image/jpeg";
   widthPx: number;
@@ -124,7 +124,7 @@ function splitSegment(wall: Wall, maxLengthPx: number): Wall[] {
   }));
 }
 
-function processWalls(walls: Wall[], opts: { endpointInsetPx: number; cornerOverlapPx: number; cornerThresholdPx: number; maxSegmentPx: number }): Wall[] {
+export function processWalls(walls: Wall[], opts: { endpointInsetPx: number; cornerOverlapPx: number; cornerThresholdPx: number; maxSegmentPx: number }): Wall[] {
   const corners = classifyEndpoints(walls, opts.cornerThresholdPx);
   return walls
     .map((w) => adjustEndpoints(w, corners, opts.endpointInsetPx, opts.cornerOverlapPx))
@@ -148,6 +148,11 @@ export async function prepareImage(imagePath: string, maxDimPx: number): Promise
     finalW = Math.round(origW * scale);
     finalH = Math.round(origH * scale);
     buffer = await sharp(raw).resize(finalW, finalH, { fit: "inside" }).toBuffer();
+    // Read back actual Sharp output dimensions — fit:"inside" rounding may differ
+    // from our math by 1px, causing composite to fail with "must have same dimensions or smaller"
+    const actualMeta = await sharp(buffer).metadata();
+    finalW = actualMeta.width ?? finalW;
+    finalH = actualMeta.height ?? finalH;
   } else {
     buffer = raw;
     finalW = origW;
@@ -178,7 +183,7 @@ async function preprocessForVision(buffer: Buffer): Promise<Buffer> {
     .toBuffer();
 }
 
-interface HoughCandidate {
+export interface HoughCandidate {
   from: [number, number];
   to: [number, number];
   length?: number;
@@ -272,7 +277,7 @@ async function drawOverlays(
 // keeps the detected grid period equivalent within ±1px after rescaling.
 const AUTOCORR_MAX_DIM = 750;
 
-async function detectGridByAutocorrelation(
+export async function detectGridByAutocorrelation(
   buffer: Buffer,
   knownGridSizePx = 70,
 ): Promise<{ gridSizePx: number; gridOffsetX: number; gridOffsetY: number; cols: number; rows: number }> {
@@ -486,11 +491,16 @@ function cutGapsInWalls(
 // call, so it's sent as its own cache_control: ephemeral block (see callVision) and
 // reused across calls. Only the per-image grid header + candidate hint vary, and
 // those travel in a separate uncached text block.
-const WALL_TRACE_INSTRUCTIONS = `WALLS ARE: thick continuous black or dark lines forming room boundaries and the building perimeter. A wall must span at least half a grid cell and have a solid, unbroken dark line. When in doubt, omit it — a missing wall is better than a phantom one.
+const WALL_TRACE_INSTRUCTIONS = `WALLS ARE: thick continuous black or dark lines of solid wall material (stone, brick, wood planks forming a partition). A wall must span at least half a grid cell. When in doubt, omit it — a missing wall is better than a phantom one.
 
 DO NOT TRACE: furniture, tables, chairs, rugs, carpet edges, floor planks, stairs, pillars, bookshelves, decorative borders, shadows, or any object sitting on the floor. These are NOT walls. If a dark line is shorter than half a grid cell or clearly part of an object, skip it.
 
-Trace ALL structural walls — all exterior building walls AND every interior partition (room dividers, corridor walls, alcoves). Leave a gap at every door or window opening.
+CRITICAL — trace ONLY wall material you can visually confirm:
+- Ruined or partial walls keep their actual shape. A C-shape stays a C, an L-shape stays an L. Do NOT add a missing side to make a complete enclosure.
+- A gap that is NOT a door/window (rubble pile, open entrance, missing section) must remain open — emit two separate segments stopping at the gap, do not bridge across it.
+- If orange Hough candidate lines are shown, strongly prefer snapping to those exact segment positions (adjusted to the nearest grid line) rather than inferring connections between them.
+
+Trace all walls that are structurally present — exterior walls where visible AND interior partitions. Leave a gap at every door or window opening.
 
 CRITICAL — gaps: wherever you see a door or window, you MUST leave a physical gap in the wall. Do NOT draw a continuous wall through a doorway. Instead:
   - Emit two separate wall segments: one ending at the near edge of the opening, one starting at the far edge.
@@ -507,7 +517,7 @@ Return ONLY JSON (no markdown):
   ],
   "secretDoors": [],
   "validation": {
-    "notes": "<brief topology summary: list every distinct enclosed space you found>"
+    "notes": "<brief topology summary: describe the wall shapes present (e.g. C-shape outer wall, two L-shaped ruins, three interior partitions). Note any visibly ruined or open walls.>"
   }
 }
 
@@ -551,10 +561,31 @@ async function callVision(
   return response.content[0].type === "text" ? response.content[0].text : "";
 }
 
+function extractJsonObject(text: string): string | null {
+  // Prefer content inside a markdown code fence
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch) return fenceMatch[1].trim();
+  // Walk from first { to its matching } (brace-balanced, string-aware)
+  // Avoids over-capturing when LLM appends explanatory text after the closing brace
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i]!;
+    if (esc) { esc = false; continue; }
+    if (c === "\\" && inStr) { esc = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === "{") depth++;
+    else if (c === "}") { if (--depth === 0) return text.slice(start, i + 1); }
+  }
+  return null;
+}
+
 function parseJson<T>(text: string, context: string): T {
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error(`${context}: no JSON in response. Raw: ${text.slice(0, 400)}`);
-  const cleaned = match[0]
+  const raw = extractJsonObject(text);
+  if (!raw) throw new Error(`${context}: no JSON in response. Raw: ${text.slice(0, 400)}`);
+  const cleaned = raw
     .replace(/\/\/[^\n]*/g, "")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/,(\s*[}\]])/g, "$1")
@@ -1017,11 +1048,21 @@ export function registerVisionTools(server: McpServer): void {
 
   server.tool(
     "screenshot_roll20",
-    "Take a screenshot of the current Roll20 editor view and save it to a local file path.",
-    { outputPath: z.string().describe("Absolute path to save the PNG screenshot") },
-    async ({ outputPath }) => {
-      await roll20.takeScreenshot(outputPath);
-      return { content: [{ type: "text", text: JSON.stringify({ saved: outputPath }) }] };
+    "Take a screenshot of the current Roll20 editor view and save it to a local file path. Optionally clip to a region of the browser viewport in screen pixels.",
+    {
+      outputPath: z.string().describe("Absolute path to save the PNG screenshot"),
+      dlEditor: z.boolean().optional().describe("If true, press Ctrl+, to enter DL wall editor before screenshotting (shows walls as colored lines), then exit afterward"),
+      clipX: z.number().optional().describe("Screen pixel x to start clip (default: full viewport)"),
+      clipY: z.number().optional().describe("Screen pixel y to start clip"),
+      clipWidth: z.number().optional().describe("Clip width in screen pixels"),
+      clipHeight: z.number().optional().describe("Clip height in screen pixels"),
+    },
+    async ({ outputPath, dlEditor, clipX, clipY, clipWidth, clipHeight }) => {
+      const clip = (clipX != null && clipY != null && clipWidth != null && clipHeight != null)
+        ? { x: clipX, y: clipY, width: clipWidth, height: clipHeight }
+        : undefined;
+      await roll20.takeScreenshot(outputPath, clip, dlEditor ?? false);
+      return { content: [{ type: "text", text: JSON.stringify({ saved: outputPath, dlEditor, clip }) }] };
     }
   );
 }

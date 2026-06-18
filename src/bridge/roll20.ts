@@ -1,4 +1,6 @@
 import { Page } from "playwright";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import path from "path";
 import { getPage, closeBrowser } from "./browser.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
 import { rtEnabled, rtRelayCommand, rtGet } from "./roll20-rt.js";
@@ -455,71 +457,246 @@ async function _relayCommandRaw<T>(cmd: Record<string, unknown>, preAssignedNonc
   throw new Error(`Relay timeout after ${RELAY_TIMEOUT_MS}ms for command: ${cmd.action}\nChat tail: ${chatDump}`);
 }
 
+// --- Browserless upload cache (mirrors RTDB/DDB session-cookie harvest pattern) ---
+// On first successful Playwright upload we capture: the endpoint Roll20's Dropzone POSTed to,
+// and the session cookies. Subsequent uploads skip the browser entirely.
+
+const UPLOAD_CACHE_PATH = path.resolve("./data/roll20-upload-cache.json");
+const UPLOAD_CACHE_TTL_MS = 8 * 60 * 60_000; // 8 h
+
+interface UploadCache {
+  endpoint: string;
+  cookies: Record<string, string>; // name→value for app.roll20.net
+  harvestedAt: number;
+}
+
+function readUploadCache(): UploadCache | null {
+  try {
+    if (!existsSync(UPLOAD_CACHE_PATH)) return null;
+    const c = JSON.parse(readFileSync(UPLOAD_CACHE_PATH, "utf-8")) as UploadCache;
+    if (Date.now() - c.harvestedAt > UPLOAD_CACHE_TTL_MS) return null;
+    return c;
+  } catch { return null; }
+}
+
+function writeUploadCache(c: UploadCache): void {
+  mkdirSync(path.dirname(UPLOAD_CACHE_PATH), { recursive: true });
+  writeFileSync(UPLOAD_CACHE_PATH, JSON.stringify(c), "utf-8");
+}
+
+function isCdnUrl(v: unknown): v is string {
+  return typeof v === "string" && (v.includes("d20.io") || v.includes("files.roll20")) && v.startsWith("http");
+}
+
+// Extract CDN URL from Roll20's upload response JSON. Roll20 has used several field names
+// across versions; try them all rather than assume one.
+function extractCdnUrl(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const b = body as Record<string, unknown>;
+  for (const key of ["imgsrc", "url", "imageUrl", "image_url", "src", "final"]) {
+    if (isCdnUrl(b[key])) return b[key] as string;
+  }
+  // Roll20 Jumpgate s3putsign_batch: {"thumb":{"final":"https://files.d20.io/.../thumb.webp",...}}
+  // Convert thumb URL → original.webp since that's the usable full-res asset URL.
+  if (b["thumb"] && typeof b["thumb"] === "object") {
+    const thumb = b["thumb"] as Record<string, unknown>;
+    if (isCdnUrl(thumb["final"])) {
+      return (thumb["final"] as string).replace(/\/thumb\.\w+(\?.*)?$/, "/original.webp");
+    }
+  }
+  // Recurse one level for other nested structures (e.g. { data: { imgsrc: "..." } })
+  for (const nested of Object.values(b)) {
+    const found = extractCdnUrl(nested);
+    if (found) return found;
+  }
+  return null;
+}
+
+// Attempt a direct HTTP upload using cached session credentials. Returns the CDN URL or
+// throws — caller must fall back to Playwright if this fails.
+async function uploadArtDirect(localAbsPath: string, cache: UploadCache): Promise<string> {
+  const { readFileSync } = await import("fs");
+
+  const ext = path.extname(localAbsPath).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp",
+  };
+  const mimeType = mimeTypes[ext] ?? "application/octet-stream";
+
+  const form = new FormData();
+  const fileBytes = readFileSync(localAbsPath);
+  form.append("file", new Blob([fileBytes], { type: mimeType }), path.basename(localAbsPath));
+
+  const cookieHeader = Object.entries(cache.cookies)
+    .map(([k, v]) => `${k}=${v}`)
+    .join("; ");
+
+  const res = await fetch(cache.endpoint, {
+    method: "POST",
+    headers: { Cookie: cookieHeader },
+    body: form,
+  });
+
+  if (!res.ok) throw new Error(`Roll20 upload HTTP ${res.status}`);
+  const body = await res.json().catch(() => null);
+  const url = extractCdnUrl(body);
+  if (!url) throw new Error(`Roll20 upload response missing CDN URL: ${JSON.stringify(body)}`);
+  return url;
+}
+
 export async function uploadArt(localAbsPath: string): Promise<string> {
-  const page = await getEditorPage();
-
-  // Step 1: open the art library panel (#imagedialog tab)
-  await page.evaluate(() => {
-    const el = document.querySelector<HTMLElement>("a[href='#imagedialog']");
-    if (!el) throw new Error("Art library tab not found");
-    el.click();
-  });
-  await new Promise(r => setTimeout(r, 600));
-
-  // Force-click the showuploaddialog button even if not visible
-  await page.evaluate(() => {
-    const btn = document.querySelector<HTMLElement>("button.btn.showuploaddialog");
-    if (!btn) throw new Error("showuploaddialog button not found");
-    btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  });
-  await new Promise(r => setTimeout(r, 800));
-
-  // Snapshot all current Roll20 CDN URLs in the page before upload.
-  const beforeUrls = new Set(await page.evaluate(() => {
-    const urls: string[] = [];
-    document.querySelectorAll("*").forEach(el => {
-      for (const attr of Array.from(el.attributes)) {
-        if ((attr.value.includes("d20.io") || attr.value.includes("files.roll20")) && attr.value.startsWith("http")) {
-          urls.push(attr.value);
-        }
-      }
-    });
-    return urls;
-  }));
-
-  // Click "Browse Files" and intercept the file chooser Dropzone opens.
-  const [fileChooser] = await Promise.all([
-    page.waitForEvent("filechooser", { timeout: 15_000 }),
-    page.click("button.file-uploader__dropzone-button"),
-  ]);
-  await fileChooser.setFiles(localAbsPath);
-
-  // Poll every attribute on every element for a new CDN URL that appeared after upload.
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 500));
-    const newUrl = await page.evaluate((before: string[]) => {
-      const beforeSet = new Set(before);
-      const els = Array.from(document.querySelectorAll("*"));
-      for (const el of els) {
-        for (const attr of Array.from(el.attributes)) {
-          const v = attr.value;
-          if ((v.includes("d20.io") || v.includes("files.roll20")) && v.startsWith("http") && !beforeSet.has(v)) {
-            return v;
-          }
-        }
-        // Also check img src directly
-        if (el instanceof HTMLImageElement) {
-          const src = el.src;
-          if ((src.includes("d20.io") || src.includes("files.roll20")) && !beforeSet.has(src)) return src;
-        }
-      }
-      return null;
-    }, Array.from(beforeUrls));
-    if (newUrl) return newUrl;
+  // Fast path: try direct HTTP with cached credentials (no browser needed).
+  const cache = readUploadCache();
+  if (cache) {
+    try {
+      return await uploadArtDirect(localAbsPath, cache);
+    } catch (e) {
+      console.error(`[roll20] direct upload failed, falling back to Playwright: ${(e as Error).message}`);
+      // Invalidate the cache so the next Playwright upload refreshes it.
+      try { writeUploadCache({ ...cache, harvestedAt: 0 }); } catch {}
+    }
   }
 
-  throw new Error("Art upload timed out — could not find new CDN URL after upload. The file may have uploaded — check Roll20 art library and use place_map_image with the URL manually.");
+  // Playwright path — used on first upload or after a direct-upload failure.
+  const page = await getEditorPage();
+
+  // Dismiss any open art library dialog before starting — Roll20's file input loses its
+  // change-event listener after one upload, so re-opening fresh is the only reliable way
+  // to get a new listener for sequential uploads. Without this, every second upload hangs.
+  await page.evaluate(() => {
+    const dialog = document.getElementById("imagedialog");
+    if (!dialog) return;
+    // Try Bootstrap .modal('hide') if jQuery is present
+    try { const jq = (window as unknown as Record<string, unknown>)["$"] as ((s: string) => Record<string, (a: string) => void>) | undefined; jq?.("#imagedialog")?.["modal"]?.("hide"); } catch {}
+    // Fallback: click the × close button
+    const closeBtn = dialog.querySelector<HTMLElement>(".close, button[data-dismiss='modal']");
+    if (closeBtn) closeBtn.click();
+  }).catch(() => {});
+  await new Promise(r => setTimeout(r, 500));
+
+  // Intercept ALL network responses during the upload window and log them for diagnostics.
+  // Roll20 Jumpgate may PUT to S3/R2 (not POST to Roll20), so we capture any method.
+  let capturedUrl: string | null = null;
+  const uploadLog: string[] = [];
+  const onResponse = async (response: import("playwright").Response) => {
+    const method = response.request().method();
+    const url = response.url();
+    try {
+      const ct = response.headers()["content-type"] ?? "";
+      if (ct.includes("json")) {
+        const body = await response.json().catch(() => null);
+        const found = extractCdnUrl(body);
+        uploadLog.push(`${method} ${url} JSON: ${JSON.stringify(body).slice(0, 300)}`);
+        if (found && !capturedUrl) capturedUrl = found;
+      } else if (ct.includes("xml") || ct.includes("text")) {
+        const text = await response.text().catch(() => "");
+        uploadLog.push(`${method} ${url} TEXT: ${text.slice(0, 300)}`);
+        // Roll20 often returns JSON with Content-Type: text/plain — try parsing it
+        if (text.trimStart().startsWith("{")) {
+          try {
+            const parsed = JSON.parse(text) as unknown;
+            const found = extractCdnUrl(parsed);
+            if (found && !capturedUrl) capturedUrl = found;
+          } catch { /* not JSON */ }
+        }
+        // Some CDN responses embed the URL in XML Location or <Location> element
+        const xmlLoc = text.match(/<Location>(https?:\/\/[^<]+)<\/Location>/)?.[1];
+        if (xmlLoc && isCdnUrl(xmlLoc) && !capturedUrl) capturedUrl = xmlLoc;
+      } else if (isCdnUrl(url)) {
+        uploadLog.push(`${method} ${url} (CDN request)`);
+      }
+    } catch { /* ignore */ }
+  };
+  page.on("response", onResponse);
+
+  try {
+    // Open art library panel
+    await page.evaluate(() => {
+      const el = document.querySelector<HTMLElement>("a[href='#imagedialog']");
+      if (!el) throw new Error("Art library tab not found");
+      el.click();
+    });
+    await new Promise(r => setTimeout(r, 600));
+
+    await page.evaluate(() => {
+      const btn = document.querySelector<HTMLElement>("button.btn.showuploaddialog");
+      if (!btn) throw new Error("showuploaddialog button not found");
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await new Promise(r => setTimeout(r, 800));
+
+    // Snapshot ALL img.src values before upload (not filtered by URL pattern,
+    // because Jumpgate may use a different CDN domain/path than the old regex assumed).
+    const preUploadImgs = await page.evaluate(() =>
+      Array.from(document.querySelectorAll<HTMLImageElement>("img"))
+        .map(i => i.src).filter(Boolean)
+    ).catch(() => [] as string[]);
+    const preSet = new Set(preUploadImgs);
+
+    // Always trigger via filechooser — using the stale hidden input directly causes every
+    // second upload to silently fail (the change-event listener is consumed after first use).
+    // Clicking the dropzone button forces Roll20 to open a fresh file picker with a new listener.
+    const [fileChooser] = await Promise.all([
+      page.waitForEvent("filechooser", { timeout: 15_000 }),
+      page.evaluate(() => {
+        const btn = document.querySelector<HTMLElement>("button.file-uploader__dropzone-button");
+        const inp = document.querySelector<HTMLElement>("input[type='file']");
+        const target = btn ?? inp;
+        if (!target) throw new Error("upload button/input not found");
+        target.click();
+      }),
+    ]);
+    await fileChooser.setFiles(localAbsPath);
+
+    // Poll for a new img.src that (a) wasn't there before and (b) looks like a CDN URL.
+    // Also check data-src (lazy-load pattern). Derive "original" from whatever thumb URL we find.
+    const deadline = Date.now() + 120_000;
+    while (!capturedUrl && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 2000));
+      if (!capturedUrl) {
+        capturedUrl = await page.evaluate((args: { preSet: string[] }) => {
+          const pre = new Set(args.preSet);
+          const isCdn = (s: string) =>
+            s.startsWith("http") && (s.includes("d20.io") || s.includes("roll20.net") || s.includes("cloudfront.net"));
+          // Check img.src and img[data-src]
+          for (const img of Array.from(document.querySelectorAll<HTMLImageElement>("img"))) {
+            for (const src of [img.src, img.dataset["src"] ?? ""]) {
+              if (src && !pre.has(src) && isCdn(src)) {
+                // Normalise to "original": strip thumb suffix variants
+                return src
+                  .replace(/\/thumb\.webp(\?.*)?$/, "/original.webp")
+                  .replace(/\/thumb\.jpg(\?.*)?$/, "/original.webp")
+                  .replace(/[?&]thumb=[^&]*/, "");
+              }
+            }
+          }
+          return null;
+        }, { preSet: preUploadImgs }).catch(() => null);
+      }
+    }
+
+    // Write diagnostic log regardless of outcome
+    const { writeFileSync } = await import("fs");
+    const logPath = path.join(process.cwd(), "data", "upload-debug.log");
+    writeFileSync(logPath, [`=== upload ${path.basename(localAbsPath)} ${new Date().toISOString()} ===`, ...uploadLog, `capturedUrl: ${capturedUrl ?? "null"}`].join("\n") + "\n", { flag: "a" });
+
+    if (!capturedUrl) {
+      throw new Error(
+        "Art upload timed out — Roll20 upload response not detected. " +
+        "The file may have uploaded — check Roll20 art library and use place_map_image with the URL manually."
+      );
+    }
+
+    return capturedUrl;
+  } finally {
+    page.off("response", onResponse);
+    // Reset art library UI state so sequential uploads start clean
+    await page.evaluate(() => {
+      const close = document.querySelector<HTMLElement>("#imagedialog .close, #imagedialog [data-dismiss]");
+      if (close) close.click();
+    }).catch(() => {});
+  }
 }
 
 export async function getTokens(pageId: string) {
@@ -554,9 +731,16 @@ export async function getCurrentPageId(): Promise<string> {
   return pid;
 }
 
-export async function takeScreenshot(outputPath: string): Promise<void> {
+export async function takeScreenshot(outputPath: string, clip?: { x: number; y: number; width: number; height: number }, dlEditor = false): Promise<void> {
   const page = await getEditorPage();
-  await page.screenshot({ path: outputPath, fullPage: false });
+  if (dlEditor) {
+    await page.keyboard.press("Control+,");
+    await page.waitForTimeout(400);
+  }
+  await page.screenshot({ path: outputPath, fullPage: false, ...(clip ? { clip } : {}) });
+  if (dlEditor) {
+    await page.keyboard.press("Control+,");
+  }
 }
 
 export async function createPageViaUI(

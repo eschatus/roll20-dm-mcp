@@ -236,6 +236,14 @@ export async function getBrowserCookie(page: Page, name: string): Promise<string
   return cookies.find((c) => c.name === name)?.value ?? null;
 }
 
+// Open a new page in the existing browser context without touching the per-site caches.
+// Used for ephemeral pages (Mod editor, diagnostics) that shouldn't share state with
+// the long-lived roll20/ddb pages.
+export async function newBrowserPage(): Promise<Page> {
+  const ctx = await getContext();
+  return ctx.newPage();
+}
+
 export async function closeBrowser(): Promise<void> {
   const promise = _contextPromise;
   _contextPromise = null;

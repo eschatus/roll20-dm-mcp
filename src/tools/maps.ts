@@ -9,7 +9,7 @@ import * as roll20 from "../bridge/roll20.js";
 // to them by an MCP client. Confine reads to a single asset base dir, cap size,
 // and require an image extension so the tool can't be coaxed into exfiltrating
 // e.g. ~/.ssh/id_rsa or a multi-GB file as base64.
-const ASSET_BASE = path.resolve(process.env.ROLL20_ASSET_DIR || path.join(process.cwd(), "data", "maps"));
+export const ASSET_BASE = path.resolve(process.env.ROLL20_ASSET_DIR || path.join(process.cwd(), "data", "maps"));
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024; // 32 MB
 const IMAGE_EXT_MEDIA: Record<string, string> = {
   ".png": "image/png",
@@ -254,13 +254,27 @@ export function registerMapTools(server: McpServer): void {
   );
 
   server.tool(
-    "get_walls",
-    "Read UDL wall objects (Updated Dynamic Lighting) from a Roll20 page. Returns each wall's id and path coordinates.",
+    "get_map_graphics",
+    "Read all graphic objects on a Roll20 page. Map-layer graphics include imgsrc for cloning pages.",
     { pageId: z.string() },
     async ({ pageId }) => {
+      const result = await roll20.relayCommand({ action: "getTokens", pageId });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }
+  );
+
+  server.tool(
+    "get_walls",
+    "Read UDL wall objects (Updated Dynamic Lighting) from a Roll20 page. Returns each wall's id and path coordinates.",
+    {
+      pageId: z.string(),
+      includePoints: z.boolean().optional().describe("If true, include absolute page-pixel coordinates for each wall's vertices"),
+    },
+    async ({ pageId, includePoints }) => {
       const result = await roll20.relayCommand<{ id: string; path: string }[]>({
         action: "getWalls",
         pageId,
+        ...(includePoints ? { includePoints: true } : {}),
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result) }],
@@ -366,6 +380,16 @@ export function registerMapTools(server: McpServer): void {
       return {
         content: [{ type: "text", text: JSON.stringify({ removed: result.removed, layers, pageId }) }],
       };
+    }
+  );
+
+  server.tool(
+    "list_pages",
+    "List all Roll20 pages in the campaign with their IDs, names, and dimensions.",
+    {},
+    async () => {
+      const pages = await roll20.relayCommand<{ id: string; name: string; width: number; height: number }[]>({ action: "listPages" });
+      return { content: [{ type: "text", text: JSON.stringify(pages) }] };
     }
   );
 
