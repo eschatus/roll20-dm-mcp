@@ -6,6 +6,7 @@ import {
   isPcToken,
   splitPcNpc,
   isDowned,
+  hasHpBar,
   resolveNamesToTokens,
   type AoeToken,
 } from "./aoe.js";
@@ -83,6 +84,16 @@ describe("isDowned", () => {
     expect(isDowned({ id: "b", name: "Z", bar1_value: 5, bar1_max: 22 })).toBe(false);
     expect(isDowned({ id: "c", name: "Door", bar1_value: 0, bar1_max: 0 })).toBe(false);
     expect(isDowned({ id: "d", name: "Statue" })).toBe(false);
+  });
+});
+
+describe("hasHpBar", () => {
+  it("is true only when bar1_max is a positive number (matches list_tokens hp:null)", () => {
+    expect(hasHpBar({ bar1_max: 22 })).toBe(true);
+    expect(hasHpBar({ bar1_max: "37" })).toBe(true);
+    expect(hasHpBar({ bar1_max: 0 })).toBe(false);   // emulator default → no bar
+    expect(hasHpBar({ bar1_max: "" })).toBe(false);
+    expect(hasHpBar({})).toBe(false);
   });
 });
 

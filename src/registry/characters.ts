@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, renameSync } from "fs";
 import path from "path";
 import { getActiveCampaign } from "./campaigns.js";
 
@@ -17,11 +17,23 @@ type FullRegistry = Record<string, Record<string, CharacterEntry>>;
 
 function load(): FullRegistry {
   if (!existsSync(REGISTRY_PATH)) return {};
-  return JSON.parse(readFileSync(REGISTRY_PATH, "utf-8")) as FullRegistry;
+  const raw = readFileSync(REGISTRY_PATH, "utf-8");
+  // An empty/whitespace file means a write is mid-flight or the file was never
+  // finished — treat as "no registry yet" rather than crashing on JSON.parse("").
+  // With save()'s atomic rename this window shouldn't occur, but stay defensive.
+  if (raw.trim() === "") return {};
+  return JSON.parse(raw) as FullRegistry;
 }
 
 function save(registry: FullRegistry): void {
-  writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2), "utf-8");
+  // Atomic write: plain writeFileSync truncates the file and then streams the new
+  // contents, so a concurrent reader (parallel test workers, concurrent relay
+  // calls) can observe an empty file and fail with "Unexpected end of JSON input".
+  // Write to a per-process temp file, then rename over the target — rename is
+  // atomic on the same filesystem, so readers always see a complete file.
+  const tmp = `${REGISTRY_PATH}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, JSON.stringify(registry, null, 2), "utf-8");
+  renameSync(tmp, REGISTRY_PATH);
 }
 
 function campaignSlug(): string {

@@ -111,4 +111,57 @@ describe("resolve_aoe batch resolver (integration)", () => {
     expect(text).toContain("Web (caster)");
     expect(text).toMatch(/\+restrained/);
   });
+
+  it("healing mode restores NPC bars (clamped at max) and routes PCs through adjustPcHp", async () => {
+    // Wound an NPC so the heal is observable; the resulting value must clamp at its max.
+    await h.callTool("update_token_hp", { characterName: "War Mage", damage: 15 });
+    const warmageBefore = hp(w.npcs.warmage.id);
+    const fighterBarBefore = hp(w.pcs.fighter.id); // Beyond20-owned bar — must NOT move
+
+    const { text } = await h.callTool("resolve_aoe", {
+      label: "Mass Cure Wounds (Vance)",
+      targetNames: ["War Mage", "Sir Aldric"],
+      healing: true,
+      damage: 8,
+    });
+
+    // NPC bar climbs by the heal amount, clamped at the War Mage's 22 max.
+    expect(hp(w.npcs.warmage.id)).toBe(Math.min(22, warmageBefore + 8));
+    // The PC's visible bar is untouched — healing routes through adjustPcHp (gmnotes), not bar1.
+    expect(hp(w.pcs.fighter.id)).toBe(fighterBarBefore);
+    // Both targets — NPC and PC — are reported as healed (no saves, no conditions).
+    expect(text).toContain("Mass Cure Wounds (Vance)");
+    expect(text).toMatch(/War Mage: \+8/);
+    expect(text).toMatch(/Sir Aldric: \+8/);
+  });
+
+  it("healing dryRun previews who would be healed without rolling or applying", async () => {
+    const warmageBefore = hp(w.npcs.warmage.id);
+
+    const { json } = await h.callTool("resolve_aoe", {
+      label: "Healing Word burst",
+      targetNames: ["War Mage", "Sir Aldric"],
+      healing: true,
+      damageFormula: "2d4+3",
+      dryRun: true,
+    });
+    const r = json as { wouldHeal: { pcs: string[]; npcs: string[] } };
+
+    expect(r.wouldHeal.npcs).toContain("War Mage");
+    expect(r.wouldHeal.pcs).toContain("Sir Aldric");
+    expect(hp(w.npcs.warmage.id)).toBe(warmageBefore); // nothing applied
+  });
+
+  it("rejects healing combined with a saving throw", async () => {
+    await expect(
+      h.callTool("resolve_aoe", {
+        label: "bad heal",
+        targetNames: ["War Mage"],
+        healing: true,
+        damage: 8,
+        saveAbility: "wisdom",
+        saveDc: 12,
+      }),
+    ).rejects.toThrow(/healing:true takes no saveAbility/);
+  });
 });
