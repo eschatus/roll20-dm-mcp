@@ -4,6 +4,19 @@ Trim the relay's read payloads down to what's actually consumed, on the hot path
 hits every turn. Pure context/transport savings — **no behavior change**. One relay redeploy covers
 all of it.
 
+> **Implementation status (2026-06-20).** Tier 1 shipped (commit `ccd90d5`): token profiles,
+> `cleanChat`, the `playerid !== "API"` buffer guard, `getTurnOrder` `_pageid` strip, and the
+> `getWalls`/`getPaths` geometry gate are all live. Note two divergences from the spec below:
+> (1) a **fourth `rich` profile** also shipped (`tokenRich()` — adds gmnotes, bar2/bar3, aura fields;
+> available on `getTokenById profile:"rich"`); and (2) token reads pass through a `compact()` helper
+> that **drops empty/null/`""` fields entirely** (so `represents`/`controlledby` are absent when
+> empty, not `""` as the pseudocode shows). **Tier 2 is only partly shipped:** the `getWalls`/
+> `getPaths` gate landed, and `getRepeatingSection` got a **row cap** (`maxRows`, default 60, with a
+> `__truncated` flag). The rest of T2.3 (column/field projection), T2.4
+> (`ddb_list_campaign_characters` → `{id,name}`), and T2.5 (drop `avatarUrl`/`largeAvatarUrl`, compact
+> `JSON.stringify` on `ddb_list_campaigns`) are **NOT yet done**. Line-number anchors below may be
+> stale — search by function name.
+
 ## Why
 
 The waste lands in three places, worst first:
@@ -81,7 +94,7 @@ change beyond losing `imgsrc` (neither shipped it anyway — this just unifies t
 
 ## Surface 3 — chat buffer (the big win)
 
-Two changes in the `on("chat:message")` handler ([ai-relay.js:357](../mod-scripts/ai-relay.js#L357)):
+Two changes in the `on("chat:message")` handler (search `on("chat:message"` in `mod-scripts/ai-relay.js`):
 
 **(a) Exclude bridge/AI messages.** Extend the **existing buffer-push condition** (don't add early
 returns — the `!dm` inbox branch lives in the same handler and must stay reachable) so the relay
@@ -167,8 +180,14 @@ writeResult(nonce, walls.map(function (w) {
 }));
 ```
 
-`getPaths`: same shape — gate `path` (and the re-added `imgsrc` at [:750](../mod-scripts/ai-relay.js#L750))
-behind `args.includePath`; default returns `id, layer, bbox, pointCount`.
+`getPaths`: same shape — gate `path` (and the re-added `imgsrc`, search `imgsrc` in `getPaths`)
+behind `args.includePath`; default returns `id, layer, pointCount`.
+
+> **As shipped, this diverges from the pseudocode above.** `bboxOf()` exists in `ai-relay.js` but is
+> NOT called in `getWalls`, so there is **no `bbox` field** in the result. The shipped `getWalls` also
+> returns a `kind` discriminator and two distinct shapes: `kind:"pathv2"` (`{id,kind,x,y,barrierType,
+> shape,pointCount}`) vs the legacy `kind:"path"` (`{id,kind,left,top,width,height,stroke,barrierType}`).
+> Treat the `bbox` and unified-shape in the snippet as the original aspiration, not what's live.
 
 > **Caller audit required.** Map/vision code that verifies placement (e.g. `auto_place_dl_walls`,
 > the `get_walls`/`get_paths` tools) may genuinely need full geometry — pass `includePoints` /
@@ -205,8 +224,9 @@ This is the one Tier-2 item on the **voice** path (once per session, cached).
 
 ## Already lean — do NOT touch
 
-`findTokensInRange` ([:1205](../mod-scripts/ai-relay.js#L1205)), `getTurnOrder` body,
-`ddb_get_character` / `ddb_get_monster` (already ~8-field projections — only the avatar URLs go).
+`findTokensInRange` (search `case "findTokensInRange"` in `ai-relay.js`), `getTurnOrder` body,
+`ddb_get_character` / `ddb_get_monster` (already ~8-field projections — only the avatar URLs go,
+and those drops are **not yet done** — see status banner).
 
 ## Deployment & verification
 

@@ -1,5 +1,5 @@
 import { getPage } from "./browser.js";
-import { ddbRtEnabled, rtGetRawCharacter, rtListCampaigns, rtGetCampaignCharacters } from "./ddb-rt.js";
+import { ddbRtEnabled, rtGetRawCharacter, rtGetMonster, rtListCampaigns, rtGetCampaignCharacters } from "./ddb-rt.js";
 
 const DDB_CHARACTER_SERVICE = "https://character-service.dndbeyond.com/character/v5";
 const DDB_MONSTER_API = "https://www.dndbeyond.com/api/v5";
@@ -299,6 +299,15 @@ export interface DdbMonster {
 }
 
 export async function getMonster(nameOrId: string | number): Promise<DdbMonster> {
+  // RT path: hit the live monster-service v1 endpoint. The old www/api/v5/monster path below
+  // 404s, so the non-RT branch is effectively dead — RT is the only working transport.
+  // CAVEAT: monster-service v1 has a different shape than DdbMonster (e.g. challengeRatingId
+  // vs challengeRating, statId arrays, HTML *Description blobs). The fields ddb_get_monster /
+  // resolveMonsterAvgHp read (id, name, averageHitPoints, armorClass) line up; challengeRating
+  // and the ability-text helpers (getMonsterAbilities) need a proper field mapper — TODO: build
+  // it from a live capture (src/recon/ddb-monster-diag.ts) and normalize here.
+  if (ddbRtEnabled()) return await rtGetMonster(nameOrId) as DdbMonster;
+
   const endpoint =
     typeof nameOrId === "number"
       ? `${DDB_MONSTER_API}/monster/${nameOrId}`

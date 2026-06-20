@@ -1,9 +1,12 @@
 # Build & test plan — making it grown up
 
-Current state: vitest is wired (`npm test`), 4 test files exist (campaigns, characters, dndbeyond,
-tactics), tsc build, no CI, no lint config checked in. The RTDB transport added this session has
-**zero unit coverage** (only live `src/recon/*` scripts, which hit the real campaign). This plan
-closes those gaps.
+Current state (2026-06-20): vitest is wired (`npm test`); **18 test files** now exist across
+`src/**` and `test/` (campaigns, characters, dndbeyond, tactics, markers, relayState, rt-helpers,
+transport-health, relay-fallback, player-commands, combatHelpers, aoe, plus `test/` integration
+suites: relay-actions, tactics-live-eval, current-page, combat-round, aoe-resolve, hp-init); tsc
+build; **CI is wired** (`.github/workflows/ci.yml`); no ESLint config checked in. The RTDB
+transport now has unit coverage (`rt-helpers.test.ts`); live `src/recon/*` scripts remain the
+manual real-campaign smoke layer. This plan tracks what's done and what remains.
 
 ## Principles
 
@@ -14,35 +17,39 @@ closes those gaps.
   flakiness — inject/clamp time where needed).
 - **CI gates merges:** typecheck + test + build must pass.
 
-## Phase A — unit tests for the new RTDB code (this session's gap) ✅ doing now
+## Phase A — unit tests for the new RTDB code (this session's gap) ✅ DONE
 
-Extract the pure helpers out of `roll20-rt.ts` into `src/bridge/rt-helpers.ts` (exported) and test:
-- `parseAibridge` — marker + balanced-brace JSON extraction (nested braces, strings with braces, malformed).
-- `cleanChat` — HTML/rolltemplate/URL stripping, entity decode, 240-char cap.
-- `parsePcHpBlock` / `writePcHpBlock` — round-trip, preserve surrounding gmnotes, replace not duplicate.
-- `parseTurnorder` — JSON-string vs array vs garbage; drops `_pageid`.
-- `mapToken` — lean/status/full profiles; default-fill of missing fields.
-- `stripUndefWrite` — drops undefined/NaN, keeps null/0/"".
-- `markers.ts` — `resolveMarkerForState` tiers (condition/pseudo/custom), `hashToPool` determinism + stability.
-- `relayState.ts` — `trackCustomState`/`getCustomStates` add/remove/prune (temp dir, no real `data/`).
+Pure helpers were extracted out of `roll20-rt.ts` into `src/bridge/rt-helpers.ts` (exported) and
+are covered by `rt-helpers.test.ts` (plus `markers.test.ts`, `relayState.test.ts`):
+- `parseAibridge` — marker + balanced-brace JSON extraction (nested braces, strings with braces, malformed). ✅
+- `cleanChat` — HTML/rolltemplate/URL stripping, entity decode, 240-char cap. ✅
+- `parsePcHpBlock` / `writePcHpBlock` — round-trip, preserve surrounding gmnotes, replace not duplicate. ✅
+- `parseTurnorder` — JSON-string vs array vs garbage; drops `_pageid`. ✅
+- `mapToken` — lean/status/full profiles; default-fill of missing fields. ✅
+- `stripUndefWrite` — drops undefined/NaN, keeps null/0/"". ✅
+- `parseBroadcastPing` — live ping payload parse (negated-y). ✅ (added after this plan was drafted)
+- `markers.ts` — `resolveMarkerForState` tiers (condition/pseudo/custom), `hashToPool` determinism + stability. ✅
+- `relayState.ts` — `trackCustomState`/`getCustomStates` add/remove/prune (temp dir, no real `data/`). ✅
 
-## Phase B — build/CI hygiene
+## Phase B — build/CI hygiene  (mostly ✅ DONE)
 
-- `.github/workflows/ci.yml`: `npm ci` → `tsc --noEmit` → `npm test` → `npm run build` on push/PR.
-- Add ESLint config (the codebase already follows no-var/let-const; pin it) + `npm run lint` in CI.
-- `tsconfig`: exclude `src/recon/**` from the prod build (dev-only live scripts that import bridges);
-  keep them runnable via `tsx`. Likewise keep `*.test.ts` out of `dist` (already handled).
+- ✅ `.github/workflows/ci.yml`: `npm ci` → `tsc --noEmit` → `npm test` → `npm run build` on push/PR,
+  plus `node --check mod-scripts/ai-relay.js` as a Mod syntax gate.
+- ❌ ESLint config + `npm run lint` in CI — **still not done** (no eslint config at repo root, no
+  `lint` script). The codebase already follows no-var/let-const; pinning it remains a TODO.
+- ✅ `tsconfig` excludes `src/recon/**` and `src/**/*.test.ts` from the prod build (both already in
+  the `exclude` array); recon scripts stay runnable via `tsx`.
 
-## Phase A2 — unit tests for the REST of the codebase ("all functions")
+## Phase A2 — unit tests for the REST of the codebase ("all functions")  (partially ✅ DONE)
 
 Beyond the new RTDB code, cover the pure logic everywhere:
-- `dndbeyond.ts`: `getMaxHp`/`getCurrentHp` (Con-mod HP math, override paths), `parseStats`
-  (ability mods, proficiency/expertise, saves/skills, init, passive perception) — table-driven.
-- `combat.ts` helpers: PC-vs-NPC routing, HP-application math, name/target resolution.
-- `tactics.ts` (has a test — extend to the tier/cascade selection edges).
-- Mod (`ai-relay.js`) pure helpers: port-mirror tests for `cleanChat`, `resolveMarkerForState`,
-  `hashToPool`, `bboxOf`, `makeCirclePath`, `normProps`, `stripUndef` (the TS `rt-helpers` versions
-  are kept byte-compatible, so one shared test vector set guards BOTH copies against drift).
+- ✅ `dndbeyond.ts`: `getMaxHp`/`getCurrentHp`, `parseStats` — covered by `dndbeyond.test.ts`.
+- ✅ `combat.ts` helpers: PC-vs-NPC routing, HP-application math — covered by `combatHelpers.test.ts`;
+  AoE save/damage logic covered by `aoe.test.ts`.
+- 🟡 `tactics.ts` — has `tactics.test.ts`; extend to tier/cascade selection edges.
+- 🟡 Mod (`ai-relay.js`) pure helpers — `test/relay-actions.test.ts` runs a Roll20 emulator over the
+  relay; full port-mirror vector coverage (shared test set guarding TS `rt-helpers` vs the Mod copy)
+  is still partial.
 
 ## Phase C — integration tests: prove the pumps are clean (LIVE, gated by env)
 
@@ -76,14 +83,14 @@ behind a flag, or a mocked relay):
 
 The new tests immediately earned their keep — two real issues surfaced:
 
-1. **RT transport falls back to the browser on a *Mod error*, not just a transport failure.**
-   `roll20.ts` `relayCommand` treats ANY `rtRelayCommand` rejection as a transport failure and
-   retries via the Playwright relay. But a legitimate Mod validation error (e.g. "no properties to
-   set") is a *successful* round-trip that the Mod chose to reject — re-running it via the browser is
-   wasteful and, for a mutating command that errored post-partial-write, risks a double-apply (the
-   browser fallback uses a fresh nonce, bypassing the idempotency cache). **Fix:** tag Mod-returned
-   errors distinctly (e.g. a `RelayModError`) and have the fallback re-throw those instead of
-   retrying; only fall back on real transport failures (timeout/auth/disconnect).
+1. ~~**RT transport falls back to the browser on a *Mod error*, not just a transport failure.**~~
+   ✅ **RESOLVED — via a different mechanism than originally proposed.** Rather than tagging
+   `RelayModError` and re-throwing, the nonce is now generated ONCE per command (before either
+   transport) and threaded through, so an rt→browser fallback re-sends the *same* nonce. The Mod's
+   `PROCESSED_NONCES` LRU deduplicates the resend, making any post-send fallback (including for
+   mutating commands) idempotent. `shouldFallback` (`roll20.ts`) therefore now returns `true`
+   unconditionally — the double-apply hazard the original fix targeted no longer exists. See
+   `src/bridge/relay-fallback.test.ts`.
 
 2. **`getCharacterStats`/`getRawCharacter` can't read player-owned DDB characters (403).** They use
    the direct character-service API, which only serves characters the account owns or that are
@@ -96,7 +103,7 @@ The new tests immediately earned their keep — two real issues surfaced:
 `src/recon/*` stays the manual pre-deploy smoke/soak layer; `soak-test.ts` is the canonical
 end-to-end gate to run after ANY Mod change before relying on it live.
 
-## Phase D — release hygiene (later)
+## Phase E — release hygiene (later)
 
 - A `CONTRIBUTING`/`README` build section: `npm ci`, `npm test`, `npm run build`, how to run a soak.
 - Mod (`ai-relay.js`) is plain JS in the sandbox — add `node --check` to CI as a syntax gate, and a

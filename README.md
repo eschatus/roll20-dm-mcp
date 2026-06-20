@@ -18,17 +18,21 @@ AI-assisted D&D 5e session management for Roll20 + D&D Beyond. Three components:
 ┌────────────────────▼────────────────────────────────┐
 │  roll20-dm MCP server (HTTP, src/index-http.ts)     │
 │                                                     │
-│  ┌── RT transport (default) ──────────────────┐     │
-│  │  Firebase RTDB direct reads (~50ms warm)   │     │
-│  │  signInWithCustomToken (harvested once,     │     │
-│  │  cached to data/roll20-rt-token.json)       │     │
+│  ┌── RT transport (set ROLL20_TRANSPORT=rt) ──┐     │
+│  │  Firebase RTDB: direct reads (~50ms warm)  │     │
+│  │  + relays !ai-relay commands (reads AND    │     │
+│  │  writes) to the Mod, reads result back.    │     │
+│  │  signInWithCustomToken harvested once,      │     │
+│  │  cached to data/roll20-rt-token.json        │     │
 │  └────────────────────────────────────────────┘     │
 │                                                     │
-│  ┌── Mod relay (writes + fallback) ───────────┐     │
-│  │  Playwright → roll20.net                   │     │
-│  │  !ai-relay {JSON} → Roll20 chat            │     │
+│  ┌── Mod relay FALLBACK (Playwright) ─────────┐     │
+│  │  used only if RT is unavailable:           │     │
+│  │  !ai-relay {JSON} typed into Roll20 chat   │     │
 │  │  ← result via MutationObserver             │     │
 │  └────────────────────────────────────────────┘     │
+│  (the Roll20 Mod sandbox executes every action,     │
+│   createObj/.set, regardless of which transport)    │
 │                                                     │
 │  ┌── D&D Beyond (browserless) ────────────────┐     │
 │  │  CobaltSession cookie → JWT (ttl 300s)     │     │
@@ -45,18 +49,20 @@ Claude Code (separate MCP client, same server)
 
 | Layer | Read latency | Write latency | When used |
 |---|---|---|---|
-| RT (Firebase RTDB) | ~50ms warm | — | Token reads, turn order, page state |
-| Mod relay (Playwright) | 3–4s | 3–4s | All writes; read fallback if RT unavailable |
-| DDB REST | ~200ms | — | Character sheets, monster stats, campaign roster |
+| RT (Firebase RTDB) | ~50ms warm | ~50ms warm | When `ROLL20_TRANSPORT=rt` — reads AND writes: direct RTDB reads + `!ai-relay` command relay to the Mod |
+| Mod relay (Playwright) | 3–4s | 3–4s | Used when RT is unset, and as the fallback for any action if RT is unavailable (auth/timeout/circuit-open) |
+| DDB REST | ~200ms | — | Character sheets, monster stats, campaign roster (read-only) |
 
-The browser window opens only for the initial RT token harvest and for write-relay commands. It closes automatically after token harvest and reopens on demand.
+The browser window opens for the initial RT token harvest (and DDB cookie harvest) and as the relay fallback when RT is down. It sits minimized otherwise and pops to the foreground when a manual login is needed.
 
 ## Setup
 
 ```bash
 cp .env.example .env
 # Required: ANTHROPIC_API_KEY, ROLL20_EMAIL, ROLL20_PASSWORD
-# Optional: DDB_COBALT (skip browser harvest), ROLL20_MCP_TOKEN (auto-generated if absent)
+# Optional: DDB_COBALT (skip DDB browser harvest), ROLL20_MCP_TOKEN (auto-generated if absent),
+#           ROLL20_TRANSPORT (set "rt" to enable the Firebase RTDB transport; unset = Playwright path),
+#           DDB_TRANSPORT (defaults to "rt"; set "browser" for the legacy DDB path)
 
 npm install
 npx playwright install chromium
@@ -130,20 +136,22 @@ npm run start          # builds + launches Electron
 
 `plan_tactics` / `plan_all_tactics` generates per-monster turn plans scaled to creature Intelligence and Wisdom. Called automatically at combat start and at the top of each round (both from the `/combat` skill and the Voice HUD agent).
 
-| Tier | Int/Wis avg | Model | Behavior |
-|---|---|---|---|
-| 0 Feral | ≤5 | Haiku | Pure instinct |
-| 1 Dim | ≤8 | Haiku | Basic predatory logic |
-| 2 Average | ≤11 | Sonnet | Reads the battlefield |
-| 3 Sharp | ≤15 | Sonnet + thinking | Coordinates with allies |
-| 4 Brilliant | ≤20 | Sonnet + extended thinking | Short + medium-term planning |
-| 5 Mastermind | 21+ | Opus + extended thinking | Full 3-stage strategic cascade |
+| Tier | Int/Wis avg | Model (thinking budget) | Cascade | Behavior |
+|---|---|---|---|---|
+| 0 Feral | ≤5 | Haiku | none | Pure instinct |
+| 1 Dim | ≤8 | Haiku | none | Basic predatory logic |
+| 2 Average | ≤11 | Sonnet | none | Reads the battlefield |
+| 3 Sharp | ≤15 | Sonnet (3k) | none | Coordinates with allies |
+| 4 Brilliant | ≤20 | Sonnet (8k) | medium: Haiku → Sonnet | Short + medium-term planning |
+| 5 Mastermind | 21+ | Opus (16k) | full: Haiku → Sonnet → Opus | Full 3-stage strategic cascade |
+
+(Tiers 0–3 run a single model; tiers 4–5 run a multi-model cascade — the "Model" column is the final/long-term stage. See `TIER_CONFIGS` in `src/tools/tactics.ts`.)
 
 Plans are whispered GM-only and surfaced again automatically when the initiative tracker reaches each mob's turn.
 
 ## Key design decisions
 
-**RT transport reads Roll20 state directly.** Firebase RTDB token is harvested once via browser (intercepting `signInWithCustomToken`), cached to `data/roll20-rt-token.json`, and reused for all subsequent reads. Writes still go through the Mod relay (guaranteed server-side propagation).
+**RT transport carries reads and writes.** The Firebase RTDB token is harvested once via browser (intercepting `signInWithCustomToken`), cached to `data/roll20-rt-token.json`, and reused. Reads come straight off RTDB; writes (and Mod-served reads) are relayed as `!ai-relay` commands over RTDB to the Mod, which executes them and writes the result back. The Playwright chat path is a fallback used only when RT is unavailable (a shared per-command nonce + the Mod's `PROCESSED_NONCES` LRU make the rt→browser fallback idempotent even for mutations).
 
 **D&D Beyond is fully browserless.** `CobaltSession` cookie is harvested once and cached to `data/ddb-cobalt.json`. Every DDB read thereafter is a plain HTTPS fetch via `character-service` or `monster-service` — no Chromium involved.
 

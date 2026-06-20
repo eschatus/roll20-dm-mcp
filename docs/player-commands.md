@@ -21,10 +21,18 @@ Players can type these in Roll20 chat. Replies arrive as whispers from
 - **Detection** is transport-side: the RTDB chat subscription
   ([roll20-rt.ts](../src/bridge/roll20-rt.ts) `handleChatChild`) forwards live
   `!`-prefixed player messages to
-  [player-commands.ts](../src/bridge/player-commands.ts). **No Mod redeploy was
-  needed** — the Mod script is unchanged. Replies use the existing
+  [player-commands.ts](../src/bridge/player-commands.ts). The forward filter
+  **excludes** `!ai-relay` (the GM relay channel), `!dm ` (handled separately —
+  see below), and API-origin messages (`playerid === "API"`). **No Mod redeploy
+  was needed** — the Mod script is unchanged. Replies use the existing
   `whisperPlayer` relay action; `!recall` rolls via `rollFormulas` (real Roll20
   dice, public).
+- **`!dm` is NOT a player-command** in this system. It is a pre-existing,
+  Mod-handled command intercepted by its own branch in `handleChatChild` and
+  published to the DM inbox (SSE broadcast). It never enters
+  `player-commands.ts`, has no entry in `KNOWN_COMMANDS`, and is **not** subject
+  to the cooldowns/guards below. It is listed in the cheat sheet only because
+  players use it at the table.
 - **Requires the RT transport** (`ROLL20_TRANSPORT=rt`) and the HTTP server
   (`npm run serve`) running. Commands are not detected on the Playwright-only
   fallback path.
@@ -52,5 +60,9 @@ Players can type these in Roll20 chat. Replies arrive as whispers from
 
 Per-player cooldowns: tactics 90s, recap 60s, rules 45s, recall/options 30s,
 help 10s. Cooldown is recorded at dispatch, so a slow in-flight call can't be
-stacked. `!tactics` thinking budgets are capped at 4000 tokens (interactive
-latency) and responses at 400 tokens regardless of tier.
+stacked. Two **global** guards back these up (since `playerid` is a
+client-written chat field and the per-player cooldown alone is spoofable): a
+sliding-window token bucket (max 10 model-calling commands per 60s across all
+players) and a concurrency cap (max 3 in-flight handlers). `!tactics` thinking
+budgets are capped at 4000 tokens (interactive latency) and responses at 400
+tokens regardless of tier.

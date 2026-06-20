@@ -114,7 +114,17 @@ messages sent after reconnect still arrive. `npm run build` passes.
 
 ## Prompt 4 — Writes must never cross transports after a timeout
 
-**Problem.** In `src/bridge/roll20.ts` (`relayCommand`), RT mode does:
+> **⚠ SUPERSEDED — the shipped fix is the opposite of this prompt.** Rather than blocking
+> cross-transport fallback for mutating post-send timeouts, the implementation made the fallback
+> *idempotent*: a single nonce is generated once per command (before either transport) and threaded
+> through, so an rt→browser fallback re-sends the **same** nonce. The Mod's `PROCESSED_NONCES` LRU
+> deduplicates the resend, so re-running a mutating command on the browser path can't double-apply.
+> `shouldFallback(action, err)` therefore now returns `true` unconditionally (see
+> `src/bridge/relay-fallback.test.ts`). The `RtPreSendError` / "must re-throw / verify state"
+> design below was **not** adopted — ignore it for current behavior. (The circuit-breaker fast-fail
+> in Prompt 5 *did* ship.)
+
+**Problem (as originally framed).** In `src/bridge/roll20.ts` (`relayCommand`), RT mode does:
 `rtRelayCommand<T>(cmd).catch(err => _relayDefault<T>(cmd))` — for **all** actions.
 If a mutating write times out on RT (classic case: the API sandbox is asleep and
 processes the chat child late), the catch re-sends the same command through the browser

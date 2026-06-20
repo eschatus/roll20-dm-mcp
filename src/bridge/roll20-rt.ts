@@ -4,8 +4,10 @@
 // we PUSH the `!ai-relay {…}` command as a chat child and LISTEN for the Mod's
 // `AIBRIDGE_RESULT:` whisper child — the Mod script (mod-scripts/ai-relay.js) is unchanged.
 //
-// Auth chain (see docs/roll20-realtime-protocol.md):
-//   Roll20 session cookie  ──POST /editor/oauth_token──▶  custom token
+// Auth chain (see docs/roll20-realtime-protocol.md — NOTE: /editor/oauth_token returns a Roll20
+// OAuth token, NOT the Firebase custom token; we instead intercept the custom token from the
+// browser's signInWithCustomToken request body):
+//   logged-in browser  ──intercept signInWithCustomToken request──▶  Firebase custom token
 //   custom token  ──firebase signInWithCustomToken──▶  ID token (RTDB cred, ~1h, SDK auto-refreshes)
 //
 // The session cookie is harvested ONCE via the existing browser bridge (which keeps a persistent

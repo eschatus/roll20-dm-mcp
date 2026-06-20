@@ -31,8 +31,8 @@ This document catalogs the attack surfaces in this project and the mitigations i
 **DDB writes have been removed.** This server no longer issues any D&D Beyond write requests — all `patchCharacter` / `applyCondition` / `ddb_update_hp` paths and the DDB branches of `apply_damage` / `heal_character` are gone (see `decisions.md` §1). DDB is read-only here: the cookie is used only for character/monster stat lookups and optional round-start drift checks. This shrinks the blast radius of a leaked cookie from "attacker modifies your sheets via this tool" to "attacker has your DDB session" (still serious, but the tool itself never writes).
 
 **Mitigations:**
-- The cookie is held in memory (via Playwright's cookie store) and on disk only in `userDataDir`
-- The cookie is never logged or written to `.env` or any plain-text file
+- The cookie is held in memory (via Playwright's cookie store) and on disk in `userDataDir` and, for the browserless path, in `data/ddb-cobalt.json` (see §8) — both gitignored
+- The cookie is never logged or written to `.env`
 - Session rotation: if you suspect compromise, log out of DDB in the Playwright browser window — this invalidates the cookie
 
 **No current mitigation for:** The `cobalt` cookie's scope cannot be narrowed — it's full-account, including write capability we choose not to exercise. There is no way to obtain a read-only scoped token through DDB's current auth system.
@@ -49,7 +49,7 @@ This document catalogs the attack surfaces in this project and the mitigations i
 - Tool results return structured JSON. Claude receives the data as a tool result, not as part of the conversation narrative — this provides some natural sandboxing
 - Character names in the registry are stored and retrieved as-is but used only as lookup keys; they are not embedded in instructions
 
-**Player-command channel (additional surface):** the `!tactics` / `!recall` / `!rules` / `!dm` commands (`src/bridge/player-commands.ts`) put **player-authored text** directly into LLM prompts, and `!dm` notes land in the dmInbox that surfaces in the DM-facing assistant's context. Stakes are low (outputs are whispers and qualitative advice; handlers are read-only), but treat dmInbox content as untrusted data, never as instructions. Cost abuse is bounded by per-player cooldowns plus a global token bucket and a concurrent-in-flight cap (the per-player cooldown alone is spoofable, since `playerid` is a client-written chat field).
+**Player-command channel (additional surface):** the `!tactics` / `!recall` / `!rules` commands (`src/bridge/player-commands.ts`) put **player-authored text** directly into LLM prompts. Separately, `!dm` notes are intercepted in `src/bridge/roll20-rt.ts` (`handleChatChild`) — NOT by `player-commands.ts` — and published to the dmInbox (SSE broadcast) that surfaces in the DM-facing assistant's context; `!dm` is **not** rate-limited by the player-command cooldowns/bucket. Stakes are low for all of them (outputs are whispers and qualitative advice; handlers are read-only), but treat dmInbox and player-command content as untrusted data, never as instructions. `!tactics`/`!recall`/`!rules` cost abuse is bounded by per-player cooldowns plus a global token bucket and a concurrent-in-flight cap (the per-player cooldown alone is spoofable, since `playerid` is a client-written chat field).
 
 **Recommended additional mitigations:**
 - Strip any content that looks like instructions from character names before embedding in tool descriptions: reject names containing "ignore", "system", "instruction", "previous" etc.
@@ -85,7 +85,7 @@ This document catalogs the attack surfaces in this project and the mitigations i
 
 ## 6. Relay command transport and authorization
 
-**What it is:** The relay (`mod-scripts/ai-relay.js`) is **chat-command driven**. The MCP server issues commands by typing `!ai-relay {JSON}` into the Roll20 campaign chat (via the Playwright browser session); the relay listens on the Mod `chat:message` event, dispatches the action, and whispers the result back as a hidden `/w gm` div that the MCP server reads via a MutationObserver. There is no longer a `change:attribute` / `GM_AI_Bridge` attribute queue.
+**What it is:** The relay (`mod-scripts/ai-relay.js`) is **chat-command driven**. The MCP server issues commands as `!ai-relay {JSON}`; when the RT transport is enabled (`ROLL20_TRANSPORT=rt`) these are pushed over the campaign's Firebase RTDB chat node, and the relay's `AIBRIDGE_RESULT` is read back over an RTDB child listener. On the Playwright fallback the same command is typed into the Roll20 chat input and the hidden `/w gm` result div is read via a MutationObserver. Either way the relay listens on the Mod `chat:message` event, dispatches the action, and whispers the result back. There is no longer a `change:attribute` / `GM_AI_Bridge` attribute queue (the sandbox-internal `state.GM_AI_Bridge` object that persists Mod globals is unrelated — it is not a Roll20 attribute and not a security boundary).
 
 **Risk:** Any player in the campaign can type `!ai-relay {...}` into chat. Without a sender check, a player could trigger relay actions (move tokens, set HP, create objects) by sending the command themselves.
 
@@ -98,7 +98,37 @@ This document catalogs the attack surfaces in this project and the mitigations i
 
 ---
 
-## 7. DALL-E / image generation API
+## 7. HTTP MCP endpoint authentication (`ROLL20_MCP_TOKEN`)
+
+**What it is:** The MCP server runs as an HTTP endpoint (`src/index-http.ts`, `npm run serve`). Every `/mcp` and `/events` request is gated by a `Bearer` token compared with `crypto.timingSafeEqual`. The token (`ROLL20_MCP_TOKEN`) is auto-generated on first run, written to `.env`, and injected into `.mcp.json` so Claude Code picks it up. The `/mcp` route additionally has DNS-rebinding protection via a Host/Origin allowlist (`localhost`, `127.0.0.1`) enforced by `StreamableHTTPServerTransport`.
+
+**Risk:** Any local process that can read `.env` or `.mcp.json` obtains the bearer token and can drive every MCP tool (move tokens, set HP, read DDB). The token sits in plaintext in two files on disk.
+
+**Mitigations:**
+- Both `.env` and `.mcp.json` are gitignored, so the token is never committed.
+- The token is high-entropy (`randomUUID`, fixed 36 chars) and compared with `timingSafeEqual`. Note: the compare early-returns on a length mismatch (`index-http.ts`), which leaks the token *length* via timing — low risk because the length is fixed, but it is not a fully constant-time path.
+- DNS-rebinding/Host-allowlist protection covers the `/mcp` route. The `/events` SSE endpoint is a raw handler that enforces only the bearer-token check, **not** the Host/Origin allowlist — so it doesn't get the same rebinding protection. (Acceptable for loopback single-user; tighten if exposed.)
+- Acceptable on a single-user machine; if that assumption changes, treat `.env`/`.mcp.json` as secrets (`chmod 600`) and rotate the token by deleting the `ROLL20_MCP_TOKEN` line and restarting.
+
+---
+
+## 8. On-disk credential caches under `data/`
+
+**What it is:** Beyond `userDataDir`, the server writes three credential-bearing caches under `data/` (all gitignored via `data/` in `.gitignore`):
+- `data/roll20-rt-token.json` — the Roll20 Firebase custom token + per-campaign RTDB shard URL, harvested from the logged-in browser session (TTL ~50 min, then re-harvested). Grants RTDB access to the campaign.
+- `data/roll20-upload-cache.json` — Roll20 session cookies captured from the browser, used to bypass Playwright for CDN uploads (TTL ~8 h). Equivalent to a Roll20 session.
+- `data/ddb-cobalt.json` — the raw DDB `CobaltSession` cookie used for browserless DDB reads. (The short-lived JWT exchanged from it is held **in memory only** — never written to disk.)
+
+**Risk:** Anyone who reads `data/` obtains live Roll20 (Firebase + session) and DDB credentials — the same blast radius as reading `userDataDir`, just split across smaller files.
+
+**Mitigations:**
+- All three are under `data/`, which is gitignored, so none are committed.
+- The Roll20 caches expire on a TTL (rt-token ~50 min, upload-cache ~8 h). The `ddb-cobalt.json` cookie has **no TTL** — it's the long-lived "remember me" session and is re-harvested only on an auth failure (401/403), so it can sit valid on disk for a long time.
+- Apply the same `userDataDir` discipline (§1): keep `data/` out of cloud-synced folders; ACL to the current user in a high-risk environment.
+
+---
+
+## 9. DALL-E / image generation API
 
 **What goes to the third-party API:** User-supplied text prompts describing scenes ("a dark forest clearing with a ruined altar").
 

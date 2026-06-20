@@ -34,9 +34,11 @@ DEAD THIS FIGHT: comma-separated names
 Round N events: [2-3 sentence summary]
 ```
 
-**Spell slot tracking**: DDB isn't reliably writable here — treat the snapshot as authoritative
-for slots/prepared spells. Update it whenever a PC casts. At round start, spot-check against DDB
-(`ddb_get_character` per PC) and note discrepancies in the snapshot without correcting DDB.
+**Spell slot tracking**: DDB is read-only **and exposes no spell-slot data via any MCP tool**
+(`ddb_get_character` returns HP, temp HP, AC, passive perception, and conditions only — not slots).
+So the snapshot is the **sole** authority for slots/prepared spells — there is nothing to spot-check
+them against. Update the snapshot whenever a PC casts. You *can* spot-check HP/conditions against
+`ddb_get_character`, but never slots.
 
 ## Step 1: Orient
 
@@ -61,8 +63,9 @@ Extract (see dm-rules.md for the condition/death/wound and voice-to-text rules):
 - **AoE template cleanup** — one-shot spells: `remove_object` the template. Persistent effects
   (Web, Cloudkill, Spike Growth, Wall of Fire): move template to map layer + rename ("Cloudkill
   — Round N").
-- **Zones/auras** — clear burned-away areas (`remove_object`/`clear_zone`); set/clear
-  concentration auras on tokens.
+- **Zones/auras** — clear burned-away areas: `clear_zone` for a named zone made by `create_zone`;
+  `remove_object` to delete a stray template graphic/token. Set/clear concentration auras on tokens
+  via `set_token_props` (e.g. `aura1_radius=0` to clear; `layer="map"` to retire a template).
 
 ## Step 3: Propose before executing
 
@@ -102,9 +105,9 @@ When the order cycles back to the first combatant:
 
 1. **Terse mechanical summary**: who fell, active conditions, effect countdowns, current stakes
    in a line or two. No exact HP numbers, no dramatic recap — the DM delivers the drama.
-2. **Spot-check DDB** — `ddb_get_character` per surviving PC; compare slots to the snapshot. Note
-   discrepancies (DDB ahead = possible missed cast; DDB behind = possible external change) without
-   correcting DDB.
+2. **Spot-check DDB** — `ddb_get_character` per surviving PC; compare **HP and conditions** to the
+   snapshot and note discrepancies (without correcting DDB). DDB does not return spell slots, so
+   slots can't be checked here — the snapshot is authoritative for those.
 3. **Check the turn hook** — if not firing, re-enable `set_turn_hook enabled=true`.
 
 Then: "Ready for next narration?"

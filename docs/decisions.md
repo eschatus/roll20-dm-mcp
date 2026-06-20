@@ -80,24 +80,24 @@ This file records every non-obvious architectural choice made in this project. E
 
 ## 8. Roll20 status marker ↔ D&D Beyond condition mapping table
 
-**Choice:** A hardcoded mapping in `src/tools/combat.ts` maps DDB condition names (`poisoned`, `blinded`, etc.) to Roll20 status marker strings (`skull`, `bleeding-eye`, etc.).
+**Choice:** A hardcoded condition→tag mapping, kept in three hand-synced copies — `CONDITION_MARKERS` in `src/tools/combat.ts` (an array, used by `get_token_markers` for the RESERVED palette), in `src/bridge/markers.ts` (a Record, used by the RT path's `resolveMarkerForState`), and in `mod-scripts/ai-relay.js` (the Mod sandbox copy) — maps condition names (`poisoned`, `blinded`, etc.) to this campaign's **custom** Roll20 status-marker tags (`Poisoned::4444329`, `Blinded::4444318`, etc.). ⚠️ The three copies are NOT identical: `combat.ts` folds `wounded` into `CONDITION_MARKERS`, whereas `markers.ts` and `ai-relay.js` place `wounded`/`bloodied` in `PSEUDO_MARKERS` (so a "clear all conditions" sweep treats `wounded` as a condition via the `combat.ts` table but as a non-swept pseudo via the others — keep this in mind when editing).
 
-**Why:** The two systems use incompatible vocabularies. Roll20 status markers are short visual identifiers; DDB conditions are semantic names. There is no official mapping between them — this is a judgment call based on visual convention.
+**Why:** The two systems use incompatible vocabularies, and the campaign uses an uploaded custom marker set — the default Roll20 icons (`skull`, `bleeding-eye`) and ad-hoc hashes render *nothing* on these tokens. The table therefore encodes the campaign-specific `Name::id` tags directly. Name resolution is three-tier (`resolveMarkerForState`: `CONDITION_MARKERS` → `PSEUDO_MARKERS` → hashed ad-hoc pool), so any state name renders something. See `docs/roll20-token-markers.md` for the full palette.
 
-**Trade-offs:** Roll20 lets GMs customize marker sets. If the campaign uses a custom marker set, these strings may not match. The mapping can be overridden by editing `CONDITION_TO_MARKER` in `combat.ts`.
+**Trade-offs:** The tags are specific to this campaign's uploaded marker set (IDs 4444311–4444352, shared across the DM's campaigns). A campaign without that set would need its own `token_markers` IDs substituted. There are three copies of the table (TS tool, TS bridge, Mod sandbox) that must be kept in sync by hand — the Mod can't import the TS module.
 
 ---
 
-## 9. Campaign registry + in-memory active campaign
+## 9. Campaign registry + persisted active campaign
 
-**Choice:** Store all campaigns in `data/campaigns.json` (a named slug → `{ roll20CampaignId, ddbCampaignId }` map). Active campaign is an in-memory variable set by `switch_campaign`. The character registry is partitioned by campaign slug.
+**Choice:** Store all campaigns in `data/campaigns.json` (a named slug → `{ roll20CampaignId, ddbCampaignId }` map). The active campaign is persisted to `data/active-campaign.json` by `setActiveCampaign` and restored on startup by `restoreActiveCampaign` (in `src/registry/campaigns.ts`). The character registry is partitioned by campaign slug.
 
-**Why:** The DM runs 13 campaigns. A single `.env` variable for campaign ID only works for one. Campaigns are long-lived (months/years) so they need to persist across server restarts in a file. But the *active* campaign is a session concept — the DM says "switch to Strahd" before a session, it stays active for that session, and resets on the next restart to whatever is called first.
+**Why:** The DM runs 13+ campaigns. A single `.env` variable for campaign ID only works for one. Campaigns are long-lived (months/years) so they persist in a file. The active campaign was *originally* in-memory (reset on restart), but that meant a mid-session server restart silently dropped the active campaign and the next tool could touch the wrong one. Persisting it to `active-campaign.json` survives restarts, so the DM does not have to re-`switch_campaign` after every restart.
 
 **Trade-offs:**
-- The active campaign resets on MCP server restart — the DM must call `switch_campaign` once at the start of each session. This is intentional: it prevents accidentally updating the wrong campaign's tokens after a restart.
-- The Roll20 editor page navigates to the new campaign URL when `switch_campaign` is called (on the next tool call that needs the browser). This takes ~5–10 seconds but only happens once per switch.
-- `data/campaigns.json` and `data/characters.json` should be backed up — they're the DM's work, not derivable from Roll20 or DDB.
+- The active campaign now persists across restarts. The `switch_campaign`-then-wait rule (see `skills/dm-rules.md`) still applies for *intentional* switches, but a restart no longer requires a re-switch.
+- The Roll20 editor page lazily navigates to the active campaign's URL on the next tool call that needs the browser (when `_loadedCampaignId` mismatches) — not inside `setActiveCampaign` itself. This takes ~5–10 seconds but only happens once per switch.
+- `data/campaigns.json`, `data/characters.json`, and `data/active-campaign.json` are written atomically (write-temp-then-rename) to survive concurrent readers; back up the first two — they're the DM's work, not derivable from Roll20 or DDB.
 
 ---
 
@@ -106,3 +106,35 @@ This file records every non-obvious architectural choice made in this project. E
 **Known smell:** `mod-scripts/ai-relay.js` dispatches every relay command through a single ~1,300-line `switch (action)` statement. A handler-map refactor (one function per action, registered in a lookup table) would shrink the file and make each action independently testable.
 
 **Decision:** This refactor is **DEFERRED** until a relay test/replay harness exists. The relay runs inside the Roll20 Mod sandbox, which has no local test runner; the only current way to validate a change is to deploy it into a live campaign and exercise it by hand. Refactoring 1,300 lines of dispatch logic with no automated regression net is high-risk for a cosmetic gain. Build the harness (record real `!ai-relay {JSON}` commands + expected token mutations, replay them against the handler functions) first; do the handler-map split second.
+
+> Note: a `test/relay-actions.test.ts` harness now exists (a Roll20 emulator exercising `ai-relay.js` pure helpers), partially satisfying the precondition. The handler-map split is still deferred.
+
+---
+
+## 11. Browserless Firebase RTDB transport (`ROLL20_TRANSPORT=rt`)
+
+**Choice:** Offer a browserless Firebase Realtime Database transport, enabled opt-in via `ROLL20_TRANSPORT=rt` (when unset, the Playwright relay is used). The MCP server harvests Roll20's per-campaign Firebase custom token (intercepted from the browser's `signInWithCustomToken` request, cached in `data/roll20-rt-token.json`, TTL ~50 min), then pushes `!ai-relay {JSON}` commands into the campaign's RTDB chat node and reads `AIBRIDGE_RESULT` back over an RTDB child listener. The Playwright browser path remains as the fallback (and the default when the flag is unset).
+
+**Why:** The Playwright chat-typing path is slow (~hundreds of ms) and requires a live browser window per command. RTDB is shard-aware and warm-path ~49ms. Crucially, RT only ever falls back to the browser — enabling it can never be *less* capable, only faster/lighter (`relayCommand` in `src/bridge/roll20.ts`). The Mod handles every action regardless of transport, so RT serves reads and mutating writes alike.
+
+**Trade-offs:** Adds Firebase token harvesting + refresh complexity and a second transport to reason about. A shared nonce is generated once per command (before either transport) so an rt→browser fallback re-sends the *same* nonce; the Mod's `PROCESSED_NONCES` LRU then deduplicates, making post-send fallback safe even for mutations. A circuit breaker skips RT entirely when it's known-down. See `docs/roll20-realtime-protocol.md`.
+
+---
+
+## 12. In-process SSE for HUD delivery (mob plans + DM inbox), not RTDB writes
+
+**Choice:** Deliver Voice-HUD payloads (tactical mob-plan cards, `!dm` inbox items) to the HUD via an in-process Server-Sent Events broadcast from the HTTP server, rather than writing them to a custom `aibridge/*` RTDB subtree for the HUD to read.
+
+**Why:** Reverse-engineering showed Roll20's RTDB security rules **deny client writes to `aibridge/*` on every shard** (verified on `roll20-99910` and `roll20-99922`). The HUD therefore cannot read DM-authored data from a custom RTDB path, and the Mod has no Firebase access to write one. An in-process SSE stream (`/events` on the HTTP server, `src/index-http.ts`) sidesteps the denied channel entirely: the server already holds the data, so it broadcasts directly to connected HUD clients.
+
+**Trade-offs:** SSE delivery is local to the machine running the MCP server — fine for the single-DM, single-machine deployment model (see Decision 4). It would need a real message bus if the HUD ever ran on a different host than the server.
+
+---
+
+## 13. Atomic writes for registry files
+
+**Choice:** `data/campaigns.json`, `data/characters.json`, and `data/active-campaign.json` are written via write-to-temp-then-rename, not in-place truncate-and-write.
+
+**Why:** The MCP server and recon scripts can read these files while a tool is mid-write. An in-place write exposes a window where a reader sees a truncated/partial JSON file and crashes on parse. Rename is atomic on the same filesystem, so a reader always sees either the old or the new complete file.
+
+**Trade-offs:** None worth noting; the temp file lands in the same directory so the rename stays atomic.

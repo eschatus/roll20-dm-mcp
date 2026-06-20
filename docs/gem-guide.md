@@ -132,13 +132,15 @@ The ping is remembered for 3 minutes, so you can place it a moment before you de
 
 ### Persistent zones
 
-For ongoing effects — a Web, Cloudkill, Spirit Guardians, difficult terrain — the Gem can create a named zone that persists on the map:
+For ongoing **fixed-area** effects — a Web, Cloudkill, Spike Growth, difficult terrain — the Gem can create a named zone that persists on the map:
 
 > *"Create a Web zone centered on Thorne, 10 feet"*
 
 The zone stays on the map. When a creature enters or leaves the area, you can ask: *"who's in the Web?"* and the Gem will check against the zone.
 
 Clear a zone when the effect ends: *"clear the Web"*.
+
+> **Emanations are different.** Spells that move *with* a creature — Spirit Guardians, Aura of Vitality, Paladin auras — are set as a **token aura**, not a zone (say *"give Thorne a 15-foot Spirit Guardians aura"*). A zone is a fixed patch of ground; an aura follows the token.
 
 ---
 
@@ -207,7 +209,7 @@ Add names here to improve voice recognition accuracy. Anything the transcriber t
 
 Map spoken shortcuts to actual token names. "The lich" → "Strahd von Zarovich". "Z" → "Zeno". The Gem resolves these silently so you never have to say the full name.
 
-### Notes tab
+### DM Notes tab
 
 A free-form DM notebook for this campaign. Persists across sessions. Good for secrets, NPC voice notes, recurring plot reminders — anything you want to reference mid-session without leaving the gem.
 
@@ -252,4 +254,4 @@ See [player-commands.md](player-commands.md) for full details including cooldown
 
 **Names must match the map.** If you say "the big goblin" and the token is named "Goblin Chief", add a nickname. The Gem matches against the actual token names — it won't invent a name.
 
-**DDB lookups need both logins.** DDB stat reads (AC, spell save DC, monster stats) require the DDB session in the Playwright browser. If DDB calls error, re-login in the background browser window.
+**DDB lookups use a cached session cookie.** DDB stat reads (AC, spell save DC, monster stats) run browserlessly via a `CobaltSession` cookie harvested once on first login (exchanged for a short-lived token per request). If DDB calls start erroring, re-login to D&D Beyond in the background browser window to refresh the cookie. (Only if you've forced `DDB_TRANSPORT=browser` does it need a live Playwright DDB session.)

@@ -4,9 +4,10 @@ Single source of truth for how the Roll20 DM assistant behaves during play. Cons
 the `/combat` and `/round` slash commands, and the Voice HUD agent persona
 (`voice-hud/src/persona.ts` loads this file at runtime). Edit here; do not fork.
 
-These are the *rules*. The Voice HUD combat *procedure* — the phase state machine (scene-set →
-init-prep → combat loop → cleanup), triggers, and per-phase tool calls — is specified in
-[`voice-hud/WORKFLOW.md`](../voice-hud/WORKFLOW.md). Where they overlap, these rules win.
+These are the *rules*. The combat *procedure* — the step-by-step choreography (scene-set →
+init-prep → combat loop → cleanup), triggers, and per-phase tool calls — lives in the
+[`/combat`](../.claude/commands/combat.md) and [`/round`](../.claude/commands/round.md) slash
+commands. Where they overlap, these rules win.
 
 These rules reconcile the saved feedback in
 `C:\Users\escha\.claude\projects\e--personalProjects-roll20-dm-mcp\memory\`. Where a

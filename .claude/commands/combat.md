@@ -16,10 +16,13 @@ This file covers only the combat-start choreography.
    `ddb_list_campaign_characters` to map token → character. (Players are already deployed and
    match the DDB campaign; you don't need them to introduce themselves.) Keep this roster for
    the session — it resolves DM references like "Ryan's character takes 12."
-4. **Enable the turn hook** — `set_turn_hook enabled=true reset=true` (auto turn/round announcements).
-5. **Roll NPC initiative** — `roll_initiative npcOnly=true clearFirst=false`. NEVER roll or wipe
+4. **Roll NPC initiative** — `roll_initiative npcOnly=true clearFirst=false`. NEVER roll or wipe
    PC initiative; players set their own. Duplicate NPC names get epithets automatically. Report
-   the order.
+   the order. (This call also arms the turn hook itself — `setTurnHook enabled=true reset=true`
+   fires inside `roll_initiative` — so there is no separate "enable turn hook" step.)
+5. **Plan NPC tactics** — `plan_all_tactics`. The auto-trigger inside `roll_initiative` only
+   fires when `clearFirst=true`; since we use `clearFirst=false` (PC-safe), call tactics
+   explicitly here. Whisper cards arrive per mob as each plan completes.
 6. **Start the player inbox loop** — run `/loop 30s` with the prompt: "Call `get_dm_inbox`. For
    each `query`: look up the token/conditions and reply via `whisper_player`. For each `intent`:
    it auto-appears in the turn announcement, so only surface it if no turn hook is running.
@@ -36,7 +39,11 @@ and executing — use the **`/round`** workflow. Core reminders (full detail in 
   DM to say so explicitly.
 - For 2+ token updates use `batch_exec`. Send a short narration after updates.
 
-## AoE quick path
+## AoE
+
+Prefer **`resolve_aoe`** — the one-call tool that finds targets, rolls/reads saves, and
+applies damage (PC heals/HP route through relay state automatically). Use the manual path
+below only for exploration or corner cases `resolve_aoe` doesn't cover:
 
 `find_tokens_in_range centerTokenId=<caster> radiusFeet=<r> layerFilter=tokens` →
 `set_token_props` aura on caster (emanations) **or** `create_zone` (fixed areas) →

@@ -27,14 +27,16 @@ JWT + CobaltSession cookie (both)  ──▶  www.dndbeyond.com campaign APIs
 | Read | Endpoint | Auth | Notes |
 |------|----------|------|-------|
 | Character sheet | `GET character-service.../character/v5/character/{id}` | Bearer | **Identical shape** to the browser path — `parseStats`/`getMaxHp` work unchanged. Shared sheets even read with no auth. |
-| Monster by id | `GET monster-service.../v1/Monster?ids={id}` | Bearer | Raw monster-service shape (see mapping below). |
-| Monster by name | `GET monster-service.../v1/Monster?search={name}&skip=0&take=10` | Bearer | Returns ranked array; bridge prefers an exact (case-insensitive) name match. |
+| Monster by id | `GET monster-service.../v1/Monster?ids={id}` | Bearer | Raw monster-service shape — **not yet normalized** to `DdbMonster` (see mapping below). |
+| Monster by name | `GET monster-service.../v1/Monster?search={name}&skip=0&take=10` | Bearer | Returns ranked array; `rtGetMonster` prefers an exact (case-insensitive) name match. |
 | Campaign characters | `GET www.dndbeyond.com/api/campaign/stt/active-short-characters/{campaignId}` | Bearer **+** cookie | `{data:[{id,name,avatarUrl,userId,userName}]}`. Replaces the DOM scrape. Cookie **alone** returns the SPA login HTML — both headers required. |
 | All campaigns (the "set") | `GET www.dndbeyond.com/api/campaign/stt/active-campaigns` | Bearer **+** cookie | `{status:"success",data:[{id,name,dmUsername,playerCount,dmId,…}]}`. Same endpoint Avrae uses. Replaces the `my-campaigns` DOM scrape. Names are HTML-escaped → decode. |
 
 ### Dead endpoints
-- `www.dndbeyond.com/api/v5/monster?name=…` (what the old code used) now **404s** — the legacy
-  `getMonster` was already broken. Use `monster-service` instead.
+- `www.dndbeyond.com/api/v5/monster?name=…` (what the old code used) now **404s**. As of 2026-06-20
+  `dndbeyond.ts:getMonster` routes through `rtGetMonster` (monster-service) when RT is enabled; the
+  dead `www/api/v5` endpoint only remains on the non-RT branch. ⚠️ The routing is wired but the
+  field **normalization below is still TODO** (see next section).
 
 ### Avrae cross-check (github.com/avrae/avrae)
 - Confirms `character-service.../character/v5` (`utils/config.py`) and `…/api/campaign/stt/active-campaigns`
@@ -47,8 +49,13 @@ JWT + CobaltSession cookie (both)  ──▶  www.dndbeyond.com campaign APIs
   either polling character-service or partner Game Log access (the route Roll20's own official DDB
   integration uses).
 
-### monster-service v1 → `DdbMonster` mapping
-The monster-service ships ids, not friendly values — resolved in `dndbeyond.ts`:
+### monster-service v1 → `DdbMonster` mapping  ⚠️ PLANNED — NOT YET IMPLEMENTED
+The monster-service ships ids, not friendly values. **This normalization does not exist in
+`dndbeyond.ts` yet** — `getMonster` currently casts the raw monster-service record straight to
+`DdbMonster`, so `challengeRating`, the ability-text helpers, and speed are not populated from the
+fields below. The 5 fields `ddb_get_monster` / `resolveMonsterAvgHp` read (id, name, averageHitPoints,
+armorClass) may line up directly; the rest need this mapper, which should be built from a live capture
+(`src/recon/ddb-monster-diag.ts`). Intended mapping once implemented:
 - `challengeRatingId` → CR string. Fractional ids `1:"0", 2:"1/8", 3:"1/4", 4:"1/2"`; from id 5 it's
   linear `CR = id - 4` (validated: Horned Devil id 15 = CR 11).
 - `stats[].statId` → `id` (1–6 = STR…CHA) so `getMonsterAbilityScores` is unchanged.
@@ -75,9 +82,12 @@ Remaining unknown: the **HP** write endpoint name. The reliable next step is to 
 XHR from a live sheet (load a character in the browser, intercept the `character-service` PUT/POST
 fired when HP changes) rather than guessing. `ddb-rt.ts` exposes `rtRawFetch()` as the building block.
 
-Writes are deliberately **not** exposed as MCP tools yet: it conflicts with the current read-only
+Writes are deliberately **not** exposed as MCP tools, and the prior DDB-write tools were **removed**
+(this is a finalized decision, not a deferral): DDB is read-only here. Writing conflicts with the
 design (Beyond20 owns PC HP and would overwrite a push), and any live mutation of a player's sheet
-should be a deliberate, consented action — see the read-only rationale in `src/tools/ddb.ts`.
+should be a deliberate, consented action — see the read-only rationale in `src/tools/ddb.ts` and
+`docs/decisions.md` §1. The probe results above are kept only to record that the path is technically
+viable should that decision ever be revisited.
 
 ## Config
 - Default transport is browserless (`rt`). Force the old Playwright path with `DDB_TRANSPORT=browser`.

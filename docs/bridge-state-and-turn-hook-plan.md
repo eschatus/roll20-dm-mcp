@@ -1,5 +1,29 @@
 # Plan: GM bridge-state token + turn-hook migration to TS
 
+> **⚠ STATUS: SUPERSEDED / LARGELY INFEASIBLE AS WRITTEN (2026-06-20).** Two premises this plan
+> rests on turned out to be false:
+> 1. **"Writes → direct RTDB writes."** Roll20's RTDB security rules **deny client writes** to
+>    object/`aibridge/*` paths on every shard (verified on `roll20-99910` / `roll20-99922`). All
+>    mutating commands still go *through the Mod* via `!ai-relay` over RTDB — the Mod does the
+>    `createObj`/`.set()`. The TS client cannot write Roll20 objects (or a custom bridge path)
+>    directly.
+> 2. **The `bridge-mod` / `bridge-ts` token scheme is blocked.** It needs either TS→RTDB writes
+>    (denied) or the Mod reading a TS-written path (the Mod has no Firebase access at all). Neither
+>    half of the two-token channel exists.
+>
+> What actually shipped instead: **HUD payloads (mob plans, `!dm` inbox) are delivered by in-process
+> SSE broadcast** from the HTTP server, not a shared bridge token (see `docs/decisions.md` §12).
+> Mod globals (`round`, `turnHookEnabled`, `dmInbox`, `mobPlans`) persist in `state.GM_AI_Bridge`
+> and are served to TS through normal relay reads (`getDmInbox` / `getTurnHookState`), still over the
+> relay — not off a bridge token. The Mod still owns turn-hook auto-narration; TS produces its
+> markdown report separately (the two are complementary — see `skills/dm-rules.md`). Auto-roll
+> initiative for NPC tokens dropped mid-combat shipped via the Mod's `add:graphic` hook.
+>
+> The text below is kept for historical context only. Do not implement it without first solving the
+> RTDB-write-denied constraint.
+
+---
+
 Deferred from the browserless-RTDB session (branch `feat/browserless-rtdb-transport`). This is the
 high-value / high-risk remaining piece. Build it as a focused effort, not at the tail of a marathon.
 
