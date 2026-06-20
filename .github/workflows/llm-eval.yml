@@ -20,8 +20,8 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci
-      - name: Narration live eval (real Haiku)
+      - name: Narration evals (structural + LLM-as-judge, real Haiku)
         env:
           ROLL20_LLM_EVAL: "1"
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: npx vitest run test/narration-live-eval.test.ts
+        run: npx vitest run test/narration-live-eval.test.ts test/narration-judge-eval.test.ts

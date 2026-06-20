@@ -35,6 +35,21 @@ Mark each case ☑ pass / ☒ fail and jot what it actually did.
 
 ## 1. Narration rule — the change under test
 
+> **Automated coverage.** These rules now have CI evals (run the real agent against
+> scripted transcripts with a recording fake MCP — no gem, no Roll20):
+> - **Structural** (`test/narration-live-eval.test.ts`, checkers in `test/structural.ts`):
+>   N1 (HP call on the named target), N2 (one batched multi-target call, no loop),
+>   N7 (no digits in player-facing narration), N8 (every claim backed by a real call).
+> - **LLM-as-judge** (`test/narration-judge-eval.test.ts`, helper in `test/judge.ts`):
+>   the subjective ones — N4 (doesn't balloon), N5 (refuses to over-narrate, k-of-3),
+>   N6 (terse round-end). A calibration block grades the live judge on fixed good/bad
+>   strings first. The judge *plumbing* + structural checkers are hermetic per-PR gates
+>   (`judge.test.ts`, `structural.test.ts`); the live runs are opt-in
+>   (`ROLL20_LLM_EVAL=1` + key) via the manual `llm-eval` workflow.
+>
+> The manual pass below stays useful for what the evals can't see: STT accuracy, the
+> gem render, and PTT — and as a spot-check that the live table feels right.
+
 For each: PTT, say the line, watch the **gem reply** (GM-facing), the **tool calls** (ledger), and
 the **Roll20 public chat** (player-facing).
 
