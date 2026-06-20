@@ -2375,4 +2375,74 @@ on("ready", function() {
     + " plans=" + Object.keys(bs.mobPlans).length);
 });
 
+// Auto-roll initiative for NPC tokens dropped onto the player page during active combat.
+// Fires 800ms after drop so that any immediately-following roll_initiative relay call
+// can run first (double-entry guard checks turn order at fire time).
+on("add:graphic", function(obj) {
+  if (obj.get("layer") !== "tokens") return;
+
+  setTimeout(function() {
+    let token = getObj("graphic", obj.id);
+    if (!token) return;
+
+    // Only on the player page
+    if (token.get("_pageid") !== Campaign().get("playerpageid")) return;
+
+    // Only during active combat
+    let orderStr = Campaign().get("turnorder") || "[]";
+    let order;
+    try { order = JSON.parse(orderStr); } catch (e) { return; }
+    if (!order.length) return;
+
+    let tokenId = obj.id;
+
+    // Skip if already in turn order (placed by relay + roll_initiative)
+    if (order.some(function(e) { return e.id === tokenId; })) return;
+
+    // Skip PCs — non-empty controlledby that isn't "all" means a specific player owns it
+    let controlled = token.get("controlledby") || "";
+    if (controlled && controlled !== "all") return;
+
+    let tokenName = token.get("name") || "Unknown";
+    let initBonus = 0;
+    let charId = token.get("represents");
+    if (charId) {
+      let initAttrNames = ["initiative_bonus", "npc_initiative", "dex_mod", "dexterity_mod"];
+      for (let i = 0; i < initAttrNames.length; i++) {
+        let attrs = findObjs({ _type: "attribute", _characterid: charId, name: initAttrNames[i] });
+        if (attrs.length > 0) {
+          let val = parseInt(attrs[0].get("current"));
+          if (!isNaN(val)) { initBonus = val; break; }
+        }
+      }
+    }
+
+    let sign = initBonus >= 0 ? "+" : "";
+    let expr = "[[1d20" + (initBonus !== 0 ? sign + initBonus : "") + "]]";
+    sendChat("Initiative", expr, function(ops) {
+      let inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
+      let roll = inlinerolls[0];
+      let total = roll ? roll.results.total : (randomInteger(20) + initBonus);
+
+      // Re-read turn order after async sendChat
+      let freshStr = Campaign().get("turnorder") || "[]";
+      let freshOrder;
+      try { freshOrder = JSON.parse(freshStr); } catch (e) { freshOrder = []; }
+
+      // Guard again — might have been added while sendChat was async
+      if (freshOrder.some(function(e) { return e.id === tokenId; })) return;
+
+      // Insert at correct pr-descending position
+      let entry = { id: tokenId, pr: total, custom: "" };
+      let insertIdx = freshOrder.findIndex(function(e) { return (parseFloat(e.pr) || 0) < total; });
+      if (insertIdx === -1) freshOrder.push(entry);
+      else freshOrder.splice(insertIdx, 0, entry);
+      Campaign().set("turnorder", JSON.stringify(freshOrder));
+
+      let bonusStr = initBonus !== 0 ? " (d20" + sign + initBonus + ")" : "";
+      sendChat("Initiative", "/w gm ⚡ Auto-init: **" + esc(tokenName) + "** → **" + total + "**" + bonusStr);
+    }, { noarchive: true });
+  }, 800);
+});
+
 log("[GM_AI_Bridge] Relay script loaded. Ready for !ai-relay commands.");
