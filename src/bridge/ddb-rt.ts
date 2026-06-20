@@ -208,3 +208,61 @@ export async function rtGetCampaignCharacters(campaignId: string): Promise<RtCam
 export function rtRawFetch(url: string, opts: RtFetchOpts = {}): Promise<Response> {
   return rtFetch(url, opts);
 }
+
+// --- live damageAdjustments overlay (the one monster table that drifts as DDB adds content) ---
+//
+// The id→name tables in ddb-monster-tables.ts are baked from config/json. The stable ones (CR,
+// alignment, size, movement, condition) never change. `damageAdjustments` accretes new ids over
+// time, so we overlay it from the live config and disk-cache it with a 7-day TTL. config/json is
+// ~57KB of mostly-irrelevant data, so we extract only the damageAdjustments slice into the cache.
+// Best-effort: a fetch failure leaves the baked table in charge — this never throws.
+
+const DDB_CONFIG_URL = `${WWW}/api/config/json`;
+const MON_CONFIG_CACHE = path.resolve("./data/ddb-monster-config.json");
+const MON_CONFIG_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface DamageAdjustmentEntry { name: string; type: 1 | 2 | 3 }
+interface MonConfigCache { fetchedAt: number; damageAdjustments: Record<string, DamageAdjustmentEntry> }
+
+let _monConfigMem: Record<number, DamageAdjustmentEntry> | null = null;
+let _monConfigRefreshing = false;
+
+function keyById(rows: Array<{ id: number; name: string; type: number }>): Record<number, DamageAdjustmentEntry> {
+  const out: Record<number, DamageAdjustmentEntry> = {};
+  for (const r of rows) if (r && typeof r.id === "number") out[r.id] = { name: r.name, type: (r.type as 1 | 2 | 3) };
+  return out;
+}
+
+async function fetchDamageAdjustments(): Promise<Record<number, DamageAdjustmentEntry>> {
+  // config/json is served to a plain cookie'd fetch (validated); cookie alone is enough here.
+  const data = await rtJson<{ data?: { damageAdjustments?: Array<{ id: number; name: string; type: number }> } } & { damageAdjustments?: Array<{ id: number; name: string; type: number }> }>(
+    DDB_CONFIG_URL,
+    { auth: "cookie" },
+  );
+  const rows = (data.data?.damageAdjustments ?? data.damageAdjustments ?? []);
+  const map = keyById(rows);
+  if (Object.keys(map).length === 0) throw new Error("ddb-rt: config/json had no damageAdjustments");
+  mkdirSync(path.dirname(MON_CONFIG_CACHE), { recursive: true });
+  writeFileSync(MON_CONFIG_CACHE, JSON.stringify({ fetchedAt: Date.now(), damageAdjustments: map } as MonConfigCache), "utf-8");
+  _monConfigMem = map;
+  return map;
+}
+
+// Returns the live damageAdjustments overlay, or null if it can never be obtained (offline cold
+// start with no cache). Loads from memory → disk → live fetch; refreshes a stale disk cache in the
+// background so the calling monster lookup is never blocked on a refresh.
+export async function rtGetDamageAdjustments(): Promise<Record<number, DamageAdjustmentEntry> | null> {
+  if (_monConfigMem) return _monConfigMem;
+  if (existsSync(MON_CONFIG_CACHE)) {
+    try {
+      const c = JSON.parse(readFileSync(MON_CONFIG_CACHE, "utf-8")) as MonConfigCache;
+      _monConfigMem = keyById(Object.entries(c.damageAdjustments).map(([id, v]) => ({ id: Number(id), name: v.name, type: v.type })));
+      if (Date.now() - c.fetchedAt > MON_CONFIG_TTL_MS && !_monConfigRefreshing) {
+        _monConfigRefreshing = true;
+        fetchDamageAdjustments().catch(() => {}).finally(() => { _monConfigRefreshing = false; });
+      }
+      return _monConfigMem;
+    } catch { /* corrupt cache → fall through to a live fetch */ }
+  }
+  try { return await fetchDamageAdjustments(); } catch { return null; }
+}
