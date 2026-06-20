@@ -18,6 +18,7 @@ import { DmAgent } from "./agent";
 import { buildRoster, clearRosterCache } from "./roster";
 import { loadCampaignData, saveCampaignData, buildVocabPrompt, addVocabTerm, CampaignData } from "./campaignData";
 import { loadSettings, saveSettings, AppSettings } from "./settings";
+import { setLogSink, persist } from "./logger";
 
 // Load the repo-root .env so ANTHROPIC_API_KEY is available (shared with the MCP server).
 dotenv.config({ path: path.join(__dirname, "..", "..", ".env") });
@@ -96,6 +97,9 @@ console.error = (...args: unknown[]) => {
   logBuffer.push(entry);
   if (logBuffer.length > LOG_BUFFER_MAX) logBuffer.shift();
   send("log", entry);
+  // Durable file (survives the detached launch, where stderr is lost). The in-memory logBuffer
+  // only backfills the panel for the current session; hud.log persists across runs.
+  persist({ ts: entry.ts, level: "info", kind: "console", msg: text });
 };
 
 // Horizontal cushion-cut gem: wider than tall. Window leaves margin for the
@@ -144,6 +148,14 @@ function setGhostClickThrough(on: boolean) {
 function send(channel: string, payload: unknown) {
   if (gem && !gem.isDestroyed()) gem.webContents.send(channel, payload);
 }
+
+// Forward structured logger.log() events (kind/perf/ms) to the same renderer Debug panel, shaped
+// like the LogEntry the panel already renders. logger.log() also persists them to hud.log itself.
+setLogSink((e) => send("log", {
+  level: e.level === "error" ? "error" : "info",
+  text: (e.ms != null ? `[${e.kind} ${e.ms}ms] ` : `[${e.kind}] `) + e.msg + (e.detail ? ` :: ${e.detail.slice(0, 120)}` : ""),
+  ts: e.ts,
+}));
 
 // --- PTT wiring ---
 function wirePtt() {

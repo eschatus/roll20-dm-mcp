@@ -12,6 +12,12 @@ import * as path from "path";
 // dependencies beyond fs/path — drop-in regardless of the config module's shape.
 const DATA_DIR = process.env.DMW_DATA_DIR || path.join(__dirname, "..", "data");
 
+// Capture the ORIGINAL console.error at import time. main.ts later monkeypatches console.error to
+// fan out to the renderer panel, so log() must use the original — otherwise logging through log()
+// would recurse back into that shim. (logger is imported before the shim is installed.)
+const _consoleError: (...a: unknown[]) => void =
+  typeof console !== "undefined" && console.error ? console.error.bind(console) : () => {};
+
 export type LogLevel = "info" | "warn" | "error" | "perf";
 
 export interface LogEvent {
@@ -60,13 +66,26 @@ export function log(e: Omit<LogEvent, "ts"> & { ts?: number }): void {
   // 1. file
   try { ensureStream()?.write(JSON.stringify(ev) + "\n"); } catch { /* ignore */ }
 
-  // 2. console (kept for live terminals; perf events show the ms inline)
+  // 2. console (kept for live terminals; perf events show the ms inline). Uses the ORIGINAL
+  // console.error so it doesn't recurse through main.ts's console shim.
   const head = ev.ms != null ? `${ev.kind} ${ev.ms}ms` : ev.kind;
   const tail = ev.detail ? " :: " + ev.detail.slice(0, 100) : "";
-  console.error(`[${head}] ${ev.msg}${tail}`);
+  _consoleError(`[${head}] ${ev.msg}${tail}`);
 
   // 3. renderer (Debug panel)
   if (_sink) { try { _sink(ev); } catch { /* renderer gone */ } }
+}
+
+/**
+ * File-only write (no console, no sink) — for a caller that already handles console + panel itself
+ * (e.g. main.ts's console.error shim), so its messages still land durably in hud.log.
+ */
+export function persist(e: Omit<LogEvent, "ts"> & { ts?: number }): void {
+  const ev: LogEvent = {
+    ts: e.ts ?? Date.now(), level: e.level, kind: e.kind, msg: e.msg,
+    ...(e.ms != null ? { ms: e.ms } : {}), ...(e.detail != null ? { detail: e.detail } : {}),
+  };
+  try { ensureStream()?.write(JSON.stringify(ev) + "\n"); } catch { /* ignore */ }
 }
 
 /** start()/stop() timer helper: const done = timer(); ...; const ms = done(); */
