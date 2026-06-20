@@ -106,7 +106,6 @@ export function registerCombatTools(server: McpServer): void {
     },
     async ({ condition, active, characterName, tokenId }) => {
       let resolvedTokenId = tokenId;
-      let charId: string | undefined;
       if (!resolvedTokenId) {
         if (!characterName) throw new Error("Provide characterName or tokenId");
         resolvedTokenId = await resolveTokenOrThrow(characterName);
@@ -114,7 +113,7 @@ export function registerCombatTools(server: McpServer): void {
       // Resolve the linked character so condition STATE (active_conditions) syncs,
       // not just the sticker. toggleCondition handles both + the pseudo/custom tiers.
       const tok = await roll20.relayCommand<{ represents?: string } | null>({ action: "getTokenById", tokenId: resolvedTokenId });
-      charId = tok?.represents || undefined;
+      const charId = tok?.represents || undefined;
       const res = await roll20.relayCommand<{ tier?: string; marker?: string }>({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition, active });
       const tierNote = res?.tier === "custom" ? " (custom state — icon auto-assigned + tracked)" : res?.tier === "pseudo" ? " (pseudo-condition)" : "";
       return text(`${condition} ${active ? "applied to" : "cleared from"} ${characterName ?? resolvedTokenId}${tierNote}`);

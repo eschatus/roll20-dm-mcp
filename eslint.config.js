@@ -47,16 +47,6 @@ export default tseslint.config(
     },
   },
   {
-    // Pre-existing prefer-const violation in combat.ts: `let charId` is declared
-    // separately from its single assignment (line ~109 vs ~117). The fix requires
-    // restructuring that code — tracked as tech-debt, not changed here per the
-    // zero-functional-churn rule.
-    files: ["src/tools/combat.ts"],
-    rules: {
-      "prefer-const": "warn",
-    },
-  },
-  {
     ignores: ["dist/**", "node_modules/**", "mod-scripts/**"],
   }
 );
