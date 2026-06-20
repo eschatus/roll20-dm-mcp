@@ -132,9 +132,11 @@ export class DmAgent {
     private mcp: Roll20McpLike,
     initial?: ProviderName,
     private makeProvider: ProviderFactory = createProvider,
+    initialPhase: DmPhase = "IDLE",
   ) {
     this.providerName = initial ?? CONFIG.provider;
     this.llm = this.makeProvider(this.providerName);
+    this.phase = initialPhase;
   }
 
   currentProvider(): ProviderName { return this.providerName; }

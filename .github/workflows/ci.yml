@@ -25,3 +25,23 @@ jobs:
         run: npm run build
       - name: Mod syntax gate (ai-relay.js is plain sandbox JS — no typecheck otherwise)
         run: node --check mod-scripts/ai-relay.js
+
+  voice-hud-tests:
+    # voice-hud has its own build (CommonJS, separate deps). These are the hermetic
+    # tests only — phase machine + narration structural checkers. The live-model
+    # narration eval is skipped here (no ROLL20_LLM_EVAL); run it via the manual
+    # llm-eval workflow.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: voice-hud
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Unit tests (offline — live eval auto-skips)
+        run: npm test
