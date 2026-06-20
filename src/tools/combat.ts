@@ -507,13 +507,18 @@ export function registerCombatTools(server: McpServer): void {
     },
     async ({ attributeName, characterName, charSheetId }) => {
       const resolvedCharId = await resolveCharSheetId(characterName, charSheetId);
-      const attrs = await roll20.relayCommand<Record<string, { current: unknown; max: unknown }>>({
+      const attrs = await roll20.relayCommand<Record<string, { current: unknown; max: unknown } | string | number>>({
         action: "getCharacterAttributes",
         charId: resolvedCharId,
         names: [attributeName],
       });
+      // The relay's attr-collapse compaction returns a FLAT value (not {current,max}) when the
+      // attribute's max is empty — which is the common case. Handle both shapes.
       const attr = attrs[attributeName];
-      return json({ charSheetId: resolvedCharId, attribute: attributeName, current: attr?.current ?? null, max: attr?.max ?? null }, false);
+      const isObj = attr !== null && typeof attr === "object";
+      const current = isObj ? ((attr as { current: unknown }).current ?? null) : (attr ?? null);
+      const max = isObj ? ((attr as { max: unknown }).max ?? null) : null;
+      return json({ charSheetId: resolvedCharId, attribute: attributeName, current, max }, false);
     }
   );
 
