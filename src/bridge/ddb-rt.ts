@@ -76,6 +76,12 @@ async function getCobalt(forceFresh = false): Promise<string> {
   return harvestCobalt();
 }
 
+// Cobalt if it's already available (env/mem/disk) WITHOUT touching the browser. Used by the
+// optional damageAdjustments overlay, which must never trigger a browser harvest of its own.
+function peekCobalt(): string | null {
+  return process.env.DDB_COBALT || _cobaltMem || readCobaltCache();
+}
+
 // --- cobalt → short-lived JWT (in-memory cache, re-harvest cobalt on 401) ---
 
 interface JwtCache { token: string; expiresAt: number }
@@ -234,6 +240,10 @@ function keyById(rows: Array<{ id: number; name: string; type: number }>): Recor
 }
 
 async function fetchDamageAdjustments(): Promise<Record<number, DamageAdjustmentEntry>> {
+  // Only refresh when cobalt is ALREADY available — never launch a browser harvest just for the
+  // optional overlay. In offline/CI/test environments (no cobalt) this skips instantly, so a
+  // monster lookup behaves exactly as before the overlay existed (no added latency, no browser).
+  if (!peekCobalt()) throw new Error("ddb-rt: no cobalt available; skipping damageAdjustments overlay (baked table used)");
   // config/json is served to a plain cookie'd fetch (validated); cookie alone is enough here.
   const data = await rtJson<{ data?: { damageAdjustments?: Array<{ id: number; name: string; type: number }> } } & { damageAdjustments?: Array<{ id: number; name: string; type: number }> }>(
     DDB_CONFIG_URL,
