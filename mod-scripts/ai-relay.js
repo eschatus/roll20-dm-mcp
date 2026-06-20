@@ -1993,6 +1993,52 @@ on("chat:message", function (msg) {
         break;
       }
 
+      case "sendPing": {
+        // args: left, top, pageId, playerId?, moveAll?, visibleTo?
+        sendPing(
+          args.left, args.top, args.pageId,
+          args.playerId || null,
+          args.moveAll  || false,
+          args.visibleTo || null
+        );
+        writeResult(nonce, { ok: true });
+        break;
+      }
+
+      case "spawnFx": {
+        // args: x, y, type (e.g. "nova-fire"), pageId
+        spawnFx(args.x, args.y, args.type, args.pageId);
+        writeResult(nonce, { ok: true });
+        break;
+      }
+
+      case "spawnFxBetweenPoints": {
+        // args: x1, y1, x2, y2, type, pageId
+        spawnFxBetweenPoints(
+          { x: args.x1, y: args.y1 },
+          { x: args.x2, y: args.y2 },
+          args.type, args.pageId
+        );
+        writeResult(nonce, { ok: true });
+        break;
+      }
+
+      case "toFront": {
+        let frontObj = getObj(args.objectType || "graphic", args.objectId);
+        if (!frontObj) throw new Error("Object not found: " + args.objectId);
+        toFront(frontObj);
+        writeResult(nonce, { ok: true });
+        break;
+      }
+
+      case "toBack": {
+        let backObj = getObj(args.objectType || "graphic", args.objectId);
+        if (!backObj) throw new Error("Object not found: " + args.objectId);
+        toBack(backObj);
+        writeResult(nonce, { ok: true });
+        break;
+      }
+
       case "createZone": {
         // Draw a named zone (circle or rect) on the "objects" layer.
         // Metadata stored in gmnotes so it survives relay restarts.
