@@ -331,6 +331,10 @@ async function runAgent(transcript: string) {
         send("agent", { kind: "confirm", text: `${name}(${shortArgs(args)})` });
         send("state", "confirm");
       }),
+      onPhaseChange: (phase) => {
+        console.error(`[agent] phase → ${phase}`);
+        send("phase", { phase });
+      },
     });
     // Record the turn that was current when the DM just spoke, so the next
     // refreshRoster can tell whether turns have advanced since this narration.
@@ -392,6 +396,9 @@ function wireWizard() {
     return { roster: rosterNames };
   });
   ipcMain.on("set-mode", (_e, m: Mode) => setMode(m));
+
+  // Phase indicator: current DmPhase (for the gem UI phase badge).
+  ipcMain.handle("get-phase", () => agent.currentPhase());
 
   // Hot-swap the LLM backend (local Ollama ↔ cloud Claude) when local gives bad
   // results. Returns the active provider so the UI reflects reality.

@@ -46,6 +46,64 @@ const CLOUD_TOOLS = [
   "ddb_get_character", "ddb_get_monster", "ddb_list_campaign_characters", "ddb_list_campaigns", // DDB reads
   "add_vocab", "add_nickname", "remove_vocab", "remove_nickname", // STT vocab + alias editing
   "register_campaign", "remove_campaign",                         // campaign setup
+  "get_current_page",  // page verification in scene-set + cleanup
+  "list_zones",        // enumerate zones for cleanup
+];
+
+// ---------------------------------------------------------------------------
+// Phase-scoped tool allowlists
+// ---------------------------------------------------------------------------
+// Each phase narrows the toolset to what the agent should actually use during
+// that phase. Wrong-phase tool calls are a major source of errors when one flat
+// prompt drives every moment of play, so these lists are intentionally tight.
+//
+// IDLE — out of combat: read-only + lookup + journal. No HP/condition tools.
+const IDLE_TOOLS = [
+  "list_campaigns", "active_campaign", "switch_campaign",
+  "list_tokens", "get_token", "get_recent_chat", "get_dm_inbox",
+  "get_turn_order",
+  "ddb_get_character", "ddb_get_monster", "ddb_list_campaign_characters", "ddb_list_campaigns",
+  "create_handout", "create_character_stub", "get_journal_folder", "set_journal_folder",
+  "send_narration", "whisper_player",
+  "add_vocab", "add_nickname", "remove_vocab", "remove_nickname",
+  "register_campaign", "remove_campaign",
+];
+
+// SCENE_SET — board review (read-mostly, silent to players). No writes except
+// campaign switch. The agent confirms the campaign, verifies the map page,
+// matches cast to tokens, and flags rules keywords. No initiative, no turn order.
+const SCENE_SET_TOOLS = [
+  "list_campaigns", "active_campaign", "switch_campaign",
+  "get_current_page", "list_tokens", "get_token",
+  "ddb_get_character", "ddb_get_monster", "ddb_list_campaign_characters", "ddb_list_campaigns",
+  "get_dm_inbox",
+];
+
+// INIT_PREP — stage the monster side while players sort their own inits.
+// NPC-only initiative roll, nameplate reveal, tactics launch. NO advance_turn,
+// NO clear_turn_order, NO HP writes.
+const INIT_PREP_TOOLS = [
+  "list_tokens", "get_token", "get_turn_order",
+  "roll_initiative",          // must use npcOnly=true, clearFirst=false
+  "set_token_props",          // nameplate on (showname / showplayers_name)
+  "batch_exec",               // bulk nameplate update across all NPCs
+  "plan_all_tactics",         // queue tactical plans before first turn
+  "ddb_get_monster",
+];
+
+// COMBAT_LOOP — turn by turn. Full live-combat toolset; still no map/vision/prep.
+const COMBAT_LOOP_TOOLS = CLOUD_TOOLS;
+
+// CLEANUP — explicit close sequence. Destructive but gated: each step is a
+// write that will be proposed for DM confirmation. NO HP writes (combat is over).
+const CLEANUP_TOOLS = [
+  "set_turn_hook",
+  "clear_turn_order",
+  "list_zones", "clear_zone",
+  "set_token_props",           // clear auras (aura1_radius=0)
+  "batch_exec",
+  "sync_character_state",
+  "list_tokens",
 ];
 
 export const CONFIG = {
@@ -120,6 +178,16 @@ export const CONFIG = {
   // tools; cloud additionally keeps the heavier combat tools the 7B can't.
   localToolAllowlist: LOCAL_TOOLS,
   cloudToolAllowlist: CLOUD_TOOLS,
+
+  // Phase-scoped tool allowlists. toolSpecs() in agent.ts picks among these
+  // based on the current DmPhase instead of using the flat cloud/local lists.
+  phaseTools: {
+    IDLE:         IDLE_TOOLS,
+    SCENE_SET:    SCENE_SET_TOOLS,
+    INIT_PREP:    INIT_PREP_TOOLS,
+    COMBAT_LOOP:  COMBAT_LOOP_TOOLS,
+    CLEANUP:      CLEANUP_TOOLS,
+  } as Record<string, string[]>,
 
   // --- Agent whisper notification sound ---
   // The demonic whisper clip played when the agent responds. A random slice of
