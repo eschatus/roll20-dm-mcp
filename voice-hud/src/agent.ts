@@ -11,10 +11,23 @@
 // (sceneSet, initPrep, beginCombat, cleanup) run a code-driven backbone of
 // must-happen steps while leaving judgment gaps to the model.
 
-import { McpRoll20 } from "./mcp";
+import type { McpTool } from "./mcp";
 import { buildSystemPrompt } from "./persona";
 import { createProvider, LLMProvider, ToolSpec, ProviderName } from "./llm";
 import { CONFIG } from "./config";
+
+// The narrow MCP surface the agent actually uses: list tools + call one. The
+// real McpRoll20 satisfies this structurally; tests inject a recording fake.
+// (McpRoll20 has private fields, so depending on the concrete class would block
+// a structural test double — the interface is the seam.)
+export interface Roll20McpLike {
+  getTools(): McpTool[];
+  call(name: string, args: Record<string, unknown>): Promise<string>;
+}
+
+/** Factory that builds an LLMProvider for a given backend name. Injectable so
+ *  tests can supply a deterministic FakeProvider instead of a live model. */
+export type ProviderFactory = (name: ProviderName) => LLMProvider;
 
 // ---------------------------------------------------------------------------
 // Phase state machine
@@ -40,7 +53,7 @@ const PHASE_TRANSITIONS: Record<DmPhase, DmPhase[]> = {
 // the model can always be corrected. Separate patterns for each sub-entry:
 
 /** Detect scene-set (opening narration with combat flavor). */
-function detectSceneSet(t: string): boolean {
+export function detectSceneSet(t: string): boolean {
   const s = t.toLowerCase();
   // Combat-flavored nouns that appear in opening narration
   const combatNouns = /\b(ambush|attack|aggress|beset|surround|charge|assault|band of|group of|horde|swarm|pack|vampir|skeleton|goblin|zombie|wolf|wolves|orc|gnoll|ghoul|wraith|specter|demon|devil|undead|dragon|troll|ogre|giant|bandit|cultist|mercenary|guard)\b/;
@@ -51,13 +64,13 @@ function detectSceneSet(t: string): boolean {
 }
 
 /** Detect DM calling for initiative (transition SCENE_SET → INIT_PREP). */
-function detectCallForInit(t: string): boolean {
+export function detectCallForInit(t: string): boolean {
   const s = t.toLowerCase();
   return /\b(roll(ing)?\s+initiative|call(ing)?\s+for\s+initiative|everyone\s+roll|roll\s+for\s+init)\b/.test(s);
 }
 
 /** Detect DM starting combat (transition INIT_PREP → COMBAT_LOOP). */
-function detectBeginCombat(t: string): boolean {
+export function detectBeginCombat(t: string): boolean {
   const s = t.toLowerCase();
   return /\b(sort\s+(it|the\s+(order|initiative))|start(ing)?\s+(combat|the\s+(fight|round|battle))|begin(ning)?\s+(combat|the\s+(fight|round|battle))|let('|')?s\s+go|combat\s+starts|round\s+one|first\s+turn)\b/.test(s);
 }
@@ -66,7 +79,7 @@ function detectBeginCombat(t: string): boolean {
  * HIGH-PRECISION EXIT — explicit DM phrase only. Two locks on the irreversible
  * cleanup sequence: this detector must fire AND each step prompts for confirmation.
  */
-function detectCombatOver(t: string): boolean {
+export function detectCombatOver(t: string): boolean {
   const s = t.toLowerCase();
   // Require deliberate "combat" or "fight" + a clear-close verb
   return /\b(combat('?s?\s+(done|over|finished|ended|complete))|fight('?s?\s+(done|over|finished|ended))|end\s+(of\s+)?(combat|the\s+fight)|close\s+out\s+(combat|the\s+fight)|wrap\s+(up\s+)?(combat|the\s+fight)|combat\s+closed)\b/.test(s);
@@ -115,9 +128,13 @@ export class DmAgent {
   /** Current combat phase. */
   private phase: DmPhase = "IDLE";
 
-  constructor(private mcp: McpRoll20, initial?: ProviderName) {
+  constructor(
+    private mcp: Roll20McpLike,
+    initial?: ProviderName,
+    private makeProvider: ProviderFactory = createProvider,
+  ) {
     this.providerName = initial ?? CONFIG.provider;
-    this.llm = createProvider(this.providerName);
+    this.llm = this.makeProvider(this.providerName);
   }
 
   currentProvider(): ProviderName { return this.providerName; }
@@ -130,7 +147,7 @@ export class DmAgent {
     if (name === this.providerName) return { ok: true };
     if (this.busy) return { ok: false, reason: "busy — finish the current action first" };
     this.providerName = name;
-    this.llm = createProvider(name);
+    this.llm = this.makeProvider(name);
     this.started = false; // re-seed system prompt + tools on next handle()
     return { ok: true };
   }
@@ -388,7 +405,7 @@ export class DmAgent {
     let turnLlm = this.llm;
     if (escalate) {
       cb.onToolResult("↑escalate", "complex narration → cloud (haiku)");
-      turnLlm = createProvider("anthropic");
+      turnLlm = this.makeProvider("anthropic");
       turnLlm.start(buildSystemPrompt(this.roster, "anthropic", this.phase), this.toolSpecs("anthropic"));
       turnLlm.pushUser(transcript);
     } else {
