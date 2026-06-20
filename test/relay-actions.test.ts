@@ -162,3 +162,56 @@ describe("setTokenBar write", () => {
     expect(Number(emu.getObj("graphic", tok.id)!.get("bar1_value"))).toBe(2);
   });
 });
+
+describe("editCharacter relay action", () => {
+  it("updates name on an existing character", () => {
+    const charId = emu.createCharacter("Old Name", {});
+    const res = emu.relay<{ ok: boolean; updated: string[] }>({
+      action: "editCharacter",
+      charId,
+      name: "New Name",
+    });
+    expect(res.ok).toBe(true);
+    expect(res.updated).toContain("name");
+    expect(emu.getObj("character", charId)!.get("name")).toBe("New Name");
+  });
+
+  it("updates multiple fields at once and reports all updated keys", () => {
+    const charId = emu.createCharacter("Hero", {});
+    const res = emu.relay<{ ok: boolean; updated: string[] }>({
+      action: "editCharacter",
+      charId,
+      controlledby: "all",
+      inplayerjournals: "all",
+      archived: false,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.updated).toContain("controlledby");
+    expect(res.updated).toContain("inplayerjournals");
+    expect(res.updated).toContain("archived");
+    expect(emu.getObj("character", charId)!.get("controlledby")).toBe("all");
+    expect(emu.getObj("character", charId)!.get("inplayerjournals")).toBe("all");
+  });
+
+  it("throws when no fields are passed", () => {
+    const charId = emu.createCharacter("Stub", {});
+    expect(() =>
+      emu.relay({ action: "editCharacter", charId })
+    ).toThrow(/no fields to edit/i);
+  });
+
+  it("throws when the character id does not exist", () => {
+    expect(() =>
+      emu.relay({ action: "editCharacter", charId: "nonexistent-id", name: "X" })
+    ).toThrow(/character not found/i);
+  });
+
+  it("is GM-gated — non-GM sender gets no result", () => {
+    const charId = emu.createCharacter("Protected", {});
+    expect(() =>
+      emu.relay({ action: "editCharacter", charId, name: "Hacked" }, { playerid: "player-evil" })
+    ).toThrow(/no result/i);
+    // Character should be unchanged.
+    expect(emu.getObj("character", charId)!.get("name")).toBe("Protected");
+  });
+});

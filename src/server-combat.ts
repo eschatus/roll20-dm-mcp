@@ -8,6 +8,7 @@ import { registerVisionTools } from "./tools/vision.js";
 import { registerTacticsTools } from "./tools/tactics.js";
 import { registerJournalTools } from "./tools/journal.js";
 import { registerTransportTools } from "./tools/transport.js";
+import { registerCharacterEditTools } from "./tools/characters-edit.js";
 
 // Single source of truth for the combat server's tool set, shared by the stdio
 // (index-combat.ts) and HTTP (index-http.ts) entry points so they never drift.
@@ -25,6 +26,7 @@ export function buildCombatServer(): McpServer {
   registerTacticsTools(server);
   registerJournalTools(server);
   registerTransportTools(server);
+  registerCharacterEditTools(server);
 
   return server;
 }
