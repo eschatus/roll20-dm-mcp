@@ -27,7 +27,7 @@ JWT + CobaltSession cookie (both)  ──▶  www.dndbeyond.com campaign APIs
 | Read | Endpoint | Auth | Notes |
 |------|----------|------|-------|
 | Character sheet | `GET character-service.../character/v5/character/{id}` | Bearer | **Identical shape** to the browser path — `parseStats`/`getMaxHp` work unchanged. Shared sheets even read with no auth. |
-| Monster by id | `GET monster-service.../v1/Monster?ids={id}` | Bearer | Raw monster-service shape — **not yet normalized** to `DdbMonster` (see mapping below). |
+| Monster by id | `GET monster-service.../v1/Monster?ids={id}` | Bearer | Raw monster-service shape — **normalized** to `DdbMonster` by `mapRawMonster` (see mapping below). |
 | Monster by name | `GET monster-service.../v1/Monster?search={name}&skip=0&take=10` | Bearer | Returns ranked array; `rtGetMonster` prefers an exact (case-insensitive) name match. |
 | Campaign characters | `GET www.dndbeyond.com/api/campaign/stt/active-short-characters/{campaignId}` | Bearer **+** cookie | `{data:[{id,name,avatarUrl,userId,userName}]}`. Replaces the DOM scrape. Cookie **alone** returns the SPA login HTML — both headers required. |
 | All campaigns (the "set") | `GET www.dndbeyond.com/api/campaign/stt/active-campaigns` | Bearer **+** cookie | `{status:"success",data:[{id,name,dmUsername,playerCount,dmId,…}]}`. Same endpoint Avrae uses. Replaces the `my-campaigns` DOM scrape. Names are HTML-escaped → decode. |
@@ -35,8 +35,8 @@ JWT + CobaltSession cookie (both)  ──▶  www.dndbeyond.com campaign APIs
 ### Dead endpoints
 - `www.dndbeyond.com/api/v5/monster?name=…` (what the old code used) now **404s**. As of 2026-06-20
   `dndbeyond.ts:getMonster` routes through `rtGetMonster` (monster-service) when RT is enabled; the
-  dead `www/api/v5` endpoint only remains on the non-RT branch. ⚠️ The routing is wired but the
-  field **normalization below is still TODO** (see next section).
+  dead `www/api/v5` endpoint only remains on the non-RT branch. The routing is wired and the field
+  **normalization below is implemented** (`mapRawMonster`, see next section).
 
 ### Avrae cross-check (github.com/avrae/avrae)
 - Confirms `character-service.../character/v5` (`utils/config.py`) and `…/api/campaign/stt/active-campaigns`
@@ -49,21 +49,29 @@ JWT + CobaltSession cookie (both)  ──▶  www.dndbeyond.com campaign APIs
   either polling character-service or partner Game Log access (the route Roll20's own official DDB
   integration uses).
 
-### monster-service v1 → `DdbMonster` mapping  ⚠️ PLANNED — NOT YET IMPLEMENTED
-The monster-service ships ids, not friendly values. **This normalization does not exist in
-`dndbeyond.ts` yet** — `getMonster` currently casts the raw monster-service record straight to
-`DdbMonster`, so `challengeRating`, the ability-text helpers, and speed are not populated from the
-fields below. The 5 fields `ddb_get_monster` / `resolveMonsterAvgHp` read (id, name, averageHitPoints,
-armorClass) may line up directly; the rest need this mapper, which should be built from a live capture
-(`src/recon/ddb-monster-diag.ts`). Intended mapping once implemented:
-- `challengeRatingId` → CR string. Fractional ids `1:"0", 2:"1/8", 3:"1/4", 4:"1/2"`; from id 5 it's
-  linear `CR = id - 4` (validated: Horned Devil id 15 = CR 11).
-- `stats[].statId` → `id` (1–6 = STR…CHA) so `getMonsterAbilityScores` is unchanged.
-- `movements[].movementId` → speed: `1 walk, 2 burrow, 3 climb, 4 fly, 5 swim`.
-- `conditionImmunities` (id array) → names via the shared condition table.
-- Ability sections are **HTML blobs** (`actionsDescription`, `specialTraitsDescription`, …), not
-  `{name,description}` arrays — stripped to text into `monster.descriptions` and rendered by
-  `getMonsterAbilities`.
+### monster-service v1 → `DdbMonster` mapping  ✅ IMPLEMENTED (2026-06-20)
+The monster-service ships ids, not friendly values. `getMonster` (RT path) normalizes the raw record
+into `DdbMonster` via **`mapRawMonster`** in `dndbeyond.ts`. The id→name lookup tables live in
+**`src/bridge/ddb-monster-tables.ts`**, captured verbatim from DDB's `GET www.dndbeyond.com/api/config/json`
+(stable 5e ruleset data; validated against the live Horned Devil id 16927). The mapping:
+- `challengeRatingId` → CR string via the baked `CR_VALUES` table (fractions render `"1/8"` etc.).
+  (The "id − 4" shortcut approximates it but the real table has gaps, e.g. id 28 is skipped — so it's baked.)
+- `stats[].statId` → `{id, value}` (1–6 = STR…CHA) so `getMonsterAbilityScores` is unchanged.
+- `movements[].movementId` → `DdbMonsterSpeed` (`1 walk, 2 burrow, 3 climb, 4 fly, 5 swim`).
+- `alignmentId`/`sizeId` → strings via the `ALIGNMENTS`/`SIZES` tables.
+- `conditionImmunities` (id array) → names via the `CONDITIONS` table.
+- `damageAdjustments` (id array) → resist/immune/vulnerable name lists, split by the entry's `type`
+  (1/2/3). This is the one table that **drifts** as DDB adds content, so it's overlaid from a lazy
+  7-day disk cache of `config/json` (`rtGetDamageAdjustments` in `ddb-rt.ts`, gated behind `peekCobalt`
+  so it never triggers a browser harvest), with the baked `DAMAGE_ADJUSTMENTS` table as fallback.
+- Ability sections are **HTML blobs** (`actionsDescription`, `specialTraitsDescription`, …) →
+  parsed by `parseAbilityBlock` into the typed `DdbMonsterAbility[]` arrays (`specialTraits`,
+  `actions`, `reactions`, `legendaryActions`, `bonusActions`), with numeric HTML entities (`&#160;`)
+  decoded. `getMonsterAbilities` renders these.
+
+Known data-quality note: a few DDB monster records (homebrew with unfilled fields) return
+`averageHitPoints: 0` / `armorClass: 0`; the mapper passes them through faithfully — guard against
+0 before writing to a token.
 
 ## Writes — investigation (NOT wired as tools)
 

@@ -165,7 +165,10 @@ never put numbers (HP/damage/totals) in player-visible `send_narration`; narrate
 effect countdowns; dead tokens → mark dead + move to the map layer; emanations (Spirit Guardians) use
 a token **aura**, fixed areas use `create_zone`. Full rules: `skills/dm-rules.md`.
 
-**Known TODO (in flight):** `dndbeyond.getMonster()` routes to `rtGetMonster` but the
-monster-service→`DdbMonster` field mapper (e.g. `challengeRatingId`) is not built yet —
-`ddb_get_monster` emits `challengeRating: undefined` on the RT path until then. See
+**DDB monster mapper (done, 2026-06-20):** `dndbeyond.getMonster()` routes to `rtGetMonster` and
+normalizes the raw monster-service v1 shape (id-arrays like `challengeRatingId`/`movements`/
+`damageAdjustments`, plus HTML `*Description` blobs) into `DdbMonster` via `mapRawMonster`. Lookup
+tables are baked in `src/bridge/ddb-monster-tables.ts` (captured from DDB's `config/json`); the one
+drifting table, `damageAdjustments`, is overlaid from a lazy 7-day disk cache (`rtGetDamageAdjustments`,
+gated so it never harvests a browser). `ddb_get_monster` now returns a real `challengeRating`. See
 `docs/ddb-browserless-protocol.md`.
