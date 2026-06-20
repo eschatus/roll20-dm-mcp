@@ -1,7 +1,9 @@
-# Roll20 Token Markers — Definitive List (Fabulous Faerun Firebirds)
+# Roll20 Token Markers — Definitive List
 
 Empirically determined 2026-06-01 by applying every marker to a live token (Dacorath
-Applebough) and confirming render via screenshot. Source of truth for the campaign's
+Applebough, in the Fabulous Faerun Firebirds campaign) and confirming render via
+screenshot. The custom marker set (IDs 4444311–4444352) is shared across campaigns —
+Curse of Strahd uses the same uploaded set. Source of truth for any given campaign's
 custom set: `Campaign().get("token_markers")` (via the `get_token_markers` tool /
 `getTokenMarkers` relay action).
 
@@ -16,8 +18,10 @@ custom set: `Campaign().get("token_markers")` (via the `get_token_markers` tool 
 - **An unregistered tag is stored in `statusmarkers` but renders NOTHING.** This is the
   `bloodied` trap (see below). Persistence in the field ≠ rendering.
 - To set arbitrary markers programmatically: `batch_exec` → `setTokenProps` with
-  `props.statusmarkers = "tag1,tag2,…"`. `set_token_marker` only knows the names in
-  `CONDITION_MARKERS` (below).
+  `props.statusmarkers = "tag1,tag2,…"`. `set_token_marker` resolves **any** state name
+  through the three-tier system below (`resolveMarkerForState`: `CONDITION_MARKERS` →
+  `PSEUDO_MARKERS` → hashed ad-hoc pool), so it always renders something — you rarely
+  need raw tags.
 
 ## ⚠ `bloodied` does NOT render
 
@@ -25,7 +29,8 @@ custom set: `Campaign().get("token_markers")` (via the `get_token_markers` tool 
 `statusmarkers:"bloodied"` and displaying **no icon at all**. Verified: applying only
 `bloodied` shows nothing; applying `bloodied,Wounded::4444333` shows just the one Wounded
 icon. **Use `Wounded::4444333` for "bloodied"** (red blood-drip icon). A `bloodied`→Wounded
-alias has been added to the relay's `CONDITION_MARKERS`.
+alias lives in the relay's `PSEUDO_MARKERS` (not `CONDITION_MARKERS` — so a DDB condition-sync
+won't sweep it), and `set_token_marker condition:"bloodied"` resolves it automatically.
 
 ---
 
@@ -150,34 +155,46 @@ Not listed in `token_markers` (Roll20 hard-coded), but all render:
 
 ---
 
-## `set_token_marker` / `CONDITION_MARKERS` cross-reference
+## `set_token_marker` name resolution (`resolveMarkerForState`)
 
-`set_token_marker` (and `toggleCondition`) map a friendly condition name → tag via the
-relay's `CONDITION_MARKERS`, with a `CONDITION_MARKERS[cond] || cond` fallback. The
-fallback is the footgun: **any name not in the map becomes a literal tag that does not
-render.**
+`set_token_marker` calls `toggleCondition`, which resolves a friendly state name → tag via
+the relay's three-tier `resolveMarkerForState` (mirrored in `src/bridge/markers.ts` and
+`mod-scripts/ai-relay.js` — the Mod keeps its own copy):
 
-**Mapped (renders correctly):** the 14 standard 5e conditions — `blinded`, `charmed`,
-`deafened`, `frightened`(→Feared), `grappled`, `incapacitated`, `invisible`, `paralyzed`,
-`petrified`, `poisoned`, `prone`, `restrained`, `stunned`, `unconscious`/`exhaustion` —
-plus `wounded` and `dead`, and now `bloodied`(→Wounded).
+1. **`CONDITION_MARKERS`** — true 5e conditions. Also writes tracked condition state and is
+   the only tier swept by a DDB condition-sync / "clear all conditions".
+2. **`PSEUDO_MARKERS`** — well-known fixed icons (buffs, concentration, bloodied→Wounded,
+   etc.) plus aliases. Renders a real icon, DM-managed, **not** swept by sync.
+3. **Hashed ad-hoc pool** — any other name deterministically hashes to a built-in icon
+   (`AD_HOC_POOL`) and is persisted in campaign state (`B().customStates`).
+
+Net: there is **no "unmapped → renders nothing" footgun** anymore. Any name passed to
+`set_token_marker` resolves to a rendering icon at one of the three tiers. (Raw
+`statusmarkers` writes via `setTokenProps`/`batch_exec` still bypass resolution, so a
+literal unregistered tag written that way still renders nothing — see the `bloodied` trap.)
+
+**`CONDITION_MARKERS` (tier 1):** `dead`/`unconscious` (→Unconscious),
+`poisoned`, `blinded`, `charmed`, `deafened`, `frightened` (→Feared), `grappled`,
+`incapacitated`, `invisible`, `paralyzed`, `petrified`, `prone`, `restrained`, `stunned`,
+`exhaustion` (→Exhausted). Note: the TS `CONDITION_MARKERS` in `markers.ts` does **not**
+include `wounded` (it lives in `PSEUDO_MARKERS` there); the `combat.ts` table used by
+`get_token_markers` lists `wounded` in the RESERVED palette — both resolve to `Wounded::4444333`.
+
+**`PSEUDO_MARKERS` (tier 2):** `bloodied`/`wounded`, `concentrating`/`concentration`,
+`blessed`/`bless`, `bane`/`baned`, `hasted`/`hastened`/`haste`, `raging`/`rage`, `marked`,
+`hidden`/`hiding`, `dodging`/`dodge`, `enlarged`, `flying`/`fly`, `sleeping`/`asleep`,
+`burning`, `surprised`, `disguised`, `featherfall`, `mirrorimage`, `magicweapon`, `buffed`,
+`drowning`, `afflicted`/`cursed`, `illusion`, `disarmed`, `mute`/`silenced`, `dismembered`.
 
 **Note on `dead`:** it maps to the **Unconscious** icon (`Unconscious::4444317`), *not* the
-built-in red-X overlay. Death handling in combat uses this (skull-ish marker + move to map
-layer). If you want the red-X instead, set `statusmarkers:"dead"` directly.
+built-in red-X overlay. Death handling in combat uses this (marker + move to map layer). If
+you want the red-X instead, set `statusmarkers:"dead"` directly.
 
-**Unmapped palette markers** (apply these via `setTokenProps statusmarkers` with the
-`Name::id` tag, since `set_token_marker` won't find them): Illusion, Dismembered,
-Concentrating, Burning, Disarmed, Mute, Sleeping, Suprised, Dodging, Hidden, Buffed,
-Buffed2, Blessed, Disguised, Enlarged, Featherfall, Flying, Hastened, MagicWeapon,
-MirrorImage, Rage, Afflicted, Bane, Marked, Marked2, Drowning — plus all 47 built-in
-named and the color dots.
+### Sync safety (resolved)
 
-### Recommendation (not yet done — your call)
-
-Buffs (Blessed, Buffed, Hastened, Rage, Concentrating, …) were deliberately **not** added
-to `CONDITION_MARKERS`, because `syncConditionsToToken` builds its "clear everything known"
-set from that map — adding buffs would cause a DDB condition-sync to strip a manually-set
-buff/concentration marker. The clean fix for "apply any sticker by name" is a **separate,
-validated path** (a relay action that resolves a friendly name against `token_markers` and
-applies it) rather than expanding `CONDITION_MARKERS`. Flagged for a future change.
+Buffs (Blessed, Buffed, Hastened, Rage, Concentrating, …) are deliberately in
+`PSEUDO_MARKERS`, not `CONDITION_MARKERS`, because `syncConditionsToToken` builds its "clear
+everything known" set only from `CONDITION_MARKERS`. Keeping buffs in the pseudo tier means a
+DDB condition-sync never strips a manually-set buff/concentration marker. This is the
+"separate validated path" that earlier versions of this doc flagged as future work — it now
+exists as the `resolveMarkerForState` tiering.

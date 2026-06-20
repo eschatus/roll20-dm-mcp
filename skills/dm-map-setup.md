@@ -38,7 +38,9 @@ Ask the DM for the page name if not provided. Default: 30×20 squares, 5ft scale
 
 ### 4. Place DL walls and decorate openings
 
-Call `auto_place_dl_walls` with the walls from step 2, tuned for the map type:
+Call `auto_place_dl_walls` with the walls from step 2. **Always pass `strokeColor: "#0044FF"`**
+(blue) for DL walls — the tool defaults to yellow `#FFFF00`, which violates the project convention
+(blue for walls, green for windows). Tune the geometry for the map type:
 
 **Stone dungeon / cave (rough walls):**
 ```
@@ -66,11 +68,15 @@ maxSegmentPx: 150         ← short chunks match organic curves
 
 If the DM hasn't specified a wall type, look at the map and pick the closest profile. Mention which profile you used.
 
-After placing DL walls, immediately call `decorate_openings` with the `doors`, `windows`, and `secretDoors` arrays from the analysis:
+(If you instead place an organic perimeter with `place_polyline_walls`, pass `strokeColor: "#0044FF"` there too — it carries the same yellow `#FFFF00` default.)
 
-- **Doors** → brown rectangles on the map layer, sized to the opening
-- **Windows** → blue rectangles on the map layer, sized to the opening
-- **Secret doors** → purple rectangles on the **GM layer** (players cannot see them)
+After placing DL walls, immediately call `decorate_openings` with the `doors`, `windows`, and `secretDoors` arrays from the analysis. It creates **native Roll20 Dynamic Lighting door/window objects** (not map-layer rectangles), color-coded so you can tell them apart in the editor:
+
+- **Doors** → red (`#FF0000`) DL door objects (`createDLDoors`)
+- **Windows** → cyan (`#00FFFF`) DL window objects (`createDLWindows`)
+- **Secret doors** → purple (`#9932CC`) DL door objects (`createDLDoors`)
+
+(If the source image isn't already in Roll20 canvas pixels, also pass `sourceImageWidth`/`sourceImageHeight` + `pageWidthSquares`/`pageHeightSquares` so the markers scale correctly — otherwise they place at 1:1.)
 
 This is automatic — do not ask the DM before doing it.
 
@@ -85,7 +91,7 @@ Report:
 - Wall profile used
 
 Then:
-> "Brown = doors, blue = windows, purple = secret doors (GM only). Replace each marker with your preferred door/window art by selecting it in Roll20 and swapping the image. Enable Dynamic Lighting on this page when ready."
+> "Red = doors, cyan = windows, purple = secret doors — placed as native Roll20 DL door/window objects. Tune or remove them in the Dynamic Lighting editor (they're DL objects, not images to swap). Enable Dynamic Lighting on this page when ready."
 
 ## Tuning guidance (if the DM wants to adjust)
 
@@ -106,6 +112,6 @@ Claude:
 1. Calls `analyze_battlemap({ imagePath: "./maps/crypt.png" })` → 3,200 tokens, 1500×1100px, 38 wall segments, 4 doors, 0 windows, 1 secret door, 140px grid
 2. Calls `setup_roll20_page({ name: "Crypt Level", widthSquares: 28, heightSquares: 20 })`
 3. Identifies map as stone dungeon → uses rough-walls profile
-4. Calls `auto_place_dl_walls({ walls: [...], endpointInsetPx: 6, cornerOverlapPx: 5, cornerThresholdPx: 12, maxSegmentPx: 180 })`
+4. Calls `auto_place_dl_walls({ walls: [...], strokeColor: "#0044FF", endpointInsetPx: 6, cornerOverlapPx: 5, cornerThresholdPx: 12, maxSegmentPx: 180 })`
 5. Calls `decorate_openings({ doors: [...], windows: [], secretDoors: [...] })`
-6. Reports: "Page 'Crypt Level' created. 52 DL wall segments (38 → 52 after splitting). 4 doors (brown), 1 secret door (purple, GM only). ~3,200 tokens (~$0.01). Stone dungeon profile. Enable DL and replace color markers with your door art."
+6. Reports: "Page 'Crypt Level' created. 52 DL wall segments (38 → 52 after splitting), blue. 4 doors (red), 1 secret door (purple). ~3,200 tokens (~$0.01). Stone dungeon profile. Enable DL when ready."

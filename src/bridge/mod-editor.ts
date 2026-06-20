@@ -59,58 +59,72 @@ export async function readModConsole(campaignId: string): Promise<string[]> {
   });
 }
 
-// Replace the relay script in the Ace editor for the first user-created script tab and click Save.
+// Deploy the relay script into the API editor. Updates the existing tab whose name matches the
+// script filename (e.g. "ai-relay.js"); if no such tab exists, CREATES a new tab. It never writes
+// into an unrelated existing tab — overwriting the first user tab would clobber other Mods (e.g. a
+// UniversalVTTImporter), so the old first-tab fallback was removed. Returns `created` so callers
+// can tell a fresh provision from an update.
 // scriptPath should be the absolute path to ai-relay.js.
-export async function deployModScript(campaignId: string, scriptPath: string): Promise<{ saved: boolean; linesWritten: number }> {
+export async function deployModScript(campaignId: string, scriptPath: string): Promise<{ saved: boolean; linesWritten: number; created: boolean }> {
   const content = readFileSync(scriptPath, "utf-8");
   const page = await getModPage(campaignId);
 
-  // Find the correct user-script tab. Try to match by script filename first
-  // (e.g. "relay.js"), then fall back to the first non-library, non-new tab.
-  const scriptName = scriptPath.split(/[\\/]/).pop() ?? "";
+  // Match an existing tab by filename. Tab text is icon-prefixed (e.g. "G\n\nai-relay.js"), so
+  // compare with `includes`, not `===` (the old `===` never matched and always clobbered).
+  const scriptName = scriptPath.split(/[\\/]/).pop() ?? "ai-relay.js";
   const tabHref: string | null = await page.evaluate((name: string) => {
     const tabs = [...document.querySelectorAll('#scriptorder a[data-toggle="tab"]')];
     const userTabs = tabs.filter(a => {
       const href = a.getAttribute("href") ?? "";
       return href.startsWith("#script-") && href !== "#script-library" && href !== "#script-new";
     });
-    const byName = name
-      ? userTabs.find(a => a.textContent?.trim().toLowerCase() === name.toLowerCase())
-      : null;
-    const chosen = byName ?? userTabs[0] ?? null;
-    return chosen ? chosen.getAttribute("href") : null;
+    const byName = userTabs.find(a => (a.textContent ?? "").trim().toLowerCase().includes(name.toLowerCase()));
+    return byName ? byName.getAttribute("href") : null;
   }, scriptName);
 
-  if (!tabHref) throw new Error("No user script tab found in #scriptorder");
+  // --- Update path: an ai-relay.js tab already exists ---
+  if (tabHref) {
+    await page.click(`a[href="${tabHref}"]`);
+    const paneId = tabHref.slice(1);
+    await page.waitForFunction(
+      (id: string) => document.getElementById(id)?.classList.contains("active"),
+      paneId,
+      { timeout: 5_000, polling: 200 }
+    );
+    const linesWritten: number = await page.evaluate(({ id, script }: { id: string; script: string }) => {
+      const pane = document.getElementById(id) as any;
+      const aceEl = pane?.querySelector(".ace_editor") as any;
+      const editor = aceEl?.env?.editor ?? (window as any).ace?.edit(aceEl);
+      if (!editor) throw new Error(`Ace editor not found in #${id}`);
+      editor.setValue(script, -1);
+      return editor.session.getLength() as number;
+    }, { id: paneId, script: content });
+    await page.click(`#${paneId} .savescript`);
+    await page.waitForTimeout(1_500);
+    return { saved: true, linesWritten, created: false };
+  }
 
-  // Click the tab to make its pane active
-  await page.click(`a[href="${tabHref}"]`);
-
-  // Wait for its pane to become visible
-  const paneId = tabHref.slice(1); // strip leading #
+  // --- Create path: no matching tab → make a NEW one (never touch existing tabs) ---
+  // The #script-new pane has a name <input type=text>, an Ace editor, and a .savescript button.
+  await page.click('a[href="#script-new"]');
   await page.waitForFunction(
-    (id: string) => document.getElementById(id)?.classList.contains("active"),
-    paneId,
+    () => document.getElementById("script-new")?.classList.contains("active"),
+    undefined,
     { timeout: 5_000, polling: 200 }
   );
-
-  // Set the Ace editor value in that specific pane
-  const linesWritten: number = await page.evaluate(({ id, script }: { id: string; script: string }) => {
-    const pane = document.getElementById(id) as any;
+  await page.fill('#script-new input[type="text"]', scriptName);
+  const linesWritten: number = await page.evaluate((script: string) => {
+    const pane = document.getElementById("script-new") as any;
     const aceEl = pane?.querySelector(".ace_editor") as any;
     const editor = aceEl?.env?.editor ?? (window as any).ace?.edit(aceEl);
-    if (!editor) throw new Error(`Ace editor not found in #${id}`);
+    if (!editor) throw new Error("Ace editor not found in #script-new");
     editor.setValue(script, -1);
     return editor.session.getLength() as number;
-  }, { id: paneId, script: content });
-
-  // Click the save button scoped to this pane
-  await page.click(`#${paneId} .savescript`);
-
-  // Brief pause for the save round-trip
-  await page.waitForTimeout(1_500);
-
-  return { saved: true, linesWritten };
+  }, content);
+  await page.click('#script-new .savescript');
+  // New-script save also boots the sandbox; give it a longer beat to settle.
+  await page.waitForTimeout(2_500);
+  return { saved: true, linesWritten, created: true };
 }
 
 // Convenience: get the campaign's API editor URL for diagnostics

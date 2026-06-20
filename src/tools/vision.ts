@@ -843,7 +843,7 @@ export function registerVisionTools(server: McpServer): void {
 
   server.tool(
     "decorate_openings",
-    "Second-pass tool: place colored markers on the Roll20 map layer at door, window, and secret door positions returned by analyze_battlemap. Markers are sized to the opening width. Secret door markers go on the GM layer.",
+    "Second-pass tool: place native Roll20 Dynamic Lighting door/window objects at the door, window, and secret-door positions returned by analyze_battlemap, sized to the opening width. Color-coded: doors red, windows cyan, secret doors purple.",
     {
       pageId: z.string().optional(),
       doors: z.array(z.object({

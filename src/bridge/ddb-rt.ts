@@ -76,6 +76,12 @@ async function getCobalt(forceFresh = false): Promise<string> {
   return harvestCobalt();
 }
 
+// Cobalt if it's already available (env/mem/disk) WITHOUT touching the browser. Used by the
+// optional damageAdjustments overlay, which must never trigger a browser harvest of its own.
+function peekCobalt(): string | null {
+  return process.env.DDB_COBALT || _cobaltMem || readCobaltCache();
+}
+
 // --- cobalt → short-lived JWT (in-memory cache, re-harvest cobalt on 401) ---
 
 interface JwtCache { token: string; expiresAt: number }
@@ -207,4 +213,74 @@ export async function rtGetCampaignCharacters(campaignId: string): Promise<RtCam
 // status/body without this module deciding what a "successful" write looks like.
 export function rtRawFetch(url: string, opts: RtFetchOpts = {}): Promise<Response> {
   return rtFetch(url, opts);
+}
+
+// --- live damageAdjustments overlay (the one monster table that drifts as DDB adds content) ---
+//
+// The id→name tables in ddb-monster-tables.ts are baked from config/json. The stable ones (CR,
+// alignment, size, movement, condition) never change. `damageAdjustments` accretes new ids over
+// time, so we overlay it from the live config and disk-cache it with a 7-day TTL. config/json is
+// ~57KB of mostly-irrelevant data, so we extract only the damageAdjustments slice into the cache.
+// Best-effort: a fetch failure leaves the baked table in charge — this never throws.
+
+const DDB_CONFIG_URL = `${WWW}/api/config/json`;
+const MON_CONFIG_CACHE = path.resolve("./data/ddb-monster-config.json");
+const MON_CONFIG_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface DamageAdjustmentEntry { name: string; type: 1 | 2 | 3 }
+interface MonConfigCache { fetchedAt: number; damageAdjustments: Record<string, DamageAdjustmentEntry> }
+
+let _monConfigMem: Record<number, DamageAdjustmentEntry> | null = null;
+let _monConfigRefreshing = false;
+
+function keyById(rows: Array<{ id: number; name: string; type: number }>): Record<number, DamageAdjustmentEntry> {
+  const out: Record<number, DamageAdjustmentEntry> = {};
+  for (const r of rows) if (r && typeof r.id === "number") out[r.id] = { name: r.name, type: (r.type as 1 | 2 | 3) };
+  return out;
+}
+
+async function fetchDamageAdjustments(): Promise<Record<number, DamageAdjustmentEntry>> {
+  // Only refresh when cobalt is ALREADY available — never launch a browser harvest just for the
+  // optional overlay. In offline/CI/test environments (no cobalt) this skips instantly, so a
+  // monster lookup behaves exactly as before the overlay existed (no added latency, no browser).
+  if (!peekCobalt()) throw new Error("ddb-rt: no cobalt available; skipping damageAdjustments overlay (baked table used)");
+  // config/json is served to a plain cookie'd fetch (validated); cookie alone is enough here.
+  const data = await rtJson<{ data?: { damageAdjustments?: Array<{ id: number; name: string; type: number }> } } & { damageAdjustments?: Array<{ id: number; name: string; type: number }> }>(
+    DDB_CONFIG_URL,
+    { auth: "cookie" },
+  );
+  const rows = (data.data?.damageAdjustments ?? data.damageAdjustments ?? []);
+  const map = keyById(rows);
+  if (Object.keys(map).length === 0) throw new Error("ddb-rt: config/json had no damageAdjustments");
+  mkdirSync(path.dirname(MON_CONFIG_CACHE), { recursive: true });
+  writeFileSync(MON_CONFIG_CACHE, JSON.stringify({ fetchedAt: Date.now(), damageAdjustments: map } as MonConfigCache), "utf-8");
+  _monConfigMem = map;
+  return map;
+}
+
+// Returns the live damageAdjustments overlay, or null if it can never be obtained (offline cold
+// start with no cache). Loads from memory → disk → live fetch; refreshes a stale disk cache in the
+// background so the calling monster lookup is never blocked on a refresh.
+export async function rtGetDamageAdjustments(): Promise<Record<number, DamageAdjustmentEntry> | null> {
+  if (_monConfigMem) return _monConfigMem;
+  if (existsSync(MON_CONFIG_CACHE)) {
+    try {
+      const c = JSON.parse(readFileSync(MON_CONFIG_CACHE, "utf-8")) as MonConfigCache;
+      _monConfigMem = keyById(Object.entries(c.damageAdjustments).map(([id, v]) => ({ id: Number(id), name: v.name, type: v.type })));
+      if (Date.now() - c.fetchedAt > MON_CONFIG_TTL_MS && !_monConfigRefreshing) {
+        _monConfigRefreshing = true;
+        fetchDamageAdjustments().catch(() => {}).finally(() => { _monConfigRefreshing = false; });
+      }
+      return _monConfigMem;
+    } catch { /* corrupt cache → fall through to a background refresh */ }
+  }
+  // No cache yet — refresh in the BACKGROUND and return null so the caller uses the baked table.
+  // A monster lookup must never block on the optional overlay: in test/offline environments the
+  // live config fetch drags in the cobalt→browser auth path and can hang, and getMonster awaits
+  // this concurrently with the monster fetch. Fire-and-forget keeps the lookup fast and offline-safe.
+  if (!_monConfigRefreshing) {
+    _monConfigRefreshing = true;
+    fetchDamageAdjustments().catch(() => {}).finally(() => { _monConfigRefreshing = false; });
+  }
+  return null;
 }

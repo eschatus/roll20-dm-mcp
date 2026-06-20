@@ -10,7 +10,38 @@
 // The LLM is mocked here so the whole pipeline is deterministic and free; the
 // live-eval suite (ROLL20_LLM_EVAL=1) covers real model behaviour.
 // ─────────────────────────────────────────────────────────────────────────────
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+
+// This suite is "deterministic and free" (see header), but tactics planning calls ddb.getMonster()
+// as best-effort enrichment — a live DDB/browser harvest that made the suite flaky at the 5s
+// timeout boundary in CI. Mock getMonster with data matching the seeded warband so the pipeline
+// stays deterministic, offline, and fast (mirrors hp-init.test.ts; keeps the rest of the bridge real).
+const MOCK_MONSTERS: Record<string, { int: number; wis: number; abilities: string }> = {
+  "goblin cutter": { int: 8, wis: 8, abilities: "Scimitar: melee 1d6+2. Nimble Escape: disengage/hide as bonus action." },
+  "hobgoblin captain": { int: 12, wis: 12, abilities: "Martial Advantage: +2d6 if ally adjacent. Leadership: allies add 1d4." },
+  "war mage": { int: 18, wis: 16, abilities: "Fireball: 20ft radius, DEX save DC 15 for half, 8d6 fire. Misty Step: teleport 30ft bonus action." },
+  "arch-cultist zeno": { int: 20, wis: 22, abilities: "Spirit Guardians: 15ft emanation, WIS save DC 16, 3d8 radiant, half speed. Counterspell. Reads enemy weaknesses." },
+};
+vi.mock("../src/bridge/dndbeyond.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/bridge/dndbeyond.js")>();
+  return {
+    ...actual,
+    getMonster: vi.fn(async (nameOrId: string | number) => {
+      const key = String(nameOrId).toLowerCase();
+      const hit = Object.entries(MOCK_MONSTERS).find(([n]) => key.includes(n));
+      if (!hit) throw new Error(`Monster not found (mocked): ${nameOrId}`);
+      const { int, wis, abilities } = hit[1];
+      return {
+        id: 0, name: String(nameOrId), averageHitPoints: 10, armorClass: 12, challengeRating: "1", largeAvatarUrl: null,
+        stats: [{ id: 1, value: 10 }, { id: 2, value: 10 }, { id: 3, value: 10 }, { id: 4, value: int }, { id: 5, value: wis }, { id: 6, value: 10 }],
+        speed: {}, specialTraits: [], actions: [{ name: "Abilities", description: abilities }],
+        reactions: [], legendaryActions: [], bonusActions: [],
+        damageImmunities: [], damageResistances: [], damageVulnerabilities: [], conditionImmunities: [],
+      };
+    }),
+  };
+});
+
 import { setupHarness, seedWarband, type Harness, type Warband } from "./harness.js";
 import * as characters from "../src/registry/characters.js";
 
@@ -141,10 +172,14 @@ describe("a full round of combat", () => {
     expect(ids).toContain(w.pcs.fighter.id);
     expect(ids).toContain(w.pcs.cleric.id);
 
-    // Radiant damage to the PCs caught in the emanation.
-    const fighterBefore = Number(h.emu.tokenProps(w.pcs.fighter.id).bar1_value);
-    await h.callTool("update_hp_many", { names: ["Sir Aldric", "Mother Vance"], damage: 9 });
-    expect(Number(h.emu.tokenProps(w.pcs.fighter.id).bar1_value)).toBe(fighterBefore - 9);
+    // Radiant damage to the PCs caught in the emanation. PC HP is tracked in relay state
+    // (a block in the token's gmnotes), routed by controlledby — the Beyond20-owned token
+    // bar must NOT move; the tracked value (surfaced in the report) is what changes.
+    const fighterBar = Number(h.emu.tokenProps(w.pcs.fighter.id).bar1_value);
+    const { text } = await h.callTool("update_hp_many", { names: ["Sir Aldric", "Mother Vance"], damage: 9 });
+    expect(Number(h.emu.tokenProps(w.pcs.fighter.id).bar1_value)).toBe(fighterBar); // bar untouched
+    expect(text).toMatch(/Sir Aldric: 21\/30 \(tracked\)/); // 30 → 21 tracked
+    expect(text).toMatch(/Mother Vance: 15\/24 \(tracked\)/); // 24 → 15 tracked
   });
 
   it("applies single-target damage + a condition, then heals, then poisons", async () => {
@@ -157,12 +192,13 @@ describe("a full round of combat", () => {
     expect(Number(h.emu.tokenProps(w.npcs.captain.id).bar1_value)).toBe(29); // 39 - 10
     expect(String(h.emu.tokenProps(w.npcs.captain.id).statusmarkers)).toMatch(/Feared|Frightened/i);
 
-    // The cleric heals herself (clamped to max).
-    // update_token_hp heal path matches the removed heal_character: clamps at bar1_max.
-    const woundedCleric = Number(h.emu.tokenProps(w.pcs.cleric.id).bar1_value);
-    await h.callTool("update_token_hp", { characterName: "Mother Vance", heal: 100 });
-    expect(Number(h.emu.tokenProps(w.pcs.cleric.id).bar1_value)).toBe(24); // clamped to max, not woundedCleric+100
-    expect(Number(h.emu.tokenProps(w.pcs.cleric.id).bar1_value)).toBeGreaterThan(woundedCleric);
+    // The cleric heals herself (clamped to max). PC HP routes to tracked state, not the
+    // Beyond20-owned bar — so the bar stays put while the tracked value climbs and clamps.
+    // (Her tracked HP is 15/24 from the Spirit Guardians hit above.)
+    const clericBar = Number(h.emu.tokenProps(w.pcs.cleric.id).bar1_value); // 24, must not move
+    const heal = await h.callTool("update_token_hp", { characterName: "Mother Vance", heal: 100 });
+    expect(Number(h.emu.tokenProps(w.pcs.cleric.id).bar1_value)).toBe(clericBar); // bar untouched (Beyond20-owned)
+    expect(heal.text).toMatch(/Mother Vance: .*24\/24 \(tracked\)/); // 15 → clamped at 24
 
     // Poison the captain via the marker primitive.
     await h.callTool("set_token_marker", { condition: "poisoned", active: true, tokenId: w.npcs.captain.id });

@@ -421,4 +421,79 @@ export function registerMapTools(server: McpServer): void {
       };
     }
   );
+
+  server.tool(
+    "send_ping",
+    "Send a map ping — the animated circle that appears when you hold the mouse button. Use to direct players' attention to a location.",
+    {
+      pageId: z.string(),
+      left: z.number().describe("X position in Roll20 canvas pixels (70px per grid square)"),
+      top: z.number().describe("Y position in Roll20 canvas pixels (70px per grid square)"),
+      moveAll: z.boolean().default(false).describe("If true, move all players' views to this point"),
+      visibleTo: z.string().optional().describe("Player ID to restrict visibility to (omit for all players)"),
+    },
+    async ({ pageId, left, top, moveAll, visibleTo }) => {
+      await roll20.relayCommand({ action: "sendPing", pageId, left, top, moveAll, ...(visibleTo ? { visibleTo } : {}) });
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, left, top, moveAll }) }] };
+    }
+  );
+
+  const FX_TYPES = ["nova", "beam", "breath", "explode", "glow", "missile", "splatter"] as const;
+  const FX_ELEMENTS = ["fire", "magic", "acid", "blood", "charm", "death", "electric", "frost", "holy", "smoke", "water"] as const;
+
+  server.tool(
+    "spawn_fx",
+    "Spawn a particle effect at a point on the map. type is 'kind-element', e.g. 'nova-fire', 'explode-magic', 'beam-frost'.",
+    {
+      pageId: z.string(),
+      x: z.number().describe("Canvas pixel X"),
+      y: z.number().describe("Canvas pixel Y"),
+      type: z.string().describe(`FX type string: '${FX_TYPES.join("|")}'-'${FX_ELEMENTS.join("|")}', e.g. 'nova-fire'`),
+    },
+    async ({ pageId, x, y, type }) => {
+      await roll20.relayCommand({ action: "spawnFx", pageId, x, y, type });
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, x, y, type }) }] };
+    }
+  );
+
+  server.tool(
+    "spawn_fx_between_points",
+    "Spawn a particle effect that travels from one point to another, e.g. a missile or beam spell.",
+    {
+      pageId: z.string(),
+      x1: z.number(), y1: z.number(),
+      x2: z.number(), y2: z.number(),
+      type: z.string().describe("FX type string, e.g. 'beam-fire', 'missile-magic'"),
+    },
+    async ({ pageId, x1, y1, x2, y2, type }) => {
+      await roll20.relayCommand({ action: "spawnFxBetweenPoints", pageId, x1, y1, x2, y2, type });
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, from: [x1, y1], to: [x2, y2], type }) }] };
+    }
+  );
+
+  server.tool(
+    "to_front",
+    "Move a Roll20 graphic to the front (top of z-order) on its layer.",
+    {
+      objectId: z.string(),
+      objectType: z.string().default("graphic"),
+    },
+    async ({ objectId, objectType }) => {
+      await roll20.relayCommand({ action: "toFront", objectId, objectType });
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, objectId }) }] };
+    }
+  );
+
+  server.tool(
+    "to_back",
+    "Move a Roll20 graphic to the back (bottom of z-order) on its layer.",
+    {
+      objectId: z.string(),
+      objectType: z.string().default("graphic"),
+    },
+    async ({ objectId, objectType }) => {
+      await roll20.relayCommand({ action: "toBack", objectId, objectType });
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, objectId }) }] };
+    }
+  );
 }

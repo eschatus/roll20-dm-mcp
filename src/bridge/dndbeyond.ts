@@ -1,5 +1,9 @@
 import { getPage } from "./browser.js";
-import { ddbRtEnabled, rtGetRawCharacter, rtListCampaigns, rtGetCampaignCharacters } from "./ddb-rt.js";
+import { ddbRtEnabled, rtGetRawCharacter, rtGetMonster, rtListCampaigns, rtGetCampaignCharacters, rtGetDamageAdjustments } from "./ddb-rt.js";
+import {
+  challengeRatingLabel, ALIGNMENTS, SIZES, MOVEMENTS, CONDITIONS, DAMAGE_ADJUSTMENTS,
+  type DamageAdjustment,
+} from "./ddb-monster-tables.js";
 
 const DDB_CHARACTER_SERVICE = "https://character-service.dndbeyond.com/character/v5";
 const DDB_MONSTER_API = "https://www.dndbeyond.com/api/v5";
@@ -295,10 +299,126 @@ export interface DdbMonster {
   bonusActions?: DdbMonsterAbility[];
   damageImmunities?: string[];
   damageResistances?: string[];
+  damageVulnerabilities?: string[];
   conditionImmunities?: string[];
 }
 
+// The raw monster-service v1 record. Numeric-id fields and HTML *Description blobs that
+// mapRawMonster decodes into the clean DdbMonster shape above.
+interface RawDdbMonster {
+  id: number;
+  name: string;
+  averageHitPoints: number;
+  armorClass: number;
+  largeAvatarUrl: string | null;
+  challengeRatingId?: number | null;
+  alignmentId?: number | null;
+  sizeId?: number | null;
+  stats?: Array<{ statId: number; value: number | null }>;
+  movements?: Array<{ movementId: number; speed: number }>;
+  damageAdjustments?: number[];
+  conditionImmunities?: number[];
+  specialTraitsDescription?: string | null;
+  actionsDescription?: string | null;
+  reactionsDescription?: string | null;
+  legendaryActionsDescription?: string | null;
+  bonusActionsDescription?: string | null;
+}
+
+function decodeMonsterEntities(s: string): string {
+  return s
+    // numeric entities first — homebrew statblocks litter descriptions with &#160; (nbsp) etc.
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&#39;/g, "'").replace(/&rsquo;/g, "'").replace(/&lsquo;/g, "'")
+    .replace(/&quot;/g, '"').replace(/&nbsp;/g, " ").replace(/&mdash;/g, "—").replace(/&ndash;/g, "–");
+}
+
+function stripHtml(html: string): string {
+  return decodeMonsterEntities(html.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+}
+
+// Parse a monster-service *Description HTML blob into named abilities. Each <p> whose lead run is
+// bolded (`<strong>Name.</strong>`, optionally inside `<em>`) starts a new ability; a <p> with no
+// bold lead is appended to the previous ability's description (multi-paragraph traits/actions, and
+// the un-bolded intro line on legendary-action blocks).
+function parseAbilityBlock(html: string | null | undefined): DdbMonsterAbility[] {
+  if (!html) return [];
+  const out: DdbMonsterAbility[] = [];
+  const paras = html.split(/<\/p>/i).map((p) => p.replace(/<p[^>]*>/i, "")).filter((p) => stripHtml(p).length > 0);
+  for (const para of paras) {
+    const full = stripHtml(para);
+    const boldMatch = para.match(/<strong>([\s\S]*?)<\/strong>/i);
+    const startsBold = boldMatch != null && /^\s*<(em|strong)\b/i.test(para);
+    if (startsBold) {
+      const lead = stripHtml(boldMatch![1]);                 // e.g. "Devil's Sight." or "Fork."
+      const name = lead.replace(/[.:\s]+$/, "").trim();
+      const description = full.startsWith(lead) ? full.slice(lead.length).trim() : full;
+      out.push({ name, description });
+    } else if (out.length > 0) {
+      out[out.length - 1].description = `${out[out.length - 1].description}\n${full}`.trim();
+    } else {
+      out.push({ name: "", description: full });
+    }
+  }
+  return out;
+}
+
+// Decode the monster-service damageAdjustments id array into resistance/immunity/vulnerability
+// name lists. Prefers the live overlay (newer ids than the baked table), falls back to baked.
+function splitDamageAdjustments(
+  ids: number[] | undefined,
+  overlay: Record<number, DamageAdjustment> | null,
+): { resistances: string[]; immunities: string[]; vulnerabilities: string[] } {
+  const resistances: string[] = [], immunities: string[] = [], vulnerabilities: string[] = [];
+  for (const id of ids ?? []) {
+    const adj = overlay?.[id] ?? DAMAGE_ADJUSTMENTS[id];
+    if (!adj) continue;
+    (adj.type === 2 ? immunities : adj.type === 3 ? vulnerabilities : resistances).push(adj.name);
+  }
+  return { resistances, immunities, vulnerabilities };
+}
+
+function mapRawMonster(raw: RawDdbMonster, overlay: Record<number, DamageAdjustment> | null): DdbMonster {
+  const speed: DdbMonsterSpeed = {};
+  for (const m of raw.movements ?? []) {
+    const key = MOVEMENTS[m.movementId];
+    if (key) speed[key] = m.speed;
+  }
+  const { resistances, immunities, vulnerabilities } = splitDamageAdjustments(raw.damageAdjustments, overlay);
+  return {
+    id: raw.id,
+    name: raw.name,
+    averageHitPoints: raw.averageHitPoints,
+    armorClass: raw.armorClass,
+    challengeRating: challengeRatingLabel(raw.challengeRatingId),
+    largeAvatarUrl: raw.largeAvatarUrl ?? null,
+    stats: (raw.stats ?? []).map((s) => ({ id: s.statId, value: s.value })),
+    speed,
+    alignment: raw.alignmentId != null ? ALIGNMENTS[raw.alignmentId] : undefined,
+    size: raw.sizeId != null ? SIZES[raw.sizeId] : undefined,
+    specialTraits: parseAbilityBlock(raw.specialTraitsDescription),
+    actions: parseAbilityBlock(raw.actionsDescription),
+    reactions: parseAbilityBlock(raw.reactionsDescription),
+    legendaryActions: parseAbilityBlock(raw.legendaryActionsDescription),
+    bonusActions: parseAbilityBlock(raw.bonusActionsDescription),
+    damageResistances: resistances,
+    damageImmunities: immunities,
+    damageVulnerabilities: vulnerabilities,
+    conditionImmunities: (raw.conditionImmunities ?? []).map((id) => CONDITIONS[id]).filter((s): s is string => !!s),
+  };
+}
+
 export async function getMonster(nameOrId: string | number): Promise<DdbMonster> {
+  // RT path: hit the live monster-service v1 endpoint and normalize its id-array / HTML-blob shape
+  // into DdbMonster via mapRawMonster. The old www/api/v5/monster path below 404s, so the non-RT
+  // branch is effectively dead — RT is the only working transport.
+  if (ddbRtEnabled()) {
+    const [raw, overlay] = await Promise.all([rtGetMonster(nameOrId), rtGetDamageAdjustments()]);
+    return mapRawMonster(raw as RawDdbMonster, overlay);
+  }
+
   const endpoint =
     typeof nameOrId === "number"
       ? `${DDB_MONSTER_API}/monster/${nameOrId}`
@@ -351,6 +471,7 @@ export function getMonsterAbilities(monster: DdbMonster): string {
   const resistances: string[] = [];
   if (monster.damageImmunities?.length) resistances.push(`Immune: ${monster.damageImmunities.join(", ")}`);
   if (monster.damageResistances?.length) resistances.push(`Resistant: ${monster.damageResistances.join(", ")}`);
+  if (monster.damageVulnerabilities?.length) resistances.push(`Vulnerable: ${monster.damageVulnerabilities.join(", ")}`);
   if (monster.conditionImmunities?.length) resistances.push(`Condition immune: ${monster.conditionImmunities.join(", ")}`);
   if (resistances.length > 0) lines.push(resistances.join("  "));
 

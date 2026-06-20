@@ -76,24 +76,75 @@ const DM_INBOX_MAX = 50;
 
 // Project a graphic token to a field profile. imgsrc is in NONE — no caller reads it
 // (art goes through createGraphic-type actions, never read-back).
+// Drop null/undefined/"" fields so Claude never has to read noisy empty values.
+function compact(obj) {
+  var out = {};
+  for (var k in obj) {
+    if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
+    var v = obj[k];
+    if (v === null || v === undefined || v === "") continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 function tokenSummary(t, profile) {
-  var s = {
+  var s = compact({
     id: t.id,
     name: t.get("name"),
-    represents: t.get("represents") || "",
-    controlledby: t.get("controlledby") || "",
+    represents: t.get("represents"),
+    controlledby: t.get("controlledby"),
     layer: t.get("layer"),
-  };
+  });
   if (profile === "lean") return s;
-  s.bar1_value = t.get("bar1_value");           // HP
-  s.bar1_max = t.get("bar1_max");
-  s.statusmarkers = t.get("statusmarkers");     // conditions
+  var b1v = t.get("bar1_value"), b1m = t.get("bar1_max");
+  if (b1v !== "" && b1v !== null && b1v !== undefined) s.bar1_value = b1v;
+  if (b1m !== "" && b1m !== null && b1m !== undefined) s.bar1_max = b1m;
+  var sm = t.get("statusmarkers");
+  if (sm) s.statusmarkers = sm;
   if (profile === "status") return s;
-  s.left = t.get("left");                        // geometry
-  s.top = t.get("top");
-  s.width = t.get("width");
-  s.height = t.get("height");
+  // "full": add geometry (round positions — Roll20 stores floats)
+  s.left = Math.round(t.get("left") || 0);
+  s.top  = Math.round(t.get("top")  || 0);
+  s.width  = Math.round(t.get("width")  || 70);
+  s.height = Math.round(t.get("height") || 70);
   return s; // "full"
+}
+
+// "rich" extras — only when the caller explicitly needs aura/light/gmnotes/bar2/bar3
+function tokenRich(t) {
+  var s = tokenSummary(t, "full");
+  var pairs = [
+    ["gmnotes",          t.get("gmnotes")],
+    ["bar2_value",       t.get("bar2_value")],
+    ["bar2_max",         t.get("bar2_max")],
+    ["bar3_value",       t.get("bar3_value")],
+    ["bar3_max",         t.get("bar3_max")],
+    ["aura1_radius",     t.get("aura1_radius")],
+    ["aura1_color",      t.get("aura1_color")],
+    ["aura1_square",     t.get("aura1_square")],
+    ["aura2_radius",     t.get("aura2_radius")],
+    ["aura2_color",      t.get("aura2_color")],
+    ["light_radius",     t.get("light_radius")],
+    ["light_dimradius",  t.get("light_dimradius")],
+    ["tint_color",       t.get("tint_color")],
+    ["rotation",         t.get("rotation")],
+  ];
+  var aura1r = t.get("aura1_radius"), aura2r = t.get("aura2_radius");
+  var tint   = t.get("tint_color");
+  var rot    = t.get("rotation");
+  pairs.forEach(function(p) {
+    var v = p[1];
+    if (v === null || v === undefined || v === "" || v === false) return;
+    // Skip aura colors/shape when no aura radius is set
+    if ((p[0] === "aura1_color" || p[0] === "aura1_square") && (!aura1r || aura1r === "")) return;
+    if ((p[0] === "aura2_color" || p[0] === "aura2_square") && (!aura2r || aura2r === "")) return;
+    // Skip transparent tint and zero rotation (defaults, carry no information)
+    if (p[0] === "tint_color" && v === "transparent") return;
+    if (p[0] === "rotation" && v === 0) return;
+    s[p[0]] = v;
+  });
+  return s;
 }
 
 // Strip rolltemplate HTML / URLs down to text. The dice signal is preserved separately in
@@ -604,42 +655,11 @@ function runBatchOp(action, args) {
       return { ok: true, conditions: Array.from(activeSet) };
     }
     case "getTokenById": {
-      // Single source of truth — the rich token shape. The main-switch case
-      // delegates here so there is exactly one implementation.
+      // profile: "lean"|"status"|"full" (default)|"rich" (adds aura/light/gmnotes/bar2/bar3)
       let t = getObj("graphic", args.tokenId);
       if (!t) return null;
-      return {
-        id: t.id,
-        name: t.get("name"),
-        represents: t.get("represents") || "",
-        layer: t.get("layer"),
-        controlledby: t.get("controlledby") || "",
-        left: t.get("left"),
-        top: t.get("top"),
-        width: t.get("width"),
-        height: t.get("height"),
-        rotation: t.get("rotation"),
-        imgsrc: t.get("imgsrc"),
-        statusmarkers: t.get("statusmarkers") || "",
-        bar1_value: t.get("bar1_value"),
-        bar1_max: t.get("bar1_max"),
-        bar2_value: t.get("bar2_value"),
-        bar2_max: t.get("bar2_max"),
-        bar3_value: t.get("bar3_value"),
-        bar3_max: t.get("bar3_max"),
-        aura1_radius: t.get("aura1_radius"),
-        aura1_color: t.get("aura1_color"),
-        aura1_square: t.get("aura1_square"),
-        showplayers_aura1: t.get("showplayers_aura1"),
-        aura2_radius: t.get("aura2_radius"),
-        aura2_color: t.get("aura2_color"),
-        aura2_square: t.get("aura2_square"),
-        showplayers_aura2: t.get("showplayers_aura2"),
-        tint_color: t.get("tint_color"),
-        light_radius: t.get("light_radius"),
-        light_dimradius: t.get("light_dimradius"),
-        gmnotes: t.get("gmnotes") || "",
-      };
+      let p = args.profile || "full";
+      return p === "rich" ? tokenRich(t) : tokenSummary(t, p);
     }
     case "setTurnOrder": {
       Campaign().set("turnorder", JSON.stringify(args.turnorder || []));
@@ -945,8 +965,8 @@ on("chat:message", function (msg) {
         // Legacy DL: path objects on the walls layer (with or without barrierType).
         // Returns both so this works regardless of which DL mode the campaign uses.
         let includePoints = args.includePoints === true;
-        // pathv2 (Latest Engine / UDL)
-        let pathv2Walls = findObjs({ _type: "pathv2", _pageid: args.pageId, layer: "walls" });
+        // pathv2 (Latest Engine / UDL) — pathv2 uses pageid (no underscore) in findObjs, like door/window
+        let pathv2Walls = findObjs({ _type: "pathv2", pageid: args.pageId, layer: "walls" });
         // path objects on walls layer (Legacy DL, or RTDB-direct diagnostic writes)
         let pathWalls = findObjs({ _type: "path", _pageid: args.pageId, layer: "walls" });
         let allWalls = pathv2Walls.map(function(w) {
@@ -1003,27 +1023,41 @@ on("chat:message", function (msg) {
 
       case "createWalls": {
         // Create DL barriers. Latest Engine UDL → pathv2 with shape:"pol".
-        // Roll20 pathv2 shape discriminator is a short string: "pol"=polygon, "free","eli","rec".
-        // Points go in the `path` field as [[x,y],...] relative to the x,y center.
-        // If createObj("pathv2") returns undefined, fall back to legacy path (yellow).
-        let wallResults = (args.walls || []).map(function(w) {
+        // Points are relative to the object center (x,y). For a two-point wall from
+        // (x1,y1)→(x2,y2): center = midpoint; points = [[-dx/2,-dy/2],[dx/2,dy/2]].
+        // If createObj("pathv2") returns undefined, fall back to legacy path.
+        let firstWall = (args.walls || [])[0];
+        if (firstWall) {
+          let probeCx = (firstWall.x1 + firstWall.x2) / 2;
+          let probeCy = (firstWall.y1 + firstWall.y2) / 2;
+          log("[GM_AI_Bridge] createWalls probe — pageId=" + args.pageId
+            + " wall[0]: x1=" + firstWall.x1 + " y1=" + firstWall.y1
+            + " x2=" + firstWall.x2 + " y2=" + firstWall.y2
+            + " cx=" + probeCx + " cy=" + probeCy
+            + " points=" + JSON.stringify([[firstWall.x1 - probeCx, firstWall.y1 - probeCy], [firstWall.x2 - probeCx, firstWall.y2 - probeCy]]));
+        }
+        let wallResults = (args.walls || []).map(function(w, wi) {
           let cx = (w.x1 + w.x2) / 2;
           let cy = (w.y1 + w.y2) / 2;
-          let wallObj = createObj("pathv2", {
+          let pv2Props = {
             pageid: args.pageId,
             layer: "walls",
             x: cx,
             y: cy,
-            width: Math.max(Math.abs(w.x2 - w.x1), 1),
-            height: Math.max(Math.abs(w.y2 - w.y1), 1),
             shape: "pol",
             barrierType: args.barrierType || "wall",
             points: JSON.stringify([[w.x1 - cx, w.y1 - cy], [w.x2 - cx, w.y2 - cy]]),
             stroke: args.stroke || "#0044FF",
+            stroke_width: 5,
             controlledby: "",
-          });
+          };
+          let wallObj;
+          try { wallObj = createObj("pathv2", pv2Props); } catch(e) {
+            log("[GM_AI_Bridge] createWalls pathv2 threw: " + String(e));
+          }
+          if (wi === 0) log("[GM_AI_Bridge] createWalls pathv2 result[0]: " + (wallObj ? "id=" + wallObj.id : "undefined — falling back"));
           if (wallObj) return { id: wallObj.id, kind: "pathv2" };
-          // Fall back to legacy path (visible as yellow — UDL won't block but at least DM can see)
+          // Fall back to legacy path on walls layer
           let minX = Math.min(w.x1, w.x2), minY = Math.min(w.y1, w.y2);
           let legacyObj = createObj("path", {
             pageid: args.pageId,
@@ -1038,6 +1072,7 @@ on("chat:message", function (msg) {
             fill: "transparent",
             rotation: 0, scaleX: 1, scaleY: 1, controlledby: "",
           });
+          if (wi === 0) log("[GM_AI_Bridge] createWalls path-fallback result[0]: " + (legacyObj ? "id=" + legacyObj.id : "undefined"));
           return legacyObj ? { id: legacyObj.id, kind: "path-fallback" } : { error: "createObj failed for both pathv2 and path" };
         });
         writeResult(nonce, wallResults);
@@ -1223,7 +1258,7 @@ on("chat:message", function (msg) {
           });
           if (layer === "walls") {
             // Remove pathv2 DL barriers (Latest VTT Engine) and legacy wall objects.
-            findObjs({ _type: "pathv2", _pageid: args.pageId, layer: "walls" }).forEach(function(obj) {
+            findObjs({ _type: "pathv2", pageid: args.pageId, layer: "walls" }).forEach(function(obj) {
               obj.remove();
               removed++;
             });
@@ -1762,7 +1797,9 @@ on("chat:message", function (msg) {
         attrs.forEach(function(a) {
           let attrName = a.get("name");
           if (!nameFilter || nameFilter.indexOf(attrName) !== -1) {
-            result[attrName] = { current: a.get("current"), max: a.get("max") };
+            let cur = a.get("current"), mx = a.get("max");
+            // Only include max when it carries a real value — most attrs have max: ""
+            result[attrName] = (mx !== null && mx !== undefined && mx !== "") ? { current: cur, max: mx } : cur;
           }
         });
         writeResult(nonce, result);
@@ -1990,6 +2027,52 @@ on("chat:message", function (msg) {
 
       case "ping": {
         writeResult(nonce, { pong: true, version: "2.1.0" });
+        break;
+      }
+
+      case "sendPing": {
+        // args: left, top, pageId, playerId?, moveAll?, visibleTo?
+        sendPing(
+          args.left, args.top, args.pageId,
+          args.playerId || null,
+          args.moveAll  || false,
+          args.visibleTo || null
+        );
+        writeResult(nonce, { ok: true });
+        break;
+      }
+
+      case "spawnFx": {
+        // args: x, y, type (e.g. "nova-fire"), pageId
+        spawnFx(args.x, args.y, args.type, args.pageId);
+        writeResult(nonce, { ok: true });
+        break;
+      }
+
+      case "spawnFxBetweenPoints": {
+        // args: x1, y1, x2, y2, type, pageId
+        spawnFxBetweenPoints(
+          { x: args.x1, y: args.y1 },
+          { x: args.x2, y: args.y2 },
+          args.type, args.pageId
+        );
+        writeResult(nonce, { ok: true });
+        break;
+      }
+
+      case "toFront": {
+        let frontObj = getObj(args.objectType || "graphic", args.objectId);
+        if (!frontObj) throw new Error("Object not found: " + args.objectId);
+        toFront(frontObj);
+        writeResult(nonce, { ok: true });
+        break;
+      }
+
+      case "toBack": {
+        let backObj = getObj(args.objectType || "graphic", args.objectId);
+        if (!backObj) throw new Error("Object not found: " + args.objectId);
+        toBack(backObj);
+        writeResult(nonce, { ok: true });
         break;
       }
 
@@ -2327,6 +2410,77 @@ on("ready", function() {
   log("[GM_AI_Bridge] Relay ready. State restored from `state` — round=" + bs.round
     + " turnHook=" + bs.turnHookEnabled + " inbox=" + bs.dmInbox.length
     + " plans=" + Object.keys(bs.mobPlans).length);
+});
+
+// Auto-roll initiative for NPC tokens dropped onto the player page during active combat.
+// Fires 800ms after drop so that any immediately-following roll_initiative relay call
+// can run first (double-entry guard checks turn order at fire time).
+on("add:graphic", function(obj) {
+  if (obj.get("layer") !== "tokens") return;
+
+  setTimeout(function() {
+    let token = getObj("graphic", obj.id);
+    if (!token) return;
+
+    // Only on the player page
+    if (token.get("_pageid") !== Campaign().get("playerpageid")) return;
+
+    // Only during active combat
+    let orderStr = Campaign().get("turnorder") || "[]";
+    let order;
+    try { order = JSON.parse(orderStr); } catch (e) { return; }
+    if (!order.length) return;
+
+    let tokenId = obj.id;
+
+    // Skip if already in turn order (placed by relay + roll_initiative)
+    if (order.some(function(e) { return e.id === tokenId; })) return;
+
+    // Skip PCs — non-empty controlledby that isn't "all" means a specific player owns it
+    let controlled = token.get("controlledby") || "";
+    if (controlled && controlled !== "all") return;
+
+    let tokenName = token.get("name") || "Unknown";
+    let initBonus = 0;
+    let charId = token.get("represents");
+    if (charId) {
+      let initAttrNames = ["initiative_bonus", "npc_initiative", "dex_mod", "dexterity_mod"];
+      for (let i = 0; i < initAttrNames.length; i++) {
+        let attrs = findObjs({ _type: "attribute", _characterid: charId, name: initAttrNames[i] });
+        if (attrs.length > 0) {
+          let val = parseInt(attrs[0].get("current"));
+          if (!isNaN(val)) { initBonus = val; break; }
+        }
+      }
+    }
+
+    let sign = initBonus >= 0 ? "+" : "";
+    let expr = "[[1d20" + (initBonus !== 0 ? sign + initBonus : "") + "]]";
+    sendChat("Initiative", expr, function(ops) {
+      let inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
+      let roll = inlinerolls[0];
+      let total = roll ? roll.results.total : (randomInteger(20) + initBonus);
+
+      // Re-read turn order after async sendChat
+      let freshStr = Campaign().get("turnorder") || "[]";
+      let freshOrder;
+      try { freshOrder = JSON.parse(freshStr); } catch (e) { freshOrder = []; }
+
+      // Guard again — might have been added while sendChat was async
+      if (freshOrder.some(function(e) { return e.id === tokenId; })) return;
+
+      // Insert at correct pr-descending position
+      let pageId = Campaign().get("initiativepage") || Campaign().get("playerpageid");
+      let entry = { id: tokenId, pr: total, custom: "", _pageid: pageId };
+      let insertIdx = freshOrder.findIndex(function(e) { return (parseFloat(e.pr) || 0) < total; });
+      if (insertIdx === -1) freshOrder.push(entry);
+      else freshOrder.splice(insertIdx, 0, entry);
+      Campaign().set("turnorder", JSON.stringify(freshOrder));
+
+      let bonusStr = initBonus !== 0 ? " (d20" + sign + initBonus + ")" : "";
+      sendChat("Initiative", "/w gm ⚡ Auto-init: **" + esc(tokenName) + "** → **" + total + "**" + bonusStr);
+    }, { noarchive: true });
+  }, 800);
 });
 
 log("[GM_AI_Bridge] Relay script loaded. Ready for !ai-relay commands.");

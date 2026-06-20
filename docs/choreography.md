@@ -2,6 +2,16 @@
 
 Two complete traces showing every hop a request makes from DM speech to final state change.
 
+> **Transport note (applies to every `relayCommand` below).** When `ROLL20_TRANSPORT=rt`
+> is set (RT is opt-in; unset = Playwright), commands are pushed as `!ai-relay {JSON}` over the campaign's Firebase RTDB
+> and the Mod's `AIBRIDGE_RESULT` is read back over an RTDB child listener — no browser needed
+> (~49ms warm). On *any* RT failure (auth, timeout, disconnect, or an open circuit breaker)
+> the same command (same nonce, so the Mod's `PROCESSED_NONCES` LRU deduplicates) falls back to
+> the Playwright path: type `!ai-relay …` into the Roll20 chat input and read the `/w gm`
+> result div via a `MutationObserver`. Some reads are served even more directly from the
+> browser's live Backbone models (`CLIENT_READS` in `roll20.ts`) when a browser is attached.
+> The traces below show the relay hop generically; substitute whichever transport is live.
+
 ---
 
 ## Trace 1 — Map Import Pipeline
@@ -19,14 +29,14 @@ Claude (MCP client)
   ▼
 MCP Server — src/tools/vision.ts
   │
-  │  readFileSync → base64 encode image
+  │  readFileSync → sharp downscale (≤1500px) → base64 encode image
   │
-  │  HTTP POST to Anthropic API (claude-opus-4-7)
+  │  HTTP POST to Anthropic API (VISION_MODEL = claude-sonnet-4-6)
   │  body: { image: base64, prompt: "return JSON grid + walls" }
   ▼
 Anthropic API
   │
-  │  response: { gridSizePx: 140, gridOffsetX: 5, gridOffsetY: 3, walls: [...42 segments] }
+  │  response: { gridSizePx: 140, gridOffsetX: 5, gridOffsetY: 3, walls: [...42 segments], doors, windows }
   ▼
 MCP Server (tool result returned to Claude)
   │
@@ -34,42 +44,38 @@ MCP Server (tool result returned to Claude)
   ▼
 MCP Server — src/tools/maps.ts
   │
-  │  relayCommand({ action: "createPage", name: "Dungeon Entrance", ... })
+  │  page creation is browser-only (createObj("page") is unsupported in the Mod sandbox):
+  │  roll20.createPageViaUI(name, w, h, …) — Playwright clicks "Create Page", diffs the page
+  │  list to learn the new pageId. Then relayCommand({ action: "setPageProps", … }) sizes it.
   ▼
-src/bridge/roll20.ts — page.evaluate()
+Roll20 (UI automation + Mod relay for setPageProps)
   │
-  │  types `!ai-relay {action:"createPage", name:"Dungeon Entrance", ...}` into Roll20 chat
+  │  new page "Dungeon Entrance" exists; pageId discovered → "pageId123"
   ▼
-Roll20 Mod Sandbox — mod-scripts/ai-relay.js
+MCP Server
   │
-  │  on("chat:message") fires; sender is GM (playerIsGM check passes)
-  │  createObj("page", { name, width, height, ... })
-  │  whispers result `/w gm <hidden div>{ id: "pageId123" }`
-  ▼
-MCP Server (MutationObserver reads the whispered result div, parses pageId)
-  │
-  │  tool call: auto_place_dl_walls({ walls: [...42], pageId: "pageId123" })
+  │  tool call: auto_place_dl_walls({ walls: [...42], pageId: "pageId123", strokeColor: "#0044FF" })
   ▼
 MCP Server — src/tools/vision.ts
   │
-  │  batches 42 walls into 5 groups of ≤10
-  │  for each batch: relayCommand({ action: "createPath", path: svgPath, ... }) × 10
-  │  (10 parallel relay calls per batch)
+  │  two-pass wall pipeline (geometry from analysis, optional Hough-candidate overlay/refinement)
+  │  emits relayCommand({ action: "createWalls", ... }) — pathv2 paths on the DL layer
   ▼
-Roll20 Mod Sandbox (×42 createObj calls)
+Roll20 Mod Sandbox
   │
-  │  createObj("path", { layer: "walls", path: svgPath, ... }) for each wall segment
+  │  createObj("pathv2", { layer: "walls", points, stroke: "#0044FF", barrierType, ... }) per segment
+  │  (falls back to legacy "path" only if pathv2 returns undefined)
   ▼
 Roll20 Campaign
   │  → New page "Dungeon Entrance" exists
-  │  → Dynamic lighting layer has 42 wall segments
+  │  → Dynamic lighting layer has the wall segments (blue stroke)
   │  → DM can enable DL and see walls immediately
 
-Claude reports back:
+Claude reports back (DM-facing markdown):
   "Created page 'Dungeon Entrance'. Placed 42/42 wall segments on the DL layer."
 ```
 
-**Total hops:** DM → Claude → MCP Server → Anthropic API → MCP Server → Roll20 relay (×43 relay calls) → Roll20 campaign
+**Total hops:** DM → Claude → MCP Server → Anthropic API → MCP Server → Roll20 relay (page + walls) → Roll20 campaign
 
 ---
 
@@ -80,55 +86,76 @@ Claude reports back:
 ```
 DM (Claude Code)
   │
-  │  natural language (via /dm-combat skill)
+  │  natural language (combat handled per skills/dm-rules.md + the /round workflow)
   ▼
 Claude (MCP client)
-  │  extracts: character="Eli", damage=9, conditions=["poisoned"]
+  │  extracts: name="Eli", damage=9, condition="poisoned"
   │
-  │  tool call: apply_damage({ characterName: "Eli", damage: 9, conditions: ["poisoned"] })
+  │  tool call: update_token_hp({ characterName: "Eli", damage: 9 })
   ▼
 MCP Server — src/tools/combat.ts
   │
-  │  registry.lookup("Eli") → { roll20TokenId: "tok_abc", ddbCharId: 12345678 }
+  │  resolveTokenOrThrow("Eli") → fuzzy-matches the live page token list → tokenId "tok_abc"
   │
   │  Read current HP from the Roll20 token (source of truth):
-  │    relayCommand({ action: "getToken", tokenId: "tok_abc" })
+  │    relayCommand({ action: "getTokenById", tokenId: "tok_abc" })
   │    → { bar1_value: 37, bar1_max: 45 }
-  │  → newHp = 37 - 9 = 28
+  │  → newHp = max(0, 37 - 9) = 28
   │
   │  D&D Beyond is READ-ONLY — no HP/condition write is issued.
-  │  (Optional, read-only: ddb.getCharacter(12345678) may be polled at round
-  │   start to spot-check drift; it is never written.)
+  │  (Optional, read-only: ddb_get_character may be polled at round start to spot-check
+  │   drift; it is never written.)
   │
-  │  All state changes go to the Roll20 token, sequentially via the relay:
+  │  Write HP back to the Roll20 token via the relay:
+  │    relayCommand({ action: "setTokenProps", tokenId: "tok_abc", props: { bar1_value: 28 } })
+  │  (update_token_hp writes bar1 on the resolved token directly. See the note below on the
+  │   intended PC-HP-to-relay-state model and where it actually applies.)
   │
-  │  relayCommand({ action: "setTokenBar",
-  │    tokenId: "tok_abc", value: 28, max: 45 })
-  │  → Roll20 relay fires
-  │  → token.set({ bar1_value: 28, bar1_max: 45 })
+  ▼  (separate tool call for the condition — update_token_hp is HP-only by convention)
   │
-  │  relayCommand({ action: "setStatusMarker",
-  │    tokenId: "tok_abc", marker: "skull", active: true })  ← "poisoned"
-  │  → Roll20 relay fires
-  │  → token.set({ statusmarkers: "skull" })
-  │
-  │  → return result
+  │  tool call: set_token_marker({ characterName: "Eli", condition: "poisoned", active: true })
   ▼
-Claude reports:
-  {
-    character: "Eli",
-    damageTaken: 9,
-    newHp: 28,
-    maxHp: 45,
-    conditionsApplied: ["poisoned"],
-    roll20Updated: true,
-    ddbUpdated: false   // DDB is read-only; HP/conditions live on the token
-  }
+MCP Server — src/tools/combat.ts
+  │
+  │  relayCommand({ action: "toggleCondition", tokenId: "tok_abc", condition: "poisoned", active: true })
+  ▼
+Roll20 Mod Sandbox — mod-scripts/ai-relay.js
+  │
+  │  resolveMarkerForState("poisoned") → tier "condition" → tag "Poisoned::4444329"
+  │  token.set({ statusmarkers: "...,Poisoned::4444329" }) + tracks active_conditions
+  ▼
+Roll20 Campaign
+  │  → Eli's token: bar1_value = 28, statusmarkers includes Poisoned::4444329
 
-  "Eli takes 9 damage, now at 28/45 HP and is poisoned.
-   Token HP bar and status marker updated in Roll20."
+Claude reports (DM-facing markdown report — numbers stay here, never in player chat):
+  - **Eli** — 9 damage → 28/45 HP, now Poisoned.
+  Changes: Eli bar1 37→28; +Poisoned.
+  Actions: update_token_hp, set_token_marker.
+
+(If the DM wants a player-visible line, send_narration carries NO numbers — e.g.
+ "The naga's fangs find their mark — Eli reels, venom in his veins." See dm-rules.md.)
 ```
 
-**Total hops:** DM → Claude → MCP Server → Roll20 relay (HP bar + status marker) → Roll20 token updated
+**Total hops:** DM → Claude → MCP Server → Roll20 relay (HP via setTokenProps + condition via toggleCondition) → Roll20 token updated
 
-**Note on the Roll20-only write model:** HP and conditions are written exclusively to the Roll20 token, which is the single source of truth for live combat state. D&D Beyond write code (`patchCharacter`, `applyCondition`, `ddb_update_hp`, and the DDB branches of `apply_damage` / `heal_character`) has been removed — earlier DDB condition writes returned 405 and HP writes were unreliable. DDB remains available read-only (character/monster stat lookups, optional round-start drift checks).
+**Note on the Roll20-only write model:** NPC HP and all conditions are written to the Roll20
+token. The *intended* design (see memory / `skills/dm-rules.md`) is that PC HP is tracked in
+relay state (routed by `controlledby`) and the PC token's bar is never touched (Beyond20 owns
+it). In current code that routing is implemented in the **AoE path** (`resolve_aoe` → `adjustPcHp`);
+`update_token_hp` itself still writes `bar1` on whatever token it resolves, PC or NPC — so the
+"never touch a PC bar" guarantee is not yet enforced on the single-target path. The token/state
+is the source of truth for live combat.
+D&D Beyond write code (`patchCharacter`, `applyCondition`, `ddb_update_hp`, and the old
+`apply_damage` / `heal_character` DDB branches) has been **removed** — DDB condition writes
+returned 405 and HP writes were unreliable. DDB remains available read-only (character/monster
+stat lookups, optional round-start drift checks). The single HP primitive is now
+`update_token_hp`; conditions go through `set_token_marker`.
+
+---
+
+> **Canonical conventions** (full detail in `skills/dm-rules.md`, which the Voice HUD loads at
+> runtime): assistant emits a markdown report every turn and never narrates story (the DM does);
+> no numbers (HP/damage/totals) in player-visible chat; narrate after every token update and at
+> round end with effect countdowns; dice roll through Roll20's public roller; emanation spells use
+> a token aura, fixed-area spells use `create_zone`; dead tokens move to the map layer; use
+> `batch_exec` for 2+ token ops; never auto-advance the turn; PC initiative is read-only.

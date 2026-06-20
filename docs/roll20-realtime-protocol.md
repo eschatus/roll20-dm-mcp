@@ -123,15 +123,23 @@ key is per-campaign; read it from the ID-token claims at connect time, not deriv
 `wss://signal2.roll20.net:4001/socket/websocket` — a Phoenix/Elixir channels socket (presence/
 signaling). Not used for chat or object state; irrelevant to the relay.
 
-## Recommended build (chosen direction: socket transport, keep Mod)
+## Chosen direction: socket transport, keep Mod  ✅ IMPLEMENTED
 
-- New `src/bridge/roll20-rt.ts` implementing the same `relayCommand` interface as `roll20.ts`,
-  backed by an authenticated RTDB connection. Keep Playwright `roll20.ts` as a fallback transport
-  behind a flag, so a Roll20 frontend change can't fully brick the relay.
-- Client-direct reads (`CLIENT_READS` in roll20.ts) become RTDB reads of
-  `/<storagePath>/pages/<pageId>/…` instead of Backbone — map those paths in a follow-up capture.
-- Token refresh loop (~55 min) via securetoken endpoint.
-- DDB is separately ~90% browserless already (CobaltSession bearer) — do it after.
+This was the plan; it shipped. Current state:
+
+- `src/bridge/roll20-rt.ts` implements the same `relayCommand` interface as `roll20.ts`, backed by an
+  authenticated RTDB connection. Playwright `roll20.ts` remains the fallback transport (guarded by
+  `ROLL20_TRANSPORT`), so a Roll20 frontend change can't fully brick the relay.
+- Direct reads exist on **both** paths: `rtGet`/`tryDirectRead` reads the campaign storage subtree
+  directly — tokens at `<storagePath>/graphics/page/<pid>`, paths at `paths/page/<pageId>`,
+  doors/windows at `doors|windows/page/<pageId>`, and the page list at top-level `pages` (serving
+  `listPages`, `getTokens`, `getTokenById`, `getTurnOrder`, `getTokenMarkers`, `getPaths`,
+  `getDoors`) — and `CLIENT_READS` in `roll20.ts` still
+  serves some reads off the browser's live Backbone models when a browser is attached. Both fall back
+  to the Mod relay on error.
+- Token refresh: the Firebase SDK auto-refreshes the ID token; the custom token is re-harvested on a
+  ~50 min cache TTL. (Raw refresh-token persistence via the `securetoken` endpoint was *not* needed.)
+- DDB went fully browserless separately (CobaltSession → JWT) — see `docs/ddb-browserless-protocol.md`.
 
 ## Map pings: the `broadcast` channel (discovered 2026-06-11, src/recon/ping-sniff.ts)
 

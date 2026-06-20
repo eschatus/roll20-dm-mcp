@@ -14,7 +14,7 @@ the Playwright DOM bridge.
 > table that isn't here, open the site in the existing Playwright browser session (already
 > authenticated) and read it through the DOM rather than WebFetch.
 
-Last analyzed: 2026-05-31. Relay version string: `2.0.0` (`ping` action).
+Last analyzed: 2026-06-20. Relay version string: `2.1.0` (reported by the `ping` action).
 
 ---
 
@@ -22,11 +22,13 @@ Last analyzed: 2026-05-31. Relay version string: `2.0.0` (`ping` action).
 
 ```
 Claude → MCP tool (TS) → roll20.relayCommand({action,...})
-                              │  !ai-relay {JSON} into Roll20 chat
+                              │  !ai-relay {JSON} — pushed over Firebase RTDB (ROLL20_TRANSPORT=rt),
+                              │  or typed into Roll20 chat on the Playwright fallback
                               ▼
                        ai-relay.js (Mod sandbox)  →  Roll20 object model (createObj/findObjs/get/set)
                               ▲
-                       result whispered back, read by MutationObserver
+                       AIBRIDGE_RESULT whispered back — read over an RTDB child listener (RT),
+                       or via MutationObserver on the fallback browser path
 
 Some capabilities skip the relay because the *sandbox* can't do them:
 Claude → MCP tool (TS) → Playwright DOM on app.roll20.net   (uploadArt, createPageViaUI, takeScreenshot, getCurrentPageId, debug_turn_order)
@@ -34,7 +36,7 @@ DDB    → MCP tool (TS) → REST (Bearer cobalt) / page-context fetch / DOM scr
 ```
 
 **Three layers of "can do":**
-1. **Relay actions** (53) — the real Roll20 API surface this project uses.
+1. **Relay actions** (~70 `case` handlers in `ai-relay.js`, plus `batchExec` sub-actions) — the real Roll20 API surface this project uses.
 2. **Browser-bridge functions** (Playwright) — for things the Mod sandbox cannot do.
 3. **DDB bridge** — separate system, read-mostly.
 
@@ -84,17 +86,21 @@ Campaign specials: `change:campaign:turnorder`, `change:campaign:playerpageid`, 
 | Relay action | MCP tool(s) | Server | Notes |
 |---|---|---|---|
 | `getTokens` | list_tokens, roll_initiative, get_turn_order, plan_all_tactics | both | page graphics |
+| `getSelection` | get_selection | combat | the DM's currently-selected tokens |
+| `findTokensInRange` | find_tokens_in_range, resolve_aoe | combat | range query (aura/zone) |
 | `getTokenById` | get_token, get/set_character_attribute, update_token_hp, create_zone, plan_tactics | both | full token read |
 | `setTokenProps` | set_token_props, update_token_hp | both | arbitrary `.set(props)` |
-| `setTokenBar` | apply_damage, heal_character, full_sync_character, sync_character_state | combat | bar1 HP |
-| `setStatusMarker` | set_token_marker, apply_damage | combat | single marker add/remove |
-| `toggleCondition` | update_token_hp | combat | +token attr `active_conditions` |
+| `setTokenBar` | full_sync_character, sync_character_state | combat | bar1 HP (NPC); `update_token_hp` uses `setTokenProps` |
+| `adjustPcHp` / `getPcHp` | resolve_aoe | combat | PC HP in relay state (gmnotes block), routed by `controlledby` (only the AoE path routes here; `update_token_hp`/`update_hp_many` write the token bar directly) |
+| `setStatusMarker` | (internal) | combat | single marker add/remove by tag |
+| `setDefaultToken` | batch_exec (`set_default_token`) | combat | `setDefaultTokenForCharacter` (token↔sheet) |
+| `toggleCondition` | set_token_marker, update_token_hp | combat | resolves via 3-tier `resolveMarkerForState`; +`active_conditions` |
 | `syncConditionsToToken` | update_token_hp, sync_character_state | combat | replace all markers |
 | `getTokenMarkers` | get_token_markers | combat | campaign custom markers |
 | `createToken` | create_pc_token, create_monster_token, create_npc_token | maps | **does not set `represents`** |
 | `createGraphic` | place_map_image, upload_and_place_map_image | maps | map-layer image |
 | `createPath` / `createPaths` | (internal) | — | legacy path |
-| `createWalls` | auto_place_dl_walls | maps | **legacy `path` on walls layer, not `pathv2`** |
+| `createWalls` | auto_place_dl_walls | maps | tries `pathv2` first, falls back to legacy `path` |
 | `createPolylines` | place_polyline_walls | maps | one multi-vertex path |
 | `createDLDoors` / `createDLWindows` | decorate_openings | maps | native UDL door/window (create only) |
 | `clearDLOpenings` | decorate_openings | maps | delete doors+windows |
@@ -103,14 +109,15 @@ Campaign specials: `change:campaign:turnorder`, `change:campaign:playerpageid`, 
 | `getDoors` | get_doors | maps | door/window read |
 | `clearLayer` | clear_layer | maps | path+graphic+pathv2+wall |
 | `debugPage` | debug_page | maps | object-type census |
-| `drawLayerTest` | draw_layer_test | maps | creates `path` (desc says pathv2) |
+| `drawLayerTest` | draw_layer_test | maps | creates `path` |
 | `runUVTT` | run_uvtt_import | maps | drives external UniversalVTTImporter mod |
-| `listPages` | setup_roll20_page, get_current_page | both | page list |
+| `listPages` | setup_roll20_page, list_pages, get_current_page, batch_import_maps | both | page list |
 | `setPageProps` | setup/rename_roll20_page | maps | name/size/scale/grid subset |
 | `setPageBackground` | (internal) | — | bg color only |
 | `createZone`/`clearZone`/`listZones`/`findTokensInZone` | create_zone, clear_zone, list_zones | combat | path on map layer + gmnotes meta |
 | `removeObject` | remove_object | combat | graphic or path |
 | `getTurnOrder`/`setTurnOrder`/`advanceTurn` | get/clear_turn_order, advance_turn, roll_initiative | combat | Campaign.turnorder |
+| `mergeTurnOrder` | roll_initiative, inject_round_marker, update_turn_order | combat | NPC-only upsert (preserves PC entries) |
 | `rollInitiativeForTokens` | roll_initiative | combat | real dice + epithets |
 | `rollFormulas` | roll_dice | combat | real dice engine |
 | `setTurnHook`/`getTurnHookState` | set/check_turn_hook | combat | enables `change:campaign:turnorder` hook |
@@ -118,12 +125,22 @@ Campaign specials: `change:campaign:turnorder`, `change:campaign:playerpageid`, 
 | `whisperPlayer` | whisper_player | combat | `/w <name>` |
 | `getRecentChat` | get_recent_chat | combat | from in-memory CHAT_BUFFER |
 | `getDmInbox`/`clearDmInbox` | get/clear_dm_inbox | combat | `!dm` queue |
-| `setMobPlan`/`clearMobPlans` | plan_tactics, plan_all_tactics, clear_tactic_memory | combat | tactical whisper cards |
+| `setMobPlan`/`getMobPlans`/`clearMobPlans` | plan_tactics, plan_all_tactics, get_mob_plans, clear_tactic_memory | combat | tactical whisper cards |
+| `getCustomStates` | list_custom_states | combat | tier-2 ad-hoc DM states + holders |
 | `setCharacterAttributes`/`getCharacterAttributes` | set/get/read_character_attribute(s), full_sync_character | combat | sheet attrs |
-| `getRepeatingSection` | plan_tactics | combat | **read-only** (e.g. npcaction) |
-| `ping` | (health check) | — | version |
+| `getRepeatingSection` | plan_tactics | combat | **read-only** (e.g. npcaction); no row cap/projection |
+| `batchExec` | batch_exec | combat | runs N token actions in one relay round-trip |
+| `getJournalFolder`/`setJournalFolder` | get/set_journal_folder | combat | journal folder tree read/write |
+| `createHandout` | create_handout | maps | lore/player handout (name, notes, gmnotes) |
+| `createCharacter` | create_character_stub | maps | `createObj('character')` stub |
+| `sendPing` | send_ping | maps | "look here" / pull player view to a spot |
+| `spawnFx` / `spawnFxBetweenPoints` | spawn_fx, spawn_fx_between_points | maps | explosions, beams, spell nova |
+| `toFront` / `toBack` | to_front, to_back | maps | z-order |
+| `ping` | (health check) | — | reports relay version (2.1.0) |
 | **event** `chat:message` | (passive) | — | buffers chat, parses `!dm` |
 | **event** `change:campaign:turnorder` | (passive) | — | turn/round announcements |
+| **event** `add:graphic` | (passive) | — | auto-rolls initiative for NPC tokens dropped during combat |
+| **event** `ready` | (passive) | — | logs `state.GM_AI_Bridge` restoration on (re)deploy |
 
 ### Browser-bridge functions (Playwright; API can't do these)
 | Function | Tool | What / why |
@@ -161,27 +178,32 @@ Legend: ✅ exposed · 🟡 partial · ❌ API-reachable but **not exposed** (ad
 - **Pages** — list, configure (subset), create (via UI bridge).
 
 ### Partial (🟡)
-- **`pathv2` DL barriers** — *read* via `getWalls`, but walls are *created* as legacy `path` objects, not native `pathv2`. (Works for lighting; isn't the modern barrier object, and `drawLayerTest`'s "pathv2" label is inaccurate.)
+- **`pathv2` DL barriers** — *read* via `getWalls`; `createWalls` now *creates* native `pathv2` (falling back to legacy `path` only if `pathv2` returns undefined). `drawLayerTest` deliberately creates `path`.
 - **Door/window** — create/read/delete only; **no update** (open/close, lock, toggle secret) — all API-reachable.
-- **Repeating sections** — read only; **no write** (no row-id generation / `generateRowID` helper).
+- **Repeating sections** — read only; **no write** (no row-id generation / `generateRowID` helper); read has no row cap/field projection.
 - **Page properties** — only name/size/scale/grid/bg; UDL lighting/fog/explorer-mode/grid-type/diagonal props not exposed (all API-reachable).
-- **Events** — only `chat:message` + `change:campaign:turnorder` wired; `add/destroy/change:graphic`, `ready`, etc. unused.
+- **Token↔sheet linking** — `setDefaultTokenForCharacter` IS exposed (via `setDefaultToken` / `batch_exec`), but `createToken` still doesn't set `represents` on creation, so freshly-created tokens aren't sheet-bound until a default-token call runs.
+- **Events** — `chat:message`, `change:campaign:turnorder`, `add:graphic`, and `ready` wired; `destroy:graphic`, `change:graphic:statusmarkers`, etc. still unused.
 
 ### API-reachable but NOT exposed (❌ — just add relay actions)
 These are the "stop hitting the wall" items. None need the browser.
-- **Visual FX** — `spawnFx` / `spawnFxBetweenPoints` (explosions, beams, spell nova). High value for combat.
-- **Pings** — `sendPing` ("look here", pull players' view to a spot).
 - **Audio** — `playJukeboxPlaylist` / `stopJukeboxPlaylist` + `jukeboxtrack` objects.
 - **Move the player ribbon** — `Campaign().set('playerpageid', id)` ("bring players to this page"). *Not* browser-only.
-- **Token↔sheet linking** — `createToken` never sets `represents`; `setDefaultTokenForCharacter` unused. PC/monster tokens aren't bound to sheets, so sheet-driven features (sheet HP, `getAttrByName`, auto-init bonus) silently degrade.
-- **Handouts** — `handout` CRUD (lore, player handouts, images, gmnotes). Nothing exposed.
 - **Rollable tables** — `rollabletable`/`tableitem` (encounter/loot tables). Nothing exposed.
 - **Cards/decks** — `deck`/`card`/`hand` (e.g. **Tarokka deck for Curse of Strahd**). Nothing exposed.
 - **Abilities & macros** — `ability` (token actions) / `macro` CRUD. Nothing exposed.
 - **Text objects** — floating map labels/annotations. Not created, read, or removed.
-- **Character object** — only attributes are touched; name/bio/gmnotes/avatar/controlledby/archived/inplayerjournals and `createObj('character')` unused.
-- **Z-order** — `toFront`/`toBack` (zones rely on layer instead).
-- **More on() hooks** — `add:graphic`/`destroy:graphic` (auto-detect token spawns/deaths), `change:graphic:statusmarkers`, etc.
+- **Character object** — `createCharacter` creates a stub; full name/bio/avatar/controlledby/archived/inplayerjournals editing is still not exposed.
+- **More on() hooks** — `destroy:graphic` (auto-detect token deaths), `change:graphic:statusmarkers`, etc.
+
+### Shipped since this doc's first draft (✅ — no longer gaps)
+- **Visual FX** — `spawnFx` / `spawnFxBetweenPoints` → `spawn_fx`, `spawn_fx_between_points`.
+- **Pings** — `sendPing` → `send_ping`.
+- **Z-order** — `toFront`/`toBack` → `to_front`, `to_back`.
+- **Handouts** — `createHandout` → `create_handout`.
+- **Character stubs** — `createCharacter` → `create_character_stub`.
+- **Token↔sheet default token** — `setDefaultTokenForCharacter` → `setDefaultToken` / `batch_exec`.
+- **`add:graphic` hook** — auto-rolls initiative for NPC tokens dropped mid-combat.
 - ~~**`state` persistence**~~ ✅ **DONE (relay v2.1.0)** — `round`, `turnHookEnabled`, `dmInbox`, and `mobPlans` now live in `state.GM_AI_Bridge` via the self-healing `B()` accessor, so they survive sandbox restarts / redeploys (turn hook no longer silently disarms). `CHAT_BUFFER` intentionally stays in-memory (transient; self-repopulates; persisting it would churn the campaign save). **Requires redeploying `ai-relay.js` in the Roll20 Mod editor to take effect.**
 
 ### Browser-only (🌐 bridged / ⛔ not bridged)
@@ -195,12 +217,12 @@ These are the "stop hitting the wall" items. None need the browser.
 ## 5. Recommended next bridges (priority order)
 
 1. ~~**`state` persistence in the relay**~~ ✅ done (v2.1.0) — stops silent turn-hook loss on redeploy.
-2. **Token↔sheet linking** — set `represents` on create + `setDefaultTokenForCharacter`; unlocks sheet HP/init/abilities the tactics + sync tools already assume.
-3. **`spawnFx` + `sendPing`** — cheap, high-impact for live play (spell effects, "look here").
-4. **Handouts CRUD** — share lore/images/secret notes with players from chat flow.
+2. ~~**`spawnFx` + `sendPing`**~~ ✅ done — `spawn_fx` / `spawn_fx_between_points` / `send_ping`.
+3. ~~**Handouts CRUD**~~ 🟡 partial — `create_handout` shipped; read/update/delete still missing.
+4. **`createToken represents`** — set `represents` on create (default-token linking exists; creation-time binding doesn't), so sheet HP/init/abilities bind without a follow-up call.
 5. **Cards/decks** — Tarokka deck is core to the active Curse of Strahd campaign.
-6. **Door/window update + native `pathv2` creation** — finish the DL story (open/lock/secret toggles).
+6. **Door/window update + native `pathv2` creation** — `createWalls` now makes `pathv2`; remaining work is door/window open/lock/secret toggles.
 7. **Jukebox/audio + rollable tables** — ambiance and random tables.
 
-All of #1–#7 are **API-reachable** — they are new relay actions, not browser automation. The only
-genuinely browser-bound work remaining is page delete/reorder and one-time sandbox setup.
+All remaining items are **API-reachable** — they are new relay actions, not browser automation. The
+only genuinely browser-bound work remaining is page delete/reorder and one-time sandbox setup.
