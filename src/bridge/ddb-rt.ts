@@ -262,7 +262,15 @@ export async function rtGetDamageAdjustments(): Promise<Record<number, DamageAdj
         fetchDamageAdjustments().catch(() => {}).finally(() => { _monConfigRefreshing = false; });
       }
       return _monConfigMem;
-    } catch { /* corrupt cache → fall through to a live fetch */ }
+    } catch { /* corrupt cache → fall through to a background refresh */ }
   }
-  try { return await fetchDamageAdjustments(); } catch { return null; }
+  // No cache yet — refresh in the BACKGROUND and return null so the caller uses the baked table.
+  // A monster lookup must never block on the optional overlay: in test/offline environments the
+  // live config fetch drags in the cobalt→browser auth path and can hang, and getMonster awaits
+  // this concurrently with the monster fetch. Fire-and-forget keeps the lookup fast and offline-safe.
+  if (!_monConfigRefreshing) {
+    _monConfigRefreshing = true;
+    fetchDamageAdjustments().catch(() => {}).finally(() => { _monConfigRefreshing = false; });
+  }
+  return null;
 }
