@@ -99,22 +99,90 @@ the **Roll20 public chat** (player-facing).
 
 ---
 
-## 3. FUTURE — phase workflow (DO NOT RUN until the phase scaffolding is built)
+## 3. Phase workflow (scaffolding is now built — run to verify)
 
-Placeholder cases for when [`WORKFLOW.md`](WORKFLOW.md) is implemented (build steps 1–4):
+**NOTE: These cases require the Electron gem to be running** — launch via
+`voice-hud\launch-gem.vbs` (or `launch-gem.cmd`) and complete the section-0
+preconditions first. The gem must be connected to a live Roll20 campaign with
+tokens on the board.
 
-- [ ] **P1 scene-set** — opening narration with keywords ("...atop Mount Baratok in Curse of
-  Strahd... surprised... vampires... wolves... swarms of bats") → confirms campaign, **verifies**
-  page (doesn't navigate off your board), matches + reports the cast GM-only, flags "surprised",
-  pushes **nothing** to players.
-- [ ] **P2 init-prep** — on "roll initiative", NPCs join via `roll_initiative npcOnly clearFirst=
-  false` (overlaps get epithets), nameplates on (player-visible), `plan_all_tactics` kicked off,
-  **PC initiative untouched** while players fuss.
-- [ ] **P3 begin** — on "sort it / start", turn hook on, settled order read back, first turn +
-  tactics surfaced.
-- [ ] **P4 idle scoping** — out of combat, asking for damage does nothing mechanical (HP tools not
-  in the idle allowlist); lookups + journal still work.
-- [ ] **P5 explicit exit** — only an explicit close phrase fires cleanup; cleanup steps each prompt
-  to confirm; a stray "the fight feels over" does **not** trigger it.
-- [ ] **P6 gem phase indicator** — the gem shows the current phase; a misdetected entry is visible
-  and correctable.
+### Setup for phase tests
+- Be in **curse-of-strahd** (or any registered campaign).
+- Have at least 3 NPC tokens + 2 PC tokens on the current page, turn tracker empty.
+- Tick "show tool activity" in the ledger so you can see which tools fire.
+- Confirm the gem shows **IDLE** in the phase badge (top of gem, or check the Debug
+  tab via `getPhase()`).
+
+---
+
+### P1 — Scene-set: fuzzy entry from opening narration
+- Say: **"The party finds themselves atop Mount Baratok in the Curse of Strahd,
+  and are surprised when suddenly they're beset by several vampires and many
+  children of the night represented by wolves and swarms of bats."**
+- Expect:
+  - Phase transitions IDLE → SCENE_SET (badge updates, log line `phase: IDLE → SCENE_SET`).
+  - Gem calls `active_campaign` / `switch_campaign` (only if wrong campaign).
+  - Gem calls `get_current_page` — **verifies** map, does NOT call any page-navigation tool.
+  - Gem calls `list_tokens` — reports cast GM-only ("Found 3 Vampire Spawn…").
+  - Gem surfaces "Party surprised — hold their round-1 turns?" as a question to DM.
+  - **Nothing** pushed to players (no `send_narration`).
+- [ ] Pass — phase badge shows SCENE_SET; cast report visible; no player output.
+
+### P2 — Init-prep: NPC initiative roll on "roll initiative"
+- While in SCENE_SET, say: **"Roll initiative."**
+- Expect:
+  - Phase transitions SCENE_SET → INIT_PREP.
+  - `roll_initiative` called with `npcOnly=true`, `clearFirst=false` (confirm banner appears).
+  - After confirm: NPCs appear in the Roll20 turn order; player entries untouched.
+  - `plan_all_tactics` called (confirm banner — tactics queue up).
+  - Gem notes "Call 'sort it / start' when players have settled."
+- [ ] Pass — turn order shows NPCs only added; players did not lose their entries.
+- [ ] `clearFirst=false` confirmed in the tool call args (check ledger).
+
+### P3 — Begin combat: "sort it / start"
+- While in INIT_PREP, say: **"Sort it, let's start."**
+- Expect:
+  - Phase transitions INIT_PREP → COMBAT_LOOP.
+  - `set_turn_hook` called with `enabled=true` (confirm banner).
+  - `get_turn_order` called immediately after — settled order read back.
+  - Gem surfaces first turn + its queued tactical plan.
+- [ ] Pass — phase badge shows COMBAT_LOOP; first combatant named.
+
+### P4 — Idle scoping: HP tools blocked while IDLE
+- **Reset to IDLE**: restart the gem (or in a fresh session before any narration).
+- While in IDLE, say: **"The goblin takes 7 damage."**
+- Expect: gem says it cannot apply HP changes out of combat (or gently declines), does
+  **not** call `update_token_hp` or `update_hp_many`. Read tools (list_tokens,
+  ddb_get_monster, etc.) still work.
+- [ ] Pass — no HP tool called in IDLE; toolset is read-only.
+
+### P5 — Explicit exit: cleanup fires only on deliberate phrase
+- While in COMBAT_LOOP, say: **"The fight feels like it might be winding down."**
+- Expect: NO cleanup triggered. Normal agent turn runs.
+- [ ] Pass — "feels like winding down" does NOT trigger cleanup.
+
+- Then say: **"Combat's over."**
+- Expect:
+  - Phase transitions COMBAT_LOOP → CLEANUP → IDLE.
+  - `set_turn_hook enabled=false` proposed (confirm each step).
+  - `clear_turn_order` proposed.
+  - `list_zones` called; `clear_zone` proposed for each zone found.
+  - Aura-clear (`set_token_props aura1_radius=0`) proposed for any token with an aura.
+  - `sync_character_state` proposed per PC.
+  - Phase returns to IDLE after cleanup finishes.
+- [ ] Pass — each cleanup step has a confirm banner; stray "winding down" did NOT trigger it.
+
+### P6 — Phase indicator visible in gem
+- At each phase transition (IDLE→SCENE_SET→INIT_PREP→COMBAT_LOOP→CLEANUP→IDLE), the
+  gem must display or log the current phase so a misdetected entry is visible and
+  correctable. Check via:
+  - The Debug log panel (look for `[agent] phase: X → Y` lines).
+  - The `phase` IPC event (add a temporary `console.log` in gem.js `onPhaseChange` callback if needed).
+- [ ] Pass — all five transitions logged; DM can see where the state machine is.
+
+---
+
+**Human verification required**: All P1–P6 cases need the live Electron gem + Roll20
+browser open. The Electron gem cannot be launched headlessly by automated tests — a
+human must sit at the table and walk through each case. Check off each box above as you
+verify it manually.

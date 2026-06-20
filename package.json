@@ -10,7 +10,8 @@
     "serve": "tsx src/index-http.ts",
     "serve:watch": "tsx watch src/index-http.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "eslint src/**/*.ts test/**/*.ts"
   },
   "keywords": [],
   "author": "",
@@ -26,10 +27,13 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^25.9.1",
     "@types/sharp": "^0.31.1",
+    "eslint": "^10.5.0",
     "tsx": "^4.22.3",
     "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1",
     "vitest": "^3.2.4"
   }
 }

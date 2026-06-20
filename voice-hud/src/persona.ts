@@ -5,9 +5,13 @@
 //  - LOCAL (7B): a tight, imperative prompt with worked examples. Small models do
 //    far better with terse rules + few-shot format than with long Claude-tuned prose,
 //    and the gem viewport (~24 chars, ~6 lines) demands brevity anyway.
+//
+// Both variants are phase-aware: each DmPhase injects a focused instruction block
+// so the model knows exactly what it should (and must NOT) do right now.
 
 import * as fs from "fs";
 import * as path from "path";
+import type { DmPhase } from "./agent";
 
 const RULES_PATH = path.join(__dirname, "..", "..", "skills", "dm-rules.md");
 
@@ -22,9 +26,64 @@ function loadRules(): string {
   return _rulesCache;
 }
 
-// ---- LOCAL (small-model) prompt: terse rules + few-shot examples ----
-function localPrompt(roster: string): string {
+// ---------------------------------------------------------------------------
+// Phase focus blocks
+// ---------------------------------------------------------------------------
+// Each block is injected near the top of the system prompt so the model sees its
+// current phase constraints before the general rules. Keep them terse — these are
+// live-table prompts.
+
+const PHASE_FOCUS: Record<DmPhase, string> = {
+  IDLE: `# CURRENT PHASE: IDLE (out of combat)
+- Read-only + lookup + journal tools only. HP / conditions / initiative tools are NOT available.
+- You may answer questions, look up monsters/characters, manage journal entries, and do campaign setup.
+- If the DM describes an opening scene with combatants, you will automatically enter SCENE-SET.`,
+
+  SCENE_SET: `# CURRENT PHASE: SCENE-SET (board review — silent to players)
+You are resolving the board before initiative. Do these steps in order, then STOP:
+1. Confirm the active campaign. If it doesn't match the DM's narration, call switch_campaign (gated).
+2. Call get_current_page. Verify the map is right. If it isn't, FLAG it — do NOT navigate.
+3. Call list_tokens. Match the narrated types ("vampires / wolves") to tokens present.
+   Report GM-only: "Found 3 Vampire Spawn, 5 Wolf, 2 Swarm of Bats + 4 PCs." Flag missing types.
+4. Surface any rules keywords ("surprised") as explicit questions to the DM. Do NOT silently apply them.
+5. STOP. No initiative, no turn order, nothing to the public channel.`,
+
+  INIT_PREP: `# CURRENT PHASE: INIT-PREP (staging monsters while players sort their inits)
+The macro backbone has already:
+  • Rolled NPC initiative (npcOnly=true, clearFirst=false — players' entries untouched).
+  • Started plan_all_tactics.
+Your job now is to:
+  • If asked, reveal nameplates: set_token_props showname=true showplayers_name=true via batch_exec.
+  • Answer questions about the order, token names, or upcoming tactics.
+  • Do NOT touch player initiative. Do NOT advance the turn. Do NOT call clear_turn_order.
+Wait for the DM to say "sort it / start" before transitioning to COMBAT_LOOP.`,
+
+  COMBAT_LOOP: `# CURRENT PHASE: COMBAT LOOP (turn by turn)
+Turn hook is armed. Follow these rules:
+- NPC turn → act with queued tactics (from get_mob_plans) or as DM directs.
+- PC turn → WAIT. Players declare; DM PTTs the results. Apply: update_hp_many (batch), set_token_marker (conditions), roll_dice for NPC saves when asked.
+- Output is a RECEIPT, not a story: mechanical change + at most one line of color. DM owns narration.
+- Player-facing send_narration: ASCII bar / Wounded marker / descriptive words — never exact HP.
+- Round end → terse mechanical summary (who's down, conditions, countdowns). No auto-advance.
+- NEVER call advance_turn unless the DM explicitly says to.
+- Combat ends ONLY when the DM says an explicit close phrase ("combat's over", "fight's done", etc.).`,
+
+  CLEANUP: `# CURRENT PHASE: CLEANUP (explicit close sequence)
+The macro backbone handles: turn hook off, clear turn order, clear zones.
+Your remaining tasks (confirm each before executing):
+  • Clear auras: set_token_props aura1_radius=0 on each token that has an aura. Use batch_exec if multiple.
+  • sync_character_state for each PC on the board (one call per PC).
+  • Report when done. The agent will return to IDLE automatically.`,
+};
+
+// ---------------------------------------------------------------------------
+// LOCAL (small-model) prompt
+// ---------------------------------------------------------------------------
+
+function localPrompt(roster: string, phase: DmPhase): string {
   return `You are the DM's scrying gem for a live D&D 5e game on Roll20. The DM speaks; you act via tools and reply in a TINY overlay (~24 chars wide, a few lines). Gothic Curse-of-Strahd tone, but be terse.
+
+${PHASE_FOCUS[phase]}
 
 # HARD RULES
 - Reply in the gem to the DM: SHORT. No preamble ("It seems…", "Let me…"). First word = the answer.
@@ -83,9 +142,14 @@ ${roster || "(empty — call list_tokens to see the field)"}
 `;
 }
 
-// ---- CLOUD prompt: terse operational rules first, canonical rules as reference ----
-function cloudPrompt(roster: string): string {
+// ---------------------------------------------------------------------------
+// CLOUD (Claude) prompt
+// ---------------------------------------------------------------------------
+
+function cloudPrompt(roster: string, phase: DmPhase): string {
   return `You are the DM's scrying-gem assistant for a live D&D 5e game on Roll20 via MCP tools. Your tool calls affect the live tabletop.
+
+${PHASE_FOCUS[phase]}
 
 # SPEED RULES (this is a fast live table — obey strictly)
 - Be efficient: the FEWEST tool calls and the SHORTEST replies that do the job.
@@ -106,7 +170,12 @@ ${roster || "(empty — only then may you call list_tokens once)"}
 `;
 }
 
+// ---------------------------------------------------------------------------
+// Public export
+// ---------------------------------------------------------------------------
+
 // provider: "ollama" → local terse prompt; anything else → full cloud prompt.
-export function buildSystemPrompt(roster: string, provider = "ollama"): string {
-  return provider === "ollama" ? localPrompt(roster) : cloudPrompt(roster);
+// phase: narrows the active focus block injected at the top.
+export function buildSystemPrompt(roster: string, provider = "ollama", phase: DmPhase = "IDLE"): string {
+  return provider === "ollama" ? localPrompt(roster, phase) : cloudPrompt(roster, phase);
 }
