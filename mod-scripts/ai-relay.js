@@ -945,8 +945,8 @@ on("chat:message", function (msg) {
         // Legacy DL: path objects on the walls layer (with or without barrierType).
         // Returns both so this works regardless of which DL mode the campaign uses.
         let includePoints = args.includePoints === true;
-        // pathv2 (Latest Engine / UDL)
-        let pathv2Walls = findObjs({ _type: "pathv2", _pageid: args.pageId, layer: "walls" });
+        // pathv2 (Latest Engine / UDL) — pathv2 uses pageid (no underscore) in findObjs, like door/window
+        let pathv2Walls = findObjs({ _type: "pathv2", pageid: args.pageId, layer: "walls" });
         // path objects on walls layer (Legacy DL, or RTDB-direct diagnostic writes)
         let pathWalls = findObjs({ _type: "path", _pageid: args.pageId, layer: "walls" });
         let allWalls = pathv2Walls.map(function(w) {
@@ -1003,27 +1003,41 @@ on("chat:message", function (msg) {
 
       case "createWalls": {
         // Create DL barriers. Latest Engine UDL → pathv2 with shape:"pol".
-        // Roll20 pathv2 shape discriminator is a short string: "pol"=polygon, "free","eli","rec".
-        // Points go in the `path` field as [[x,y],...] relative to the x,y center.
-        // If createObj("pathv2") returns undefined, fall back to legacy path (yellow).
-        let wallResults = (args.walls || []).map(function(w) {
+        // Points are relative to the object center (x,y). For a two-point wall from
+        // (x1,y1)→(x2,y2): center = midpoint; points = [[-dx/2,-dy/2],[dx/2,dy/2]].
+        // If createObj("pathv2") returns undefined, fall back to legacy path.
+        let firstWall = (args.walls || [])[0];
+        if (firstWall) {
+          let probeCx = (firstWall.x1 + firstWall.x2) / 2;
+          let probeCy = (firstWall.y1 + firstWall.y2) / 2;
+          log("[GM_AI_Bridge] createWalls probe — pageId=" + args.pageId
+            + " wall[0]: x1=" + firstWall.x1 + " y1=" + firstWall.y1
+            + " x2=" + firstWall.x2 + " y2=" + firstWall.y2
+            + " cx=" + probeCx + " cy=" + probeCy
+            + " points=" + JSON.stringify([[firstWall.x1 - probeCx, firstWall.y1 - probeCy], [firstWall.x2 - probeCx, firstWall.y2 - probeCy]]));
+        }
+        let wallResults = (args.walls || []).map(function(w, wi) {
           let cx = (w.x1 + w.x2) / 2;
           let cy = (w.y1 + w.y2) / 2;
-          let wallObj = createObj("pathv2", {
+          let pv2Props = {
             pageid: args.pageId,
             layer: "walls",
             x: cx,
             y: cy,
-            width: Math.max(Math.abs(w.x2 - w.x1), 1),
-            height: Math.max(Math.abs(w.y2 - w.y1), 1),
             shape: "pol",
             barrierType: args.barrierType || "wall",
             points: JSON.stringify([[w.x1 - cx, w.y1 - cy], [w.x2 - cx, w.y2 - cy]]),
             stroke: args.stroke || "#0044FF",
+            stroke_width: 5,
             controlledby: "",
-          });
+          };
+          let wallObj;
+          try { wallObj = createObj("pathv2", pv2Props); } catch(e) {
+            log("[GM_AI_Bridge] createWalls pathv2 threw: " + String(e));
+          }
+          if (wi === 0) log("[GM_AI_Bridge] createWalls pathv2 result[0]: " + (wallObj ? "id=" + wallObj.id : "undefined — falling back"));
           if (wallObj) return { id: wallObj.id, kind: "pathv2" };
-          // Fall back to legacy path (visible as yellow — UDL won't block but at least DM can see)
+          // Fall back to legacy path on walls layer
           let minX = Math.min(w.x1, w.x2), minY = Math.min(w.y1, w.y2);
           let legacyObj = createObj("path", {
             pageid: args.pageId,
@@ -1038,6 +1052,7 @@ on("chat:message", function (msg) {
             fill: "transparent",
             rotation: 0, scaleX: 1, scaleY: 1, controlledby: "",
           });
+          if (wi === 0) log("[GM_AI_Bridge] createWalls path-fallback result[0]: " + (legacyObj ? "id=" + legacyObj.id : "undefined"));
           return legacyObj ? { id: legacyObj.id, kind: "path-fallback" } : { error: "createObj failed for both pathv2 and path" };
         });
         writeResult(nonce, wallResults);
@@ -1223,7 +1238,7 @@ on("chat:message", function (msg) {
           });
           if (layer === "walls") {
             // Remove pathv2 DL barriers (Latest VTT Engine) and legacy wall objects.
-            findObjs({ _type: "pathv2", _pageid: args.pageId, layer: "walls" }).forEach(function(obj) {
+            findObjs({ _type: "pathv2", pageid: args.pageId, layer: "walls" }).forEach(function(obj) {
               obj.remove();
               removed++;
             });
@@ -2433,7 +2448,8 @@ on("add:graphic", function(obj) {
       if (freshOrder.some(function(e) { return e.id === tokenId; })) return;
 
       // Insert at correct pr-descending position
-      let entry = { id: tokenId, pr: total, custom: "" };
+      let pageId = Campaign().get("initiativepage") || Campaign().get("playerpageid");
+      let entry = { id: tokenId, pr: total, custom: "", _pageid: pageId };
       let insertIdx = freshOrder.findIndex(function(e) { return (parseFloat(e.pr) || 0) < total; });
       if (insertIdx === -1) freshOrder.push(entry);
       else freshOrder.splice(insertIdx, 0, entry);
