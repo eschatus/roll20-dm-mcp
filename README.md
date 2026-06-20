@@ -159,7 +159,7 @@ Plans are whispered GM-only and surfaced again automatically when the initiative
 
 **PC initiative is read-only.** `roll_initiative` always uses `npcOnly=true`. Players set their own initiative; the Mod never touches PC entries.
 
-**Turn order writes wipe player entries.** The relay never calls `setTurnOrder` wholesale. NPCs are added via `roll_initiative npcOnly=true clearFirst=false`; single entries adjusted via `update_turn_order`.
+**Player initiatives are preserved, not wiped.** A raw wholesale `setTurnOrder` would replace the entire order (erasing players), so the initiative paths avoid it: `roll_initiative` writes via an atomic `mergeTurnOrder` (read-merge-write in one tick), and `clearFirst=true` strips **only** NPC entries (`clearNpcFirst`) — player-controlled entries and round markers are always kept. `update_turn_order` upserts a single entry the same way. The only wholesale wipe is `clear_turn_order` (explicit, between encounters); `setTurnOrder` is also reachable via `batch_exec` if you pass it deliberately. So a player's rolled/assigned initiative survives rolling and adjusting — it's erased only when you clear it.
 
 **AoE emanations use token auras; fixed areas use zones.** Spirit Guardians, Aura of Protection, etc. → `set_token_props aura1_radius`. Fireball, Web, Cloudkill → `create_zone` on the map layer.
 

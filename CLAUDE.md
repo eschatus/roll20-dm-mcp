@@ -143,9 +143,13 @@ Roll20 icons render nothing on these tokens. See `docs/roll20-token-markers.md`.
 hand-synced table copies.)
 
 **Initiative / turn order (safety-critical):**
-- **Never `setTurnOrder` wholesale** — it wipes player entries. Add NPCs with
-  `roll_initiative npcOnly=true clearFirst=false`; adjust one entry with `update_turn_order`;
-  insert round markers with `inject_round_marker` (needs `formula:"+1"`).
+- **Never `setTurnOrder` wholesale** — a raw full write replaces the entire order, erasing
+  players. The initiative paths avoid it: `roll_initiative` writes via atomic `mergeTurnOrder`, and
+  `clearFirst=true` strips **only** NPC entries (`clearNpcFirst`) — player entries and round markers
+  are always kept, so players' inits survive any roll (clearFirst true or false). Add NPCs with
+  `roll_initiative npcOnly=true`; adjust one entry with `update_turn_order`; insert round markers with
+  `inject_round_marker` (needs `formula:"+1"`). The only wholesale wipe is `clear_turn_order`
+  (between encounters); `setTurnOrder` is also reachable via `batch_exec` — don't pass it wholesale.
 - **PC initiative is read-only** — players roll their own.
 - `roll_initiative` always arms the turn hook itself. `clearFirst=true` is the only thing that
   auto-fires tactics (`fireTacticsForPage`); with `clearFirst=false` call `plan_all_tactics`
