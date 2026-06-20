@@ -141,10 +141,14 @@ describe("a full round of combat", () => {
     expect(ids).toContain(w.pcs.fighter.id);
     expect(ids).toContain(w.pcs.cleric.id);
 
-    // Radiant damage to the PCs caught in the emanation.
-    const fighterBefore = Number(h.emu.tokenProps(w.pcs.fighter.id).bar1_value);
-    await h.callTool("update_hp_many", { names: ["Sir Aldric", "Mother Vance"], damage: 9 });
-    expect(Number(h.emu.tokenProps(w.pcs.fighter.id).bar1_value)).toBe(fighterBefore - 9);
+    // Radiant damage to the PCs caught in the emanation. PC HP is tracked in relay state
+    // (a block in the token's gmnotes), routed by controlledby — the Beyond20-owned token
+    // bar must NOT move; the tracked value (surfaced in the report) is what changes.
+    const fighterBar = Number(h.emu.tokenProps(w.pcs.fighter.id).bar1_value);
+    const { text } = await h.callTool("update_hp_many", { names: ["Sir Aldric", "Mother Vance"], damage: 9 });
+    expect(Number(h.emu.tokenProps(w.pcs.fighter.id).bar1_value)).toBe(fighterBar); // bar untouched
+    expect(text).toMatch(/Sir Aldric: 21\/30 \(tracked\)/); // 30 → 21 tracked
+    expect(text).toMatch(/Mother Vance: 15\/24 \(tracked\)/); // 24 → 15 tracked
   });
 
   it("applies single-target damage + a condition, then heals, then poisons", async () => {
@@ -157,12 +161,13 @@ describe("a full round of combat", () => {
     expect(Number(h.emu.tokenProps(w.npcs.captain.id).bar1_value)).toBe(29); // 39 - 10
     expect(String(h.emu.tokenProps(w.npcs.captain.id).statusmarkers)).toMatch(/Feared|Frightened/i);
 
-    // The cleric heals herself (clamped to max).
-    // update_token_hp heal path matches the removed heal_character: clamps at bar1_max.
-    const woundedCleric = Number(h.emu.tokenProps(w.pcs.cleric.id).bar1_value);
-    await h.callTool("update_token_hp", { characterName: "Mother Vance", heal: 100 });
-    expect(Number(h.emu.tokenProps(w.pcs.cleric.id).bar1_value)).toBe(24); // clamped to max, not woundedCleric+100
-    expect(Number(h.emu.tokenProps(w.pcs.cleric.id).bar1_value)).toBeGreaterThan(woundedCleric);
+    // The cleric heals herself (clamped to max). PC HP routes to tracked state, not the
+    // Beyond20-owned bar — so the bar stays put while the tracked value climbs and clamps.
+    // (Her tracked HP is 15/24 from the Spirit Guardians hit above.)
+    const clericBar = Number(h.emu.tokenProps(w.pcs.cleric.id).bar1_value); // 24, must not move
+    const heal = await h.callTool("update_token_hp", { characterName: "Mother Vance", heal: 100 });
+    expect(Number(h.emu.tokenProps(w.pcs.cleric.id).bar1_value)).toBe(clericBar); // bar untouched (Beyond20-owned)
+    expect(heal.text).toMatch(/Mother Vance: .*24\/24 \(tracked\)/); // 15 → clamped at 24
 
     // Poison the captain via the marker primitive.
     await h.callTool("set_token_marker", { condition: "poisoned", active: true, tokenId: w.npcs.captain.id });

@@ -646,7 +646,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "update_token_hp",
-    "The SINGLE HP primitive — replaces the old apply_damage and heal_character tools. Apply damage (clamps at 0), healing (clamps at bar1_max), or set HP to an exact value on ANY Roll20 token: registered PCs (looked up by name via the character registry), NPCs, or any on-map token resolved by fuzzy name. Roll20-only — D&D Beyond is read-only and is NOT written. Reads bar1, computes, writes back. For CONDITIONS (poisoned, prone, dead, etc.) use set_token_marker instead — not this. (The condition args here are legacy/bulk-only.)",
+    "The SINGLE HP primitive — replaces the old apply_damage and heal_character tools. Apply damage (clamps at 0), healing (clamps at max), or set HP to an exact value on ANY Roll20 token. Routes automatically by controlledby: a player-controlled token (PC) has its HP tracked in relay state (a block in the token's gmnotes) and its visible token bar is NEVER touched (Beyond20 owns it) — reported as '(tracked)'; an NPC's HP is its token bar1. Resolve by characterName (fuzzy/registry) or tokenId. Roll20-only — D&D Beyond is read-only and is NOT written. For CONDITIONS (poisoned, prone, dead, etc.) use set_token_marker instead — not this. (The condition args here are legacy/bulk-only.)",
     {
       characterName: z.string().optional().describe("USE THIS. The token/character name exactly as it appears on the map, e.g. 'Brie Mossfrond', 'Skeleton the Armored'. Resolved to the token automatically."),
       tokenId: z.string().optional().describe("Internal Roll20 ID only. Do NOT invent or guess this — if you don't have a real ID from a prior tool result, use characterName instead."),
@@ -667,31 +667,44 @@ export function registerCombatTools(server: McpServer): void {
         if (!characterName) throw new Error("Provide characterName or tokenId");
         resolvedTokenId = await resolveTokenOrThrow(characterName);
       }
-      type TokenData = { bar1_value: number; bar1_max: number; name: string };
+      type TokenData = { id: string; bar1_value: number; bar1_max: number; name: string; controlledby?: string };
       const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId: resolvedTokenId });
       if (!token) throw new Error(`Token not found: ${characterName ?? tokenId}`);
 
-      // No HP bar (bar1_max unset → hp:null): damage/healing has nothing to write
-      // and would silently no-op. setHp is allowed — it establishes a value.
-      if (setHp === undefined && (damage !== undefined || heal !== undefined) && !hasHpBar(token)) {
-        return text(`${token.name}: no HP bar set (bar1_max is empty) — ${damage !== undefined ? "damage" : "healing"} not applied. Roll initiative to auto-init NPC HP from DDB, set the bar in Roll20, or use setHp to establish one.`);
-      }
-
-      const maxHp = Number(token.bar1_max) || 0;
-      const currentHp = Number(token.bar1_value) || 0;
-
-      let newHp: number;
-      if (setHp !== undefined) {
-        newHp = setHp;
-      } else if (damage !== undefined) {
-        newHp = Math.max(0, currentHp - damage);
-      } else if (heal !== undefined) {
-        newHp = maxHp ? Math.min(maxHp, currentHp + heal) : currentHp + heal;
-      } else {
+      if (damage === undefined && heal === undefined && setHp === undefined) {
         throw new Error("Provide damage, heal, or setHp");
       }
 
-      await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props: { bar1_value: newHp } });
+      const isPc = isPcToken(token);
+      let newHp: number;
+      let maxHp: number;
+
+      if (isPc) {
+        // PC HP is tracked in relay state (a block in the token's gmnotes), routed by
+        // controlledby — NEVER the visible token bar (Beyond20 owns a player's bar1).
+        // adjustPcHp reads the tracked block, computes, and writes it back.
+        const res = await roll20.relayCommand<{ current: number; max: number; name: string }>({
+          action: "adjustPcHp",
+          tokenId: resolvedTokenId,
+          ...(damage !== undefined ? { damage } : {}),
+          ...(heal !== undefined ? { heal } : {}),
+          ...(setHp !== undefined ? { setHp } : {}),
+        });
+        newHp = res.current;
+        maxHp = res.max;
+      } else {
+        // NPC: the token bar IS the source of truth. Guard a missing bar (writing to it
+        // silently no-ops); setHp is allowed — it establishes a value.
+        if (setHp === undefined && !hasHpBar(token)) {
+          return text(`${token.name}: no HP bar set (bar1_max is empty) — ${damage !== undefined ? "damage" : "healing"} not applied. Roll initiative to auto-init NPC HP from DDB, set the bar in Roll20, or use setHp to establish one.`);
+        }
+        maxHp = Number(token.bar1_max) || 0;
+        const currentHp = Number(token.bar1_value) || 0;
+        if (setHp !== undefined) newHp = setHp;
+        else if (damage !== undefined) newHp = Math.max(0, currentHp - damage);
+        else newHp = maxHp ? Math.min(maxHp, currentHp + heal!) : currentHp + heal!;
+        await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props: { bar1_value: newHp } });
+      }
 
       if (replaceConditions !== undefined) {
         await roll20.relayCommand({ action: "syncConditionsToToken", tokenId: resolvedTokenId, conditions: replaceConditions });
@@ -704,7 +717,7 @@ export function registerCombatTools(server: McpServer): void {
         }
       }
 
-      const hpStr = maxHp ? `${newHp}/${maxHp}` : String(newHp);
+      const hpStr = (maxHp ? `${newHp}/${maxHp}` : String(newHp)) + (isPc ? " (tracked)" : "");
       const delta = damage !== undefined ? `-${damage}` : heal !== undefined ? `+${heal}` : `→${newHp}`;
       const condNote = replaceConditions !== undefined
         ? ` | conditions set: [${replaceConditions.join(", ") || "none"}]`
@@ -730,7 +743,7 @@ export function registerCombatTools(server: McpServer): void {
     async ({ names, nameMatch, damage, heal }) => {
       if (damage === undefined && heal === undefined) throw new Error("Provide damage or heal");
       const pageId = await roll20.getCurrentPageId();
-      type Tk = { id: string; name: string; bar1_value: number; bar1_max: number };
+      type Tk = { id: string; name: string; bar1_value: number; bar1_max: number; controlledby?: string };
       const tokens = await roll20.relayCommand<Tk[]>({ action: "getTokens", pageId });
 
       let targets: Tk[] = [];
@@ -748,28 +761,36 @@ export function registerCombatTools(server: McpServer): void {
       }
       if (!targets.length) throw new Error(`No tokens matched ${nameMatch ? `'${nameMatch}'` : (names || []).join(", ")}`);
 
-      // Split off tokens with no HP bar (bar1_max unset) — writing to them silently
-      // no-ops, so report them as not-applied instead of a phantom success.
-      const noBar = targets.filter((t) => !hasHpBar(t));
-      targets = targets.filter((t) => hasHpBar(t));
-      if (!targets.length) {
+      // Route by controlledby: PCs track HP in relay state (gmnotes block) via adjustPcHp —
+      // never their token bar (Beyond20 owns it); NPCs write bar1. NPCs need a real bar
+      // (writing to a barless NPC silently no-ops); PCs don't (their HP lives in gmnotes).
+      const { pcs, npcs } = splitPcNpc(targets);
+      const noBar = npcs.filter((t) => !hasHpBar(t));
+      const npcTargets = npcs.filter((t) => hasHpBar(t));
+      if (!pcs.length && !npcTargets.length) {
         return text(`${damage !== undefined ? "−" + damage : "+" + heal} applied to 0/${noBar.length}: no HP bar — ${noBar.map((t) => (t.name || "").split("\n")[0].trim()).join(", ")} (roll initiative to auto-init NPC HP, or set bar1 in Roll20).`);
       }
 
       // Tag each op with the target token id so the per-op batch result can be
       // matched back to a token and any failure surfaced (don't blindly report all OK).
-      const ops = targets.map((t) => {
+      type HpOp = { id: string; action: string; args: Record<string, unknown>; _name: string; _pc: boolean; _nv: number; _max: number };
+      const ops: HpOp[] = [];
+      for (const t of npcTargets) {
         const cur = Number(t.bar1_value) || 0, max = Number(t.bar1_max) || 0;
         const nv = damage !== undefined ? Math.max(0, cur - damage) : (max ? Math.min(max, cur + heal!) : cur + heal!);
-        return {
-          id: t.id,
-          action: "setTokenBar",
-          args: { tokenId: t.id, value: nv, max: max || undefined },
-          _name: (t.name || "").split("\n")[0].trim(),
-          _nv: nv,
-          _max: max,
-        };
-      });
+        ops.push({
+          id: t.id, action: "setTokenBar", args: { tokenId: t.id, value: nv, max: max || undefined },
+          _name: (t.name || "").split("\n")[0].trim(), _pc: false, _nv: nv, _max: max,
+        });
+      }
+      for (const t of pcs) {
+        // adjustPcHp reads the tracked block and computes; the result carries the new value.
+        ops.push({
+          id: t.id, action: "adjustPcHp",
+          args: { tokenId: t.id, ...(damage !== undefined ? { damage } : { heal }) },
+          _name: (t.name || "").split("\n")[0].trim(), _pc: true, _nv: 0, _max: Number(t.bar1_max) || 0,
+        });
+      }
 
       const relayOps = ops.map(({ id, action, args }) => ({ id, action, args }));
       const results = await roll20.relayCommand<BatchResult[]>({ action: "batchExec", ops: relayOps });
@@ -781,14 +802,20 @@ export function registerCombatTools(server: McpServer): void {
       for (const op of ops) {
         const r = byId.get(op.id)!;
         if (r.ok) {
-          okLines.push(`${op._name}: ${op._nv}${op._max ? "/" + op._max : ""}`);
+          if (op._pc) {
+            const data = r.data as { current?: number; max?: number } | undefined;
+            const max = data?.max || op._max || 0;
+            okLines.push(`${op._name}: ${data?.current ?? "?"}${max ? "/" + max : ""} (tracked)`);
+          } else {
+            okLines.push(`${op._name}: ${op._nv}${op._max ? "/" + op._max : ""}`);
+          }
         } else {
           failLines.push(`${op._name}: FAILED (${r.error ?? "no result returned by relay"})`);
         }
       }
 
       const verb = damage !== undefined ? `−${damage}` : `+${heal}`;
-      const summary = `${verb} applied to ${okLines.length}/${targets.length + noBar.length}`;
+      const summary = `${verb} applied to ${okLines.length}/${targets.length}`;
       const body = [
         okLines.length ? okLines.join(" · ") : null,
         failLines.length ? `failed: ${failLines.join(" · ")}` : null,
