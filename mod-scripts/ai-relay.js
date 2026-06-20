@@ -704,6 +704,1581 @@ function runBatchOp(action, args) {
   }
 }
 
+// Action dispatch table (one function per relay action). Generated from the
+// former switch(action) — see scripts/handlermap-transform.mjs. Each handler
+// receives (args, msg, nonce, senderPlayerId) and calls writeResult itself.
+var ACTIONS = {};
+ACTIONS["getTokens"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // profile: "lean" | "status" | "full" (default). imgsrc included for map-layer graphics.
+        const profile = args.profile || "full";
+        const tokens = findObjs({ _type: "graphic", _pageid: args.pageId });
+        writeResult(nonce, tokens.map(function(t) {
+          let s = tokenSummary(t, profile);
+          if (t.get("layer") === "map") s.imgsrc = t.get("imgsrc");
+          return s;
+        }));
+        return;
+      }
+      };
+ACTIONS["getSelection"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Roll20 exposes the current selection ONLY as msg.selected on the chat command
+        // that triggered this handler — there is no passive getSelectedTokens() in the
+        // sandbox. The bridge sends !ai-relay while the GM has tokens selected, so this
+        // reflects the live tabletop selection in the GM's session.
+        // Each msg.selected entry is { _id, _type }. Resolve graphics to name + linked character.
+        let sel = msg.selected || [];
+        let selResults = sel.map(function (s) {
+          if (s._type !== "graphic") return { id: s._id, type: s._type };
+          let t = getObj("graphic", s._id);
+          if (!t) return { id: s._id, error: "not found" };
+          let charId = t.get("represents") || "";
+          let charName = "";
+          if (charId) {
+            let ch = getObj("character", charId);
+            if (ch) charName = ch.get("name");
+          }
+          let summ = tokenSummary(t, "full");
+          summ.characterName = charName;
+          return summ;
+        });
+        writeResult(nonce, selResults);
+        return;
+      }
+      };
+ACTIONS["setTokenBar"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        const token = getObj("graphic", args.tokenId);
+        if (!token) throw new Error(`Token not found: ${args.tokenId}`);
+        const v = Number(args.value);
+        if (!isFinite(v)) throw new Error(`setTokenBar: value must be a finite number, got ${JSON.stringify(args.value)}`);
+        token.set({
+          bar1_value: v,
+          ...(args.max !== undefined && isFinite(Number(args.max)) ? { bar1_max: Number(args.max) } : {}),
+        });
+        writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["adjustPcHp"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        const token = getObj("graphic", args.tokenId);
+        if (!token) throw new Error(`Token not found: ${args.tokenId}`);
+        writeResult(nonce, adjustPcHp(token, args));
+        return;
+      }
+      };
+ACTIONS["getPcHp"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Read tracked PC HP from the token gmnotes PCHP block (single source of truth).
+        // tokenId → that token; characterName → first matching PC token; otherwise the whole map.
+        if (args.tokenId) {
+          let t = getObj("graphic", args.tokenId);
+          writeResult(nonce, t ? parsePcHpBlock(t.get("gmnotes")) : null);
+        } else if (args.characterName) {
+          let want = pcHpKey(args.characterName);
+          let found = null;
+          findObjs({ _type: "graphic" }).forEach(function(t) {
+            if (found) return;
+            if (pcHpKey(t.get("name")) === want) { let e = parsePcHpBlock(t.get("gmnotes")); if (e) found = e; }
+          });
+          writeResult(nonce, found);
+        } else {
+          let map = {};
+          findObjs({ _type: "graphic" }).forEach(function(t) {
+            let e = parsePcHpBlock(t.get("gmnotes"));
+            if (e) map[pcHpKey(t.get("name"))] = e;
+          });
+          writeResult(nonce, map);
+        }
+        return;
+      }
+      };
+ACTIONS["setDefaultToken"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        const token = getObj("graphic", args.tokenId);
+        if (!token) throw new Error(`Token not found: ${args.tokenId}`);
+        writeResult(nonce, setDefaultTokenForChar(token, args));
+        return;
+      }
+      };
+ACTIONS["setStatusMarker"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        const token = getObj("graphic", args.tokenId);
+        if (!token) throw new Error(`Token not found: ${args.tokenId}`);
+        const current = token.get("statusmarkers") || "";
+        const markers = current ? current.split(",") : [];
+        if (args.active && !markers.includes(args.marker)) {
+          markers.push(args.marker);
+        } else if (!args.active) {
+          const idx = markers.indexOf(args.marker);
+          if (idx !== -1) markers.splice(idx, 1);
+        }
+        token.set("statusmarkers", markers.join(","));
+        writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["createToken"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        const token = createObj("graphic", {
+          _pageid: args.pageId,
+          imgsrc: args.imgsrc,
+          name: args.name,
+          layer: args.layer || "tokens",
+          left: args.left || 70,
+          top: args.top || 70,
+          width: args.width || 70,
+          height: args.height || 70,
+          bar1_value: args.bar1_value || 0,
+          bar1_max: args.bar1_max || 0,
+          showname: true,
+          showplayers_name: true,
+          showplayers_bar1: true,
+        });
+        // createObj('graphic') returns undefined when imgsrc is missing or not a
+        // Roll20-hosted URL (external/marketplace/thumb URLs are silently refused).
+        // Guard so callers get an actionable message, not "Cannot read 'id' of undefined".
+        if (!token) throw new Error("createObj('graphic') returned undefined — imgsrc must be an uploaded Roll20 URL (https://s3.amazonaws.com/files.d20.io/.../max/... or /med/...), not an external/thumb URL");
+        writeResult(nonce, { id: token.id });
+        return;
+      }
+      };
+ACTIONS["createPage"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Roll20 API does not support createObj("page") — pages must be created manually in the UI.
+        throw new Error("Roll20 API does not allow creating pages programmatically. Create the page manually in the Roll20 page navigator, then pass its pageId.");
+      }
+      };
+ACTIONS["createPath"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        const pathObj = createObj("path", {
+          pageid: args.pageId,
+          layer: args.layer || "walls",
+          path: args.path,
+          stroke: args.stroke || "#000000",
+          stroke_width: args.stroke_width || 5,
+          fill: args.fill || "transparent",
+          left: args.left,
+          top: args.top,
+          width: args.width,
+          height: args.height,
+          rotation: args.rotation || 0,
+          scaleX: 1,
+          scaleY: 1,
+          controlledby: "",
+        });
+        if (!pathObj) throw new Error("createObj('path') returned undefined — check pageid and path format");
+        writeResult(nonce, { id: pathObj.id });
+        return;
+      }
+      };
+ACTIONS["createPaths"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Batch create — avoids one relay round-trip per path.
+        const results = (args.paths || []).map((p) => {
+          const pathObj = createObj("path", {
+            pageid: args.pageId,
+            layer: p.layer || args.layer || "walls",
+            path: p.path,
+            stroke: p.stroke || args.stroke || "#000000",
+            stroke_width: p.stroke_width || args.stroke_width || 5,
+            fill: p.fill || args.fill || "transparent",
+            left: p.left,
+            top: p.top,
+            width: p.width,
+            height: p.height,
+            rotation: p.rotation || 0,
+            scaleX: 1,
+            scaleY: 1,
+            controlledby: "",
+          });
+          return pathObj ? { id: pathObj.id } : { error: "createObj returned undefined" };
+        });
+        writeResult(nonce, results);
+        return;
+      }
+      };
+ACTIONS["getWalls"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Read DL barrier objects from a page.
+        // Latest Engine UDL: pathv2 objects with barrierType set.
+        // Legacy DL: path objects on the walls layer (with or without barrierType).
+        // Returns both so this works regardless of which DL mode the campaign uses.
+        let includePoints = args.includePoints === true;
+        // pathv2 (Latest Engine / UDL) — pathv2 uses pageid (no underscore) in findObjs, like door/window
+        let pathv2Walls = findObjs({ _type: "pathv2", pageid: args.pageId, layer: "walls" });
+        // path objects on walls layer (Legacy DL, or RTDB-direct diagnostic writes)
+        let pathWalls = findObjs({ _type: "path", _pageid: args.pageId, layer: "walls" });
+        let allWalls = pathv2Walls.map(function(w) {
+          let ptsStr = w.get("points") || "[]";
+          let pts;
+          try { pts = JSON.parse(ptsStr); } catch(e) { pts = []; }
+          let cx = w.get("x"), cy = w.get("y");
+          let result = {
+            id: w.id,
+            kind: "pathv2",
+            x: cx,
+            y: cy,
+            barrierType: w.get("barrierType"),
+            shape: w.get("shape"),
+            pointCount: Array.isArray(pts) ? pts.length : 0,
+          };
+          // includePoints: true → return absolute page pixel coordinates
+          if (includePoints && Array.isArray(pts)) {
+            result.points = pts.map(function(p) { return [Math.round(p[0] + cx), Math.round(p[1] + cy)]; });
+          }
+          return result;
+        }).concat(pathWalls.map(function(p) {
+          return {
+            id: p.id,
+            kind: "path",
+            left: p.get("left"),
+            top: p.get("top"),
+            width: p.get("width"),
+            height: p.get("height"),
+            stroke: p.get("stroke"),
+            barrierType: p.get("barrierType"),
+          };
+        }));
+        writeResult(nonce, allWalls);
+        return;
+      }
+      };
+ACTIONS["debugPage"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Enumerate what types of objects exist on a page — helps diagnose object storage.
+        let types = ["path", "pathv2", "graphic", "wall", "text", "door", "window"];
+        let summary = {};
+        types.forEach(function(t) {
+          let objs = findObjs({ _type: t, _pageid: args.pageId });
+          summary[t] = { count: objs.length };
+          if (objs.length && objs.length <= 5) {
+            summary[t].sample = objs.slice(0, 3).map(function(o) {
+              return { id: o.id, layer: o.get("layer"), barrierType: o.get("barrierType"), shape: o.get("shape") };
+            });
+          }
+        });
+        writeResult(nonce, summary);
+        return;
+      }
+      };
+ACTIONS["createWalls"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Create DL barriers. Latest Engine UDL → pathv2 with shape:"pol".
+        // Points are relative to the object center (x,y). For a two-point wall from
+        // (x1,y1)→(x2,y2): center = midpoint; points = [[-dx/2,-dy/2],[dx/2,dy/2]].
+        // If createObj("pathv2") returns undefined, fall back to legacy path.
+        let firstWall = (args.walls || [])[0];
+        if (firstWall) {
+          let probeCx = (firstWall.x1 + firstWall.x2) / 2;
+          let probeCy = (firstWall.y1 + firstWall.y2) / 2;
+          log("[GM_AI_Bridge] createWalls probe — pageId=" + args.pageId
+            + " wall[0]: x1=" + firstWall.x1 + " y1=" + firstWall.y1
+            + " x2=" + firstWall.x2 + " y2=" + firstWall.y2
+            + " cx=" + probeCx + " cy=" + probeCy
+            + " points=" + JSON.stringify([[firstWall.x1 - probeCx, firstWall.y1 - probeCy], [firstWall.x2 - probeCx, firstWall.y2 - probeCy]]));
+        }
+        let wallResults = (args.walls || []).map(function(w, wi) {
+          let cx = (w.x1 + w.x2) / 2;
+          let cy = (w.y1 + w.y2) / 2;
+          let pv2Props = {
+            pageid: args.pageId,
+            layer: "walls",
+            x: cx,
+            y: cy,
+            shape: "pol",
+            barrierType: args.barrierType || "wall",
+            points: JSON.stringify([[w.x1 - cx, w.y1 - cy], [w.x2 - cx, w.y2 - cy]]),
+            stroke: args.stroke || "#0044FF",
+            stroke_width: 5,
+            controlledby: "",
+          };
+          let wallObj;
+          try { wallObj = createObj("pathv2", pv2Props); } catch(e) {
+            log("[GM_AI_Bridge] createWalls pathv2 threw: " + String(e));
+          }
+          if (wi === 0) log("[GM_AI_Bridge] createWalls pathv2 result[0]: " + (wallObj ? "id=" + wallObj.id : "undefined — falling back"));
+          if (wallObj) return { id: wallObj.id, kind: "pathv2" };
+          // Fall back to legacy path on walls layer
+          let minX = Math.min(w.x1, w.x2), minY = Math.min(w.y1, w.y2);
+          let legacyObj = createObj("path", {
+            pageid: args.pageId,
+            layer: "walls",
+            path: JSON.stringify([["M", w.x1 - minX, w.y1 - minY], ["L", w.x2 - minX, w.y2 - minY]]),
+            left: cx, top: cy,
+            width: Math.max(Math.abs(w.x2 - w.x1), 1),
+            height: Math.max(Math.abs(w.y2 - w.y1), 1),
+            barrierType: args.barrierType || "wall",
+            stroke: "#FFFF00",
+            stroke_width: 5,
+            fill: "transparent",
+            rotation: 0, scaleX: 1, scaleY: 1, controlledby: "",
+          });
+          if (wi === 0) log("[GM_AI_Bridge] createWalls path-fallback result[0]: " + (legacyObj ? "id=" + legacyObj.id : "undefined"));
+          return legacyObj ? { id: legacyObj.id, kind: "path-fallback" } : { error: "createObj failed for both pathv2 and path" };
+        });
+        writeResult(nonce, wallResults);
+        return;
+      }
+      };
+ACTIONS["createDLDoors"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Create native Roll20 DL door objects. Coordinates in page pixels; y is negated for Roll20.
+        // Each door: { x, y, x0, y0, x1, y1, color? } — x/y center, x0/y0 and x1/y1 endpoints (pre-negated).
+        let doorResults = (args.doors || []).map(function(d) {
+          let obj = createObj("door", {
+            pageid: args.pageId,
+            x: d.x,
+            y: d.y,
+            path: { handle0: { x: d.x0, y: d.y0 }, handle1: { x: d.x1, y: d.y1 } },
+            color: d.color || "#FF0000",
+            isOpen: false,
+            isLocked: false,
+          });
+          return obj ? { id: obj.id } : { error: "createObj('door') returned undefined" };
+        });
+        writeResult(nonce, doorResults);
+        return;
+      }
+      };
+ACTIONS["createDLWindows"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Create native Roll20 DL window objects. Same coordinate convention as createDLDoors.
+        let windowResults = (args.windows || []).map(function(w) {
+          let obj = createObj("window", {
+            pageid: args.pageId,
+            x: w.x,
+            y: w.y,
+            path: { handle0: { x: w.x0, y: w.y0 }, handle1: { x: w.x1, y: w.y1 } },
+            color: w.color || "#00FFFF",
+            isOpen: false,
+            isLocked: false,
+          });
+          return obj ? { id: obj.id } : { error: "createObj('window') returned undefined" };
+        });
+        writeResult(nonce, windowResults);
+        return;
+      }
+      };
+ACTIONS["createGraphic"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        const graphic = createObj("graphic", {
+          pageid: args.pageId,
+          layer: args.layer || "map",
+          imgsrc: args.imgsrc,
+          name: args.name || "",
+          left: args.left,
+          top: args.top,
+          width: args.width,
+          height: args.height,
+          rotation: args.rotation || 0,
+          controlledby: "",
+          showname: false,
+        });
+        if (!graphic) throw new Error("createObj('graphic') returned undefined");
+        writeResult(nonce, { id: graphic.id });
+        return;
+      }
+      };
+ACTIONS["setPageBackground"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        const page = getObj("page", args.pageId);
+        if (!page) throw new Error(`Page not found: ${args.pageId}`);
+        page.set({ background_color: args.color || "#ffffff" });
+        writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["listPages"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        const pages = findObjs({ _type: "page" });
+        writeResult(nonce, pages.map((p) => ({
+          id: p.id,
+          name: p.get("name"),
+          width: p.get("width"),
+          height: p.get("height"),
+        })));
+        return;
+      }
+      };
+ACTIONS["setPageProps"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        const page = getObj("page", args.pageId);
+        if (!page) throw new Error(`Page not found: ${args.pageId}`);
+        const props = {};
+        if (args.name !== undefined) props.name = args.name;
+        if (args.width !== undefined) props.width = args.width;
+        if (args.height !== undefined) props.height = args.height;
+        if (args.scale_number !== undefined) props.scale_number = args.scale_number;
+        if (args.scale_units !== undefined) props.scale_units = args.scale_units;
+        if (args.showgrid !== undefined) props.showgrid = args.showgrid;
+        if (args.background_color !== undefined) props.background_color = args.background_color;
+        page.set(props);
+        writeResult(nonce, { ok: true, width: page.get("width"), height: page.get("height") });
+        return;
+      }
+      };
+ACTIONS["getPaths"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Read back all path/graphic objects from a page. If layer is omitted, returns all layers.
+        let query = { _pageid: args.pageId };
+        if (args.layer) query.layer = args.layer;
+        // left/top/width/height already give the bounding box; the raw SVG `path` string and
+        // graphic imgsrc are the bloat — gate both behind includePath (default off).
+        let includePath = args.includePath === true;
+        let paths = findObjs(Object.assign({ _type: "path" }, query));
+        let graphics = args.includeGraphics ? findObjs(Object.assign({ _type: "graphic" }, query)) : [];
+        let results = paths.map(function(p) {
+          let base = {
+            type: "path",
+            id: p.id,
+            layer: p.get("layer"),
+            left: p.get("left"),
+            top: p.get("top"),
+            width: p.get("width"),
+            height: p.get("height"),
+            rotation: p.get("rotation"),
+            stroke: p.get("stroke"),
+          };
+          if (includePath) base.path = p.get("path");
+          return base;
+        }).concat(graphics.map(function(g) {
+          let base = {
+            type: "graphic",
+            id: g.id,
+            layer: g.get("layer"),
+            left: g.get("left"),
+            top: g.get("top"),
+            width: g.get("width"),
+            height: g.get("height"),
+            rotation: g.get("rotation"),
+          };
+          if (includePath) base.imgsrc = g.get("imgsrc");
+          return base;
+        }));
+        writeResult(nonce, results);
+        return;
+      }
+      };
+ACTIONS["getDoors"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // door/window objects use pageid (not _pageid) and inverted y-axis.
+        // y values from Roll20 are negative; negate them to get normal page coords.
+        function mapOpening(obj, type) {
+          let path = obj.get("path") || {};
+          let h0 = path.handle0 || {};
+          let h1 = path.handle1 || {};
+          return {
+            id: obj.id,
+            type: type,
+            x: obj.get("x"),
+            y: -(obj.get("y")),
+            handle0: { x: h0.x, y: h0.y !== undefined ? -(h0.y) : undefined },
+            handle1: { x: h1.x, y: h1.y !== undefined ? -(h1.y) : undefined },
+            color: obj.get("color"),
+            isOpen: obj.get("isOpen"),
+            isLocked: obj.get("isLocked"),
+            isSecret: obj.get("isSecret"),
+          };
+        }
+        let doors = findObjs({ _type: "door", pageid: args.pageId });
+        let windows = findObjs({ _type: "window", pageid: args.pageId });
+        writeResult(nonce, {
+          doors: doors.map(function(d) { return mapOpening(d, "door"); }),
+          windows: windows.map(function(w) { return mapOpening(w, "window"); }),
+        });
+        return;
+      }
+      };
+ACTIONS["clearLayer"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Remove all path/graphic objects from the specified layer on a page.
+        // Also clears UDL wall objects when the "walls" layer is targeted.
+        const page = getObj("page", args.pageId);
+        if (!page) throw new Error(`Page not found: ${args.pageId}`);
+        const layers = args.layers || [args.layer || "walls"];
+        let removed = 0;
+        layers.forEach(function(layer) {
+          findObjs({ _type: "path", _pageid: args.pageId, layer: layer }).forEach(function(obj) {
+            obj.remove();
+            removed++;
+          });
+          findObjs({ _type: "graphic", _pageid: args.pageId, layer: layer }).forEach(function(obj) {
+            obj.remove();
+            removed++;
+          });
+          if (layer === "walls") {
+            // Remove pathv2 DL barriers (Latest VTT Engine) and legacy wall objects.
+            findObjs({ _type: "pathv2", pageid: args.pageId, layer: "walls" }).forEach(function(obj) {
+              obj.remove();
+              removed++;
+            });
+            findObjs({ _type: "wall", _pageid: args.pageId }).forEach(function(obj) {
+              obj.remove();
+              removed++;
+            });
+            findObjs({ _type: "wall", pageid: args.pageId }).forEach(function(obj) {
+              obj.remove();
+              removed++;
+            });
+          }
+        });
+        writeResult(nonce, { removed: removed });
+        return;
+      }
+      };
+ACTIONS["drawLayerTest"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Draw one diagonal line per layer using legacy path objects to identify which layers Roll20's UI shows.
+        // Coordinates use top-left-relative convention (UVTT importer style):
+        // path points are relative to bounding box min corner, always positive.
+        // left/top = center of bounding box = minX+width/2, minY+height/2.
+        let layerTests = [
+          { layer: "map",        stroke: "#FF0000", path: '[["M",0,0],["L",2170,2940]]',    left: 1085, top: 1470, width: 2170, height: 2940 },
+          { layer: "objects",    stroke: "#00FF00", path: '[["M",2170,0],["L",0,2940]]',    left: 1085, top: 1470, width: 2170, height: 2940 },
+          { layer: "foreground", stroke: "#FF00FF", path: '[["M",0,0],["L",2170,0]]',       left: 1085, top:  980, width: 2170, height: 0 },
+          { layer: "gmlayer",    stroke: "#0000FF", path: '[["M",0,0],["L",2170,0]]',       left: 1085, top: 1470, width: 2170, height: 0 },
+          { layer: "walls",      stroke: "#FF8800", path: '[["M",0,0],["L",0,2940]]',       left: 1085, top: 1470, width: 0,    height: 2940 },
+        ];
+        let results = layerTests.map(function(t) {
+          let obj = createObj("path", {
+            pageid: args.pageId,
+            layer: t.layer,
+            path: t.path,
+            stroke: t.stroke,
+            stroke_width: 10,
+            fill: "transparent",
+            left: t.left,
+            top: t.top,
+            width: t.width,
+            height: t.height,
+            rotation: 0,
+            scaleX: 1,
+            scaleY: 1,
+            controlledby: senderPlayerId,
+          });
+          return { layer: t.layer, stroke: t.stroke, id: obj ? obj.id : null };
+        });
+        writeResult(nonce, results);
+        return;
+      }
+      };
+ACTIONS["runUVTT"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Create a carrier graphic on gmlayer with UVTT JSON in its gmnotes,
+        // then trigger the UniversalVTTImporter mod via !uvtt --ids.
+        let uvttGraphic = createObj("graphic", {
+          _pageid: args.pageId,
+          layer: "gmlayer",
+          name: "uvtt-data-carrier",
+          left: 35,
+          top: 35,
+          width: 70,
+          height: 70,
+          controlledby: "",
+          showname: false,
+        });
+        if (!uvttGraphic) throw new Error("Failed to create carrier graphic for UVTT import");
+
+        let uvttJson = typeof args.uvttData === "string"
+          ? args.uvttData
+          : JSON.stringify(args.uvttData);
+        uvttGraphic.set("gmnotes", uvttJson);
+
+        let extraArgs = args.noObjects ? " --no-objects" : "";
+        let uvttCmd = "!uvtt --ids " + uvttGraphic.id + extraArgs;
+        sendChat("API", uvttCmd);
+
+        writeResult(nonce, {
+          graphicId: uvttGraphic.id,
+          command: uvttCmd,
+          note: "UVTT import triggered. Delete graphicId when done.",
+        });
+        return;
+      }
+      };
+ACTIONS["createPolylines"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Create one path object per polyline from an ordered list of absolute-pixel points.
+        // Walls layer → pathv2 UDL barrier (Latest VTT Engine). Other layers → legacy path.
+        // Each polyline: { points: [[x,y], ...], stroke?, stroke_width?, closed?, layer? }
+        let polylineResults = (args.polylines || []).map(function(pl) {
+          let pts = pl.points || [];
+          if (pts.length < 2) return { error: "Need at least 2 points" };
+          let layer = pl.layer || args.layer || "walls";
+          if (layer === "walls") {
+            // Anchor at first point — Roll20 natively stores pathv2 with x,y = first drawn point
+            // and all other points relative to it. Passing a bounding-box center causes Roll20 to
+            // re-anchor internally to an approximate first point, but imprecisely, shifting the
+            // entire wall to the wrong position.
+            let cx = pts[0][0];
+            let cy = pts[0][1];
+            let xs = pts.map(function(p) { return p[0]; });
+            let ys = pts.map(function(p) { return p[1]; });
+            let minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+            let minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+            let relPts = pts.map(function(p) { return [p[0] - cx, p[1] - cy]; });
+            let wallObj = createObj("pathv2", {
+              pageid: args.pageId,
+              layer: "walls",
+              x: cx,
+              y: cy,
+              width: Math.max(maxX - minX, 1),
+              height: Math.max(maxY - minY, 1),
+              shape: "pol",
+              barrierType: "wall",
+              points: JSON.stringify(relPts),
+              stroke: pl.stroke || args.stroke || "#0044FF",
+              controlledby: "",
+            });
+            return wallObj ? { id: wallObj.id, pointCount: pts.length } : { error: "createObj('pathv2') returned undefined" };
+          }
+          let minX = Math.min.apply(null, pts.map(function(p) { return p[0]; }));
+          let minY = Math.min.apply(null, pts.map(function(p) { return p[1]; }));
+          let maxX = Math.max.apply(null, pts.map(function(p) { return p[0]; }));
+          let maxY = Math.max.apply(null, pts.map(function(p) { return p[1]; }));
+          let pathCmds = pts.map(function(p, i) {
+            return [i === 0 ? "M" : "L", p[0] - minX, p[1] - minY];
+          });
+          if (pl.closed) pathCmds.push(["Z"]);
+          let pathObj = createObj("path", {
+            pageid: args.pageId,
+            layer: layer,
+            path: JSON.stringify(pathCmds),
+            left: (minX + maxX) / 2,
+            top: (minY + maxY) / 2,
+            width: Math.max(maxX - minX, 1),
+            height: Math.max(maxY - minY, 1),
+            stroke: pl.stroke || args.stroke || "#FFFF00",
+            stroke_width: pl.stroke_width || args.stroke_width || 5,
+            fill: pl.fill || args.fill || "transparent",
+            rotation: 0,
+            scaleX: 1,
+            scaleY: 1,
+            controlledby: "",
+          });
+          return pathObj ? { id: pathObj.id, pointCount: pts.length } : { error: "createObj('path') returned undefined" };
+        });
+        writeResult(nonce, polylineResults);
+        return;
+      }
+      };
+ACTIONS["clearDLOpenings"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Remove all native door and window DL objects from a page.
+        let removed = 0;
+        findObjs({ _type: "door", pageid: args.pageId }).forEach(function(o) { o.remove(); removed++; });
+        findObjs({ _type: "window", pageid: args.pageId }).forEach(function(o) { o.remove(); removed++; });
+        writeResult(nonce, { removed: removed });
+        return;
+      }
+      };
+ACTIONS["getTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let rawOrder = Campaign().get("turnorder");
+        let parsed = rawOrder ? JSON.parse(rawOrder) : [];
+        // Drop the per-entry _pageid (repeated on every row, never read downstream); keep
+        // everything else (id, pr, custom, formula for round markers).
+        writeResult(nonce, parsed.map(function(e) {
+          let o = {};
+          for (let k in e) { if (k !== "_pageid") o[k] = e[k]; }
+          return o;
+        }));
+        return;
+      }
+      };
+ACTIONS["setTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        Campaign().set("turnorder", JSON.stringify(args.entries || []));
+        writeResult(nonce, { ok: true, count: (args.entries || []).length });
+        return;
+      }
+      };
+ACTIONS["mergeTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Atomic upsert into the live turn order — read, merge, write in ONE
+        // sandbox tick so it never clobbers entries (e.g. player initiatives)
+        // added between a read and a write. Each entry is matched by `id`:
+        // replace in place if that id already exists, else append. Custom rows
+        // (id "-1") have no stable identity, so they are always inserted, never
+        // matched. After merging we sort pr-descending (Roll20's convention),
+        // keeping custom "-1" rows in their inserted relative order.
+        //
+        // clearNpcFirst: true → strip all non-PC token entries before merging.
+        // Keeps player-controlled tokens (controlledby = a real player ID) and
+        // custom rows (id "-1", e.g. round markers). Safe replacement for a full
+        // setTurnOrder([]) wipe that would also erase player entries.
+        let rawTO = Campaign().get("turnorder");
+        let merged;
+        try { merged = rawTO ? JSON.parse(rawTO) : []; } catch (e) { merged = []; }
+        if (!Array.isArray(merged)) merged = [];
+        if (args.clearNpcFirst) {
+          merged = merged.filter(function(entry) {
+            if (!entry) return false;
+            if (String(entry.id) === "-1") return true; // keep round markers / custom rows
+            let t = getObj("graphic", entry.id);
+            if (!t) return false; // stale entry → remove
+            let cb = String(t.get("controlledby") || "").trim();
+            return cb !== "" && cb.toLowerCase() !== "all"; // keep player-controlled only
+          });
+        }
+        let incoming = args.entries || [];
+        incoming.forEach(function (entry) {
+          if (!entry || typeof entry !== "object") return;
+          let id = entry.id;
+          if (id != null && String(id) !== "-1") {
+            let idx = -1;
+            for (let i = 0; i < merged.length; i++) {
+              if (merged[i] && String(merged[i].id) === String(id)) { idx = i; break; }
+            }
+            if (idx !== -1) { merged[idx] = entry; return; }
+          }
+          merged.push(entry);
+        });
+        // Stable pr-descending sort. Math, not lexical, so "10" sorts above "9".
+        merged = merged
+          .map(function (e, i) { return { e: e, i: i }; })
+          .sort(function (a, b) {
+            let pa = Number(a.e && a.e.pr);
+            let pb = Number(b.e && b.e.pr);
+            if (isNaN(pa)) pa = -Infinity;
+            if (isNaN(pb)) pb = -Infinity;
+            if (pb !== pa) return pb - pa;
+            return a.i - b.i; // preserve original order on ties
+          })
+          .map(function (x) { return x.e; });
+        Campaign().set("turnorder", JSON.stringify(merged));
+        writeResult(nonce, { ok: true, turnorder: merged });
+        return;
+      }
+      };
+ACTIONS["rollInitiativeForTokens"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Roll d20 + initiative bonus for each token. Tries common 5e attribute names.
+        // Posts a public gothic HTML initiative card by default (rollPublic defaults true).
+        // Duplicate-named tokens are renamed with a random epithet (e.g. "Goblin the Savage") so they
+        // are distinguishable both on the map and in the turn tracker.
+        let initAttrNames = ["initiative_bonus", "npc_initiative", "dex_mod", "dexterity_mod"];
+        let rollPublic = args.rollPublic !== false; // default true
+
+        // Pass 1: count names to detect duplicates
+        let nameCounts = {};
+        (args.tokenIds || []).forEach(function(tokenId) {
+          let token = getObj("graphic", tokenId);
+          if (!token) return;
+          let n = token.get("name");
+          nameCounts[n] = (nameCounts[n] || 0) + 1;
+        });
+
+        // Pass 2: rename duplicates with epithets drawn from monster-type word banks.
+        // nextEpithetName() threads `usedNames` across the whole batch and guarantees a
+        // unique final name even for large groups (e.g. 30 direwolves), escalating from a
+        // single adjective to a two-adjective combo to a numeric suffix as needed.
+        let usedNames = {};
+        (args.tokenIds || []).forEach(function(tokenId) {
+          let token = getObj("graphic", tokenId);
+          if (!token) return;
+          let baseName = token.get("name");
+          if ((nameCounts[baseName] || 0) <= 1) return;
+          let pool = getMonsterEpithets(baseName);
+          let newName = nextEpithetName(baseName, pool, usedNames);
+          token.set({ name: newName, tooltip: newName, showname: true, showplayers_name: true });
+        });
+
+        // Pass 3: gather init bonuses (synchronous), then roll via Roll20's real dice engine
+        let rollNonce = nonce;
+        let tokenData = [];
+        (args.tokenIds || []).forEach(function(tokenId) {
+          let token = getObj("graphic", tokenId);
+          if (!token) { tokenData.push({ tokenId: tokenId, error: "Token not found" }); return; }
+
+          let initBonus = 0;
+          let charId = token.get("represents");
+          if (charId) {
+            for (let i = 0; i < initAttrNames.length; i++) {
+              let attrs = findObjs({ _type: "attribute", _characterid: charId, name: initAttrNames[i] });
+              if (attrs.length > 0) {
+                let val = parseInt(attrs[0].get("current"));
+                if (!isNaN(val)) { initBonus = val; break; }
+              }
+            }
+          }
+          tokenData.push({ tokenId: tokenId, name: token.get("name"), initBonus: initBonus, charId: charId || "" });
+        });
+
+        let validTokens = tokenData.filter(function(t) { return !t.error; });
+        if (!validTokens.length) { writeResult(rollNonce, tokenData); return; }
+
+        // Build one inline roll expression per token: "Name: [[1d20+bonus]]"
+        let msgParts = validTokens.map(function(t) {
+          let sign = t.initBonus >= 0 ? "+" : "";
+          return t.name + ": [[1d20" + (t.initBonus !== 0 ? sign + t.initBonus : "") + "]]";
+        });
+
+        sendChat("Initiative", msgParts.join(" | "), function(ops) {
+          let inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
+
+          let rollResults = validTokens.map(function(t, i) {
+            let roll = inlinerolls[i];
+            let d20 = 1, total = 1 + t.initBonus;
+            if (roll) {
+              total = roll.results.total;
+              // First roll group is the d20
+              let firstGroup = roll.results.rolls && roll.results.rolls[0];
+              if (firstGroup && firstGroup.type === "R" && firstGroup.results && firstGroup.results[0]) {
+                d20 = firstGroup.results[0].v;
+              } else {
+                d20 = total - t.initBonus;
+              }
+            }
+            return { tokenId: t.tokenId, name: t.name, d20: d20, initBonus: t.initBonus, total: total };
+          });
+
+          // Announce public entries via gothic HTML card (all rolled tokens, not just charId).
+          if (rollPublic) {
+            let publicEntries = rollResults.slice();
+            if (publicEntries.length > 0) {
+              publicEntries.sort(function(a, b) { return b.total - a.total; });
+              let rows = publicEntries.map(function(e, idx) {
+                let icon = idx === 0 ? "👑" : "🩸";
+                let sign = e.initBonus >= 0 ? "+" : "";
+                let displayName = esc(e.name || "");
+                let detail = "<span style='color:#6b4040;font-size:0.82em;'> d20(" + e.d20 + ")" + sign + e.initBonus + "</span>";
+                return "<tr>"
+                  + "<td style='padding:3px 8px;color:#d4a0a0;font-family:Palatino Linotype,Palatino,serif;'>" + icon + " " + displayName + "</td>"
+                  + "<td style='padding:3px 8px;color:#ff5555;font-weight:bold;text-align:right;font-family:Palatino Linotype,Palatino,serif;'>" + e.total + detail + "</td>"
+                  + "</tr>";
+              }).join("");
+              let html = "<div style='background:#080204;border:1px solid #5a0000;padding:6px 10px;'>"
+                + "<div style='color:#660000;text-align:center;letter-spacing:3px;font-size:0.85em;'>▾ ▼ ▾ ▼ ▾ ▼ ▾</div>"
+                + "<div style='color:#cc4444;text-align:center;font-size:1.05em;margin:4px 0;font-family:Palatino Linotype,Palatino,serif;'>🪶 𝔗𝔥𝔢 𝔇𝔢𝔞𝔡'𝔰 𝔇𝔯𝔞𝔴 🪶</div>"
+                + "<table style='width:100%;border-collapse:collapse;margin:4px 0;'>" + rows + "</table>"
+                + "<div style='color:#4a0000;text-align:center;font-size:0.85em;margin-top:4px;'>— ✦ —</div>"
+                + "</div>";
+              sendChat("Initiative", "/direct " + html);
+            }
+          }
+
+          writeResult(rollNonce, rollResults.concat(tokenData.filter(function(t) { return t.error; })));
+        }, { noarchive: true });
+        return;
+      }
+      };
+ACTIONS["advanceTurn"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let order = Campaign().get("turnorder");
+        if (!order) { writeResult(nonce, { ok: false, note: "Turn order is empty" }); return; }
+        let entries = JSON.parse(order);
+        if (entries.length === 0) { writeResult(nonce, { ok: false, note: "Turn order is empty" }); return; }
+        // Rotate: move first entry to end
+        entries.push(entries.shift());
+        Campaign().set("turnorder", JSON.stringify(entries));
+        let current = entries[0];
+        let currentToken = current.id ? getObj("graphic", current.id) : null;
+        writeResult(nonce, {
+          ok: true,
+          current: {
+            id: current.id,
+            pr: current.pr,
+            custom: current.custom,
+            name: currentToken ? currentToken.get("name") : (current.custom || "?"),
+          },
+        });
+        return;
+      }
+      };
+ACTIONS["getTokenById"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Single implementation lives in runBatchOp (rich token shape).
+        writeResult(nonce, runBatchOp("getTokenById", args));
+        return;
+      }
+      };
+ACTIONS["setTokenProps"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Single implementation lives in runBatchOp.
+        writeResult(nonce, runBatchOp("setTokenProps", args));
+        return;
+      }
+      };
+ACTIONS["getRecentChat"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let n = Math.min(args.limit || 50, CHAT_BUFFER.length);
+        writeResult(nonce, CHAT_BUFFER.slice(-n));
+        return;
+      }
+      };
+ACTIONS["getDmInbox"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let inbox = B().dmInbox;
+        let inboxEntries = args.type
+          ? inbox.filter(function(e) { return e.type === args.type; })
+          : inbox.slice();
+        writeResult(nonce, inboxEntries);
+        return;
+      }
+      };
+ACTIONS["clearDmInbox"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let bs = B();
+        if (args.playerName) {
+          bs.dmInbox = bs.dmInbox.filter(function(e) { return e.who !== args.playerName; });
+        } else {
+          bs.dmInbox = [];
+        }
+        writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["setMobPlan"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        if (!args.tokenId) throw new Error("setMobPlan requires tokenId");
+        let plans = B().mobPlans;
+        if (args.html) {
+          // Store structured plan alongside HTML so callers (gem HUD, etc.) can read
+          // the plaintext without parsing the Roll20 template card.
+          plans[args.tokenId] = { html: args.html, plan: args.plan || null };
+        } else {
+          delete plans[args.tokenId];
+        }
+        writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["getMobPlans"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Read all stored mob plans. Plans persist until overwritten by a fresh
+        // plan_all_tactics run (they are NOT deleted when the token's turn fires).
+        writeResult(nonce, B().mobPlans || {});
+        return;
+      }
+      };
+ACTIONS["clearMobPlans"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        B().mobPlans = {};
+        writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["whisperPlayer"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        if (!args.playerName || !args.message) throw new Error("whisperPlayer requires playerName and message");
+        // Player-facing whisper: must be VISIBLE to the recipient, so (1) archive it (noarchive
+        // false) — a noarchive whisper flashes once and is gone, and a player not watching that
+        // instant never sees it; and (2) speak as a player-visible identity, NOT "GM-AI-Bridge",
+        // whose output the campaign's bridge-suppression CSS hides. The AIBRIDGE_RESULT to the GM
+        // (writeResult below) stays hidden as before.
+        var whisperSpeaker = args.speakAs || "The DM";
+        sendChat(whisperSpeaker, "/w " + args.playerName + " " + args.message, null, { noarchive: false });
+        writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["findTokensInRange"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let centerToken = getObj("graphic", args.centerTokenId);
+        if (!centerToken) throw new Error("Center token not found: " + args.centerTokenId);
+        let pageId = args.pageId || centerToken.get("_pageid");
+        let page = getObj("page", pageId);
+        if (!page) throw new Error("Page not found: " + pageId);
+        let scaleNumber = page.get("scale_number") || 5;
+        let pixelsPerFoot = 70 / scaleNumber;
+        let cx = centerToken.get("left");
+        let cy = centerToken.get("top");
+        let radiusFeet = args.radiusFeet || 15;
+        let radiusPx = radiusFeet * pixelsPerFoot;
+        let allTokens = findObjs({ _type: "graphic", _pageid: pageId });
+        let rangeResults = [];
+        allTokens.forEach(function(t) {
+          if (t.id === args.centerTokenId) return;
+          if (args.layerFilter && t.get("layer") !== args.layerFilter) return;
+          let dx = t.get("left") - cx;
+          let dy = t.get("top") - cy;
+          let distPx = Math.sqrt(dx * dx + dy * dy);
+          let distFeet = distPx / pixelsPerFoot;
+          if (distFeet <= radiusFeet) {
+            rangeResults.push({
+              id: t.id,
+              name: t.get("name"),
+              layer: t.get("layer"),
+              distanceFeet: Math.round(distFeet * 10) / 10,
+              bar1_value: t.get("bar1_value"),
+              bar1_max: t.get("bar1_max"),
+              controlledby: t.get("controlledby") || "",
+            });
+          }
+        });
+        rangeResults.sort(function(a, b) { return a.distanceFeet - b.distanceFeet; });
+        writeResult(nonce, rangeResults);
+        return;
+      }
+      };
+ACTIONS["setTurnHook"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let bs = B();
+        bs.turnHookEnabled = !!args.enabled;
+        if (args.reset) { bs.round = 0; }
+        writeResult(nonce, { ok: true, enabled: bs.turnHookEnabled, round: bs.round });
+        return;
+      }
+      };
+ACTIONS["getTurnHookState"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let bs = B();
+        writeResult(nonce, { enabled: bs.turnHookEnabled, round: bs.round });
+        return;
+      }
+      };
+ACTIONS["setCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Write attributes to a Roll20 character sheet (charId = the `represents` field from the token).
+        // args.attributes values can be plain scalars (sets current only) or { current, max } objects.
+        // NOTE: findObjs uses _characterid (underscore), but createObj requires characterid (no underscore).
+        let charId = args.charId;
+        let attributes = args.attributes || {};
+        let updated = [], created = [], failed = [];
+        Object.keys(attributes).forEach(function(attrName) {
+          let val = attributes[attrName];
+          let isObj = typeof val === "object" && val !== null;
+          let currentVal = isObj ? val.current : val;
+          let maxVal = isObj ? val.max : undefined;
+          let existing = findObjs({ _type: "attribute", _characterid: charId, name: attrName });
+          if (existing.length > 0) {
+            let updates = {};
+            if (currentVal !== undefined) updates.current = currentVal;
+            if (maxVal !== undefined) updates.max = maxVal;
+            existing[0].set(updates);
+            updated.push(attrName);
+          } else {
+            let createArgs = { characterid: charId, name: attrName };
+            if (currentVal !== undefined) createArgs.current = currentVal;
+            if (maxVal !== undefined) createArgs.max = maxVal;
+            let obj = createObj("attribute", createArgs);
+            if (obj) { created.push(attrName); } else { failed.push(attrName); }
+          }
+        });
+        writeResult(nonce, { updated: updated, created: created, failed: failed });
+        return;
+      }
+      };
+ACTIONS["getCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Read attributes from a Roll20 character sheet. Pass names[] to filter.
+        let charId = args.charId;
+        let nameFilter = args.names;
+        let attrs = findObjs({ _type: "attribute", _characterid: charId });
+        let result = {};
+        attrs.forEach(function(a) {
+          let attrName = a.get("name");
+          if (!nameFilter || nameFilter.indexOf(attrName) !== -1) {
+            let cur = a.get("current"), mx = a.get("max");
+            // Only include max when it carries a real value — most attrs have max: ""
+            result[attrName] = (mx !== null && mx !== undefined && mx !== "") ? { current: cur, max: mx } : cur;
+          }
+        });
+        writeResult(nonce, result);
+        return;
+      }
+      };
+ACTIONS["getRepeatingSection"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Returns all rows of a repeating section from a character sheet.
+        // args.charId, args.section (e.g. "npcaction")
+        // Result: { [rowId]: { [fieldName]: value } }  (macro-syntax values skipped)
+        if (!args.charId || !args.section) throw new Error("getRepeatingSection requires charId and section");
+        let repAttrs = findObjs({ _type: "attribute", _characterid: args.charId });
+        let prefix = "repeating_" + args.section + "_";
+        let rows = {};
+        repAttrs.forEach(function(a) {
+          let name = a.get("name");
+          if (name.indexOf(prefix) !== 0) return;
+          let rest = name.slice(prefix.length);
+          let sep = rest.indexOf("_");
+          if (sep === -1) return;
+          let rowId = rest.slice(0, sep);
+          let field = rest.slice(sep + 1);
+          let val = String(a.get("current") || "");
+          // Skip Roll20 macro syntax — sendChat would try to resolve @{...} and error
+          if (val.indexOf("@{") !== -1) return;
+          if (!rows[rowId]) rows[rowId] = {};
+          rows[rowId][field] = val;
+        });
+        // Cap very long sections (a caster's full spell list) — keep context bounded.
+        let maxRows = args.maxRows || 60;
+        let rowIds = Object.keys(rows);
+        if (rowIds.length > maxRows) {
+          let capped = {};
+          rowIds.slice(0, maxRows).forEach(function(id) { capped[id] = rows[id]; });
+          capped.__truncated = rowIds.length;
+          writeResult(nonce, capped);
+        } else {
+          writeResult(nonce, rows);
+        }
+        return;
+      }
+      };
+ACTIONS["syncConditionsToToken"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Set all status markers on a token and store active_conditions on the character.
+        // args.tokenId, args.charId (optional), args.conditions: string[]
+        let token = getObj("graphic", args.tokenId);
+        if (!token) throw new Error("Token not found: " + args.tokenId);
+        let activeSet = new Set((args.conditions || []).map(function(c) { return c.toLowerCase(); }));
+        let markerSet = new Set((token.get("statusmarkers") || "").split(",").filter(Boolean));
+        // Build set of all known marker strings in every format (Name::id, Name, name)
+        // so stale plain-name versions left from prior attempts get cleaned up.
+        let allKnown = new Set();
+        Object.keys(CONDITION_MARKERS).forEach(function(condition) {
+          let tag = CONDITION_MARKERS[condition];
+          allKnown.add(tag);
+          let displayName = tag.split("::")[0];
+          allKnown.add(displayName);
+          allKnown.add(displayName.toLowerCase());
+        });
+        allKnown.forEach(function(m) { markerSet.delete(m); });
+        // Re-add only active conditions with correct Name::id tags
+        activeSet.forEach(function(condition) {
+          let marker = CONDITION_MARKERS[condition];
+          if (marker) markerSet.add(marker);
+        });
+        token.set("statusmarkers", Array.from(markerSet).join(","));
+        if (args.charId) setConditionAttr(args.charId, activeSet);
+        writeResult(nonce, { ok: true, conditions: Array.from(activeSet), markers: Array.from(markerSet) });
+        return;
+      }
+      };
+ACTIONS["toggleCondition"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Toggle a single condition on a token sticker and character attribute.
+        // args.tokenId, args.charId (optional), args.condition: string, args.active: boolean
+        let token = getObj("graphic", args.tokenId);
+        if (!token) throw new Error("Token not found: " + args.tokenId);
+        let condition = (args.condition || "").toLowerCase();
+        let res = resolveMarkerForState(condition);
+        let marker = res.tag;
+        let markerSet = new Set((token.get("statusmarkers") || "").split(",").filter(Boolean));
+        if (args.active) markerSet.add(marker); else markerSet.delete(marker);
+        token.set("statusmarkers", Array.from(markerSet).join(","));
+        // Tier 1a (true conditions) tracks on the character's active_conditions attr.
+        if (res.tier === "condition" && args.charId) {
+          let existing = findObjs({ _type: "attribute", _characterid: args.charId, name: "active_conditions" });
+          let condList = existing.length > 0 ? (existing[0].get("current") || "").split(",").filter(Boolean) : [];
+          let condSet = new Set(condList);
+          if (args.active) condSet.add(condition); else condSet.delete(condition);
+          setConditionAttr(args.charId, condSet);
+        }
+        // Tier 2 (ad-hoc) tracks which tokens hold the named state in campaign state.
+        if (res.tier === "custom") trackCustomState(res.key, marker, args.tokenId, !!args.active);
+        writeResult(nonce, { ok: true, condition: condition, active: !!args.active, marker: marker, tier: res.tier });
+        return;
+      }
+      };
+ACTIONS["getTokenMarkers"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let raw = Campaign().get("token_markers");
+        let markers = typeof raw === "string" ? JSON.parse(raw) : (raw || []);
+        writeResult(nonce, markers.map(function(m) {
+          return { id: m.id, name: m.name, tag: m.tag };
+        }));
+        return;
+      }
+      };
+ACTIONS["getCustomStates"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Tier-2 ad-hoc states the DM is tracking: name -> icon + which tokens hold it.
+        let cs = B().customStates || {};
+        let out = Object.keys(cs).map(function (name) {
+          let entry = cs[name] || {};
+          let holders = (entry.tokens || []).map(function (id) {
+            let g = getObj("graphic", id);
+            return { id: id, name: g ? (g.get("name") || "") : "(missing)" };
+          });
+          return { state: name, tag: entry.tag, tokens: holders };
+        });
+        writeResult(nonce, out);
+        return;
+      }
+      };
+ACTIONS["rollFormulas"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Roll each formula for real but WITH a callback, so the raw Roll20 roll stays hidden — we only
+        // want the numbers. Then we post our OWN parchment card showing the real total + dice in ink.
+        // This avoids the uncolorable purple Roll20 inline-roll chip entirely, so the card looks fully
+        // "written on parchment". silent → the card is whispered to the GM.
+        let rollNonce = nonce;
+        let items = args.items || [];
+        if (!items.length) { writeResult(rollNonce, []); return; }
+        let defaultSpeaker = args.speakAs || "The Bones";
+        let silent = args.silent === true;
+        let rollResults = new Array(items.length);
+        let rollRemaining = items.length;
+        let rollDone = false;
+        function finishRolls() {
+          if (rollDone) return;
+          rollDone = true;
+          writeResult(rollNonce, rollResults);
+        }
+        items.forEach(function(item, idx) {
+          sendChat(defaultSpeaker, "/roll " + item.formula, function(ops) {
+            var total = 0, dice = [];
+            try {
+              var pr = JSON.parse(ops[0].content);
+              total = pr.total;
+              (pr.rolls || []).forEach(function(r) { if (r.type === "R") (r.results || []).forEach(function(d) { dice.push(d.v); }); });
+            } catch (e) {}
+            rollResults[idx] = { label: item.label || "", formula: item.formula, total: total, dice: dice };
+
+            // nat-20 / nat-1 ink color for single d20 rolls
+            var inkTotal = "#2d1705";
+            if (dice.length === 1 && /d20/i.test(item.formula)) {
+              if (dice[0] === 20) inkTotal = "#0f5510";
+              else if (dice[0] === 1) inkTotal = "#7a0d0d";
+            }
+            var bd = dice.length
+              ? "<div style=\"color:#553913;font-size:0.72em;letter-spacing:0.06em;margin-top:4px;\">⚄ " + dice.join("&nbsp;·&nbsp;") + "</div>"
+              : "";
+            // Aged parchment: a SOLID opaque base color (so darkmode never shows through even if the
+            // sanitizer drops the gradient layers) with subtle mottling painted on via background-image.
+            var card = "<div style=\"background-color:#f3e6c4;"
+              + "background-image:radial-gradient(ellipse at 20% 25%,rgba(150,112,62,0.20),transparent 55%),"
+              + "radial-gradient(ellipse at 82% 78%,rgba(120,88,45,0.18),transparent 55%);"
+              + "border:1px solid #8a6a38;border-radius:5px;padding:9px 20px 11px;min-width:118px;text-align:center;"
+              + "font-family:'Palatino Linotype',Palatino,'Book Antiqua',serif;display:inline-block;"
+              + "box-shadow:inset 0 0 18px rgba(110,80,35,0.22),0 1px 3px rgba(0,0,0,0.45);\">"
+              + "<div style=\"color:#3d2407;font-size:0.82em;letter-spacing:0.1em;font-variant:small-caps;font-weight:bold;font-style:italic;margin:0 0 2px;\">🎲 " + esc(item.formula) + "</div>"
+              + "<div style=\"color:" + inkTotal + ";font-weight:bold;font-size:2em;line-height:1.05;\">" + total + "</div>"
+              + bd
+              + "</div>";
+            sendChat(item.label || defaultSpeaker, (silent ? "/w gm " : "") + card, null, { noarchive: false });
+
+            rollRemaining--;
+            if (rollRemaining === 0) finishRolls();
+          });
+        });
+        // Safety: if a callback never fires (bad formula, etc.), don't hang the relay — time out.
+        setTimeout(function() {
+          if (rollDone) return;
+          for (var i = 0; i < items.length; i++) {
+            if (!rollResults[i]) rollResults[i] = { label: items[i].label || "", formula: items[i].formula, total: 0, dice: [], error: "no roll result (timeout)" };
+          }
+          finishRolls();
+        }, 4000);
+        return;
+      }
+      };
+ACTIONS["sendNarration"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Send styled narrative text to Roll20 chat, visible to all players.
+        // style: "narration" (default) | "combat" | "dramatic" | "ambient"
+        let narText = args.text || "";
+        let narStyle = args.style || "narration";
+        let narSpeaker = args.speakAs || "The Dark Powers";
+
+        let styles = {
+          narration: "font-family:Georgia,serif;font-style:italic;color:#e8c97e;border:1px solid #7a3030;border-left-width:3px;padding:7px 12px;background:#1c0808;line-height:1.65;border-radius:2px;",
+          combat:    "font-family:Georgia,serif;font-weight:bold;color:#f08080;border:1px solid #8b0000;border-left-width:3px;padding:7px 12px;background:#200a0a;line-height:1.65;border-radius:2px;",
+          dramatic:  "font-family:Georgia,serif;font-weight:bold;font-style:italic;color:#e8c040;text-align:center;border:1px solid #8b6914;border-top-width:2px;border-bottom-width:2px;padding:10px 14px;background:#1a1100;letter-spacing:0.5px;line-height:1.7;border-radius:2px;",
+          ambient:   "font-family:Georgia,serif;font-style:italic;color:#a8c890;border:1px solid #4a6a3a;border-left-width:3px;padding:7px 12px;background:#080f08;line-height:1.65;border-radius:2px;",
+        };
+        let styleStr = styles[narStyle] || styles.narration;
+        let html = "<div style='" + styleStr + "'>" + narText + "</div>";
+        sendChat(narSpeaker, html, null, {});
+        writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["batchExec"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Execute N sync operations in a single relay round-trip.
+        // Each op: { id?, action, args? }
+        // Returns: [{ id, ok, data?, error? }]
+        let batchOps = args.ops || [];
+        let batchResults = [];
+        batchOps.forEach(function(op) {
+          let opId = (op.id != null) ? op.id : batchResults.length;
+          try {
+            let data = runBatchOp(op.action, op.args || {});
+            batchResults.push({ id: opId, ok: true, data: data });
+          } catch(e) {
+            batchResults.push({ id: opId, ok: false, error: String(e) });
+          }
+        });
+        writeResult(nonce, batchResults);
+        return;
+      }
+      };
+ACTIONS["ping"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        writeResult(nonce, { pong: true, version: "2.1.0" });
+        return;
+      }
+      };
+ACTIONS["sendPing"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // args: left, top, pageId, playerId?, moveAll?, visibleTo?
+        sendPing(
+          args.left, args.top, args.pageId,
+          args.playerId || null,
+          args.moveAll  || false,
+          args.visibleTo || null
+        );
+        writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["spawnFx"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // args: x, y, type (e.g. "nova-fire"), pageId
+        spawnFx(args.x, args.y, args.type, args.pageId);
+        writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["spawnFxBetweenPoints"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // args: x1, y1, x2, y2, type, pageId
+        spawnFxBetweenPoints(
+          { x: args.x1, y: args.y1 },
+          { x: args.x2, y: args.y2 },
+          args.type, args.pageId
+        );
+        writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["toFront"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let frontObj = getObj(args.objectType || "graphic", args.objectId);
+        if (!frontObj) throw new Error("Object not found: " + args.objectId);
+        toFront(frontObj);
+        writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["toBack"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let backObj = getObj(args.objectType || "graphic", args.objectId);
+        if (!backObj) throw new Error("Object not found: " + args.objectId);
+        toBack(backObj);
+        writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["createZone"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Draw a named zone (circle or rect) on the "objects" layer.
+        // Metadata stored in gmnotes so it survives relay restarts.
+        // centerX/centerY in page pixels; radiusFeet converted via page scale.
+        let zonePage = getObj("page", args.pageId);
+        if (!zonePage) throw new Error("Page not found: " + args.pageId);
+        let zoneScale = args.scaleNumber || zonePage.get("scale_number") || 5;
+        let zoneRadiusPx = (args.radiusFeet || 15) * (70 / zoneScale);
+        let zoneCx = args.centerX || 0;
+        let zoneCy = args.centerY || 0;
+        let zoneColor = args.color || "#aa00ff";
+        let zoneName = "ZONE: " + (args.name || "Zone");
+
+        let zonePath, zoneWidth, zoneHeight;
+        if ((args.shape || "circle") === "rect") {
+          // Rectangle: width/height passed directly in feet, converted to pixels
+          let halfW = (args.widthFeet || args.radiusFeet || 15) * (70 / zoneScale) / 2;
+          let halfH = (args.heightFeet || args.radiusFeet || 15) * (70 / zoneScale) / 2;
+          zoneWidth = halfW * 2;
+          zoneHeight = halfH * 2;
+          zonePath = JSON.stringify([["M",0,0],["L",zoneWidth,0],["L",zoneWidth,zoneHeight],["L",0,zoneHeight],["Z"]]);
+        } else {
+          zonePath = makeCirclePath(zoneRadiusPx);
+          zoneWidth = zoneRadiusPx * 2;
+          zoneHeight = zoneRadiusPx * 2;
+        }
+
+        let zoneObj = createObj("path", {
+          pageid: args.pageId,
+          layer: "map",
+          path: zonePath,
+          left: zoneCx,
+          top: zoneCy,
+          width: zoneWidth,
+          height: zoneHeight,
+          rotation: 0,
+          stroke: zoneColor,
+          stroke_width: 3,
+          fill: zoneColor,
+          fill_opacity: 0.25,
+          scaleX: 1,
+          scaleY: 1,
+          controlledby: "",
+        });
+        if (!zoneObj) throw new Error("Failed to create zone path object");
+        zoneObj.set("name", zoneName);
+        zoneObj.set("gmnotes", JSON.stringify({
+          zone: true,
+          name: args.name || "Zone",
+          shape: args.shape || "circle",
+          centerX: zoneCx,
+          centerY: zoneCy,
+          radiusFeet: args.radiusFeet || 15,
+          color: zoneColor,
+        }));
+        writeResult(nonce, { id: zoneObj.id, name: zoneName, radiusFeet: args.radiusFeet || 15, centerX: zoneCx, centerY: zoneCy });
+        return;
+      }
+      };
+ACTIONS["clearZone"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        if (args.zoneId) {
+          let zo = getObj("path", args.zoneId);
+          if (zo) zo.remove();
+          writeResult(nonce, { removed: zo ? 1 : 0 });
+        } else if (args.name) {
+          let prefix = "ZONE: " + args.name;
+          let found = findObjs({ _type: "path", _pageid: args.pageId }).filter(function(p) {
+            return p.get("name") === prefix;
+          });
+          found.forEach(function(p) { p.remove(); });
+          writeResult(nonce, { removed: found.length });
+        } else {
+          throw new Error("clearZone requires zoneId or name");
+        }
+        return;
+      }
+      };
+ACTIONS["removeObject"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Remove any Roll20 object by id. Tries graphic, then path.
+        let roObj = getObj(args.objectType || "graphic", args.objectId);
+        if (!roObj && (!args.objectType || args.objectType === "graphic")) roObj = getObj("path", args.objectId);
+        if (!roObj) throw new Error("Object not found: " + args.objectId);
+        roObj.remove();
+        writeResult(nonce, { ok: true, id: args.objectId });
+        return;
+      }
+      };
+ACTIONS["listZones"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let allPaths = findObjs({ _type: "path", _pageid: args.pageId });
+        let zones = allPaths.filter(function(p) {
+          return (p.get("name") || "").startsWith("ZONE: ");
+        }).map(function(p) {
+          let meta = {};
+          try { meta = JSON.parse(p.get("gmnotes") || "{}"); } catch(e) {}
+          return {
+            id: p.id,
+            name: p.get("name"),
+            left: p.get("left"),
+            top: p.get("top"),
+            meta: meta,
+          };
+        });
+        writeResult(nonce, zones);
+        return;
+      }
+      };
+ACTIONS["findTokensInZone"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Load zone metadata from gmnotes, then check all tokens for containment.
+        let zoneGraphic = getObj("path", args.zoneId);
+        if (!zoneGraphic) throw new Error("Zone not found: " + args.zoneId);
+        let zoneMeta = {};
+        try { zoneMeta = JSON.parse(zoneGraphic.get("gmnotes") || "{}"); } catch(e) {}
+        let zCx = zoneMeta.centerX != null ? zoneMeta.centerX : zoneGraphic.get("left");
+        let zCy = zoneMeta.centerY != null ? zoneMeta.centerY : zoneGraphic.get("top");
+        let zRadFeet = zoneMeta.radiusFeet || 15;
+        let zPage = getObj("page", args.pageId || zoneGraphic.get("_pageid"));
+        if (!zPage) throw new Error("Page not found");
+        let zScale = zPage.get("scale_number") || 5;
+        let zPxPerFoot = 70 / zScale;
+        let zRadPx = zRadFeet * zPxPerFoot;
+        let zTokens = findObjs({ _type: "graphic", _pageid: zPage.id });
+        let inZone = [];
+        zTokens.forEach(function(t) {
+          let dx = t.get("left") - zCx;
+          let dy = t.get("top") - zCy;
+          let distPx = Math.sqrt(dx * dx + dy * dy);
+          if (distPx <= zRadPx) {
+            inZone.push({
+              id: t.id,
+              name: t.get("name"),
+              layer: t.get("layer"),
+              distanceFeet: Math.round((distPx / zPxPerFoot) * 10) / 10,
+              bar1_value: t.get("bar1_value"),
+              bar1_max: t.get("bar1_max"),
+            });
+          }
+        });
+        inZone.sort(function(a, b) { return a.distanceFeet - b.distanceFeet; });
+        writeResult(nonce, inZone);
+        return;
+      }
+      };
+ACTIONS["getJournalFolder"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let rawJf = Campaign().get("_journalfolder");
+        writeResult(nonce, rawJf ? JSON.parse(rawJf) : []);
+        return;
+      }
+      };
+ACTIONS["setJournalFolder"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Two modes:
+        //  - args.json = a full array -> replace the whole _journalfolder tree.
+        //  - args.json = { __append__: [folder, ...] } -> read the LIVE tree and push
+        //    those folders/ids onto the end (safe merge; never clobbers existing).
+        if (args.json && !Array.isArray(args.json) && args.json.__append__) {
+          let rawJf = Campaign().get("_journalfolder");
+          let tree = rawJf ? JSON.parse(rawJf) : [];
+          args.json.__append__.forEach(function(f) { tree.push(f); });
+          Campaign().set("_journalfolder", JSON.stringify(tree));
+          writeResult(nonce, { ok: true, appended: args.json.__append__.length, total: tree.length });
+        } else {
+          Campaign().set("_journalfolder", JSON.stringify(args.json || []));
+          writeResult(nonce, { ok: true });
+        }
+        return;
+      }
+      };
+ACTIONS["createHandout"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Single implementation lives in runBatchOp.
+        // Full-page journal handout. notes = player-visible HTML, gmnotes = GM-only.
+        // inplayerjournals "all" shares with players. avatar = Roll20 CDN url.
+        writeResult(nonce, runBatchOp("createHandout", args));
+        return;
+      }
+      };
+ACTIONS["createCharacter"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Single implementation lives in runBatchOp.
+        // Bestiary stub: a character entry (draggable token). attributes = [{name,current,max}].
+        writeResult(nonce, runBatchOp("createCharacter", args));
+        return;
+      }
+      };
+ACTIONS["editCharacter"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Edit an existing Roll20 character object's top-level fields.
+        // Supports: name, bio, avatar, controlledby, archived, inplayerjournals.
+        // GM-gated (enforced in the outer handler). stripUndef prevents sandbox crash.
+        let ch = getObj("character", args.charId);
+        if (!ch) throw new Error("Character not found: " + args.charId);
+        let props = stripUndef({
+          name:             args.name,
+          bio:              args.bio,
+          avatar:           args.avatar,
+          controlledby:     args.controlledby,
+          archived:         args.archived,
+          inplayerjournals: args.inplayerjournals,
+        });
+        let keys = Object.keys(props);
+        if (keys.length === 0) throw new Error("editCharacter: no fields to edit — pass at least one of: name, bio, avatar, controlledby, archived, inplayerjournals");
+        ch.set(props);
+        writeResult(nonce, { ok: true, updated: keys });
+        return;
+      }
+      };
+
 on("chat:message", function (msg) {
   // Buffer only real table chat: not relay commands, and NOT our own API/bridge output
   // (AIBRIDGE_RESULT whispers, Initiative announces, whisperPlayer — all playerid "API").
@@ -777,1510 +2352,9 @@ on("chat:message", function (msg) {
   }
 
   try {
-    switch (action) {
-      case "getTokens": {
-        // profile: "lean" | "status" | "full" (default). imgsrc included for map-layer graphics.
-        const profile = args.profile || "full";
-        const tokens = findObjs({ _type: "graphic", _pageid: args.pageId });
-        writeResult(nonce, tokens.map(function(t) {
-          let s = tokenSummary(t, profile);
-          if (t.get("layer") === "map") s.imgsrc = t.get("imgsrc");
-          return s;
-        }));
-        break;
-      }
-
-      case "getSelection": {
-        // Roll20 exposes the current selection ONLY as msg.selected on the chat command
-        // that triggered this handler — there is no passive getSelectedTokens() in the
-        // sandbox. The bridge sends !ai-relay while the GM has tokens selected, so this
-        // reflects the live tabletop selection in the GM's session.
-        // Each msg.selected entry is { _id, _type }. Resolve graphics to name + linked character.
-        let sel = msg.selected || [];
-        let selResults = sel.map(function (s) {
-          if (s._type !== "graphic") return { id: s._id, type: s._type };
-          let t = getObj("graphic", s._id);
-          if (!t) return { id: s._id, error: "not found" };
-          let charId = t.get("represents") || "";
-          let charName = "";
-          if (charId) {
-            let ch = getObj("character", charId);
-            if (ch) charName = ch.get("name");
-          }
-          let summ = tokenSummary(t, "full");
-          summ.characterName = charName;
-          return summ;
-        });
-        writeResult(nonce, selResults);
-        break;
-      }
-
-      case "setTokenBar": {
-        const token = getObj("graphic", args.tokenId);
-        if (!token) throw new Error(`Token not found: ${args.tokenId}`);
-        const v = Number(args.value);
-        if (!isFinite(v)) throw new Error(`setTokenBar: value must be a finite number, got ${JSON.stringify(args.value)}`);
-        token.set({
-          bar1_value: v,
-          ...(args.max !== undefined && isFinite(Number(args.max)) ? { bar1_max: Number(args.max) } : {}),
-        });
-        writeResult(nonce, { ok: true });
-        break;
-      }
-
-      case "adjustPcHp": {
-        const token = getObj("graphic", args.tokenId);
-        if (!token) throw new Error(`Token not found: ${args.tokenId}`);
-        writeResult(nonce, adjustPcHp(token, args));
-        break;
-      }
-
-      case "getPcHp": {
-        // Read tracked PC HP from the token gmnotes PCHP block (single source of truth).
-        // tokenId → that token; characterName → first matching PC token; otherwise the whole map.
-        if (args.tokenId) {
-          let t = getObj("graphic", args.tokenId);
-          writeResult(nonce, t ? parsePcHpBlock(t.get("gmnotes")) : null);
-        } else if (args.characterName) {
-          let want = pcHpKey(args.characterName);
-          let found = null;
-          findObjs({ _type: "graphic" }).forEach(function(t) {
-            if (found) return;
-            if (pcHpKey(t.get("name")) === want) { let e = parsePcHpBlock(t.get("gmnotes")); if (e) found = e; }
-          });
-          writeResult(nonce, found);
-        } else {
-          let map = {};
-          findObjs({ _type: "graphic" }).forEach(function(t) {
-            let e = parsePcHpBlock(t.get("gmnotes"));
-            if (e) map[pcHpKey(t.get("name"))] = e;
-          });
-          writeResult(nonce, map);
-        }
-        break;
-      }
-
-      case "setDefaultToken": {
-        const token = getObj("graphic", args.tokenId);
-        if (!token) throw new Error(`Token not found: ${args.tokenId}`);
-        writeResult(nonce, setDefaultTokenForChar(token, args));
-        break;
-      }
-
-      case "setStatusMarker": {
-        const token = getObj("graphic", args.tokenId);
-        if (!token) throw new Error(`Token not found: ${args.tokenId}`);
-        const current = token.get("statusmarkers") || "";
-        const markers = current ? current.split(",") : [];
-        if (args.active && !markers.includes(args.marker)) {
-          markers.push(args.marker);
-        } else if (!args.active) {
-          const idx = markers.indexOf(args.marker);
-          if (idx !== -1) markers.splice(idx, 1);
-        }
-        token.set("statusmarkers", markers.join(","));
-        writeResult(nonce, { ok: true });
-        break;
-      }
-
-      case "createToken": {
-        const token = createObj("graphic", {
-          _pageid: args.pageId,
-          imgsrc: args.imgsrc,
-          name: args.name,
-          layer: args.layer || "tokens",
-          left: args.left || 70,
-          top: args.top || 70,
-          width: args.width || 70,
-          height: args.height || 70,
-          bar1_value: args.bar1_value || 0,
-          bar1_max: args.bar1_max || 0,
-          showname: true,
-          showplayers_name: true,
-          showplayers_bar1: true,
-        });
-        // createObj('graphic') returns undefined when imgsrc is missing or not a
-        // Roll20-hosted URL (external/marketplace/thumb URLs are silently refused).
-        // Guard so callers get an actionable message, not "Cannot read 'id' of undefined".
-        if (!token) throw new Error("createObj('graphic') returned undefined — imgsrc must be an uploaded Roll20 URL (https://s3.amazonaws.com/files.d20.io/.../max/... or /med/...), not an external/thumb URL");
-        writeResult(nonce, { id: token.id });
-        break;
-      }
-
-      case "createPage": {
-        // Roll20 API does not support createObj("page") — pages must be created manually in the UI.
-        throw new Error("Roll20 API does not allow creating pages programmatically. Create the page manually in the Roll20 page navigator, then pass its pageId.");
-      }
-
-      case "createPath": {
-        const pathObj = createObj("path", {
-          pageid: args.pageId,
-          layer: args.layer || "walls",
-          path: args.path,
-          stroke: args.stroke || "#000000",
-          stroke_width: args.stroke_width || 5,
-          fill: args.fill || "transparent",
-          left: args.left,
-          top: args.top,
-          width: args.width,
-          height: args.height,
-          rotation: args.rotation || 0,
-          scaleX: 1,
-          scaleY: 1,
-          controlledby: "",
-        });
-        if (!pathObj) throw new Error("createObj('path') returned undefined — check pageid and path format");
-        writeResult(nonce, { id: pathObj.id });
-        break;
-      }
-
-      case "createPaths": {
-        // Batch create — avoids one relay round-trip per path.
-        const results = (args.paths || []).map((p) => {
-          const pathObj = createObj("path", {
-            pageid: args.pageId,
-            layer: p.layer || args.layer || "walls",
-            path: p.path,
-            stroke: p.stroke || args.stroke || "#000000",
-            stroke_width: p.stroke_width || args.stroke_width || 5,
-            fill: p.fill || args.fill || "transparent",
-            left: p.left,
-            top: p.top,
-            width: p.width,
-            height: p.height,
-            rotation: p.rotation || 0,
-            scaleX: 1,
-            scaleY: 1,
-            controlledby: "",
-          });
-          return pathObj ? { id: pathObj.id } : { error: "createObj returned undefined" };
-        });
-        writeResult(nonce, results);
-        break;
-      }
-
-      case "getWalls": {
-        // Read DL barrier objects from a page.
-        // Latest Engine UDL: pathv2 objects with barrierType set.
-        // Legacy DL: path objects on the walls layer (with or without barrierType).
-        // Returns both so this works regardless of which DL mode the campaign uses.
-        let includePoints = args.includePoints === true;
-        // pathv2 (Latest Engine / UDL) — pathv2 uses pageid (no underscore) in findObjs, like door/window
-        let pathv2Walls = findObjs({ _type: "pathv2", pageid: args.pageId, layer: "walls" });
-        // path objects on walls layer (Legacy DL, or RTDB-direct diagnostic writes)
-        let pathWalls = findObjs({ _type: "path", _pageid: args.pageId, layer: "walls" });
-        let allWalls = pathv2Walls.map(function(w) {
-          let ptsStr = w.get("points") || "[]";
-          let pts;
-          try { pts = JSON.parse(ptsStr); } catch(e) { pts = []; }
-          let cx = w.get("x"), cy = w.get("y");
-          let result = {
-            id: w.id,
-            kind: "pathv2",
-            x: cx,
-            y: cy,
-            barrierType: w.get("barrierType"),
-            shape: w.get("shape"),
-            pointCount: Array.isArray(pts) ? pts.length : 0,
-          };
-          // includePoints: true → return absolute page pixel coordinates
-          if (includePoints && Array.isArray(pts)) {
-            result.points = pts.map(function(p) { return [Math.round(p[0] + cx), Math.round(p[1] + cy)]; });
-          }
-          return result;
-        }).concat(pathWalls.map(function(p) {
-          return {
-            id: p.id,
-            kind: "path",
-            left: p.get("left"),
-            top: p.get("top"),
-            width: p.get("width"),
-            height: p.get("height"),
-            stroke: p.get("stroke"),
-            barrierType: p.get("barrierType"),
-          };
-        }));
-        writeResult(nonce, allWalls);
-        break;
-      }
-
-      case "debugPage": {
-        // Enumerate what types of objects exist on a page — helps diagnose object storage.
-        let types = ["path", "pathv2", "graphic", "wall", "text", "door", "window"];
-        let summary = {};
-        types.forEach(function(t) {
-          let objs = findObjs({ _type: t, _pageid: args.pageId });
-          summary[t] = { count: objs.length };
-          if (objs.length && objs.length <= 5) {
-            summary[t].sample = objs.slice(0, 3).map(function(o) {
-              return { id: o.id, layer: o.get("layer"), barrierType: o.get("barrierType"), shape: o.get("shape") };
-            });
-          }
-        });
-        writeResult(nonce, summary);
-        break;
-      }
-
-      case "createWalls": {
-        // Create DL barriers. Latest Engine UDL → pathv2 with shape:"pol".
-        // Points are relative to the object center (x,y). For a two-point wall from
-        // (x1,y1)→(x2,y2): center = midpoint; points = [[-dx/2,-dy/2],[dx/2,dy/2]].
-        // If createObj("pathv2") returns undefined, fall back to legacy path.
-        let firstWall = (args.walls || [])[0];
-        if (firstWall) {
-          let probeCx = (firstWall.x1 + firstWall.x2) / 2;
-          let probeCy = (firstWall.y1 + firstWall.y2) / 2;
-          log("[GM_AI_Bridge] createWalls probe — pageId=" + args.pageId
-            + " wall[0]: x1=" + firstWall.x1 + " y1=" + firstWall.y1
-            + " x2=" + firstWall.x2 + " y2=" + firstWall.y2
-            + " cx=" + probeCx + " cy=" + probeCy
-            + " points=" + JSON.stringify([[firstWall.x1 - probeCx, firstWall.y1 - probeCy], [firstWall.x2 - probeCx, firstWall.y2 - probeCy]]));
-        }
-        let wallResults = (args.walls || []).map(function(w, wi) {
-          let cx = (w.x1 + w.x2) / 2;
-          let cy = (w.y1 + w.y2) / 2;
-          let pv2Props = {
-            pageid: args.pageId,
-            layer: "walls",
-            x: cx,
-            y: cy,
-            shape: "pol",
-            barrierType: args.barrierType || "wall",
-            points: JSON.stringify([[w.x1 - cx, w.y1 - cy], [w.x2 - cx, w.y2 - cy]]),
-            stroke: args.stroke || "#0044FF",
-            stroke_width: 5,
-            controlledby: "",
-          };
-          let wallObj;
-          try { wallObj = createObj("pathv2", pv2Props); } catch(e) {
-            log("[GM_AI_Bridge] createWalls pathv2 threw: " + String(e));
-          }
-          if (wi === 0) log("[GM_AI_Bridge] createWalls pathv2 result[0]: " + (wallObj ? "id=" + wallObj.id : "undefined — falling back"));
-          if (wallObj) return { id: wallObj.id, kind: "pathv2" };
-          // Fall back to legacy path on walls layer
-          let minX = Math.min(w.x1, w.x2), minY = Math.min(w.y1, w.y2);
-          let legacyObj = createObj("path", {
-            pageid: args.pageId,
-            layer: "walls",
-            path: JSON.stringify([["M", w.x1 - minX, w.y1 - minY], ["L", w.x2 - minX, w.y2 - minY]]),
-            left: cx, top: cy,
-            width: Math.max(Math.abs(w.x2 - w.x1), 1),
-            height: Math.max(Math.abs(w.y2 - w.y1), 1),
-            barrierType: args.barrierType || "wall",
-            stroke: "#FFFF00",
-            stroke_width: 5,
-            fill: "transparent",
-            rotation: 0, scaleX: 1, scaleY: 1, controlledby: "",
-          });
-          if (wi === 0) log("[GM_AI_Bridge] createWalls path-fallback result[0]: " + (legacyObj ? "id=" + legacyObj.id : "undefined"));
-          return legacyObj ? { id: legacyObj.id, kind: "path-fallback" } : { error: "createObj failed for both pathv2 and path" };
-        });
-        writeResult(nonce, wallResults);
-        break;
-      }
-
-      case "createDLDoors": {
-        // Create native Roll20 DL door objects. Coordinates in page pixels; y is negated for Roll20.
-        // Each door: { x, y, x0, y0, x1, y1, color? } — x/y center, x0/y0 and x1/y1 endpoints (pre-negated).
-        let doorResults = (args.doors || []).map(function(d) {
-          let obj = createObj("door", {
-            pageid: args.pageId,
-            x: d.x,
-            y: d.y,
-            path: { handle0: { x: d.x0, y: d.y0 }, handle1: { x: d.x1, y: d.y1 } },
-            color: d.color || "#FF0000",
-            isOpen: false,
-            isLocked: false,
-          });
-          return obj ? { id: obj.id } : { error: "createObj('door') returned undefined" };
-        });
-        writeResult(nonce, doorResults);
-        break;
-      }
-
-      case "createDLWindows": {
-        // Create native Roll20 DL window objects. Same coordinate convention as createDLDoors.
-        let windowResults = (args.windows || []).map(function(w) {
-          let obj = createObj("window", {
-            pageid: args.pageId,
-            x: w.x,
-            y: w.y,
-            path: { handle0: { x: w.x0, y: w.y0 }, handle1: { x: w.x1, y: w.y1 } },
-            color: w.color || "#00FFFF",
-            isOpen: false,
-            isLocked: false,
-          });
-          return obj ? { id: obj.id } : { error: "createObj('window') returned undefined" };
-        });
-        writeResult(nonce, windowResults);
-        break;
-      }
-
-      case "createGraphic": {
-        const graphic = createObj("graphic", {
-          pageid: args.pageId,
-          layer: args.layer || "map",
-          imgsrc: args.imgsrc,
-          name: args.name || "",
-          left: args.left,
-          top: args.top,
-          width: args.width,
-          height: args.height,
-          rotation: args.rotation || 0,
-          controlledby: "",
-          showname: false,
-        });
-        if (!graphic) throw new Error("createObj('graphic') returned undefined");
-        writeResult(nonce, { id: graphic.id });
-        break;
-      }
-
-      case "setPageBackground": {
-        const page = getObj("page", args.pageId);
-        if (!page) throw new Error(`Page not found: ${args.pageId}`);
-        page.set({ background_color: args.color || "#ffffff" });
-        writeResult(nonce, { ok: true });
-        break;
-      }
-
-      case "listPages": {
-        const pages = findObjs({ _type: "page" });
-        writeResult(nonce, pages.map((p) => ({
-          id: p.id,
-          name: p.get("name"),
-          width: p.get("width"),
-          height: p.get("height"),
-        })));
-        break;
-      }
-
-      case "setPageProps": {
-        const page = getObj("page", args.pageId);
-        if (!page) throw new Error(`Page not found: ${args.pageId}`);
-        const props = {};
-        if (args.name !== undefined) props.name = args.name;
-        if (args.width !== undefined) props.width = args.width;
-        if (args.height !== undefined) props.height = args.height;
-        if (args.scale_number !== undefined) props.scale_number = args.scale_number;
-        if (args.scale_units !== undefined) props.scale_units = args.scale_units;
-        if (args.showgrid !== undefined) props.showgrid = args.showgrid;
-        if (args.background_color !== undefined) props.background_color = args.background_color;
-        page.set(props);
-        writeResult(nonce, { ok: true, width: page.get("width"), height: page.get("height") });
-        break;
-      }
-
-      case "getPaths": {
-        // Read back all path/graphic objects from a page. If layer is omitted, returns all layers.
-        let query = { _pageid: args.pageId };
-        if (args.layer) query.layer = args.layer;
-        // left/top/width/height already give the bounding box; the raw SVG `path` string and
-        // graphic imgsrc are the bloat — gate both behind includePath (default off).
-        let includePath = args.includePath === true;
-        let paths = findObjs(Object.assign({ _type: "path" }, query));
-        let graphics = args.includeGraphics ? findObjs(Object.assign({ _type: "graphic" }, query)) : [];
-        let results = paths.map(function(p) {
-          let base = {
-            type: "path",
-            id: p.id,
-            layer: p.get("layer"),
-            left: p.get("left"),
-            top: p.get("top"),
-            width: p.get("width"),
-            height: p.get("height"),
-            rotation: p.get("rotation"),
-            stroke: p.get("stroke"),
-          };
-          if (includePath) base.path = p.get("path");
-          return base;
-        }).concat(graphics.map(function(g) {
-          let base = {
-            type: "graphic",
-            id: g.id,
-            layer: g.get("layer"),
-            left: g.get("left"),
-            top: g.get("top"),
-            width: g.get("width"),
-            height: g.get("height"),
-            rotation: g.get("rotation"),
-          };
-          if (includePath) base.imgsrc = g.get("imgsrc");
-          return base;
-        }));
-        writeResult(nonce, results);
-        break;
-      }
-
-      case "getDoors": {
-        // door/window objects use pageid (not _pageid) and inverted y-axis.
-        // y values from Roll20 are negative; negate them to get normal page coords.
-        function mapOpening(obj, type) {
-          let path = obj.get("path") || {};
-          let h0 = path.handle0 || {};
-          let h1 = path.handle1 || {};
-          return {
-            id: obj.id,
-            type: type,
-            x: obj.get("x"),
-            y: -(obj.get("y")),
-            handle0: { x: h0.x, y: h0.y !== undefined ? -(h0.y) : undefined },
-            handle1: { x: h1.x, y: h1.y !== undefined ? -(h1.y) : undefined },
-            color: obj.get("color"),
-            isOpen: obj.get("isOpen"),
-            isLocked: obj.get("isLocked"),
-            isSecret: obj.get("isSecret"),
-          };
-        }
-        let doors = findObjs({ _type: "door", pageid: args.pageId });
-        let windows = findObjs({ _type: "window", pageid: args.pageId });
-        writeResult(nonce, {
-          doors: doors.map(function(d) { return mapOpening(d, "door"); }),
-          windows: windows.map(function(w) { return mapOpening(w, "window"); }),
-        });
-        break;
-      }
-
-      case "clearLayer": {
-        // Remove all path/graphic objects from the specified layer on a page.
-        // Also clears UDL wall objects when the "walls" layer is targeted.
-        const page = getObj("page", args.pageId);
-        if (!page) throw new Error(`Page not found: ${args.pageId}`);
-        const layers = args.layers || [args.layer || "walls"];
-        let removed = 0;
-        layers.forEach(function(layer) {
-          findObjs({ _type: "path", _pageid: args.pageId, layer: layer }).forEach(function(obj) {
-            obj.remove();
-            removed++;
-          });
-          findObjs({ _type: "graphic", _pageid: args.pageId, layer: layer }).forEach(function(obj) {
-            obj.remove();
-            removed++;
-          });
-          if (layer === "walls") {
-            // Remove pathv2 DL barriers (Latest VTT Engine) and legacy wall objects.
-            findObjs({ _type: "pathv2", pageid: args.pageId, layer: "walls" }).forEach(function(obj) {
-              obj.remove();
-              removed++;
-            });
-            findObjs({ _type: "wall", _pageid: args.pageId }).forEach(function(obj) {
-              obj.remove();
-              removed++;
-            });
-            findObjs({ _type: "wall", pageid: args.pageId }).forEach(function(obj) {
-              obj.remove();
-              removed++;
-            });
-          }
-        });
-        writeResult(nonce, { removed: removed });
-        break;
-      }
-
-      case "drawLayerTest": {
-        // Draw one diagonal line per layer using legacy path objects to identify which layers Roll20's UI shows.
-        // Coordinates use top-left-relative convention (UVTT importer style):
-        // path points are relative to bounding box min corner, always positive.
-        // left/top = center of bounding box = minX+width/2, minY+height/2.
-        let layerTests = [
-          { layer: "map",        stroke: "#FF0000", path: '[["M",0,0],["L",2170,2940]]',    left: 1085, top: 1470, width: 2170, height: 2940 },
-          { layer: "objects",    stroke: "#00FF00", path: '[["M",2170,0],["L",0,2940]]',    left: 1085, top: 1470, width: 2170, height: 2940 },
-          { layer: "foreground", stroke: "#FF00FF", path: '[["M",0,0],["L",2170,0]]',       left: 1085, top:  980, width: 2170, height: 0 },
-          { layer: "gmlayer",    stroke: "#0000FF", path: '[["M",0,0],["L",2170,0]]',       left: 1085, top: 1470, width: 2170, height: 0 },
-          { layer: "walls",      stroke: "#FF8800", path: '[["M",0,0],["L",0,2940]]',       left: 1085, top: 1470, width: 0,    height: 2940 },
-        ];
-        let results = layerTests.map(function(t) {
-          let obj = createObj("path", {
-            pageid: args.pageId,
-            layer: t.layer,
-            path: t.path,
-            stroke: t.stroke,
-            stroke_width: 10,
-            fill: "transparent",
-            left: t.left,
-            top: t.top,
-            width: t.width,
-            height: t.height,
-            rotation: 0,
-            scaleX: 1,
-            scaleY: 1,
-            controlledby: senderPlayerId,
-          });
-          return { layer: t.layer, stroke: t.stroke, id: obj ? obj.id : null };
-        });
-        writeResult(nonce, results);
-        break;
-      }
-
-      case "runUVTT": {
-        // Create a carrier graphic on gmlayer with UVTT JSON in its gmnotes,
-        // then trigger the UniversalVTTImporter mod via !uvtt --ids.
-        let uvttGraphic = createObj("graphic", {
-          _pageid: args.pageId,
-          layer: "gmlayer",
-          name: "uvtt-data-carrier",
-          left: 35,
-          top: 35,
-          width: 70,
-          height: 70,
-          controlledby: "",
-          showname: false,
-        });
-        if (!uvttGraphic) throw new Error("Failed to create carrier graphic for UVTT import");
-
-        let uvttJson = typeof args.uvttData === "string"
-          ? args.uvttData
-          : JSON.stringify(args.uvttData);
-        uvttGraphic.set("gmnotes", uvttJson);
-
-        let extraArgs = args.noObjects ? " --no-objects" : "";
-        let uvttCmd = "!uvtt --ids " + uvttGraphic.id + extraArgs;
-        sendChat("API", uvttCmd);
-
-        writeResult(nonce, {
-          graphicId: uvttGraphic.id,
-          command: uvttCmd,
-          note: "UVTT import triggered. Delete graphicId when done.",
-        });
-        break;
-      }
-
-      case "createPolylines": {
-        // Create one path object per polyline from an ordered list of absolute-pixel points.
-        // Walls layer → pathv2 UDL barrier (Latest VTT Engine). Other layers → legacy path.
-        // Each polyline: { points: [[x,y], ...], stroke?, stroke_width?, closed?, layer? }
-        let polylineResults = (args.polylines || []).map(function(pl) {
-          let pts = pl.points || [];
-          if (pts.length < 2) return { error: "Need at least 2 points" };
-          let layer = pl.layer || args.layer || "walls";
-          if (layer === "walls") {
-            // Anchor at first point — Roll20 natively stores pathv2 with x,y = first drawn point
-            // and all other points relative to it. Passing a bounding-box center causes Roll20 to
-            // re-anchor internally to an approximate first point, but imprecisely, shifting the
-            // entire wall to the wrong position.
-            let cx = pts[0][0];
-            let cy = pts[0][1];
-            let xs = pts.map(function(p) { return p[0]; });
-            let ys = pts.map(function(p) { return p[1]; });
-            let minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
-            let minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
-            let relPts = pts.map(function(p) { return [p[0] - cx, p[1] - cy]; });
-            let wallObj = createObj("pathv2", {
-              pageid: args.pageId,
-              layer: "walls",
-              x: cx,
-              y: cy,
-              width: Math.max(maxX - minX, 1),
-              height: Math.max(maxY - minY, 1),
-              shape: "pol",
-              barrierType: "wall",
-              points: JSON.stringify(relPts),
-              stroke: pl.stroke || args.stroke || "#0044FF",
-              controlledby: "",
-            });
-            return wallObj ? { id: wallObj.id, pointCount: pts.length } : { error: "createObj('pathv2') returned undefined" };
-          }
-          let minX = Math.min.apply(null, pts.map(function(p) { return p[0]; }));
-          let minY = Math.min.apply(null, pts.map(function(p) { return p[1]; }));
-          let maxX = Math.max.apply(null, pts.map(function(p) { return p[0]; }));
-          let maxY = Math.max.apply(null, pts.map(function(p) { return p[1]; }));
-          let pathCmds = pts.map(function(p, i) {
-            return [i === 0 ? "M" : "L", p[0] - minX, p[1] - minY];
-          });
-          if (pl.closed) pathCmds.push(["Z"]);
-          let pathObj = createObj("path", {
-            pageid: args.pageId,
-            layer: layer,
-            path: JSON.stringify(pathCmds),
-            left: (minX + maxX) / 2,
-            top: (minY + maxY) / 2,
-            width: Math.max(maxX - minX, 1),
-            height: Math.max(maxY - minY, 1),
-            stroke: pl.stroke || args.stroke || "#FFFF00",
-            stroke_width: pl.stroke_width || args.stroke_width || 5,
-            fill: pl.fill || args.fill || "transparent",
-            rotation: 0,
-            scaleX: 1,
-            scaleY: 1,
-            controlledby: "",
-          });
-          return pathObj ? { id: pathObj.id, pointCount: pts.length } : { error: "createObj('path') returned undefined" };
-        });
-        writeResult(nonce, polylineResults);
-        break;
-      }
-
-      case "clearDLOpenings": {
-        // Remove all native door and window DL objects from a page.
-        let removed = 0;
-        findObjs({ _type: "door", pageid: args.pageId }).forEach(function(o) { o.remove(); removed++; });
-        findObjs({ _type: "window", pageid: args.pageId }).forEach(function(o) { o.remove(); removed++; });
-        writeResult(nonce, { removed: removed });
-        break;
-      }
-
-      case "getTurnOrder": {
-        let rawOrder = Campaign().get("turnorder");
-        let parsed = rawOrder ? JSON.parse(rawOrder) : [];
-        // Drop the per-entry _pageid (repeated on every row, never read downstream); keep
-        // everything else (id, pr, custom, formula for round markers).
-        writeResult(nonce, parsed.map(function(e) {
-          let o = {};
-          for (let k in e) { if (k !== "_pageid") o[k] = e[k]; }
-          return o;
-        }));
-        break;
-      }
-
-      case "setTurnOrder": {
-        Campaign().set("turnorder", JSON.stringify(args.entries || []));
-        writeResult(nonce, { ok: true, count: (args.entries || []).length });
-        break;
-      }
-
-      case "mergeTurnOrder": {
-        // Atomic upsert into the live turn order — read, merge, write in ONE
-        // sandbox tick so it never clobbers entries (e.g. player initiatives)
-        // added between a read and a write. Each entry is matched by `id`:
-        // replace in place if that id already exists, else append. Custom rows
-        // (id "-1") have no stable identity, so they are always inserted, never
-        // matched. After merging we sort pr-descending (Roll20's convention),
-        // keeping custom "-1" rows in their inserted relative order.
-        //
-        // clearNpcFirst: true → strip all non-PC token entries before merging.
-        // Keeps player-controlled tokens (controlledby = a real player ID) and
-        // custom rows (id "-1", e.g. round markers). Safe replacement for a full
-        // setTurnOrder([]) wipe that would also erase player entries.
-        let rawTO = Campaign().get("turnorder");
-        let merged;
-        try { merged = rawTO ? JSON.parse(rawTO) : []; } catch (e) { merged = []; }
-        if (!Array.isArray(merged)) merged = [];
-        if (args.clearNpcFirst) {
-          merged = merged.filter(function(entry) {
-            if (!entry) return false;
-            if (String(entry.id) === "-1") return true; // keep round markers / custom rows
-            let t = getObj("graphic", entry.id);
-            if (!t) return false; // stale entry → remove
-            let cb = String(t.get("controlledby") || "").trim();
-            return cb !== "" && cb.toLowerCase() !== "all"; // keep player-controlled only
-          });
-        }
-        let incoming = args.entries || [];
-        incoming.forEach(function (entry) {
-          if (!entry || typeof entry !== "object") return;
-          let id = entry.id;
-          if (id != null && String(id) !== "-1") {
-            let idx = -1;
-            for (let i = 0; i < merged.length; i++) {
-              if (merged[i] && String(merged[i].id) === String(id)) { idx = i; break; }
-            }
-            if (idx !== -1) { merged[idx] = entry; return; }
-          }
-          merged.push(entry);
-        });
-        // Stable pr-descending sort. Math, not lexical, so "10" sorts above "9".
-        merged = merged
-          .map(function (e, i) { return { e: e, i: i }; })
-          .sort(function (a, b) {
-            let pa = Number(a.e && a.e.pr);
-            let pb = Number(b.e && b.e.pr);
-            if (isNaN(pa)) pa = -Infinity;
-            if (isNaN(pb)) pb = -Infinity;
-            if (pb !== pa) return pb - pa;
-            return a.i - b.i; // preserve original order on ties
-          })
-          .map(function (x) { return x.e; });
-        Campaign().set("turnorder", JSON.stringify(merged));
-        writeResult(nonce, { ok: true, turnorder: merged });
-        break;
-      }
-
-      case "rollInitiativeForTokens": {
-        // Roll d20 + initiative bonus for each token. Tries common 5e attribute names.
-        // Posts a public gothic HTML initiative card by default (rollPublic defaults true).
-        // Duplicate-named tokens are renamed with a random epithet (e.g. "Goblin the Savage") so they
-        // are distinguishable both on the map and in the turn tracker.
-        let initAttrNames = ["initiative_bonus", "npc_initiative", "dex_mod", "dexterity_mod"];
-        let rollPublic = args.rollPublic !== false; // default true
-
-        // Pass 1: count names to detect duplicates
-        let nameCounts = {};
-        (args.tokenIds || []).forEach(function(tokenId) {
-          let token = getObj("graphic", tokenId);
-          if (!token) return;
-          let n = token.get("name");
-          nameCounts[n] = (nameCounts[n] || 0) + 1;
-        });
-
-        // Pass 2: rename duplicates with epithets drawn from monster-type word banks.
-        // nextEpithetName() threads `usedNames` across the whole batch and guarantees a
-        // unique final name even for large groups (e.g. 30 direwolves), escalating from a
-        // single adjective to a two-adjective combo to a numeric suffix as needed.
-        let usedNames = {};
-        (args.tokenIds || []).forEach(function(tokenId) {
-          let token = getObj("graphic", tokenId);
-          if (!token) return;
-          let baseName = token.get("name");
-          if ((nameCounts[baseName] || 0) <= 1) return;
-          let pool = getMonsterEpithets(baseName);
-          let newName = nextEpithetName(baseName, pool, usedNames);
-          token.set({ name: newName, tooltip: newName, showname: true, showplayers_name: true });
-        });
-
-        // Pass 3: gather init bonuses (synchronous), then roll via Roll20's real dice engine
-        let rollNonce = nonce;
-        let tokenData = [];
-        (args.tokenIds || []).forEach(function(tokenId) {
-          let token = getObj("graphic", tokenId);
-          if (!token) { tokenData.push({ tokenId: tokenId, error: "Token not found" }); return; }
-
-          let initBonus = 0;
-          let charId = token.get("represents");
-          if (charId) {
-            for (let i = 0; i < initAttrNames.length; i++) {
-              let attrs = findObjs({ _type: "attribute", _characterid: charId, name: initAttrNames[i] });
-              if (attrs.length > 0) {
-                let val = parseInt(attrs[0].get("current"));
-                if (!isNaN(val)) { initBonus = val; break; }
-              }
-            }
-          }
-          tokenData.push({ tokenId: tokenId, name: token.get("name"), initBonus: initBonus, charId: charId || "" });
-        });
-
-        let validTokens = tokenData.filter(function(t) { return !t.error; });
-        if (!validTokens.length) { writeResult(rollNonce, tokenData); break; }
-
-        // Build one inline roll expression per token: "Name: [[1d20+bonus]]"
-        let msgParts = validTokens.map(function(t) {
-          let sign = t.initBonus >= 0 ? "+" : "";
-          return t.name + ": [[1d20" + (t.initBonus !== 0 ? sign + t.initBonus : "") + "]]";
-        });
-
-        sendChat("Initiative", msgParts.join(" | "), function(ops) {
-          let inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
-
-          let rollResults = validTokens.map(function(t, i) {
-            let roll = inlinerolls[i];
-            let d20 = 1, total = 1 + t.initBonus;
-            if (roll) {
-              total = roll.results.total;
-              // First roll group is the d20
-              let firstGroup = roll.results.rolls && roll.results.rolls[0];
-              if (firstGroup && firstGroup.type === "R" && firstGroup.results && firstGroup.results[0]) {
-                d20 = firstGroup.results[0].v;
-              } else {
-                d20 = total - t.initBonus;
-              }
-            }
-            return { tokenId: t.tokenId, name: t.name, d20: d20, initBonus: t.initBonus, total: total };
-          });
-
-          // Announce public entries via gothic HTML card (all rolled tokens, not just charId).
-          if (rollPublic) {
-            let publicEntries = rollResults.slice();
-            if (publicEntries.length > 0) {
-              publicEntries.sort(function(a, b) { return b.total - a.total; });
-              let rows = publicEntries.map(function(e, idx) {
-                let icon = idx === 0 ? "👑" : "🩸";
-                let sign = e.initBonus >= 0 ? "+" : "";
-                let displayName = esc(e.name || "");
-                let detail = "<span style='color:#6b4040;font-size:0.82em;'> d20(" + e.d20 + ")" + sign + e.initBonus + "</span>";
-                return "<tr>"
-                  + "<td style='padding:3px 8px;color:#d4a0a0;font-family:Palatino Linotype,Palatino,serif;'>" + icon + " " + displayName + "</td>"
-                  + "<td style='padding:3px 8px;color:#ff5555;font-weight:bold;text-align:right;font-family:Palatino Linotype,Palatino,serif;'>" + e.total + detail + "</td>"
-                  + "</tr>";
-              }).join("");
-              let html = "<div style='background:#080204;border:1px solid #5a0000;padding:6px 10px;'>"
-                + "<div style='color:#660000;text-align:center;letter-spacing:3px;font-size:0.85em;'>▾ ▼ ▾ ▼ ▾ ▼ ▾</div>"
-                + "<div style='color:#cc4444;text-align:center;font-size:1.05em;margin:4px 0;font-family:Palatino Linotype,Palatino,serif;'>🪶 𝔗𝔥𝔢 𝔇𝔢𝔞𝔡'𝔰 𝔇𝔯𝔞𝔴 🪶</div>"
-                + "<table style='width:100%;border-collapse:collapse;margin:4px 0;'>" + rows + "</table>"
-                + "<div style='color:#4a0000;text-align:center;font-size:0.85em;margin-top:4px;'>— ✦ —</div>"
-                + "</div>";
-              sendChat("Initiative", "/direct " + html);
-            }
-          }
-
-          writeResult(rollNonce, rollResults.concat(tokenData.filter(function(t) { return t.error; })));
-        }, { noarchive: true });
-        break;
-      }
-
-      case "advanceTurn": {
-        let order = Campaign().get("turnorder");
-        if (!order) { writeResult(nonce, { ok: false, note: "Turn order is empty" }); break; }
-        let entries = JSON.parse(order);
-        if (entries.length === 0) { writeResult(nonce, { ok: false, note: "Turn order is empty" }); break; }
-        // Rotate: move first entry to end
-        entries.push(entries.shift());
-        Campaign().set("turnorder", JSON.stringify(entries));
-        let current = entries[0];
-        let currentToken = current.id ? getObj("graphic", current.id) : null;
-        writeResult(nonce, {
-          ok: true,
-          current: {
-            id: current.id,
-            pr: current.pr,
-            custom: current.custom,
-            name: currentToken ? currentToken.get("name") : (current.custom || "?"),
-          },
-        });
-        break;
-      }
-
-      case "getTokenById": {
-        // Single implementation lives in runBatchOp (rich token shape).
-        writeResult(nonce, runBatchOp("getTokenById", args));
-        break;
-      }
-
-      case "setTokenProps": {
-        // Single implementation lives in runBatchOp.
-        writeResult(nonce, runBatchOp("setTokenProps", args));
-        break;
-      }
-
-      case "getRecentChat": {
-        let n = Math.min(args.limit || 50, CHAT_BUFFER.length);
-        writeResult(nonce, CHAT_BUFFER.slice(-n));
-        break;
-      }
-
-      case "getDmInbox": {
-        let inbox = B().dmInbox;
-        let inboxEntries = args.type
-          ? inbox.filter(function(e) { return e.type === args.type; })
-          : inbox.slice();
-        writeResult(nonce, inboxEntries);
-        break;
-      }
-
-      case "clearDmInbox": {
-        let bs = B();
-        if (args.playerName) {
-          bs.dmInbox = bs.dmInbox.filter(function(e) { return e.who !== args.playerName; });
-        } else {
-          bs.dmInbox = [];
-        }
-        writeResult(nonce, { ok: true });
-        break;
-      }
-
-      case "setMobPlan": {
-        if (!args.tokenId) throw new Error("setMobPlan requires tokenId");
-        let plans = B().mobPlans;
-        if (args.html) {
-          // Store structured plan alongside HTML so callers (gem HUD, etc.) can read
-          // the plaintext without parsing the Roll20 template card.
-          plans[args.tokenId] = { html: args.html, plan: args.plan || null };
-        } else {
-          delete plans[args.tokenId];
-        }
-        writeResult(nonce, { ok: true });
-        break;
-      }
-
-      case "getMobPlans": {
-        // Read all stored mob plans. Plans persist until overwritten by a fresh
-        // plan_all_tactics run (they are NOT deleted when the token's turn fires).
-        writeResult(nonce, B().mobPlans || {});
-        break;
-      }
-
-      case "clearMobPlans": {
-        B().mobPlans = {};
-        writeResult(nonce, { ok: true });
-        break;
-      }
-
-      case "whisperPlayer": {
-        if (!args.playerName || !args.message) throw new Error("whisperPlayer requires playerName and message");
-        // Player-facing whisper: must be VISIBLE to the recipient, so (1) archive it (noarchive
-        // false) — a noarchive whisper flashes once and is gone, and a player not watching that
-        // instant never sees it; and (2) speak as a player-visible identity, NOT "GM-AI-Bridge",
-        // whose output the campaign's bridge-suppression CSS hides. The AIBRIDGE_RESULT to the GM
-        // (writeResult below) stays hidden as before.
-        var whisperSpeaker = args.speakAs || "The DM";
-        sendChat(whisperSpeaker, "/w " + args.playerName + " " + args.message, null, { noarchive: false });
-        writeResult(nonce, { ok: true });
-        break;
-      }
-
-      case "findTokensInRange": {
-        let centerToken = getObj("graphic", args.centerTokenId);
-        if (!centerToken) throw new Error("Center token not found: " + args.centerTokenId);
-        let pageId = args.pageId || centerToken.get("_pageid");
-        let page = getObj("page", pageId);
-        if (!page) throw new Error("Page not found: " + pageId);
-        let scaleNumber = page.get("scale_number") || 5;
-        let pixelsPerFoot = 70 / scaleNumber;
-        let cx = centerToken.get("left");
-        let cy = centerToken.get("top");
-        let radiusFeet = args.radiusFeet || 15;
-        let radiusPx = radiusFeet * pixelsPerFoot;
-        let allTokens = findObjs({ _type: "graphic", _pageid: pageId });
-        let rangeResults = [];
-        allTokens.forEach(function(t) {
-          if (t.id === args.centerTokenId) return;
-          if (args.layerFilter && t.get("layer") !== args.layerFilter) return;
-          let dx = t.get("left") - cx;
-          let dy = t.get("top") - cy;
-          let distPx = Math.sqrt(dx * dx + dy * dy);
-          let distFeet = distPx / pixelsPerFoot;
-          if (distFeet <= radiusFeet) {
-            rangeResults.push({
-              id: t.id,
-              name: t.get("name"),
-              layer: t.get("layer"),
-              distanceFeet: Math.round(distFeet * 10) / 10,
-              bar1_value: t.get("bar1_value"),
-              bar1_max: t.get("bar1_max"),
-              controlledby: t.get("controlledby") || "",
-            });
-          }
-        });
-        rangeResults.sort(function(a, b) { return a.distanceFeet - b.distanceFeet; });
-        writeResult(nonce, rangeResults);
-        break;
-      }
-
-      case "setTurnHook": {
-        let bs = B();
-        bs.turnHookEnabled = !!args.enabled;
-        if (args.reset) { bs.round = 0; }
-        writeResult(nonce, { ok: true, enabled: bs.turnHookEnabled, round: bs.round });
-        break;
-      }
-
-      case "getTurnHookState": {
-        let bs = B();
-        writeResult(nonce, { enabled: bs.turnHookEnabled, round: bs.round });
-        break;
-      }
-
-      case "setCharacterAttributes": {
-        // Write attributes to a Roll20 character sheet (charId = the `represents` field from the token).
-        // args.attributes values can be plain scalars (sets current only) or { current, max } objects.
-        // NOTE: findObjs uses _characterid (underscore), but createObj requires characterid (no underscore).
-        let charId = args.charId;
-        let attributes = args.attributes || {};
-        let updated = [], created = [], failed = [];
-        Object.keys(attributes).forEach(function(attrName) {
-          let val = attributes[attrName];
-          let isObj = typeof val === "object" && val !== null;
-          let currentVal = isObj ? val.current : val;
-          let maxVal = isObj ? val.max : undefined;
-          let existing = findObjs({ _type: "attribute", _characterid: charId, name: attrName });
-          if (existing.length > 0) {
-            let updates = {};
-            if (currentVal !== undefined) updates.current = currentVal;
-            if (maxVal !== undefined) updates.max = maxVal;
-            existing[0].set(updates);
-            updated.push(attrName);
-          } else {
-            let createArgs = { characterid: charId, name: attrName };
-            if (currentVal !== undefined) createArgs.current = currentVal;
-            if (maxVal !== undefined) createArgs.max = maxVal;
-            let obj = createObj("attribute", createArgs);
-            if (obj) { created.push(attrName); } else { failed.push(attrName); }
-          }
-        });
-        writeResult(nonce, { updated: updated, created: created, failed: failed });
-        break;
-      }
-
-      case "getCharacterAttributes": {
-        // Read attributes from a Roll20 character sheet. Pass names[] to filter.
-        let charId = args.charId;
-        let nameFilter = args.names;
-        let attrs = findObjs({ _type: "attribute", _characterid: charId });
-        let result = {};
-        attrs.forEach(function(a) {
-          let attrName = a.get("name");
-          if (!nameFilter || nameFilter.indexOf(attrName) !== -1) {
-            let cur = a.get("current"), mx = a.get("max");
-            // Only include max when it carries a real value — most attrs have max: ""
-            result[attrName] = (mx !== null && mx !== undefined && mx !== "") ? { current: cur, max: mx } : cur;
-          }
-        });
-        writeResult(nonce, result);
-        break;
-      }
-
-      case "getRepeatingSection": {
-        // Returns all rows of a repeating section from a character sheet.
-        // args.charId, args.section (e.g. "npcaction")
-        // Result: { [rowId]: { [fieldName]: value } }  (macro-syntax values skipped)
-        if (!args.charId || !args.section) throw new Error("getRepeatingSection requires charId and section");
-        let repAttrs = findObjs({ _type: "attribute", _characterid: args.charId });
-        let prefix = "repeating_" + args.section + "_";
-        let rows = {};
-        repAttrs.forEach(function(a) {
-          let name = a.get("name");
-          if (name.indexOf(prefix) !== 0) return;
-          let rest = name.slice(prefix.length);
-          let sep = rest.indexOf("_");
-          if (sep === -1) return;
-          let rowId = rest.slice(0, sep);
-          let field = rest.slice(sep + 1);
-          let val = String(a.get("current") || "");
-          // Skip Roll20 macro syntax — sendChat would try to resolve @{...} and error
-          if (val.indexOf("@{") !== -1) return;
-          if (!rows[rowId]) rows[rowId] = {};
-          rows[rowId][field] = val;
-        });
-        // Cap very long sections (a caster's full spell list) — keep context bounded.
-        let maxRows = args.maxRows || 60;
-        let rowIds = Object.keys(rows);
-        if (rowIds.length > maxRows) {
-          let capped = {};
-          rowIds.slice(0, maxRows).forEach(function(id) { capped[id] = rows[id]; });
-          capped.__truncated = rowIds.length;
-          writeResult(nonce, capped);
-        } else {
-          writeResult(nonce, rows);
-        }
-        break;
-      }
-
-      case "syncConditionsToToken": {
-        // Set all status markers on a token and store active_conditions on the character.
-        // args.tokenId, args.charId (optional), args.conditions: string[]
-        let token = getObj("graphic", args.tokenId);
-        if (!token) throw new Error("Token not found: " + args.tokenId);
-        let activeSet = new Set((args.conditions || []).map(function(c) { return c.toLowerCase(); }));
-        let markerSet = new Set((token.get("statusmarkers") || "").split(",").filter(Boolean));
-        // Build set of all known marker strings in every format (Name::id, Name, name)
-        // so stale plain-name versions left from prior attempts get cleaned up.
-        let allKnown = new Set();
-        Object.keys(CONDITION_MARKERS).forEach(function(condition) {
-          let tag = CONDITION_MARKERS[condition];
-          allKnown.add(tag);
-          let displayName = tag.split("::")[0];
-          allKnown.add(displayName);
-          allKnown.add(displayName.toLowerCase());
-        });
-        allKnown.forEach(function(m) { markerSet.delete(m); });
-        // Re-add only active conditions with correct Name::id tags
-        activeSet.forEach(function(condition) {
-          let marker = CONDITION_MARKERS[condition];
-          if (marker) markerSet.add(marker);
-        });
-        token.set("statusmarkers", Array.from(markerSet).join(","));
-        if (args.charId) setConditionAttr(args.charId, activeSet);
-        writeResult(nonce, { ok: true, conditions: Array.from(activeSet), markers: Array.from(markerSet) });
-        break;
-      }
-
-      case "toggleCondition": {
-        // Toggle a single condition on a token sticker and character attribute.
-        // args.tokenId, args.charId (optional), args.condition: string, args.active: boolean
-        let token = getObj("graphic", args.tokenId);
-        if (!token) throw new Error("Token not found: " + args.tokenId);
-        let condition = (args.condition || "").toLowerCase();
-        let res = resolveMarkerForState(condition);
-        let marker = res.tag;
-        let markerSet = new Set((token.get("statusmarkers") || "").split(",").filter(Boolean));
-        if (args.active) markerSet.add(marker); else markerSet.delete(marker);
-        token.set("statusmarkers", Array.from(markerSet).join(","));
-        // Tier 1a (true conditions) tracks on the character's active_conditions attr.
-        if (res.tier === "condition" && args.charId) {
-          let existing = findObjs({ _type: "attribute", _characterid: args.charId, name: "active_conditions" });
-          let condList = existing.length > 0 ? (existing[0].get("current") || "").split(",").filter(Boolean) : [];
-          let condSet = new Set(condList);
-          if (args.active) condSet.add(condition); else condSet.delete(condition);
-          setConditionAttr(args.charId, condSet);
-        }
-        // Tier 2 (ad-hoc) tracks which tokens hold the named state in campaign state.
-        if (res.tier === "custom") trackCustomState(res.key, marker, args.tokenId, !!args.active);
-        writeResult(nonce, { ok: true, condition: condition, active: !!args.active, marker: marker, tier: res.tier });
-        break;
-      }
-
-      case "getTokenMarkers": {
-        let raw = Campaign().get("token_markers");
-        let markers = typeof raw === "string" ? JSON.parse(raw) : (raw || []);
-        writeResult(nonce, markers.map(function(m) {
-          return { id: m.id, name: m.name, tag: m.tag };
-        }));
-        break;
-      }
-
-      case "getCustomStates": {
-        // Tier-2 ad-hoc states the DM is tracking: name -> icon + which tokens hold it.
-        let cs = B().customStates || {};
-        let out = Object.keys(cs).map(function (name) {
-          let entry = cs[name] || {};
-          let holders = (entry.tokens || []).map(function (id) {
-            let g = getObj("graphic", id);
-            return { id: id, name: g ? (g.get("name") || "") : "(missing)" };
-          });
-          return { state: name, tag: entry.tag, tokens: holders };
-        });
-        writeResult(nonce, out);
-        break;
-      }
-
-      case "rollFormulas": {
-        // Roll each formula for real but WITH a callback, so the raw Roll20 roll stays hidden — we only
-        // want the numbers. Then we post our OWN parchment card showing the real total + dice in ink.
-        // This avoids the uncolorable purple Roll20 inline-roll chip entirely, so the card looks fully
-        // "written on parchment". silent → the card is whispered to the GM.
-        let rollNonce = nonce;
-        let items = args.items || [];
-        if (!items.length) { writeResult(rollNonce, []); break; }
-        let defaultSpeaker = args.speakAs || "The Bones";
-        let silent = args.silent === true;
-        let rollResults = new Array(items.length);
-        let rollRemaining = items.length;
-        let rollDone = false;
-        function finishRolls() {
-          if (rollDone) return;
-          rollDone = true;
-          writeResult(rollNonce, rollResults);
-        }
-        items.forEach(function(item, idx) {
-          sendChat(defaultSpeaker, "/roll " + item.formula, function(ops) {
-            var total = 0, dice = [];
-            try {
-              var pr = JSON.parse(ops[0].content);
-              total = pr.total;
-              (pr.rolls || []).forEach(function(r) { if (r.type === "R") (r.results || []).forEach(function(d) { dice.push(d.v); }); });
-            } catch (e) {}
-            rollResults[idx] = { label: item.label || "", formula: item.formula, total: total, dice: dice };
-
-            // nat-20 / nat-1 ink color for single d20 rolls
-            var inkTotal = "#2d1705";
-            if (dice.length === 1 && /d20/i.test(item.formula)) {
-              if (dice[0] === 20) inkTotal = "#0f5510";
-              else if (dice[0] === 1) inkTotal = "#7a0d0d";
-            }
-            var bd = dice.length
-              ? "<div style=\"color:#553913;font-size:0.72em;letter-spacing:0.06em;margin-top:4px;\">⚄ " + dice.join("&nbsp;·&nbsp;") + "</div>"
-              : "";
-            // Aged parchment: a SOLID opaque base color (so darkmode never shows through even if the
-            // sanitizer drops the gradient layers) with subtle mottling painted on via background-image.
-            var card = "<div style=\"background-color:#f3e6c4;"
-              + "background-image:radial-gradient(ellipse at 20% 25%,rgba(150,112,62,0.20),transparent 55%),"
-              + "radial-gradient(ellipse at 82% 78%,rgba(120,88,45,0.18),transparent 55%);"
-              + "border:1px solid #8a6a38;border-radius:5px;padding:9px 20px 11px;min-width:118px;text-align:center;"
-              + "font-family:'Palatino Linotype',Palatino,'Book Antiqua',serif;display:inline-block;"
-              + "box-shadow:inset 0 0 18px rgba(110,80,35,0.22),0 1px 3px rgba(0,0,0,0.45);\">"
-              + "<div style=\"color:#3d2407;font-size:0.82em;letter-spacing:0.1em;font-variant:small-caps;font-weight:bold;font-style:italic;margin:0 0 2px;\">🎲 " + esc(item.formula) + "</div>"
-              + "<div style=\"color:" + inkTotal + ";font-weight:bold;font-size:2em;line-height:1.05;\">" + total + "</div>"
-              + bd
-              + "</div>";
-            sendChat(item.label || defaultSpeaker, (silent ? "/w gm " : "") + card, null, { noarchive: false });
-
-            rollRemaining--;
-            if (rollRemaining === 0) finishRolls();
-          });
-        });
-        // Safety: if a callback never fires (bad formula, etc.), don't hang the relay — time out.
-        setTimeout(function() {
-          if (rollDone) return;
-          for (var i = 0; i < items.length; i++) {
-            if (!rollResults[i]) rollResults[i] = { label: items[i].label || "", formula: items[i].formula, total: 0, dice: [], error: "no roll result (timeout)" };
-          }
-          finishRolls();
-        }, 4000);
-        break;
-      }
-
-      case "sendNarration": {
-        // Send styled narrative text to Roll20 chat, visible to all players.
-        // style: "narration" (default) | "combat" | "dramatic" | "ambient"
-        let narText = args.text || "";
-        let narStyle = args.style || "narration";
-        let narSpeaker = args.speakAs || "The Dark Powers";
-
-        let styles = {
-          narration: "font-family:Georgia,serif;font-style:italic;color:#e8c97e;border:1px solid #7a3030;border-left-width:3px;padding:7px 12px;background:#1c0808;line-height:1.65;border-radius:2px;",
-          combat:    "font-family:Georgia,serif;font-weight:bold;color:#f08080;border:1px solid #8b0000;border-left-width:3px;padding:7px 12px;background:#200a0a;line-height:1.65;border-radius:2px;",
-          dramatic:  "font-family:Georgia,serif;font-weight:bold;font-style:italic;color:#e8c040;text-align:center;border:1px solid #8b6914;border-top-width:2px;border-bottom-width:2px;padding:10px 14px;background:#1a1100;letter-spacing:0.5px;line-height:1.7;border-radius:2px;",
-          ambient:   "font-family:Georgia,serif;font-style:italic;color:#a8c890;border:1px solid #4a6a3a;border-left-width:3px;padding:7px 12px;background:#080f08;line-height:1.65;border-radius:2px;",
-        };
-        let styleStr = styles[narStyle] || styles.narration;
-        let html = "<div style='" + styleStr + "'>" + narText + "</div>";
-        sendChat(narSpeaker, html, null, {});
-        writeResult(nonce, { ok: true });
-        break;
-      }
-
-      case "batchExec": {
-        // Execute N sync operations in a single relay round-trip.
-        // Each op: { id?, action, args? }
-        // Returns: [{ id, ok, data?, error? }]
-        let batchOps = args.ops || [];
-        let batchResults = [];
-        batchOps.forEach(function(op) {
-          let opId = (op.id != null) ? op.id : batchResults.length;
-          try {
-            let data = runBatchOp(op.action, op.args || {});
-            batchResults.push({ id: opId, ok: true, data: data });
-          } catch(e) {
-            batchResults.push({ id: opId, ok: false, error: String(e) });
-          }
-        });
-        writeResult(nonce, batchResults);
-        break;
-      }
-
-      case "ping": {
-        writeResult(nonce, { pong: true, version: "2.1.0" });
-        break;
-      }
-
-      case "sendPing": {
-        // args: left, top, pageId, playerId?, moveAll?, visibleTo?
-        sendPing(
-          args.left, args.top, args.pageId,
-          args.playerId || null,
-          args.moveAll  || false,
-          args.visibleTo || null
-        );
-        writeResult(nonce, { ok: true });
-        break;
-      }
-
-      case "spawnFx": {
-        // args: x, y, type (e.g. "nova-fire"), pageId
-        spawnFx(args.x, args.y, args.type, args.pageId);
-        writeResult(nonce, { ok: true });
-        break;
-      }
-
-      case "spawnFxBetweenPoints": {
-        // args: x1, y1, x2, y2, type, pageId
-        spawnFxBetweenPoints(
-          { x: args.x1, y: args.y1 },
-          { x: args.x2, y: args.y2 },
-          args.type, args.pageId
-        );
-        writeResult(nonce, { ok: true });
-        break;
-      }
-
-      case "toFront": {
-        let frontObj = getObj(args.objectType || "graphic", args.objectId);
-        if (!frontObj) throw new Error("Object not found: " + args.objectId);
-        toFront(frontObj);
-        writeResult(nonce, { ok: true });
-        break;
-      }
-
-      case "toBack": {
-        let backObj = getObj(args.objectType || "graphic", args.objectId);
-        if (!backObj) throw new Error("Object not found: " + args.objectId);
-        toBack(backObj);
-        writeResult(nonce, { ok: true });
-        break;
-      }
-
-      case "createZone": {
-        // Draw a named zone (circle or rect) on the "objects" layer.
-        // Metadata stored in gmnotes so it survives relay restarts.
-        // centerX/centerY in page pixels; radiusFeet converted via page scale.
-        let zonePage = getObj("page", args.pageId);
-        if (!zonePage) throw new Error("Page not found: " + args.pageId);
-        let zoneScale = args.scaleNumber || zonePage.get("scale_number") || 5;
-        let zoneRadiusPx = (args.radiusFeet || 15) * (70 / zoneScale);
-        let zoneCx = args.centerX || 0;
-        let zoneCy = args.centerY || 0;
-        let zoneColor = args.color || "#aa00ff";
-        let zoneName = "ZONE: " + (args.name || "Zone");
-
-        let zonePath, zoneWidth, zoneHeight;
-        if ((args.shape || "circle") === "rect") {
-          // Rectangle: width/height passed directly in feet, converted to pixels
-          let halfW = (args.widthFeet || args.radiusFeet || 15) * (70 / zoneScale) / 2;
-          let halfH = (args.heightFeet || args.radiusFeet || 15) * (70 / zoneScale) / 2;
-          zoneWidth = halfW * 2;
-          zoneHeight = halfH * 2;
-          zonePath = JSON.stringify([["M",0,0],["L",zoneWidth,0],["L",zoneWidth,zoneHeight],["L",0,zoneHeight],["Z"]]);
-        } else {
-          zonePath = makeCirclePath(zoneRadiusPx);
-          zoneWidth = zoneRadiusPx * 2;
-          zoneHeight = zoneRadiusPx * 2;
-        }
-
-        let zoneObj = createObj("path", {
-          pageid: args.pageId,
-          layer: "map",
-          path: zonePath,
-          left: zoneCx,
-          top: zoneCy,
-          width: zoneWidth,
-          height: zoneHeight,
-          rotation: 0,
-          stroke: zoneColor,
-          stroke_width: 3,
-          fill: zoneColor,
-          fill_opacity: 0.25,
-          scaleX: 1,
-          scaleY: 1,
-          controlledby: "",
-        });
-        if (!zoneObj) throw new Error("Failed to create zone path object");
-        zoneObj.set("name", zoneName);
-        zoneObj.set("gmnotes", JSON.stringify({
-          zone: true,
-          name: args.name || "Zone",
-          shape: args.shape || "circle",
-          centerX: zoneCx,
-          centerY: zoneCy,
-          radiusFeet: args.radiusFeet || 15,
-          color: zoneColor,
-        }));
-        writeResult(nonce, { id: zoneObj.id, name: zoneName, radiusFeet: args.radiusFeet || 15, centerX: zoneCx, centerY: zoneCy });
-        break;
-      }
-
-      case "clearZone": {
-        if (args.zoneId) {
-          let zo = getObj("path", args.zoneId);
-          if (zo) zo.remove();
-          writeResult(nonce, { removed: zo ? 1 : 0 });
-        } else if (args.name) {
-          let prefix = "ZONE: " + args.name;
-          let found = findObjs({ _type: "path", _pageid: args.pageId }).filter(function(p) {
-            return p.get("name") === prefix;
-          });
-          found.forEach(function(p) { p.remove(); });
-          writeResult(nonce, { removed: found.length });
-        } else {
-          throw new Error("clearZone requires zoneId or name");
-        }
-        break;
-      }
-
-      case "removeObject": {
-        // Remove any Roll20 object by id. Tries graphic, then path.
-        let roObj = getObj(args.objectType || "graphic", args.objectId);
-        if (!roObj && (!args.objectType || args.objectType === "graphic")) roObj = getObj("path", args.objectId);
-        if (!roObj) throw new Error("Object not found: " + args.objectId);
-        roObj.remove();
-        writeResult(nonce, { ok: true, id: args.objectId });
-        break;
-      }
-
-      case "listZones": {
-        let allPaths = findObjs({ _type: "path", _pageid: args.pageId });
-        let zones = allPaths.filter(function(p) {
-          return (p.get("name") || "").startsWith("ZONE: ");
-        }).map(function(p) {
-          let meta = {};
-          try { meta = JSON.parse(p.get("gmnotes") || "{}"); } catch(e) {}
-          return {
-            id: p.id,
-            name: p.get("name"),
-            left: p.get("left"),
-            top: p.get("top"),
-            meta: meta,
-          };
-        });
-        writeResult(nonce, zones);
-        break;
-      }
-
-      case "findTokensInZone": {
-        // Load zone metadata from gmnotes, then check all tokens for containment.
-        let zoneGraphic = getObj("path", args.zoneId);
-        if (!zoneGraphic) throw new Error("Zone not found: " + args.zoneId);
-        let zoneMeta = {};
-        try { zoneMeta = JSON.parse(zoneGraphic.get("gmnotes") || "{}"); } catch(e) {}
-        let zCx = zoneMeta.centerX != null ? zoneMeta.centerX : zoneGraphic.get("left");
-        let zCy = zoneMeta.centerY != null ? zoneMeta.centerY : zoneGraphic.get("top");
-        let zRadFeet = zoneMeta.radiusFeet || 15;
-        let zPage = getObj("page", args.pageId || zoneGraphic.get("_pageid"));
-        if (!zPage) throw new Error("Page not found");
-        let zScale = zPage.get("scale_number") || 5;
-        let zPxPerFoot = 70 / zScale;
-        let zRadPx = zRadFeet * zPxPerFoot;
-        let zTokens = findObjs({ _type: "graphic", _pageid: zPage.id });
-        let inZone = [];
-        zTokens.forEach(function(t) {
-          let dx = t.get("left") - zCx;
-          let dy = t.get("top") - zCy;
-          let distPx = Math.sqrt(dx * dx + dy * dy);
-          if (distPx <= zRadPx) {
-            inZone.push({
-              id: t.id,
-              name: t.get("name"),
-              layer: t.get("layer"),
-              distanceFeet: Math.round((distPx / zPxPerFoot) * 10) / 10,
-              bar1_value: t.get("bar1_value"),
-              bar1_max: t.get("bar1_max"),
-            });
-          }
-        });
-        inZone.sort(function(a, b) { return a.distanceFeet - b.distanceFeet; });
-        writeResult(nonce, inZone);
-        break;
-      }
-
-      case "getJournalFolder": {
-        let rawJf = Campaign().get("_journalfolder");
-        writeResult(nonce, rawJf ? JSON.parse(rawJf) : []);
-        break;
-      }
-
-      case "setJournalFolder": {
-        // Two modes:
-        //  - args.json = a full array -> replace the whole _journalfolder tree.
-        //  - args.json = { __append__: [folder, ...] } -> read the LIVE tree and push
-        //    those folders/ids onto the end (safe merge; never clobbers existing).
-        if (args.json && !Array.isArray(args.json) && args.json.__append__) {
-          let rawJf = Campaign().get("_journalfolder");
-          let tree = rawJf ? JSON.parse(rawJf) : [];
-          args.json.__append__.forEach(function(f) { tree.push(f); });
-          Campaign().set("_journalfolder", JSON.stringify(tree));
-          writeResult(nonce, { ok: true, appended: args.json.__append__.length, total: tree.length });
-        } else {
-          Campaign().set("_journalfolder", JSON.stringify(args.json || []));
-          writeResult(nonce, { ok: true });
-        }
-        break;
-      }
-
-      case "createHandout": {
-        // Single implementation lives in runBatchOp.
-        // Full-page journal handout. notes = player-visible HTML, gmnotes = GM-only.
-        // inplayerjournals "all" shares with players. avatar = Roll20 CDN url.
-        writeResult(nonce, runBatchOp("createHandout", args));
-        break;
-      }
-
-      case "createCharacter": {
-        // Single implementation lives in runBatchOp.
-        // Bestiary stub: a character entry (draggable token). attributes = [{name,current,max}].
-        writeResult(nonce, runBatchOp("createCharacter", args));
-        break;
-      }
-
-      case "editCharacter": {
-        // Edit an existing Roll20 character object's top-level fields.
-        // Supports: name, bio, avatar, controlledby, archived, inplayerjournals.
-        // GM-gated (enforced in the outer handler). stripUndef prevents sandbox crash.
-        let ch = getObj("character", args.charId);
-        if (!ch) throw new Error("Character not found: " + args.charId);
-        let props = stripUndef({
-          name:             args.name,
-          bio:              args.bio,
-          avatar:           args.avatar,
-          controlledby:     args.controlledby,
-          archived:         args.archived,
-          inplayerjournals: args.inplayerjournals,
-        });
-        let keys = Object.keys(props);
-        if (keys.length === 0) throw new Error("editCharacter: no fields to edit — pass at least one of: name, bio, avatar, controlledby, archived, inplayerjournals");
-        ch.set(props);
-        writeResult(nonce, { ok: true, updated: keys });
-        break;
-      }
-
-      default:
-        throw new Error(`Unknown action: ${action}`);
-    }
+    var __handler = ACTIONS[action];
+    if (!__handler) throw new Error("Unknown action: " + action);
+    __handler(args, msg, nonce, senderPlayerId);
   } catch (err) {
     writeResult(nonce, null, err.message || String(err));
   }
