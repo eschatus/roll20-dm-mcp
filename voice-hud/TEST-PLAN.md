@@ -101,6 +101,22 @@ the **Roll20 public chat** (player-facing).
 
 ## 3. Phase workflow (scaffolding is now built — run to verify)
 
+> **Most of this section is now automated.** The phase-machine *logic* — fuzzy
+> entry/exit detection, the IDLE→SCENE_SET→INIT_PREP→COMBAT_LOOP→CLEANUP→IDLE
+> transitions, the gated macro backbones (NPC-only initiative, turn-hook arming,
+> cleanup sequence), the idle read-only scoping, and the write-confirm gate — is
+> covered by deterministic offline tests in
+> [`test/phase-machine.test.ts`](test/phase-machine.test.ts). Run them with
+> `npm test` in `voice-hud/` (no gem, no Roll20, no model needed). The tests inject
+> transcripts straight into `DmAgent.handle()` and assert on a recording fake MCP +
+> a scripted provider — i.e. they stand in for the human at the chat line.
+>
+> The boxes below remain as the **manual smoke pass**: what the automated suite
+> *cannot* exercise is the path **above** the chat line — mic capture, Whisper
+> transcription accuracy, the Electron overlay/phase badge render, and the global
+> PTT/confirm hotkeys. Walk P1–P6 at the gem once to confirm that wiring; trust the
+> automated suite for the logic on every change after.
+
 **NOTE: These cases require the Electron gem to be running** — launch via
 `voice-hud\launch-gem.vbs` (or `launch-gem.cmd`) and complete the section-0
 preconditions first. The gem must be connected to a live Roll20 campaign with
@@ -182,7 +198,18 @@ tokens on the board.
 
 ---
 
-**Human verification required**: All P1–P6 cases need the live Electron gem + Roll20
-browser open. The Electron gem cannot be launched headlessly by automated tests — a
-human must sit at the table and walk through each case. Check off each box above as you
-verify it manually.
+**What still needs a human**: only the parts the automated suite can't reach —
+mic capture, Whisper transcription accuracy on real speech, the Electron overlay +
+phase-badge render, and the global PTT/confirm hotkeys. The phase **logic** (entry/
+exit detection, transitions, gated macro backbones, idle scoping, confirm gate) is
+covered offline by [`test/phase-machine.test.ts`](test/phase-machine.test.ts) — run
+`npm test` and trust it on every code change. Do the manual gem walk-through once to
+verify the audio/overlay wiring, then re-run it only when that I/O layer changes.
+
+Per-case automation status:
+- **P1, P2, P3, P5** (transitions + macro backbones) — automated; gem walk-through
+  confirms the badge/audio wiring only.
+- **P4** (idle read-only scoping) — automated as a phase-allowlist assertion
+  (enforcement is schema-level: HP tools are never offered in IDLE).
+- **P6** (phase observability) — automated via `onPhaseChange`; the gem walk-through
+  confirms the badge actually renders.

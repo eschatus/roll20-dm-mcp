@@ -1,0 +1,27 @@
+name: LLM eval (voice-hud narration)
+
+# Manual only — NOT scheduled. This makes real Anthropic calls (costs tokens,
+# non-deterministic), so it runs on demand: click "Run workflow" after changing the
+# HUD prompts (persona.ts), the phase logic (agent.ts), or on a model migration.
+# Requires the ANTHROPIC_API_KEY repo secret. The hermetic checkers it relies on are
+# gated on every PR via the voice-hud-tests job in ci.yml.
+on:
+  workflow_dispatch:
+
+jobs:
+  narration-eval:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: voice-hud
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - name: Narration live eval (real Haiku)
+        env:
+          ROLL20_LLM_EVAL: "1"
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: npx vitest run test/narration-live-eval.test.ts
