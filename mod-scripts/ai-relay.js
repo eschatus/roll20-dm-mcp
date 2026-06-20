@@ -76,24 +76,75 @@ const DM_INBOX_MAX = 50;
 
 // Project a graphic token to a field profile. imgsrc is in NONE — no caller reads it
 // (art goes through createGraphic-type actions, never read-back).
+// Drop null/undefined/"" fields so Claude never has to read noisy empty values.
+function compact(obj) {
+  var out = {};
+  for (var k in obj) {
+    if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
+    var v = obj[k];
+    if (v === null || v === undefined || v === "") continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 function tokenSummary(t, profile) {
-  var s = {
+  var s = compact({
     id: t.id,
     name: t.get("name"),
-    represents: t.get("represents") || "",
-    controlledby: t.get("controlledby") || "",
+    represents: t.get("represents"),
+    controlledby: t.get("controlledby"),
     layer: t.get("layer"),
-  };
+  });
   if (profile === "lean") return s;
-  s.bar1_value = t.get("bar1_value");           // HP
-  s.bar1_max = t.get("bar1_max");
-  s.statusmarkers = t.get("statusmarkers");     // conditions
+  var b1v = t.get("bar1_value"), b1m = t.get("bar1_max");
+  if (b1v !== "" && b1v !== null && b1v !== undefined) s.bar1_value = b1v;
+  if (b1m !== "" && b1m !== null && b1m !== undefined) s.bar1_max = b1m;
+  var sm = t.get("statusmarkers");
+  if (sm) s.statusmarkers = sm;
   if (profile === "status") return s;
-  s.left = t.get("left");                        // geometry
-  s.top = t.get("top");
-  s.width = t.get("width");
-  s.height = t.get("height");
+  // "full": add geometry (round positions — Roll20 stores floats)
+  s.left = Math.round(t.get("left") || 0);
+  s.top  = Math.round(t.get("top")  || 0);
+  s.width  = Math.round(t.get("width")  || 70);
+  s.height = Math.round(t.get("height") || 70);
   return s; // "full"
+}
+
+// "rich" extras — only when the caller explicitly needs aura/light/gmnotes/bar2/bar3
+function tokenRich(t) {
+  var s = tokenSummary(t, "full");
+  var pairs = [
+    ["gmnotes",          t.get("gmnotes")],
+    ["bar2_value",       t.get("bar2_value")],
+    ["bar2_max",         t.get("bar2_max")],
+    ["bar3_value",       t.get("bar3_value")],
+    ["bar3_max",         t.get("bar3_max")],
+    ["aura1_radius",     t.get("aura1_radius")],
+    ["aura1_color",      t.get("aura1_color")],
+    ["aura1_square",     t.get("aura1_square")],
+    ["aura2_radius",     t.get("aura2_radius")],
+    ["aura2_color",      t.get("aura2_color")],
+    ["light_radius",     t.get("light_radius")],
+    ["light_dimradius",  t.get("light_dimradius")],
+    ["tint_color",       t.get("tint_color")],
+    ["rotation",         t.get("rotation")],
+  ];
+  var aura1r = t.get("aura1_radius"), aura2r = t.get("aura2_radius");
+  var tint   = t.get("tint_color");
+  var rot    = t.get("rotation");
+  pairs.forEach(function(p) {
+    var v = p[1];
+    if (v === null || v === undefined || v === "" || v === false) return;
+    // Skip aura colors/shape when no aura radius is set
+    if ((p[0] === "aura1_color" || p[0] === "aura1_square") && (!aura1r || aura1r === "")) return;
+    if ((p[0] === "aura2_color" || p[0] === "aura2_square") && (!aura2r || aura2r === "")) return;
+    // Skip transparent tint and zero rotation (defaults, carry no information)
+    if (p[0] === "tint_color" && v === "transparent") return;
+    if (p[0] === "rotation" && v === 0) return;
+    s[p[0]] = v;
+  });
+  return s;
 }
 
 // Strip rolltemplate HTML / URLs down to text. The dice signal is preserved separately in
@@ -604,42 +655,11 @@ function runBatchOp(action, args) {
       return { ok: true, conditions: Array.from(activeSet) };
     }
     case "getTokenById": {
-      // Single source of truth — the rich token shape. The main-switch case
-      // delegates here so there is exactly one implementation.
+      // profile: "lean"|"status"|"full" (default)|"rich" (adds aura/light/gmnotes/bar2/bar3)
       let t = getObj("graphic", args.tokenId);
       if (!t) return null;
-      return {
-        id: t.id,
-        name: t.get("name"),
-        represents: t.get("represents") || "",
-        layer: t.get("layer"),
-        controlledby: t.get("controlledby") || "",
-        left: t.get("left"),
-        top: t.get("top"),
-        width: t.get("width"),
-        height: t.get("height"),
-        rotation: t.get("rotation"),
-        imgsrc: t.get("imgsrc"),
-        statusmarkers: t.get("statusmarkers") || "",
-        bar1_value: t.get("bar1_value"),
-        bar1_max: t.get("bar1_max"),
-        bar2_value: t.get("bar2_value"),
-        bar2_max: t.get("bar2_max"),
-        bar3_value: t.get("bar3_value"),
-        bar3_max: t.get("bar3_max"),
-        aura1_radius: t.get("aura1_radius"),
-        aura1_color: t.get("aura1_color"),
-        aura1_square: t.get("aura1_square"),
-        showplayers_aura1: t.get("showplayers_aura1"),
-        aura2_radius: t.get("aura2_radius"),
-        aura2_color: t.get("aura2_color"),
-        aura2_square: t.get("aura2_square"),
-        showplayers_aura2: t.get("showplayers_aura2"),
-        tint_color: t.get("tint_color"),
-        light_radius: t.get("light_radius"),
-        light_dimradius: t.get("light_dimradius"),
-        gmnotes: t.get("gmnotes") || "",
-      };
+      let p = args.profile || "full";
+      return p === "rich" ? tokenRich(t) : tokenSummary(t, p);
     }
     case "setTurnOrder": {
       Campaign().set("turnorder", JSON.stringify(args.turnorder || []));
@@ -1777,7 +1797,9 @@ on("chat:message", function (msg) {
         attrs.forEach(function(a) {
           let attrName = a.get("name");
           if (!nameFilter || nameFilter.indexOf(attrName) !== -1) {
-            result[attrName] = { current: a.get("current"), max: a.get("max") };
+            let cur = a.get("current"), mx = a.get("max");
+            // Only include max when it carries a real value — most attrs have max: ""
+            result[attrName] = (mx !== null && mx !== undefined && mx !== "") ? { current: cur, max: mx } : cur;
           }
         });
         writeResult(nonce, result);
