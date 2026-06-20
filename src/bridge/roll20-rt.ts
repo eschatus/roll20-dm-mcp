@@ -128,8 +128,22 @@ async function harvestCustomToken(campaignId: string): Promise<HarvestResult> {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
       captured = await pollFor(() => captured, 25_000);
     }
-    // The realtime socket opens just after auth — give it a moment to reveal the namespace.
-    if (!capturedNs) capturedNs = await pollFor(() => capturedNs, 10_000);
+    // The realtime socket / firebase config appear only after the editor JS boots — and that can
+    // be slow on a COLD (archived) campaign, which is why the ws-only capture missed it before
+    // (it raced a 10s window the socket opened after). Poll BOTH the captured ws ns and the page's
+    // own FIREBASE_ROOT global — the global is authoritative and persists, unlike the one-shot ws
+    // event — for a generous window. The onWs handler still feeds capturedNs if it fires first.
+    if (!capturedNs) {
+      const end = Date.now() + 30_000;
+      while (Date.now() < end && !capturedNs) {
+        const dbUrl = await page.evaluate(() => {
+          const w = window as unknown as { FIREBASE_ROOT?: string; databaseURL?: string };
+          return w.FIREBASE_ROOT || w.databaseURL || null;
+        }).catch(() => null);
+        if (dbUrl) { const m = /\/\/([^.]+)\.firebaseio/.exec(String(dbUrl)); if (m) { capturedNs = m[1]; break; } }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
   } finally {
     page.off("request", onReq);
     page.off("websocket", onWs);
