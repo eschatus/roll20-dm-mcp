@@ -2257,6 +2257,27 @@ on("chat:message", function (msg) {
         break;
       }
 
+      case "editCharacter": {
+        // Edit an existing Roll20 character object's top-level fields.
+        // Supports: name, bio, avatar, controlledby, archived, inplayerjournals.
+        // GM-gated (enforced in the outer handler). stripUndef prevents sandbox crash.
+        let ch = getObj("character", args.charId);
+        if (!ch) throw new Error("Character not found: " + args.charId);
+        let props = stripUndef({
+          name:             args.name,
+          bio:              args.bio,
+          avatar:           args.avatar,
+          controlledby:     args.controlledby,
+          archived:         args.archived,
+          inplayerjournals: args.inplayerjournals,
+        });
+        let keys = Object.keys(props);
+        if (keys.length === 0) throw new Error("editCharacter: no fields to edit — pass at least one of: name, bio, avatar, controlledby, archived, inplayerjournals");
+        ch.set(props);
+        writeResult(nonce, { ok: true, updated: keys });
+        break;
+      }
+
       default:
         throw new Error(`Unknown action: ${action}`);
     }

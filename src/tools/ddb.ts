@@ -14,6 +14,7 @@ export function registerDdbTools(server: McpServer): void {
         content: [
           {
             type: "text",
+            // T2.5: drop avatarUrl — never read by any consumer; saves ~120 chars/call.
             text: JSON.stringify({
               id: char.id,
               name: char.name,
@@ -23,7 +24,6 @@ export function registerDdbTools(server: McpServer): void {
               armorClass: char.armorClass,
               passivePerception: char.passivePerception,
               conditions: char.conditions.map((c) => c.id),
-              avatarUrl: char.avatarUrl,
             }),
           },
         ],
@@ -38,11 +38,14 @@ export function registerDdbTools(server: McpServer): void {
     async ({ campaignId }) => {
       const id = campaignId ?? getActiveCampaign().ddbCampaignId;
       const chars = await ddb.getCampaignCharacters(id);
+      // T2.4: project to {id, name} — only fields any consumer actually reads.
+      // DdbCampaignCharacter uses characterName; map to name for a stable API shape.
+      const slim = chars.map((c) => ({ id: c.id, name: c.characterName }));
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(chars),
+            text: JSON.stringify(slim),
           },
         ],
       };
@@ -55,8 +58,9 @@ export function registerDdbTools(server: McpServer): void {
     {},
     async () => {
       const campaigns = await ddb.listCampaigns();
+      // T2.5: compact stringify — pretty-print adds 20-40% whitespace for no benefit.
       return {
-        content: [{ type: "text", text: JSON.stringify(campaigns, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(campaigns) }],
       };
     }
   );
@@ -71,13 +75,13 @@ export function registerDdbTools(server: McpServer): void {
         content: [
           {
             type: "text",
+            // T2.5: drop largeAvatarUrl — never read by any consumer; saves ~120 chars/call.
             text: JSON.stringify({
               id: monster.id,
               name: monster.name,
               averageHitPoints: monster.averageHitPoints,
               armorClass: monster.armorClass,
               challengeRating: monster.challengeRating,
-              largeAvatarUrl: monster.largeAvatarUrl,
             }),
           },
         ],
