@@ -8,6 +8,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { DEFAULT_BASE_VOCAB } from "./baseVocab";
 
 // __dirname = voice-hud/dist at compiled runtime → ../../data = repo-root/data
 const CONTEXT_PATH = path.join(__dirname, "..", "..", "data", "campaign-context.json");
@@ -58,9 +59,17 @@ export function saveCampaignData(data: CampaignData): void {
   writeStore(store);
 }
 
-// Build the Whisper initial_prompt: campaign vocab + roster names + nicknames, deduped.
-export function buildVocabPrompt(data: CampaignData, rosterNames: string[]): string {
+// Build the Whisper initial_prompt: the global base vocab (common D&D terms) +
+// campaign vocab + roster names + nicknames, deduped. `baseVocab` is injected
+// (default: the built-in set) so it stays SEPARATE from the per-campaign data and
+// is testable; main.ts passes loadBaseVocab() so a base-vocab.json override applies.
+export function buildVocabPrompt(
+  data: CampaignData,
+  rosterNames: string[],
+  baseVocab: string[] = DEFAULT_BASE_VOCAB,
+): string {
   const set = new Set<string>();
+  for (const v of baseVocab) if (v.trim()) set.add(v.trim());
   for (const v of data.vocab) if (v.trim()) set.add(v.trim());
   for (const n of rosterNames) if (n.trim()) set.add(n.trim());
   for (const a of data.nicknames) {

@@ -115,7 +115,7 @@ npm run start          # builds + launches Electron
 
 **Agent:** defaults to Anthropic cloud (Claude Haiku). Brain buttons in the Chat tab switch between local Ollama and cloud; selection persists across restarts.
 
-**STT:** faster-whisper `large-v3-turbo` on CUDA. Character names, nicknames, and campaign vocab are injected as `initial_prompt` for every transcription, updated after each agent turn.
+**STT:** faster-whisper `large-v3-turbo` on CUDA. A **global base vocabulary** of common D&D terms (initiative, saving throw, the abilities/skills/conditions/damage types, dice) plus per-campaign character names, nicknames, and vocab are injected as `initial_prompt` for every transcription, updated after each agent turn. The base set lives in `voice-hud/src/baseVocab.ts` (separate from per-campaign vocab) — extend it without touching code via a JSON array at `<DMW_DATA_DIR>/base-vocab.json`.
 
 **Config:** all runtime knobs (PTT key, STT model, MCP URL, provider, etc.) are exposed in the Scrying Ledger Config tab and persisted to `voice-hud/.env`.
 

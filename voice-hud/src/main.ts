@@ -17,6 +17,7 @@ import { McpRoll20 } from "./mcp";
 import { DmAgent } from "./agent";
 import { buildRoster, clearRosterCache } from "./roster";
 import { loadCampaignData, saveCampaignData, buildVocabPrompt, addVocabTerm, CampaignData } from "./campaignData";
+import { loadBaseVocab } from "./baseVocab";
 import { loadSettings, saveSettings, AppSettings } from "./settings";
 import { setLogSink, persist } from "./logger";
 
@@ -48,6 +49,9 @@ let mode: Mode = "ghost";
 let activeSlug = "";
 let campaignData: CampaignData = { slug: "", vocab: [], nicknames: [], notes: "" };
 let rosterNames: string[] = [];
+// Global STT base vocab (common D&D terms), loaded once at startup. Separate from
+// per-campaign vocab; extend via <dataDir>/base-vocab.json. Relaunch to pick up edits.
+const baseVocab = loadBaseVocab();
 let settings: AppSettings = loadSettings();
 
 // A pending write-tool proposal awaiting DM confirmation (tap=confirm, Esc=cancel).
@@ -233,7 +237,7 @@ function wireClipHandler() {
     try {
       if (!stt) throw new Error("STT not ready");
       if (activeSlug) campaignData = loadCampaignData(activeSlug); // pick up add_vocab writes
-      const vocab = buildVocabPrompt(campaignData, rosterNames);
+      const vocab = buildVocabPrompt(campaignData, rosterNames, baseVocab);
       const t0 = Date.now();
       const result = await stt.transcribe(wavPath, vocab);
       const text = result.text.trim();
@@ -266,7 +270,7 @@ function wireClipHandler() {
     try {
       fs.writeFileSync(wavPath, Buffer.from(buf));
       if (!stt) throw new Error("STT not ready");
-      const vocab = buildVocabPrompt(campaignData, rosterNames);
+      const vocab = buildVocabPrompt(campaignData, rosterNames, baseVocab);
       const result = await stt.transcribe(wavPath, vocab);
       return { ok: true, text: result.text };
     } catch (err) {
