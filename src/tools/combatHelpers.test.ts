@@ -1,5 +1,34 @@
 import { describe, it, expect } from "vitest";
-import { indexBatchResults, type BatchResult } from "./combatHelpers.js";
+import { indexBatchResults, coerceStringArray, type BatchResult } from "./combatHelpers.js";
+
+describe("coerceStringArray (model-tolerant array param)", () => {
+  it("passes a real array through unchanged", () => {
+    expect(coerceStringArray(["Bugbear", "Droop"])).toEqual(["Bugbear", "Droop"]);
+  });
+
+  it("parses a JSON-stringified array (the Haiku failure mode)", () => {
+    expect(coerceStringArray('["Bugbear the Heavy-Handed", "Droop", "Iarno"]'))
+      .toEqual(["Bugbear the Heavy-Handed", "Droop", "Iarno"]);
+  });
+
+  it("wraps a bare single name in an array", () => {
+    expect(coerceStringArray("Droop")).toEqual(["Droop"]);
+  });
+
+  it("treats an empty string as an empty array", () => {
+    expect(coerceStringArray("")).toEqual([]);
+    expect(coerceStringArray("   ")).toEqual([]);
+  });
+
+  it("falls back to a single-element array on malformed JSON (not a throw)", () => {
+    expect(coerceStringArray('["unterminated')).toEqual(['["unterminated']);
+  });
+
+  it("leaves a non-string/array value for Zod to reject", () => {
+    expect(coerceStringArray(42)).toBe(42);
+    expect(coerceStringArray(null)).toBe(null);
+  });
+});
 
 describe("indexBatchResults", () => {
   it("indexes results by stringified id", () => {
