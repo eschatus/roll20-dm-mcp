@@ -7,14 +7,15 @@ filenames below; wire the image tags into the README / wiki page once the file e
 
 ## Priority shots
 
-### 1. The Voice HUD gem → `assets/gem-hud.png`  *(you capture — Electron overlay)*
-The scrying-gem overlay is the signature visual and **can't be captured headlessly**. With the
-gem running (`voice-hud\launch-gem.vbs`):
-- Gem with the **chat ledger expanded** showing a recent turn (a receipt + the tool-activity rows).
-- Bonus: the **Inbox tab** with a classified `!dm` item, and the **tactic tray** popped out
-  (clean corners now — fixed in the tactic-tray-radius PR).
+### 1. The Voice HUD gem — ✅ CAPTURED
+The scrying-gem overlay is the signature visual and **can't be captured headlessly**. Four shots
+are committed and wired into the README + the **Voice HUD Gem** wiki page:
+- `assets/gem-in-play.png` — the gem's tactic tray over a live Roll20 fight (hero).
+- `assets/gem-tactics-tray.png` — the expanded tactic tray (current creature + other mobs).
+- `assets/ledger-proper-nouns.png` — Scrying Ledger → Proper Nouns (STT vocab).
+- `assets/ledger-nicknames.png` — Scrying Ledger → Nicknames.
 
-Use Win+Shift+S; crop to the overlay.
+Still nice-to-have: a shot of the **Inbox tab** with a classified `!dm` item (`assets/ledger-inbox.png`).
 
 ### 2. A provisioned lit map → `assets/roll20-map.png`
 A battlemap with dynamic-lighting walls placed (blue `#0044FF`), doors, lit. Capture in Roll20, or

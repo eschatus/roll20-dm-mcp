@@ -6,7 +6,9 @@ AI-assisted D&D 5e session management for Roll20 + D&D Beyond. Three components:
 - **`roll20-dm-maps` MCP server** — map prep pipeline (stdio): upload battlemaps, auto-place dynamic lighting walls via Claude Vision, token creation.
 - **Voice HUD** (`voice-hud/`) — transparent Electron overlay: push-to-talk → Whisper STT → Claude agent → live tabletop. The DM speaks; the gem acts.
 
-> 📸 **Screenshots** (the gem overlay, a lit DL map): see [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md) for what to capture and where it lands.
+![The scrying gem over a live Roll20 encounter](assets/gem-in-play.png)
+
+> *The push-to-talk **scrying gem** overlaying a live Roll20 fight — the gold tray surfaces the current combatant's tactics; the turn order sits at left. More shots in the [Voice HUD](#voice-hud) section.*
 
 ## Architecture
 
@@ -129,6 +131,10 @@ The relay receives `!ai-relay {JSON}` commands and whispers results back as hidd
 ## Voice HUD
 
 The scrying gem — a transparent cushion-cut crystal overlay that floats above Roll20 in the corner of the screen.
+
+| Tactic tray | Proper-noun vocab | Nickname aliases |
+|---|---|---|
+| ![Tactic tray](assets/gem-tactics-tray.png) | ![Proper Nouns tab](assets/ledger-proper-nouns.png) | ![Nicknames tab](assets/ledger-nicknames.png) |
 
 ```bash
 cd voice-hud

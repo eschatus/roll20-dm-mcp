@@ -10,6 +10,8 @@ The goal is to keep you in the story. You speak to your players, and with a key 
 
 ## The gem at a glance
 
+![The scrying gem over a live Roll20 encounter](https://raw.githubusercontent.com/eschatus/roll20-dm-mcp/master/assets/gem-in-play.png)
+
 The gem visual has four states:
 
 | State | Appearance | Meaning |
@@ -175,6 +177,8 @@ The Gem never advances the turn automatically — that's your call.
 
 When combat starts, the Gem generates a tactical plan for each NPC group (if the tactical assistant is enabled). The current creature's short-term goal appears in the tactic strip at the bottom of the gem. Click it to see the full plan with medium-term goal and overall objective.
 
+![The expanded tactic tray — current creature's move/action plus other mobs](https://raw.githubusercontent.com/eschatus/roll20-dm-mcp/master/assets/gem-tactics-tray.png)
+
 Plans update each round based on the current battlefield state.
 
 ### Ending combat
@@ -207,9 +211,13 @@ The east medallion on the gem glows red with an unread count when new items arri
 
 Add names here to improve voice recognition accuracy. Anything the transcriber tends to mishear — especially proper nouns from your campaign — should live here. Changes take effect on the next PTT press.
 
+![Proper Nouns tab — campaign names and terms that bias speech recognition](https://raw.githubusercontent.com/eschatus/roll20-dm-mcp/master/assets/ledger-proper-nouns.png)
+
 ### Nicknames tab
 
 Map spoken shortcuts to actual token names. "The lich" → "Strahd von Zarovich". "Z" → "Zeno". The Gem resolves these silently so you never have to say the full name.
+
+![Nicknames tab — "you say X → means Y" alias resolution](https://raw.githubusercontent.com/eschatus/roll20-dm-mcp/master/assets/ledger-nicknames.png)
 
 ### DM Notes tab
 

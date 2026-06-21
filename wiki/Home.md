@@ -4,6 +4,8 @@
 
 AI-assisted D&D 5e session management for **Roll20 + D&D Beyond**. The DM speaks; the gem acts.
 
+![The scrying gem over a live Roll20 encounter](https://raw.githubusercontent.com/eschatus/roll20-dm-mcp/master/assets/gem-in-play.png)
+
 ## Guides (you don't need to clone the repo)
 
 - **[Setup](Setup)** — install, configure, and first run.
