@@ -17,6 +17,11 @@ src/**/*.js.map
 *.jpg
 *.jpeg
 *.pdf
+
+# …but DO track committed visual assets (README / wiki screenshots, diagrams).
+!assets/*.png
+!assets/*.jpg
+!assets/*.jpeg
 voice-hud/stt/.venv/
 
 # test scratch

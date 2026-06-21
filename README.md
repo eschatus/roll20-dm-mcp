@@ -6,7 +6,37 @@ AI-assisted D&D 5e session management for Roll20 + D&D Beyond. Three components:
 - **`roll20-dm-maps` MCP server** — map prep pipeline (stdio): upload battlemaps, auto-place dynamic lighting walls via Claude Vision, token creation.
 - **Voice HUD** (`voice-hud/`) — transparent Electron overlay: push-to-talk → Whisper STT → Claude agent → live tabletop. The DM speaks; the gem acts.
 
+![The scrying gem over a live Roll20 encounter](assets/gem-in-play.png)
+
+> *The push-to-talk **scrying gem** overlaying a live Roll20 fight — the gold tray surfaces the current combatant's tactics; the turn order sits at left. More shots in the [Voice HUD](#voice-hud) section.*
+
 ## Architecture
+
+```mermaid
+flowchart TD
+    HUD["Voice HUD (Electron)<br/>PTT → Whisper STT → Claude agent"]
+    CC["Claude Code<br/>map prep · /combat · /round"]
+    SRV["roll20-dm MCP server<br/>HTTP · bearer auth"]
+    MAPS["roll20-dm-maps<br/>stdio"]
+    RT["RT transport<br/>Firebase RTDB · ~50ms"]
+    PW["Playwright fallback<br/>types !ai-relay into chat"]
+    MOD["ai-relay.js<br/>Roll20 Mod sandbox"]
+    R20["Roll20 objects<br/>tokens · walls · turn order"]
+    DDB["D&D Beyond<br/>browserless · read-only"]
+
+    HUD -->|MCP| SRV
+    CC -->|MCP| SRV
+    CC -->|MCP| MAPS
+    SRV --> RT
+    SRV -. fallback .-> PW
+    MAPS --> RT
+    RT --> MOD
+    PW --> MOD
+    MOD --> R20
+    SRV --> DDB
+```
+
+<details><summary>Detailed text view</summary>
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -44,6 +74,8 @@ AI-assisted D&D 5e session management for Roll20 + D&D Beyond. Three components:
 Claude Code (separate MCP client, same server)
   └── map prep, session setup, /combat, /round skills
 ```
+
+</details>
 
 ### Transport layers
 
@@ -99,6 +131,10 @@ The relay receives `!ai-relay {JSON}` commands and whispers results back as hidd
 ## Voice HUD
 
 The scrying gem — a transparent cushion-cut crystal overlay that floats above Roll20 in the corner of the screen.
+
+| Tactic tray | Proper-noun vocab | Nickname aliases |
+|---|---|---|
+| ![Tactic tray](assets/gem-tactics-tray.png) | ![Proper Nouns tab](assets/ledger-proper-nouns.png) | ![Nicknames tab](assets/ledger-nicknames.png) |
 
 ```bash
 cd voice-hud
