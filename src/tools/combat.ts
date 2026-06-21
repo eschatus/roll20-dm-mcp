@@ -21,7 +21,7 @@ import {
 // condition lookup (RESERVED_MARKER_CONDITIONS, used by get_token_markers) is
 // derived from this. Keep in sync with ai-relay.js CONDITION_MARKERS (the Roll20
 // sandbox keeps its own separate copy — do not assume they share this module).
-const CONDITION_MARKERS: { name: string; marker: string; label?: string }[] = [
+export const CONDITION_MARKERS: { name: string; marker: string; label?: string }[] = [
   { name: "dead",          marker: "Unconscious::4444317", label: "unconscious / dead" },
   { name: "unconscious",   marker: "Unconscious::4444317", label: "unconscious / dead" },
   { name: "wounded",       marker: "Wounded::4444333",     label: "wounded / bloodied" },

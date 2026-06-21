@@ -580,6 +580,15 @@ function stripUndef(props) {
   return clean;
 }
 
+// THE single chokepoint for object-form writes. Writing an undefined/NaN value to
+// t.set() async-crashes the whole API sandbox (no try/catch can catch the deferred
+// _doSave). Every object write goes through here so a bad value is dropped, not
+// fatal. (Key/value string writes — statusmarkers, turnorder JSON, name — are
+// type-safe by construction and don't need it.)
+function setSafe(obj, props) {
+  obj.set(stripUndef(props));
+}
+
 // Synchronous operation executor used by batchExec.
 // Only sync-safe actions here — no sendChat callbacks.
 function runBatchOp(action, args) {
@@ -591,7 +600,7 @@ function runBatchOp(action, args) {
       if (!isFinite(v)) throw new Error("setTokenBar: value must be a finite number, got " + JSON.stringify(args.value));
       let p = { bar1_value: v };
       if (args.max !== undefined && isFinite(Number(args.max))) p.bar1_max = Number(args.max);
-      t.set(p);
+      setSafe(t, p);
       return { ok: true };
     }
     case "adjustPcHp": {
@@ -610,7 +619,7 @@ function runBatchOp(action, args) {
       let props = stripUndef(normProps(args));
       let keys = Object.keys(props);
       if (keys.length === 0) throw new Error("setTokenProps: no properties to set — pass props:{...} (or top-level fields)");
-      t.set(props);
+      setSafe(t, props);
       return { ok: true, set: keys };
     }
     case "toggleCondition": {
@@ -753,7 +762,7 @@ ACTIONS["setTokenBar"] = function (args, msg, nonce, senderPlayerId) {
         if (!token) throw new Error(`Token not found: ${args.tokenId}`);
         const v = Number(args.value);
         if (!isFinite(v)) throw new Error(`setTokenBar: value must be a finite number, got ${JSON.stringify(args.value)}`);
-        token.set({
+        setSafe(token, {
           bar1_value: v,
           ...(args.max !== undefined && isFinite(Number(args.max)) ? { bar1_max: Number(args.max) } : {}),
         });
@@ -1086,7 +1095,7 @@ ACTIONS["setPageBackground"] = function (args, msg, nonce, senderPlayerId) {
         {
         const page = getObj("page", args.pageId);
         if (!page) throw new Error(`Page not found: ${args.pageId}`);
-        page.set({ background_color: args.color || "#ffffff" });
+        setSafe(page, { background_color: args.color || "#ffffff" });
         writeResult(nonce, { ok: true });
         return;
       }
@@ -1115,7 +1124,7 @@ ACTIONS["setPageProps"] = function (args, msg, nonce, senderPlayerId) {
         if (args.scale_units !== undefined) props.scale_units = args.scale_units;
         if (args.showgrid !== undefined) props.showgrid = args.showgrid;
         if (args.background_color !== undefined) props.background_color = args.background_color;
-        page.set(props);
+        setSafe(page, props);
         writeResult(nonce, { ok: true, width: page.get("width"), height: page.get("height") });
         return;
       }
@@ -1484,7 +1493,7 @@ ACTIONS["rollInitiativeForTokens"] = function (args, msg, nonce, senderPlayerId)
           if ((nameCounts[baseName] || 0) <= 1) return;
           let pool = getMonsterEpithets(baseName);
           let newName = nextEpithetName(baseName, pool, usedNames);
-          token.set({ name: newName, tooltip: newName, showname: true, showplayers_name: true });
+          setSafe(token, { name: newName, tooltip: newName, showname: true, showplayers_name: true });
         });
 
         // Pass 3: gather init bonuses (synchronous), then roll via Roll20's real dice engine
@@ -1749,7 +1758,7 @@ ACTIONS["setCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) 
             let updates = {};
             if (currentVal !== undefined) updates.current = currentVal;
             if (maxVal !== undefined) updates.max = maxVal;
-            existing[0].set(updates);
+            setSafe(existing[0], updates);
             updated.push(attrName);
           } else {
             let createArgs = { characterid: charId, name: attrName };
@@ -2275,7 +2284,7 @@ ACTIONS["editCharacter"] = function (args, msg, nonce, senderPlayerId) {
         });
         let keys = Object.keys(props);
         if (keys.length === 0) throw new Error("editCharacter: no fields to edit — pass at least one of: name, bio, avatar, controlledby, archived, inplayerjournals");
-        ch.set(props);
+        setSafe(ch, props);
         writeResult(nonce, { ok: true, updated: keys });
         return;
       }
