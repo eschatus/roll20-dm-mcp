@@ -59,8 +59,12 @@ Deep dives: `docs/decisions.md`, `docs/roll20-api-coverage.md`, `docs/roll20-rea
 ## Project-wide gotchas (these have bitten us — heed them)
 
 - **Never write `undefined`/`NaN` to a token.** `t.set()` with an undefined/NaN value
-  async-crashes the *entire* Mod sandbox (looks like a timeout/congestion). The relay guards every
-  write with `stripUndef`; preserve that. (`docs` + memory: relay-undefined-firebase-crash.)
+  async-crashes the *entire* Mod sandbox (looks like a timeout/congestion). **Every object-form
+  write goes through the `setSafe(obj, props)` chokepoint** (`obj.set(stripUndef(props))`) — use it
+  for any new object write; never call `.set({…})` directly. Key/value string writes (`statusmarkers`,
+  `turnorder` JSON, `name`) are type-safe by construction. A regression test
+  (`test/relay-actions-smoke.test.ts` → "setSafe write guard") proves bad values are dropped, not
+  written. (`docs` + memory: relay-undefined-firebase-crash.)
 - **Roll20 object quirks:** read type as `_type` (not `type`); turn-order entries need `_pageid`;
   `createObj("page")` is **unsupported** in the sandbox — pages are made by `createPageViaUI`
   (Playwright). Walls use `pathv2` (re-anchors to the first point regardless of passed x/y — pass

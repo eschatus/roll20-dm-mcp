@@ -131,3 +131,29 @@ describe("simple write actions (smoke)", () => {
     expect(r).toBeTruthy();
   });
 });
+
+// The #1 robustness vector: an undefined/NaN value reaching token.set() async-crashes
+// the WHOLE Mod sandbox. setSafe() must drop such values instead of writing them.
+// (Over the wire, NaN serializes to null via JSON.stringify — both must be dropped.)
+describe("setSafe write guard (sandbox-crash vector)", () => {
+  it("drops a NaN/null prop but applies the valid ones in the same write", () => {
+    const before = Number(emu.getObj("graphic", npcId)!.get("bar1_value"));
+    // bar1_value: NaN -> null over JSON; name is valid.
+    emu.relay({ action: "batchExec", ops: [
+      { id: "p", action: "setTokenProps", args: { tokenId: npcId, props: { name: "Guarded", bar1_value: NaN } } },
+    ] });
+    const t = emu.getObj("graphic", npcId)!;
+    expect(t.get("name")).toBe("Guarded");                 // valid field applied
+    expect(Number.isNaN(Number(t.get("bar1_value")))).toBe(false); // bad value NOT written
+    expect(Number(t.get("bar1_value"))).toBe(before);       // left unchanged
+  });
+
+  it("a write that is ALL bad values throws cleanly instead of writing garbage", () => {
+    expect(() =>
+      emu.relay({ action: "setTokenProps", tokenId: npcId, props: { bar1_value: NaN } })
+    ).toThrow(/no properties/i);
+    // …and the sandbox is still alive afterward.
+    const ok = emu.relay<{ pong: boolean }>({ action: "ping" });
+    expect(ok.pong).toBe(true);
+  });
+});
