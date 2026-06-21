@@ -9,6 +9,7 @@
     "dev": "tsx watch src/index-combat.ts",
     "serve": "tsx src/index-http.ts",
     "serve:watch": "tsx watch src/index-http.ts",
+    "release:mod": "tsx src/recon/release-mod.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
