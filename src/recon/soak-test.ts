@@ -5,6 +5,7 @@
 // Dice roll is silent (engine correctness only) to avoid spamming a live session.
 process.env.ROLL20_TRANSPORT = "rt";
 
+import { pathToFileURL } from "url";
 import { relayCommand } from "../bridge/roll20.js";
 import { rtGet, rtRemove } from "../bridge/roll20-rt.js";
 
@@ -15,7 +16,8 @@ function check(label: string, cond: boolean, detail = "") {
 }
 const r = (cmd: Record<string, unknown>) => relayCommand<any>(cmd);
 
-async function main() {
+export async function runSoak(): Promise<number> {
+  pass = 0; fail = 0;
   const campaign = await rtGet<{ playerpageid?: string }>("campaign");
   const pid = campaign?.playerpageid!;
   console.error(`\n[soak] campaign player page: ${pid}\n`);
@@ -98,10 +100,19 @@ async function main() {
   check("scratch token deleted", gone == null);
 
   summarize();
+  return fail;
 }
 
 function summarize() {
   console.error(`\n${fail === 0 ? "✅" : "❌"} SOAK: ${pass} passed, ${fail} failed`);
-  process.exit(fail === 0 ? 0 : 1);
 }
-main().catch((e) => { console.error("❌ soak crashed:", e); process.exit(1); });
+
+// Run directly (`tsx src/recon/soak-test.ts`) → execute + set the exit code. Imported
+// (e.g. by release-mod) → just expose runSoak() so the caller can run it IN-PROCESS,
+// sharing the one browser/RT connection (a child process can't share the browser
+// profile, and a second RT listener collides — both false-fail the soak).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  runSoak()
+    .then((f) => process.exit(f === 0 ? 0 : 1))
+    .catch((e) => { console.error("❌ soak crashed:", e); process.exit(1); });
+}
