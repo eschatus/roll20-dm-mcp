@@ -437,8 +437,9 @@
     position: absolute; left: 10px; right: 10px; bottom: 43px;
     background: linear-gradient(160deg, rgba(18,11,0,.97), rgba(8,5,0,.97));
     border: 1px solid rgba(200,155,30,0.5);
-    /* top corners square-ish, bottom follows the shield arch curve */
-    border-radius: 6px 6px 42% 42% / 6px 6px 22px 22px;
+    /* uniform soft corners — the old exaggerated bottom "shield arch" curve
+       (42%/22px) encroached on the text at the bottom of the tray. */
+    border-radius: 6px;
     padding: 11px 14px;
     display: none; z-index: 10;
     font-family: "Palatino Linotype", Palatino, Georgia, serif;
