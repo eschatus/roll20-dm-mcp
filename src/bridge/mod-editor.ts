@@ -7,17 +7,25 @@ let _modPage: Page | null = null;
 async function getModPage(campaignId: string): Promise<Page> {
   const modUrl = `https://app.roll20.net/campaigns/scripts/${campaignId}`;
 
-  // Reuse existing page if it's already on the right URL
+  let page: Page;
   if (_modPage && !_modPage.isClosed()) {
-    if (_modPage.url().includes(`/campaigns/scripts/${campaignId}`)) return _modPage;
-    await _modPage.goto(modUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    return _modPage;
+    page = _modPage;
+    if (!page.url().includes(`/campaigns/scripts/${campaignId}`)) {
+      await page.goto(modUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    }
+  } else {
+    // Open a fresh page (won't disturb the game-editor page cache)
+    page = await newBrowserPage();
+    await page.goto(modUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    _modPage = page;
   }
 
-  // Open a fresh page (won't disturb the game-editor page cache)
-  const page = await newBrowserPage();
-  await page.goto(modUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
-  _modPage = page;
+  // CRITICAL: the #scriptorder tabs render via Roll20's JS AFTER `domcontentloaded`.
+  // A cold page (e.g. a fresh standalone process, vs. the server's warm reused page)
+  // that queries tabs too early sees NONE and wrongly takes deployModScript's
+  // "create new script" path → a DUPLICATE relay that jams the sandbox. Always wait
+  // for the tab bar to actually render before any caller inspects it.
+  await page.waitForSelector('#scriptorder a[data-toggle="tab"]', { timeout: 20_000 });
   return page;
 }
 
@@ -65,7 +73,11 @@ export async function readModConsole(campaignId: string): Promise<string[]> {
 // UniversalVTTImporter), so the old first-tab fallback was removed. Returns `created` so callers
 // can tell a fresh provision from an update.
 // scriptPath should be the absolute path to ai-relay.js.
-export async function deployModScript(campaignId: string, scriptPath: string): Promise<{ saved: boolean; linesWritten: number; created: boolean }> {
+export async function deployModScript(
+  campaignId: string,
+  scriptPath: string,
+  opts: { requireExisting?: boolean } = {}
+): Promise<{ saved: boolean; linesWritten: number; created: boolean }> {
   const content = readFileSync(scriptPath, "utf-8");
   const page = await getModPage(campaignId);
 
@@ -102,6 +114,16 @@ export async function deployModScript(campaignId: string, scriptPath: string): P
     await page.click(`#${paneId} .savescript`);
     await page.waitForTimeout(1_500);
     return { saved: true, linesWritten, created: false };
+  }
+
+  // Safety valve for redeploys (e.g. release scripts): refuse to create a duplicate.
+  // If we expected an existing tab but didn't find one, that's almost always a cold
+  // page that rendered tabs late — fail LOUD rather than spawn a second relay.
+  if (opts.requireExisting) {
+    throw new Error(
+      `deployModScript: no existing "${scriptName}" tab found, and requireExisting is set — ` +
+      `refusing to create a duplicate. Deploy the first copy via the MCP deploy_mod_script tool, then retry.`
+    );
   }
 
   // --- Create path: no matching tab → make a NEW one (never touch existing tabs) ---

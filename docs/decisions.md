@@ -138,3 +138,18 @@ This file records every non-obvious architectural choice made in this project. E
 **Why:** The MCP server and recon scripts can read these files while a tool is mid-write. An in-place write exposes a window where a reader sees a truncated/partial JSON file and crashes on parse. Rename is atomic on the same filesystem, so a reader always sees either the old or the new complete file.
 
 **Trade-offs:** None worth noting; the temp file lands in the same directory so the rename stays atomic.
+
+---
+
+## 14. Mod deploy must run through the warm server page (the duplicate-relay incident)
+
+**What happened:** a one-command `release:mod` (deploy + soak from a fresh `tsx` process) **created a second relay script** in the Roll20 API console, which jammed the sandbox (two `chat:message` handlers) and took the live relay down.
+
+**Root cause:** `deployModScript` matches the existing `ai-relay.js` tab by reading `#scriptorder`. The MCP server reuses a *warm* `_modPage` where those tabs are already rendered; a fresh process navigated with `waitUntil: "domcontentloaded"` and queried the tabs **before Roll20's JS rendered them** → "no existing tab" → the create-new-script branch → duplicate.
+
+**Fixes (all landed):**
+- `getModPage` now `waitForSelector('#scriptorder a[data-toggle="tab"]')` after navigation, so callers never inspect tabs early.
+- `deployModScript(campaignId, path, { requireExisting: true })` refuses to create a new tab — a release can only ever *overwrite*. `release:mod` passes it (belt-and-suspenders).
+- `release:mod` runs the soak **in-process** (`runSoak()` from `soak-test.ts`), not as a child: a child can't share the persistent browser profile (so it can't bootstrap RT) and a second RT listener collides — both false-fail the soak. It also waits a fixed settle for the rebooted sandbox to warm before soaking.
+
+**Lesson:** anything touching the API editor must go through the server's warm page (or wait for tabs), and live verification (soak) must share the one browser/RT connection.
