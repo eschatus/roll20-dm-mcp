@@ -6,7 +6,35 @@ AI-assisted D&D 5e session management for Roll20 + D&D Beyond. Three components:
 - **`roll20-dm-maps` MCP server** — map prep pipeline (stdio): upload battlemaps, auto-place dynamic lighting walls via Claude Vision, token creation.
 - **Voice HUD** (`voice-hud/`) — transparent Electron overlay: push-to-talk → Whisper STT → Claude agent → live tabletop. The DM speaks; the gem acts.
 
+> 📸 **Screenshots** (the gem overlay, a lit DL map): see [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md) for what to capture and where it lands.
+
 ## Architecture
+
+```mermaid
+flowchart TD
+    HUD["Voice HUD (Electron)<br/>PTT → Whisper STT → Claude agent"]
+    CC["Claude Code<br/>map prep · /combat · /round"]
+    SRV["roll20-dm MCP server<br/>HTTP · bearer auth"]
+    MAPS["roll20-dm-maps<br/>stdio"]
+    RT["RT transport<br/>Firebase RTDB · ~50ms"]
+    PW["Playwright fallback<br/>types !ai-relay into chat"]
+    MOD["ai-relay.js<br/>Roll20 Mod sandbox"]
+    R20["Roll20 objects<br/>tokens · walls · turn order"]
+    DDB["D&D Beyond<br/>browserless · read-only"]
+
+    HUD -->|MCP| SRV
+    CC -->|MCP| SRV
+    CC -->|MCP| MAPS
+    SRV --> RT
+    SRV -. fallback .-> PW
+    MAPS --> RT
+    RT --> MOD
+    PW --> MOD
+    MOD --> R20
+    SRV --> DDB
+```
+
+<details><summary>Detailed text view</summary>
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -44,6 +72,8 @@ AI-assisted D&D 5e session management for Roll20 + D&D Beyond. Three components:
 Claude Code (separate MCP client, same server)
   └── map prep, session setup, /combat, /round skills
 ```
+
+</details>
 
 ### Transport layers
 
