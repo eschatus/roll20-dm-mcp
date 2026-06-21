@@ -19,6 +19,24 @@ export function json(value: unknown, pretty = true): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value, pretty ? null : undefined, pretty ? 2 : undefined) }] };
 }
 
+// Tolerate the ways small/cloud models pass array params (Haiku in the HUD does
+// this constantly): a real array passes through; a JSON-stringified array
+// (`'["a","b"]'`) is parsed; a bare string (`"a"`) becomes `["a"]`; empty → `[]`.
+// Use as a Zod preprocess: `z.preprocess(coerceStringArray, z.array(z.string()))`.
+// Mirrors the relay's normProps leniency — the model's natural call shouldn't
+// hard-fail Zod validation. Anything else is returned untouched for Zod to reject.
+export function coerceStringArray(v: unknown): unknown {
+  if (Array.isArray(v)) return v;
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (s.startsWith("[")) {
+      try { return JSON.parse(s); } catch { /* not JSON — treat as a single name */ }
+    }
+    return s ? [s] : [];
+  }
+  return v;
+}
+
 // ── Turn order ────────────────────────────────────────────────────────────────
 // Roll20 turn order entry: {id, pr (string), custom, _pageid}. _pageid is
 // required — without it Roll20's tracker shows "no tokens on this stage". The

@@ -12,7 +12,7 @@ import {
 import { getLastPing } from "../bridge/roll20-rt.js";
 import {
   type TurnEntry, type BatchResult,
-  text, json, indexBatchResults,
+  text, json, indexBatchResults, coerceStringArray,
   tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId,
 } from "./combatHelpers.js";
 
@@ -321,18 +321,19 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "roll_initiative",
-    "Roll initiative for tokens on the current (or specified) page and load results into Roll20's turn order tracker. Use flatInit to place matched tokens at a fixed value instead of rolling. Use nameFilter to target a subset by name (e.g. 'goblin'). NPCs dropped on the map without an HP bar are auto-initialized from DDB average HP at this point (disable with initHp:false) so AoE/damage actually lands.",
+    "Roll initiative for tokens on the current (or specified) page and load results into Roll20's turn order tracker. Use names to roll for an EXPLICIT list of named combatants (the common case at combat start, e.g. ['Bugbear','Droop','Iarno']). Use nameFilter for a single substring instead. Use flatInit to place matched tokens at a fixed value instead of rolling. NPCs dropped on the map without an HP bar are auto-initialized from DDB average HP at this point (disable with initHp:false) so AoE/damage actually lands.",
     {
       pageId: z.string().optional().describe("Page to roll for. Defaults to the current player page."),
       npcOnly: z.boolean().default(true).describe("If true, skip tokens whose controlledby field contains a player ID (i.e. PC tokens)."),
       clearFirst: z.boolean().default(false).describe("Wipe the existing turn order before adding rolls. Set true at combat start."),
       flatInit: z.number().int().optional().describe("If set, place all matched tokens at this fixed initiative value instead of rolling."),
-      nameFilter: z.string().optional().describe("Case-insensitive substring filter on token names. E.g. 'goblin' matches 'Goblin 1', 'Goblin Archer', etc."),
+      names: z.preprocess(coerceStringArray, z.array(z.string())).optional().describe("Explicit list of token names to roll for, e.g. ['Bugbear the Heavy-Handed','Droop','Iarno']. Matches a token if a given name is contained in (or equals) the token's name, case-insensitive — so partial names work. A JSON-stringified array or a single name string are both accepted."),
+      nameFilter: z.string().optional().describe("Case-insensitive substring filter on token names. E.g. 'goblin' matches 'Goblin 1', 'Goblin Archer', etc. Prefer `names` for an explicit multi-creature list."),
       publicRoll: z.boolean().default(true).describe("If true (default), posts a public gothic initiative card to chat showing all rolled tokens sorted by result. Pass false to roll silently."),
       nearPcsFeet: z.number().optional().describe("Only include NPCs within this many feet of any PC token — use at combat start so distant mobs elsewhere on the map don't join the fight. 60-90 is a good default when the DM just says 'roll inits'."),
       initHp: z.boolean().default(true).describe("Auto-initialize bar1/bar1_max from DDB average HP for any NPC combatant with no HP bar set (bar1_max unset → hp:null). PCs are never touched. Set false to skip the DDB lookups."),
     },
-    async ({ pageId, npcOnly, clearFirst, flatInit, nameFilter, publicRoll, nearPcsFeet, initHp }) => {
+    async ({ pageId, npcOnly, clearFirst, flatInit, names, nameFilter, publicRoll, nearPcsFeet, initHp }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
 
       const tokens = await roll20.relayCommand<{ id: string; name: string; layer: string; controlledby: string; bar1_value?: number | string; bar1_max?: number | string }[]>({
@@ -360,9 +361,18 @@ export function registerCombatTools(server: McpServer): void {
 
       const TOKEN_LAYERS = new Set(["tokens", "objects"]);
       const needle = nameFilter?.toLowerCase();
+      // Explicit name list: a token matches if a provided name is contained in (or
+      // equals) the token's name, or vice versa — case-insensitive. Tolerant of
+      // epithets ("Bugbear" ↔ "Bugbear the Heavy-Handed") and full names alike.
+      const wanted = names?.map((n) => n.toLowerCase().trim()).filter(Boolean) ?? null;
+      const matchesWanted = (name: string) => {
+        const tn = name.toLowerCase();
+        return wanted!.some((w) => tn.includes(w) || w.includes(tn));
+      };
       const combatants = tokens.filter((t) => {
         if (!TOKEN_LAYERS.has(t.layer)) return false;
         if (npcOnly && t.controlledby && t.controlledby.trim() !== "") return false;
+        if (wanted && wanted.length && !matchesWanted(t.name)) return false;
         if (needle && !t.name.toLowerCase().includes(needle)) return false;
         if (nearIds && !nearIds.has(t.id)) return false;
         return true;
