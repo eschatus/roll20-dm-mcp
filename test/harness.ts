@@ -20,6 +20,7 @@ import * as tactics from "../src/tools/tactics.js";
 import * as characters from "../src/registry/characters.js";
 import { registerCombatTools } from "../src/tools/combat.js";
 import { registerTacticsTools } from "../src/tools/tactics.js";
+import { registerZoneTools } from "../src/tools/zones.js";
 
 // ── Fake MCP server ───────────────────────────────────────────────────────────
 type ToolResult = { content: Array<{ type: string; text: string }> };
@@ -100,6 +101,7 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
   const server = new FakeMcpServer();
   registerCombatTools(server as never);
   registerTacticsTools(server as never);
+  registerZoneTools(server as never);
 
   async function callTool(name: string, args: Record<string, unknown> = {}) {
     const entry = server.handlers.get(name);

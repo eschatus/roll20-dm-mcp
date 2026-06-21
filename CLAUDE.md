@@ -9,9 +9,12 @@ below: **Maps development** and **Combat development**.
 AI-assisted D&D 5e session management for **Roll20 + D&D Beyond**. Three components:
 
 - **`roll20-dm`** — live-combat MCP server over **HTTP** (`src/index-http.ts` → `src/server-combat.ts`).
-  HP, conditions, initiative, dice, narration, turn hooks, AoE, zones, tactics, DDB reads.
-- **`roll20-dm-maps`** — map-prep MCP server over **stdio** (`src/index-maps.ts`).
-  Battlemap upload, Claude-Vision wall detection, DL walls/doors, token creation.
+  HP, conditions, initiative, dice, narration, turn hooks, AoE, tactics, DDB reads. Also keeps the two
+  **dual-use** map tools it needs live: **zones** (fixed-area spells) and **screenshot** (board vision).
+- **`roll20-dm-maps`** — map-prep MCP server over **stdio** (`src/index-maps.ts`). Owns the full
+  **map/wall/zone domain**: battlemap upload, Claude-Vision wall detection, DL walls/doors, token
+  creation, zones, screenshots. The prep-only analysis/wall tools (`registerVisionTools`) live here only;
+  zones (`zones.ts`) + screenshot (`screenshot.ts`) are **shared modules** registered in both servers.
 - **Voice HUD** (`voice-hud/`) — Electron overlay (PTT → Whisper STT → Claude agent). Reads the
   root `.env` and the canonical rules in `skills/dm-rules.md` at runtime.
 
@@ -100,7 +103,10 @@ the tool in the correct server — **`server-combat.ts`** (roll20-dm) or **`inde
 ## Maps development
 
 **Server:** `roll20-dm-maps` (stdio, `src/index-maps.ts`). **Code:** `src/tools/maps.ts`,
-`src/tools/vision.ts`, `src/tools/tokens.ts`, `src/tools/batch.ts`. **Skill:** `skills/dm-map-setup.md`.
+`src/tools/vision.ts`, `src/tools/tokens.ts`, `src/tools/batch.ts`, `src/tools/zones.ts`,
+`src/tools/screenshot.ts`. **Skill:** `skills/dm-map-setup.md`. (`zones.ts` + `screenshot.ts` are shared
+with the combat server — register them in **both** `index-maps.ts` and `server-combat.ts` if you touch
+the registration; the rest of vision/wall tooling is maps-only.)
 
 **Pipeline** (image → playable lit map):
 1. `analyze_battlemap({imagePath})` — `src/tools/vision.ts` calls the Anthropic API
