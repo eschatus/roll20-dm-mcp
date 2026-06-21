@@ -54,6 +54,11 @@ contextBridge.exposeInMainWorld("dmw", {
   addVocab: (term: string) => ipcRenderer.invoke("add-vocab", term),
   rebuildRoster: () => ipcRenderer.invoke("rebuild-roster"),
 
+  // Training panel / After-Action Review (the reinforcement loop)
+  onAar: (cb: (report: unknown) => void) => ipcRenderer.on("aar", (_e, r) => cb(r)),
+  runAar: () => ipcRenderer.invoke("run-aar"),
+  acceptCorrection: (p: { spoken: string; canonical: string }) => ipcRenderer.invoke("accept-correction", p),
+
   // settings + whisper notification audio
   getSettings: () => ipcRenderer.invoke("get-settings"),
   saveSettings: (s: unknown) => ipcRenderer.invoke("save-settings", s),
