@@ -11,6 +11,7 @@
     "serve:watch": "tsx watch src/index-http.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
     "lint": "eslint src/**/*.ts test/**/*.ts"
   },
   "keywords": [],
@@ -32,6 +33,7 @@
     "@types/sharp": "^0.31.1",
     "eslint": "^10.5.0",
     "tsx": "^4.22.3",
+    "@vitest/coverage-v8": "^3.2.4",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.61.1",
     "vitest": "^3.2.4"
