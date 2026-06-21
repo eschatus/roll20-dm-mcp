@@ -261,6 +261,10 @@ export class Roll20Emulator {
       sendChat: this.sendChat,
       on: this.on,
       playerIsGM: this.playerIsGM,
+      // Z-order globals — Roll20 reorders the graphic within its layer. We don't
+      // model z-order, so these are no-ops (enough to exercise toFront/toBack).
+      toFront: () => {},
+      toBack: () => {},
       log: this.log,
       state: this.state,
       Math: seededMath,
