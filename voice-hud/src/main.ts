@@ -254,7 +254,7 @@ function wireClipHandler() {
         send("state", "idle");
       } else {
         send("transcript", { text, lowConfidence: result.low_confidence });
-        if (text) runAgent(text);
+        if (text) runAgent(text, result.low_confidence);
         else send("state", "idle");
       }
       return { ok: true, text, lowConfidence: result.low_confidence };
@@ -324,15 +324,21 @@ function wireClipHandler() {
 }
 
 // --- Run the agent on a transcript ---
-async function runAgent(transcript: string) {
+async function runAgent(transcript: string, lowConfidence = false) {
   send("state", "thinking");
-  console.error(`[agent] turn start: "${transcript.slice(0, 80)}"`);
+  console.error(`[agent] turn start: "${transcript.slice(0, 80)}"${lowConfidence ? " (LOW CONF)" : ""}`);
   _agentTurnActive = true;
+  // A shaky transcript: flag it to the agent (the persona reads this) so it leans
+  // toward confirming destructive writes rather than acting on a likely mishear.
+  // Detector-safe — the marker carries no phase keywords.
+  const utterance = lowConfidence
+    ? `[LOW-CONFIDENCE voice transcript — a likely mishear; interpret cautiously and confirm any destructive write] ${transcript}`
+    : transcript;
   try {
     // SWR: fire roster refresh in the background so the LLM starts immediately.
     // If the refresh lands mid-turn, refreshRoster stashes the block; we apply it below.
     refreshRoster({ silent: true }).catch((e) => console.error("[roster] pre-turn refresh failed:", (e as Error).message));
-    await agent.handle(transcript, {
+    await agent.handle(utterance, {
       onText: (text) => { console.error(`[agent] say: ${text.slice(0, 80)}`); send("agent", { kind: "say", text }); },
       onToolStart: (name, args) => { console.error(`[agent] tool → ${name}(${shortArgs(args)})`); send("agent", { kind: "tool", text: `${name}(${shortArgs(args)})` }); },
       onToolResult: (name, resultText) => { console.error(`[agent] tool ✓ ${name}: ${resultText.slice(0, 60)}`); send("agent", { kind: "result", text: `${name} ✓`, detail: resultText }); },
