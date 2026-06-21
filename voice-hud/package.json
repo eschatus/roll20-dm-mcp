@@ -21,6 +21,7 @@
     "@anthropic-ai/sdk": "^0.98.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^17.4.2",
+    "double-metaphone": "^1.0.5",
     "openai": "^4.77.0",
     "uiohook-napi": "^1.5.4"
   }
