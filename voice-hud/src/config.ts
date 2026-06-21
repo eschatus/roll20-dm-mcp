@@ -152,8 +152,13 @@ export const CONFIG = {
   mcpUrl: process.env.DMW_MCP_URL || "http://127.0.0.1:39200/mcp",
 
   // --- HUD agent provider ---
-  // "anthropic" (cloud, default) or "ollama" (local). DMW_PROVIDER overrides.
-  provider: (process.env.DMW_PROVIDER || "anthropic") as "ollama" | "anthropic",
+  // Local LLM (Ollama) is MOTHBALLED behind a flag — it needs a much bigger GPU than
+  // the cloud default delivers, so it's hidden/disabled unless DMW_ENABLE_LOCAL_LLM=1.
+  enableLocalLlm: process.env.DMW_ENABLE_LOCAL_LLM === "1",
+  // "anthropic" (cloud, default) or "ollama" (local — only honored when the flag is on,
+  // so a stale DMW_PROVIDER=ollama can't strand the gem on a backend that's disabled).
+  provider: ((process.env.DMW_ENABLE_LOCAL_LLM === "1" && process.env.DMW_PROVIDER)
+    ? process.env.DMW_PROVIDER : "anthropic") as "ollama" | "anthropic",
 
   // Anthropic (cloud) model — used when provider=anthropic or on auto-escalation.
   // Haiku 4.5 is cheap + reliable at narration parsing / multi-target tool use
