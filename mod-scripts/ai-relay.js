@@ -1878,7 +1878,9 @@ ACTIONS["toggleCondition"] = function (args, msg, nonce, senderPlayerId) {
 ACTIONS["getTokenMarkers"] = function (args, msg, nonce, senderPlayerId) {
         {
         let raw = Campaign().get("token_markers");
-        let markers = typeof raw === "string" ? JSON.parse(raw) : (raw || []);
+        // Guard the parse: an empty/unset token_markers ("" from .get) must not
+        // crash the handler — JSON.parse("") throws "Unexpected end of JSON input".
+        let markers = typeof raw === "string" ? (raw.trim() ? JSON.parse(raw) : []) : (raw || []);
         writeResult(nonce, markers.map(function(m) {
           return { id: m.id, name: m.name, tag: m.tag };
         }));

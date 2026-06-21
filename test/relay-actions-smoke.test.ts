@@ -71,6 +71,12 @@ describe("read actions (smoke)", () => {
     expect(missing).toBeNull();
   });
 
+  it("getTokenMarkers returns [] when token_markers is empty (no JSON.parse crash)", () => {
+    emu.campaignModel.set("token_markers", ""); // unset/empty, as a fresh campaign
+    const markers = emu.relay<unknown[]>({ action: "getTokenMarkers" });
+    expect(markers).toEqual([]);
+  });
+
   it("getCharacterAttributes reads sheet attributes", () => {
     const attrs = emu.relay<Record<string, unknown>>({ action: "getCharacterAttributes", charId });
     expect(attrs).toBeTruthy();
