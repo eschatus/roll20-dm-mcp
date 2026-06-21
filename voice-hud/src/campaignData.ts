@@ -59,15 +59,16 @@ export function saveCampaignData(data: CampaignData): void {
   writeStore(store);
 }
 
-// Build the Whisper initial_prompt: the global base vocab (common D&D terms) +
-// campaign vocab + roster names + nicknames, deduped. `baseVocab` is injected
-// (default: the built-in set) so it stays SEPARATE from the per-campaign data and
-// is testable; main.ts passes loadBaseVocab() so a base-vocab.json override applies.
-export function buildVocabPrompt(
+// The full deduped vocab set: global base vocab (common D&D terms) + campaign vocab
+// + roster names + nicknames. `baseVocab` is injected (default: the built-in set)
+// so it stays SEPARATE from the per-campaign data and is testable; main.ts passes
+// loadBaseVocab() so a base-vocab.json override applies. Used as BOTH the Whisper
+// initial_prompt and the post-STT corrector's glossary.
+export function buildVocabList(
   data: CampaignData,
   rosterNames: string[],
   baseVocab: string[] = DEFAULT_BASE_VOCAB,
-): string {
+): string[] {
   const set = new Set<string>();
   for (const v of baseVocab) if (v.trim()) set.add(v.trim());
   for (const v of data.vocab) if (v.trim()) set.add(v.trim());
@@ -76,7 +77,16 @@ export function buildVocabPrompt(
     if (a.nickname.trim()) set.add(a.nickname.trim());
     if (a.target.trim()) set.add(a.target.trim());
   }
-  return Array.from(set).join(", ");
+  return Array.from(set);
+}
+
+// Whisper initial_prompt = the vocab list, comma-joined.
+export function buildVocabPrompt(
+  data: CampaignData,
+  rosterNames: string[],
+  baseVocab: string[] = DEFAULT_BASE_VOCAB,
+): string {
+  return buildVocabList(data, rosterNames, baseVocab).join(", ");
 }
 
 // Append a corrected proper noun learned from a transcript edit (dedup).

@@ -153,6 +153,8 @@ npm run start          # builds + launches Electron
 
 **STT:** faster-whisper `large-v3-turbo` on CUDA. A **global base vocabulary** of common D&D terms (initiative, saving throw, the abilities/skills/conditions/damage types, dice) plus per-campaign character names, nicknames, and vocab are injected as `initial_prompt` for every transcription, updated after each agent turn. The base set lives in `voice-hud/src/baseVocab.ts` (separate from per-campaign vocab) — extend it without touching code via a JSON array at `<DMW_DATA_DIR>/base-vocab.json`.
 
+**STT correction** (`voice-hud/src/correction.ts`): a deterministic post-STT pass that fixes Whisper's residue against the same glossary, in microseconds. Three ordered, toggleable passes — (1) **notation** (`"two dee six"` → `2d6`, `"nat twenty"` → `nat 20`), (2) **literal map** (exact swaps like `"dee see"` → `DC`), (3) **fuzzy + phonetic**: Double Metaphone is the primary gate, fuzzy ratio secondary, with a common-word guard so real English is left alone (`cave`↛`save`). Despaced multi-word spans match single-word names, so a split name like `"hair gone"` → `Haregon`. Built for precision — a missed correction is cheap; a wrong one corrupts the parse, so stubborn names go in the literal map.
+
 **Config:** all runtime knobs (PTT key, STT model, MCP URL, provider, etc.) are exposed in the Scrying Ledger Config tab and persisted to `voice-hud/.env`.
 
 **Debug:** the Scrying Ledger Debug tab streams the main process `console.error` log live, with 500-entry history.

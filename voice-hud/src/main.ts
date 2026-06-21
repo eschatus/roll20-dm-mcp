@@ -16,8 +16,9 @@ import { startStt, SttEngine } from "./stt";
 import { McpRoll20 } from "./mcp";
 import { DmAgent } from "./agent";
 import { buildRoster, clearRosterCache } from "./roster";
-import { loadCampaignData, saveCampaignData, buildVocabPrompt, addVocabTerm, CampaignData } from "./campaignData";
+import { loadCampaignData, saveCampaignData, buildVocabPrompt, buildVocabList, addVocabTerm, CampaignData } from "./campaignData";
 import { loadBaseVocab } from "./baseVocab";
+import { correctTranscript } from "./correction";
 import { loadSettings, saveSettings, AppSettings } from "./settings";
 import { setLogSink, persist } from "./logger";
 
@@ -237,21 +238,26 @@ function wireClipHandler() {
     try {
       if (!stt) throw new Error("STT not ready");
       if (activeSlug) campaignData = loadCampaignData(activeSlug); // pick up add_vocab writes
-      const vocab = buildVocabPrompt(campaignData, rosterNames, baseVocab);
+      const vocabList = buildVocabList(campaignData, rosterNames, baseVocab);
       const t0 = Date.now();
-      const result = await stt.transcribe(wavPath, vocab);
-      const text = result.text.trim();
+      const result = await stt.transcribe(wavPath, vocabList.join(", "));
+      // Post-STT correction (deterministic, µs): fix mishears against the same
+      // glossary — split names, dice/mechanics notation. Only the FINAL transcript
+      // is corrected (partials stay raw/fast). Log when it actually changes anything.
+      const corrected = correctTranscript(result.text, { glossary: vocabList });
+      if (corrected !== result.text) console.error(`[correct] "${result.text.slice(0, 60)}" → "${corrected.slice(0, 60)}"`);
+      const text = corrected.trim();
       console.error(`[stt] ${Date.now() - t0}ms → "${text.slice(0, 80)}"${text ? "" : " (EMPTY)"}`);
       if (mode === "expanded") {
         // Ledger open: dictate into the editable chatbox for review/fix, don't auto-run.
         send("dictate", { text, lowConfidence: result.low_confidence });
         send("state", "idle");
       } else {
-        send("transcript", { text: result.text, lowConfidence: result.low_confidence });
+        send("transcript", { text, lowConfidence: result.low_confidence });
         if (text) runAgent(text);
         else send("state", "idle");
       }
-      return { ok: true, text: result.text, lowConfidence: result.low_confidence };
+      return { ok: true, text, lowConfidence: result.low_confidence };
     } catch (err) {
       send("agent", { kind: "error", text: "STT failed: " + (err as Error).message });
       send("state", "idle");
