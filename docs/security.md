@@ -128,13 +128,16 @@ This document catalogs the attack surfaces in this project and the mitigations i
 
 ---
 
-## 9. DALL-E / image generation API
+## 9. DALL-E / image generation API — OUT OF SCOPE (dropped 2026-06-20)
 
-**What goes to the third-party API:** User-supplied text prompts describing scenes ("a dark forest clearing with a ruined altar").
+An image-generation tool was considered and **removed from scope** — no provider/cost justification.
+There is no image-generation surface in the product. The notes below are retained only as guidance
+should it ever be reconsidered.
+
+**What would go to the third-party API:** User-supplied text prompts describing scenes ("a dark forest clearing with a ruined altar").
 
 **Risk:** PII or campaign-specific information embedded in prompts leaves the local environment.
 
-**Mitigations:**
+**Mitigations (if ever revisited):**
 - Prompts are DM-composed scene descriptions — no player PII flows through
 - Do not include player real names, campaign-specific lore, or any sensitive information in image generation prompts
-- The image generation tool is not implemented yet — this is a future surface to revisit when it is added

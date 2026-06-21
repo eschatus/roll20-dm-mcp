@@ -35,6 +35,17 @@ Source of the backlog: the "genuinely open" items found across `docs/`, `skills/
 
 ---
 
+## Status (updated 2026-06-20)
+- **Wave 1 — DONE & merged:** VHUD (#19), LINT (#18), PCBAR (#17), RELAY (#16, deployed + soaked).
+- **HANDLERMAP — DONE, deployed & soaked (#23):** `ai-relay.js` dispatch is now a handler map.
+- **BRIDGE — PARKED** (deliberate): the state half already shipped; moving round-end narration to
+  TS would couple it to the agent being online — not worth that trade now.
+- **Image-generation tool — OUT OF SCOPE** (dropped; no provider/cost justification).
+- Also landed: voice-HUD phase/narration test stack (#21, #22), v8 coverage + relay smoke (#24),
+  `getTokenMarkers` parse guard (#25).
+
+The tables below are the original dispatch plan, kept for provenance.
+
 ## Wave 1 — parallel Sonnet workers (disjoint areas)
 
 | Track | Goal | Owns (files) | Spec / source | Acceptance |
@@ -44,9 +55,8 @@ Source of the backlog: the "genuinely open" items found across `docs/`, `skills/
 | **PCBAR** | Enforce "never write a PC bar" on the single-target HP path | `src/tools/combat.ts` (single-target `update_token_hp` only) + a new `test/` case | `docs/choreography.md:146` | Single-target route honors `isPcToken`/controlledby → relay state (like `resolve_aoe` does); emulator test proves a PC bar is never written; **verify first** — may already hold |
 | **RELAY** | Two `ai-relay.js`-touching features (one worker owns the Mod file) | `mod-scripts/ai-relay.js`, a new `src/tools/characters-edit.ts`, `src/server-combat.ts` (register), `test/relay-actions.test.ts` | `docs/roll20-api-coverage.md` (char stub) + `docs/relay-payload-slimming.md` | (a) full **character editing** action (name/bio/avatar/controlledby/archived/inplayerjournals) + a `set_character_props` tool; (b) finish the **payload-slimming** drops still flagged (e.g. `ddb_list_campaigns` `JSON.stringify`). Emulator tests pass. **Flag for orchestrator: needs Mod redeploy + soak after merge.** |
 
-**IMG (optional, design-gated):** an image-generation tool (`docs/security.md:140`) needs a provider
-decision (which API, auth, cost) before code. Either the orchestrator scopes it into a spec first, or
-defer. Not a clean parallel start until designed.
+**IMG — OUT OF SCOPE (dropped 2026-06-20).** An image-generation tool was considered and removed:
+no provider/cost justification. See `docs/security.md` §9.
 
 ## Wave 2 — sequential, high-risk (run ALONE, after Wave 1 merges)
 
@@ -55,8 +65,8 @@ full attention, the emulator as the regression net, and a Mod redeploy + soak af
 
 | Track | Goal | Spec | Why sequential |
 |---|---|---|---|
-| **BRIDGE** | Migrate GM bridge-state + turn-hook narration to TS | `docs/bridge-state-and-turn-hook-plan.md` (has "Open questions for next session") | High value/risk; single-writer-per-carrier-token constraint; relay + bridge co-change; needs soak |
-| **HANDLERMAP** | Refactor `ai-relay.js` dispatch switch → handler-map | `docs/decisions.md:104` (deferred) | Rewrites ~1,300 lines of dispatch; conflicts with **everything** relay → must be last, after RELAY lands and `test/relay-actions.test.ts` covers the actions it migrates |
+| **BRIDGE** _(PARKED)_ | Migrate GM bridge-state + turn-hook narration to TS | `docs/bridge-state-and-turn-hook-plan.md` (has "Open questions for next session") | High value/risk; single-writer-per-carrier-token constraint; relay + bridge co-change; needs soak. State half shipped; narration half parked (would couple round-end narration to the agent being online) |
+| **HANDLERMAP** _(DONE #23, deployed + soaked)_ | Refactor `ai-relay.js` dispatch switch → handler-map | `docs/decisions.md:104` | Done via a TS-compiler-API verbatim transform (`scripts/handlermap-transform.mjs`); emulator + smoke coverage as the net |
 
 ## Integration order (orchestrator)
 1. Merge **LINT**, **PCBAR**, **VHUD** in any order (disjoint).
