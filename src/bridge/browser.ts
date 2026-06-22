@@ -1,5 +1,6 @@
 import { chromium, BrowserContext, Page } from "playwright";
 import path from "path";
+import { dataPath } from "../dataDir.js";
 
 type Site = "roll20" | "ddb";
 
@@ -81,9 +82,9 @@ async function getContext(): Promise<BrowserContext> {
     for (const s of Object.keys(_pagePromises) as Site[]) delete _pagePromises[s];
   }
   if (!_contextPromise) {
-    const userDataDir = path.resolve(
-      process.env.BROWSER_USER_DATA_DIR ?? "./data/browser-session"
-    );
+    const userDataDir = process.env.BROWSER_USER_DATA_DIR
+      ? path.resolve(process.env.BROWSER_USER_DATA_DIR)
+      : dataPath("browser-session");
     _contextPromise = (async () => {
       // Fast path: attach to a browser that's already running (handles MCP server restarts
       // and multi-server setups where another process already owns the profile dir).

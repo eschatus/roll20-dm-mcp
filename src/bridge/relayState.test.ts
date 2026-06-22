@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { existsSync, rmSync } from "fs";
-import path from "path";
+import { dataPath } from "../dataDir.js";
 import { trackCustomState, getCustomStates } from "./relayState.js";
 
 // Use unique throwaway campaign ids so tests never touch real data/relay-state files.
@@ -13,7 +13,7 @@ function freshCampaign(): string {
 
 afterAll(() => {
   for (const id of ids) {
-    const f = path.resolve(`./data/relay-state-${id}.json`);
+    const f = dataPath(`relay-state-${id}.json`);
     if (existsSync(f)) rmSync(f);
   }
 });
@@ -57,6 +57,6 @@ describe("relayState custom-state tracking", () => {
   it("persists to disk (a fresh read sees prior writes)", () => {
     const c = freshCampaign();
     trackCustomState(c, "marked", "arrowed", "tokX", true);
-    expect(existsSync(path.resolve(`./data/relay-state-${c}.json`))).toBe(true);
+    expect(existsSync(dataPath(`relay-state-${c}.json`))).toBe(true);
   });
 });

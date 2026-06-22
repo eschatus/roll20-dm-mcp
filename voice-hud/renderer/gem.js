@@ -568,6 +568,14 @@ function markProvider(active) {
 async function refreshProvider() {
   if (!window.dmw) return;
   try { markProvider(await dmw.getProvider()); } catch {}
+  // Local LLM (Ollama) is mothballed — hide the brain toggle unless it's enabled.
+  try {
+    const c = await dmw.getConfig();
+    if (c && !c.enableLocalLlm) {
+      const pick = document.querySelector(".model-btn")?.closest(".model-pick");
+      if (pick) pick.style.display = "none";
+    }
+  } catch {}
 }
 document.querySelectorAll(".model-btn").forEach((b) => {
   b.addEventListener("click", async () => {

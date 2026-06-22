@@ -72,3 +72,56 @@ describe("orchestrator", () => {
     expect(out).toBe("two dee six");
   });
 });
+
+describe("regression — bug 1: score-maximizing window selection (greedy-longest must NOT swallow 'is')", () => {
+  it("'Ireena is down to seven hit points' — 'is' is preserved, not absorbed by the Ireena window", () => {
+    const out = correctTranscript(
+      "Ireena is down to seven hit points",
+      { glossary: ["Ireena"], notation: false, literal: false },
+    );
+    expect(out).toContain("Ireena is down");
+    expect(out).not.toMatch(/Ireena\s+down/);
+  });
+
+  it("'Strahd is here' — 'is' is preserved after the Strahd match", () => {
+    const out = correctTranscript(
+      "Strahd is here",
+      { glossary: ["Strahd"], notation: false, literal: false },
+    );
+    expect(out).toBe("Strahd is here");
+  });
+
+  it("split-name still merges: 'hair gone moves up' → 'Haregon moves up'", () => {
+    const out = correctTranscript(
+      "hair gone moves up",
+      { glossary: ["Haregon"], notation: false, literal: false },
+    );
+    expect(out).toBe("Haregon moves up");
+  });
+
+  it("multi-word glossary term: 'Diver Tympania' corrects to 'Daever Tympania'", () => {
+    const out = correctTranscript(
+      "Diver Tympania steps forward",
+      { glossary: ["Daever Tympania"], notation: false, literal: false },
+    );
+    expect(out).toBe("Daever Tympania steps forward");
+  });
+
+  it("combat verb is not nameified: 'they kill Droop' keeps 'kill' (not 'Quill')", () => {
+    const out = correctTranscript(
+      "they kill Droop in the first round",
+      { glossary: ["Quill", "Droop"], notation: false, literal: false },
+    );
+    expect(out).toContain("kill Droop");
+    expect(out).not.toContain("Quill");
+  });
+
+  it("a near-name mishear is still corrected even though verb collisions are guarded", () => {
+    // Irina↔Ireena (~0.67) must still fix while kill↔Quill (~0.6, common word) is blocked.
+    const out = correctTranscript(
+      "Irina casts a spell",
+      { glossary: ["Ireena"], notation: false, literal: false },
+    );
+    expect(out).toContain("Ireena");
+  });
+});

@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, renameSync } from "fs";
-import path from "path";
+import { dataPath } from "../dataDir.js";
 
 // Atomic write: rename over the target so a concurrent reader never observes the
 // truncated window that plain writeFileSync opens (→ "Unexpected end of JSON input").
@@ -9,11 +9,10 @@ function atomicWrite(filePath: string, contents: string): void {
   renameSync(tmp, filePath);
 }
 
-// Data dir is overridable via ROLL20_DATA_DIR so tests (and relocated installs)
-// don't read/write the real ./data files.
-const DATA_DIR = process.env.ROLL20_DATA_DIR ?? "./data";
-const CAMPAIGNS_PATH = path.resolve(DATA_DIR, "campaigns.json");
-const ACTIVE_CAMPAIGN_PATH = path.resolve(DATA_DIR, "active-campaign.json");
+// Data dir resolved by ../dataDir (ROLL20_DATA_DIR override; default ./data) so the
+// per-user / relocated-install location is defined in exactly one place.
+const CAMPAIGNS_PATH = dataPath("campaigns.json");
+const ACTIVE_CAMPAIGN_PATH = dataPath("active-campaign.json");
 
 export interface CampaignEntry {
   name: string;

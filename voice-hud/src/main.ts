@@ -12,7 +12,7 @@ import * as fs from "fs";
 import * as dotenv from "dotenv";
 import { CONFIG } from "./config";
 import { PttHook } from "./ptt";
-import { startStt, SttEngine } from "./stt";
+import { startStt, startFinalStt, SttEngine } from "./stt";
 import { McpRoll20 } from "./mcp";
 import { DmAgent } from "./agent";
 import { buildRoster, clearRosterCache } from "./roster";
@@ -41,6 +41,7 @@ app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 let gem: BrowserWindow | null = null;
 const ptt = new PttHook();
 let stt: SttEngine | null = null; // resolved by startStt() (walks the fallback chain)
+let sttFinal: SttEngine | null = null; // optional two-tier: bigger model for the FINAL clip (else falls back to stt)
 const mcp = new McpRoll20();
 const agent = new DmAgent(mcp, loadSettings().provider ?? CONFIG.provider);
 
@@ -85,6 +86,8 @@ let _agentTurnActive = false;
 let _pendingRosterBlock: string | null = null;
 // Token id→name map (updated from roster, consumed by RTDB event handler)
 let rosterTokenById: Record<string, string> = {};
+// Warn-once when the DMW_SAVE_CLIPS A/B corpus hits its size/count budget.
+let abClipBudgetWarned = false;
 
 // Manual-drag state for the ✥ handle.
 let dragTimer: NodeJS.Timeout | null = null;
@@ -236,12 +239,41 @@ function wireClipHandler() {
   ipcMain.handle("clip", async (_e, buf: ArrayBuffer) => {
     const wavPath = path.join(CONFIG.tmpDir, `clip-${Date.now()}.wav`);
     fs.writeFileSync(wavPath, Buffer.from(buf));
+    // A/B corpus capture: with DMW_SAVE_CLIPS=1, keep a copy of the real production
+    // audio under data/ab-clips/ for `npm run ab:stt`. (The clip is otherwise deleted
+    // in finally.) A .draft.txt with the live transcript is written too — a CONVENIENCE
+    // starting point; the harness ignores it. Edit it to ground truth → <clip>.txt for WER.
+    let abClip: string | null = null;
+    if (process.env.DMW_SAVE_CLIPS === "1") {
+      try {
+        const dir = path.join(__dirname, "..", "data", "ab-clips");
+        fs.mkdirSync(dir, { recursive: true });
+        // Hard budget so an enabled capture never balloons: skip (never delete) once the
+        // corpus would exceed the byte cap (default 1 GB) or the file cap. Override via
+        // DMW_SAVE_CLIPS_MAX_MB / DMW_SAVE_CLIPS_MAX_FILES.
+        const maxBytes = (Number(process.env.DMW_SAVE_CLIPS_MAX_MB) || 1024) * 1024 * 1024;
+        const maxFiles = Number(process.env.DMW_SAVE_CLIPS_MAX_FILES) || 250;
+        const audio = fs.readdirSync(dir).filter((f) => /\.(wav|mp3|ogg|flac)$/i.test(f));
+        const used = audio.reduce((n, f) => { try { return n + fs.statSync(path.join(dir, f)).size; } catch { return n; } }, 0);
+        const incoming = fs.statSync(wavPath).size;
+        if (audio.length >= maxFiles || used + incoming > maxBytes) {
+          if (!abClipBudgetWarned) {
+            console.error(`[ab-clip] corpus full (${audio.length} clips, ${(used / 1e6).toFixed(0)} MB) — not saving more. Prune data/ab-clips/ to resume.`);
+            abClipBudgetWarned = true;
+          }
+        } else {
+          abClip = path.join(dir, path.basename(wavPath));
+          fs.copyFileSync(wavPath, abClip);
+        }
+      } catch (e) { console.error("[ab-clip] save failed: " + (e as Error).message); }
+    }
     try {
       if (!stt) throw new Error("STT not ready");
       if (activeSlug) campaignData = loadCampaignData(activeSlug); // pick up add_vocab writes
       const vocabList = buildVocabList(campaignData, rosterNames, baseVocab);
       const t0 = Date.now();
-      const result = await stt.transcribe(wavPath, vocabList.join(", "));
+      // Final clip → the bigger two-tier engine if configured, else the primary.
+      const result = await (sttFinal ?? stt).transcribe(wavPath, vocabList.join(", "));
       // Post-STT correction (deterministic, µs): fix mishears against the same
       // glossary — split names, dice/mechanics notation. Only the FINAL transcript
       // is corrected (partials stay raw/fast). Log when it actually changes anything.
@@ -252,13 +284,14 @@ function wireClipHandler() {
       if (corrected !== result.text) console.error(`[correct] "${result.text.slice(0, 60)}" → "${corrected.slice(0, 60)}"`);
       const text = corrected.trim();
       console.error(`[stt] ${Date.now() - t0}ms → "${text.slice(0, 80)}"${text ? "" : " (EMPTY)"}`);
+      if (abClip) { try { fs.writeFileSync(abClip.replace(/\.wav$/i, ".draft.txt"), text); } catch { /* ignore */ } }
       if (mode === "expanded") {
         // Ledger open: dictate into the editable chatbox for review/fix, don't auto-run.
         send("dictate", { text, lowConfidence: result.low_confidence });
         send("state", "idle");
       } else {
         send("transcript", { text, lowConfidence: result.low_confidence });
-        if (text) runAgent(text);
+        if (text) runAgent(text, result.low_confidence);
         else send("state", "idle");
       }
       return { ok: true, text, lowConfidence: result.low_confidence };
@@ -328,15 +361,21 @@ function wireClipHandler() {
 }
 
 // --- Run the agent on a transcript ---
-async function runAgent(transcript: string) {
+async function runAgent(transcript: string, lowConfidence = false) {
   send("state", "thinking");
-  console.error(`[agent] turn start: "${transcript.slice(0, 80)}"`);
+  console.error(`[agent] turn start: "${transcript.slice(0, 80)}"${lowConfidence ? " (LOW CONF)" : ""}`);
   _agentTurnActive = true;
+  // A shaky transcript: flag it to the agent (the persona reads this) so it leans
+  // toward confirming destructive writes rather than acting on a likely mishear.
+  // Detector-safe — the marker carries no phase keywords.
+  const utterance = lowConfidence
+    ? `[LOW-CONFIDENCE voice transcript — a likely mishear; interpret cautiously and confirm any destructive write] ${transcript}`
+    : transcript;
   try {
     // SWR: fire roster refresh in the background so the LLM starts immediately.
     // If the refresh lands mid-turn, refreshRoster stashes the block; we apply it below.
     refreshRoster({ silent: true }).catch((e) => console.error("[roster] pre-turn refresh failed:", (e as Error).message));
-    await agent.handle(transcript, {
+    await agent.handle(utterance, {
       onText: (text) => { console.error(`[agent] say: ${text.slice(0, 80)}`); send("agent", { kind: "say", text }); },
       onToolStart: (name, args) => { console.error(`[agent] tool → ${name}(${shortArgs(args)})`); send("agent", { kind: "tool", text: `${name}(${shortArgs(args)})` }); },
       onToolResult: (name, resultText) => { console.error(`[agent] tool ✓ ${name}: ${resultText.slice(0, 60)}`); send("agent", { kind: "result", text: `${name} ✓`, detail: resultText }); },
@@ -435,6 +474,10 @@ function wireWizard() {
   // results. Returns the active provider so the UI reflects reality.
   ipcMain.handle("get-provider", () => agent.currentProvider());
   ipcMain.handle("set-provider", (_e, name: "ollama" | "anthropic") => {
+    if (name === "ollama" && !CONFIG.enableLocalLlm) {
+      send("agent", { kind: "info", text: "local LLM is mothballed (set DMW_ENABLE_LOCAL_LLM=1)" });
+      return { ok: false, active: agent.currentProvider(), reason: "local LLM disabled" };
+    }
     const r = agent.switchProvider(name);
     send("agent", { kind: "info", text: r.ok ? `model → ${name}` : `swap refused: ${r.reason}` });
     if (r.ok) { settings = { ...settings, provider: name }; saveSettings(settings); }
@@ -525,6 +568,7 @@ function wireWizard() {
     partialMs: CONFIG.partialMs,
     mcpUrl: CONFIG.mcpUrl,
     provider: CONFIG.provider,
+    enableLocalLlm: CONFIG.enableLocalLlm,
     model: CONFIG.model,
     autoEscalate: CONFIG.autoEscalate,
     ollamaUrl: CONFIG.ollamaUrl,
@@ -664,6 +708,18 @@ app.whenReady().then(async () => {
     })
     .catch((err) => send("agent", { kind: "error", text: "STT failed: " + (err as Error).message }));
 
+  // Two-tier (opt-in): a second resident server on a bigger model for FINAL clips only.
+  // Off unless DMW_WHISPER_FINAL_MODEL is set + whisperserver; null on failure → finals
+  // just use the primary engine. Started in the background; never blocks the gem.
+  startFinalStt((m) => process.stderr.write(m))
+    .then((engine) => {
+      if (!engine) return;
+      sttFinal = engine;
+      sttFinal.on("exit", () => { sttFinal = null; }); // crash → silently fall back to primary
+      send("agent", { kind: "info", text: `two-tier finals: ${engine.name}` });
+    })
+    .catch(() => { /* finals fall back to the primary engine */ });
+
   try {
     const tools = await mcp.connect();
     console.error(`[mcp] connected — ${tools.length} tools`);
@@ -679,7 +735,7 @@ app.whenReady().then(async () => {
 });
 
 let appQuitting = false;
-app.on("before-quit", () => { appQuitting = true; });
+app.on("before-quit", () => { appQuitting = true; try { sttFinal?.stop(); } catch { /* ignore */ } });
 
 app.on("window-all-closed", () => {
   appQuitting = true;

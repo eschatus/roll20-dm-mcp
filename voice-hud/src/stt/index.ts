@@ -5,9 +5,35 @@
 
 import { SttEngine } from "./engine";
 import { FasterWhisperEngine } from "./fasterWhisper";
+import { WhisperCppEngine } from "./whisperCpp";
+import { WhisperServerEngine } from "./whisperServer";
 import { CONFIG } from "../config";
 
 export { SttEngine, TranscriptResult } from "./engine";
+
+// Optional second engine for the FINAL clip in a two-tier setup (config.whisperFinalModel):
+// a bigger/more-accurate resident model for the agent-driving transcript, while fast live
+// partials keep using the primary engine. Only meaningful with the resident whisper-server;
+// returns null otherwise (caller then uses the primary engine for finals too). Runs on
+// whisperServerPort+1 to coexist with the partial-tier server; null on any failure.
+export async function startFinalStt(onLog: (m: string) => void): Promise<SttEngine | null> {
+  if (!CONFIG.whisperFinalModel || CONFIG.sttEngine !== "whisperserver") return null;
+  const eng = new WhisperServerEngine({
+    binPath: CONFIG.whisperServerBin,
+    modelPath: CONFIG.whisperFinalModel,
+    port: CONFIG.whisperServerPort + 1,
+  });
+  eng.on("log", (m) => onLog(String(m)));
+  try {
+    onLog(`[stt] two-tier: final clips → ${eng.name} (port ${CONFIG.whisperServerPort + 1})\n`);
+    await eng.start();
+    return eng;
+  } catch (e) {
+    onLog(`[stt] two-tier final engine failed: ${(e as Error).message} — finals use the primary engine\n`);
+    eng.stop();
+    return null;
+  }
+}
 
 interface EngineStep { model: string; device: string; computeType: string }
 
@@ -26,8 +52,49 @@ function chain(): EngineStep[] {
 // Start STT, walking the fallback chain until one loads. Throws only if every
 // step fails. Diagnostics for each attempt are surfaced via onLog.
 export async function startStt(onLog: (m: string) => void): Promise<SttEngine> {
-  const steps = chain();
   let lastErr: Error | null = null;
+
+  // Native whisper.cpp engine (opt-in via DMW_STT_ENGINE=whispercpp). Try it first;
+  // on any failure (binary or model missing) fall through to the Python faster-whisper
+  // chain so the gem always comes up.
+  if (CONFIG.sttEngine === "whispercpp") {
+    const eng = new WhisperCppEngine({ binPath: CONFIG.whisperBin, modelPath: CONFIG.whisperModel });
+    eng.on("log", (m) => onLog(String(m)));
+    try {
+      onLog(`[stt] trying ${eng.name}…\n`);
+      await eng.start();
+      onLog(`[stt] using ${eng.name}\n`);
+      return eng;
+    } catch (e) {
+      lastErr = e as Error;
+      onLog(`[stt] ${eng.name} failed: ${(e as Error).message} — falling back to faster-whisper\n`);
+      eng.stop();
+    }
+  }
+
+  // Resident whisper-server engine (opt-in via DMW_STT_ENGINE=whisperserver). Keeps the
+  // model loaded across all transcribe() calls — eliminates the per-clip model-reload cost
+  // of the one-shot whisper-cli. Falls through to faster-whisper on any startup failure.
+  if (CONFIG.sttEngine === "whisperserver") {
+    const eng = new WhisperServerEngine({
+      binPath: CONFIG.whisperServerBin,
+      modelPath: CONFIG.whisperModel,
+      port: CONFIG.whisperServerPort,
+    });
+    eng.on("log", (m) => onLog(String(m)));
+    try {
+      onLog(`[stt] trying ${eng.name} on port ${CONFIG.whisperServerPort}…\n`);
+      await eng.start();
+      onLog(`[stt] using ${eng.name} (resident, port ${CONFIG.whisperServerPort})\n`);
+      return eng;
+    } catch (e) {
+      lastErr = e as Error;
+      onLog(`[stt] ${eng.name} failed: ${(e as Error).message} — falling back to faster-whisper\n`);
+      eng.stop();
+    }
+  }
+
+  const steps = chain();
   for (const step of steps) {
     const eng = new FasterWhisperEngine({
       python: CONFIG.stt.python, script: CONFIG.stt.script,

@@ -120,6 +120,32 @@ export const CONFIG = {
   // Right-Shift (UiohookKey "ShiftRight") — pairs with Right-Ctrl PTT. Esc cancels.
   confirmKey: process.env.DMW_CONFIRM_KEY || "ShiftRight",
 
+  // STT engine selector. "faster-whisper" = the Python sidecar (default). "whispercpp"
+  // = the native prebuilt whisper.cpp CLI binary (one-shot, reloads per clip). "whisperserver"
+  // = whisper-server.exe kept resident (model loads once; much lower per-clip latency).
+  // The factory falls back to faster-whisper if the selected engine fails to start.
+  sttEngine: (process.env.DMW_STT_ENGINE || "faster-whisper") as "faster-whisper" | "whispercpp" | "whisperserver",
+  // whisper.cpp prebuilt CLI binary. Default = the extracted release under the data
+  // dir (CPU on win32). Swap to a cuBLAS/Vulkan build via DMW_WHISPER_BIN for GPU.
+  whisperBin: process.env.DMW_WHISPER_BIN ||
+    path.join(__dirname, "..", "data", "whisper", process.platform === "win32" ? "Release/whisper-cli.exe" : "whisper-cli"),
+  // whisper.cpp ggml model (.bin) for the native engine. Default under the data dir.
+  whisperModel: process.env.DMW_WHISPER_MODEL ||
+    path.join(__dirname, "..", "data", "models", "ggml-base.en.bin"),
+  // whisper-server.exe binary path. Default = Release dir alongside whisper-cli.exe.
+  // Set DMW_WHISPER_SERVER_BIN to override (e.g. point at the cuBLAS build for GPU).
+  whisperServerBin: process.env.DMW_WHISPER_SERVER_BIN ||
+    path.join(__dirname, "..", "data", "whisper", process.platform === "win32" ? "Release/whisper-server.exe" : "whisper-server"),
+  // HTTP port for the resident whisper-server (default 18080 — avoids conflicts with
+  // common 8080). Set DMW_WHISPER_SERVER_PORT to override.
+  whisperServerPort: Number(process.env.DMW_WHISPER_SERVER_PORT) || 18080,
+  // Optional TWO-TIER (only with whisperserver): when set, the FINAL committed clip is
+  // transcribed by a second resident server on this bigger/more-accurate model, while
+  // fast live partials keep using whisperModel — spending latency headroom where it
+  // matters (the agent-driving final) without lagging the 900 ms partial loop. Empty =
+  // single-tier. e.g. DMW_WHISPER_FINAL_MODEL=…/ggml-medium.en.bin with a base.en primary.
+  whisperFinalModel: process.env.DMW_WHISPER_FINAL_MODEL || "",
+
   // --- STT engine (faster-whisper sidecar) ---
   stt: {
     // The 3.10 venv python that has faster-whisper + CUDA libs installed.
@@ -152,8 +178,13 @@ export const CONFIG = {
   mcpUrl: process.env.DMW_MCP_URL || "http://127.0.0.1:39200/mcp",
 
   // --- HUD agent provider ---
-  // "anthropic" (cloud, default) or "ollama" (local). DMW_PROVIDER overrides.
-  provider: (process.env.DMW_PROVIDER || "anthropic") as "ollama" | "anthropic",
+  // Local LLM (Ollama) is MOTHBALLED behind a flag — it needs a much bigger GPU than
+  // the cloud default delivers, so it's hidden/disabled unless DMW_ENABLE_LOCAL_LLM=1.
+  enableLocalLlm: process.env.DMW_ENABLE_LOCAL_LLM === "1",
+  // "anthropic" (cloud, default) or "ollama" (local — only honored when the flag is on,
+  // so a stale DMW_PROVIDER=ollama can't strand the gem on a backend that's disabled).
+  provider: ((process.env.DMW_ENABLE_LOCAL_LLM === "1" && process.env.DMW_PROVIDER)
+    ? process.env.DMW_PROVIDER : "anthropic") as "ollama" | "anthropic",
 
   // Anthropic (cloud) model — used when provider=anthropic or on auto-escalation.
   // Haiku 4.5 is cheap + reliable at narration parsing / multi-target tool use
