@@ -71,8 +71,13 @@ production code paths (same vocab prompt, same deterministic correction layer) a
 text + latency, and — when a clip has a ground-truth reference — **WER (raw→corrected)** and
 **proper-noun recall** (the D&D names that actually matter), plus an aggregate.
 
-Get clips two ways:
-- **Real production audio (best):** launch the gem with `DMW_SAVE_CLIPS=1` and PTT your lines. Each
+Get clips three ways:
+- **Dedicated recorder (easiest):** `npm run record` → open `http://localhost:8137`, hold the button
+  (or `Space`) and speak a line, play it back, type **what you actually said**, Save. It reuses the
+  gem's exact capture + `encodeWav`, so clips are byte-identical to production, and writes
+  `<name>.wav` + `<name>.txt` straight into `data/ab-clips/`. Works on your rig and Bill's M4 (any
+  browser — mic is allowed on `http://localhost`).
+- **Real session audio:** launch the gem with `DMW_SAVE_CLIPS=1` and PTT your lines. Each
   clip is copied to `data/ab-clips/` (the exact 16 kHz format the gem produces), with a
   `<clip>.draft.txt` of the live transcript as a convenience. **Edit that to what you actually said
   and rename to `<clip>.txt`** to enable WER (the harness ignores `.draft.txt` — it's the STT's own

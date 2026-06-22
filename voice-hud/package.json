@@ -9,7 +9,8 @@
     "dev": "tsc -w",
     "test": "vitest run",
     "test:watch": "vitest",
-    "ab:stt": "tsx scripts/ab-stt.ts"
+    "ab:stt": "tsx scripts/ab-stt.ts",
+    "record": "tsx scripts/record-clips.ts"
   },
   "license": "ISC",
   "devDependencies": {
