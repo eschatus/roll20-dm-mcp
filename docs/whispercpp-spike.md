@@ -64,6 +64,29 @@ macOS/Linux: grab the matching release (`whisper-bin-ubuntu-x64.tar.gz`, the xcf
 Silicon GPU. Default bin path is platform-aware (`Release/whisper-cli.exe` on win32, `whisper-cli`
 elsewhere).
 
+## A/B harness — measure it, don't eyeball it
+
+`npm run ab:stt` (`voice-hud/scripts/ab-stt.ts`) runs **both** engines headlessly through the real
+production code paths (same vocab prompt, same deterministic correction layer) and prints per-clip
+text + latency, and — when a clip has a ground-truth reference — **WER (raw→corrected)** and
+**proper-noun recall** (the D&D names that actually matter), plus an aggregate.
+
+Get clips two ways:
+- **Real production audio (best):** launch the gem with `DMW_SAVE_CLIPS=1` and PTT your lines. Each
+  clip is copied to `data/ab-clips/` (the exact 16 kHz format the gem produces), with a
+  `<clip>.draft.txt` of the live transcript as a convenience. **Edit that to what you actually said
+  and rename to `<clip>.txt`** to enable WER (the harness ignores `.draft.txt` — it's the STT's own
+  guess, which would be circular).
+- **Drop-in:** put any `.wav/.mp3/.ogg/.flac` in `data/ab-clips/`, optional same-named `.txt` ref.
+
+Campaign names: `DMW_AB_VOCAB="Strahd, Ireena, Haregon, …"` is added to the base vocab prompt for
+both engines (defaults to base vocab alone). A `jfk.wav` + reference is seeded so it runs immediately.
+
+**Capture is budget-capped** so an enabled session never balloons: it stops saving (never deletes)
+once `data/ab-clips/` would exceed **1 GB** or **250 clips** — override with `DMW_SAVE_CLIPS_MAX_MB`
+/ `DMW_SAVE_CLIPS_MAX_FILES`. Latency caveat: the one-shot whisper.cpp reloads the model per clip
+(its time includes model load); faster-whisper is resident.
+
 ## Tunables
 
 - **Model size** = speed/accuracy/size: `base.en` (fast, ~150 MB) → `small.en` → `medium.en`
