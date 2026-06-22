@@ -43,7 +43,7 @@ describe("buildServerSpawn", () => {
   });
   it("packaged → bundled resources/server/dist/index-http.js", () => {
     const { entry, cwd } = buildServerSpawn(true, "/res", "/repo");
-    expect(norm(entry)).toBe("/res/server/dist/index-http.js");
+    expect(norm(entry)).toBe("/res/server/dist/index-http.mjs");
     expect(norm(cwd)).toBe("/res/server");
   });
 });

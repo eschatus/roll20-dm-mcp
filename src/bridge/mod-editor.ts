@@ -1,5 +1,5 @@
 import { readFileSync } from "fs";
-import { Page } from "playwright";
+import type { Page } from "playwright";
 import { newBrowserPage } from "./browser.js";
 
 let _modPage: Page | null = null;

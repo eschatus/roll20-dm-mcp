@@ -11,16 +11,14 @@
     "test:watch": "vitest",
     "ab:stt": "tsx scripts/ab-stt.ts",
     "record": "tsx scripts/record-clips.ts",
-    "bundle:server": "esbuild ../src/index-http.ts --bundle --platform=node --format=cjs --outfile=../dist-server/dist/index-http.js --external:playwright --external:firebase-tools",
-    "dist:dir": "npm run build && npm run bundle:server && electron-builder --dir",
-    "dist": "npm run build && npm run bundle:server && electron-builder"
+    "bundle:server": "npx --yes esbuild ../src/index-http.ts --bundle --platform=node --format=esm --outfile=../dist-server/dist/index-http.mjs --external:playwright --external:sharp",
+    "dist:dir": "npm run build && npm run bundle:server && npx --yes electron-builder --dir",
+    "dist": "npm run build && npm run bundle:server && npx --yes electron-builder"
   },
   "license": "ISC",
   "devDependencies": {
     "@types/node": "^22.0.0",
     "electron": "^33.4.11",
-    "electron-builder": "^25.1.8",
-    "esbuild": "^0.24.0",
     "tsx": "^4.20.0",
     "typescript": "^6.0.3",
     "vitest": "^3.2.4"
