@@ -1,0 +1,88 @@
+name: Release
+
+# Tag-driven CD: push a `v*` tag → build the DM Whisper installer for Windows, macOS
+# (Apple Silicon) and Linux, then publish all three to a DRAFT GitHub Release named after
+# the version. Review the draft on the repo's Releases page and hit "Publish release".
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# `workflow_dispatch` runs the same matrix as a dry build (no publish) and uploads the
+# installers as workflow artifacts so you can smoke-test before tagging.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write          # required for electron-builder to create/upload the Release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, platform: win }
+          - { os: macos-14,       platform: mac }    # Apple Silicon (arm64)
+          - { os: ubuntu-latest,  platform: linux }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # The tag must match voice-hud/package.json version — electron-builder names the
+      # Release from package.json, not the git ref, so a mismatch publishes the wrong draft.
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./voice-hud/package.json').version")"
+          echo "tag=$tag package=$pkg"
+          [ "$tag" = "$pkg" ] || { echo "::error::tag v$tag != package version $pkg"; exit 1; }
+
+      - name: Install root deps (inputs to the esbuild server bundle)
+        run: npm ci
+
+      - name: Install voice-hud deps
+        working-directory: voice-hud
+        run: npm ci
+
+      - name: Fetch whisper assets (Windows — prebuilt zip)
+        if: matrix.platform == 'win'
+        working-directory: voice-hud
+        shell: pwsh
+        run: ./scripts/fetch-whisper.ps1
+
+      - name: Fetch whisper assets (mac/linux — build static from source)
+        if: matrix.platform != 'win'
+        working-directory: voice-hud
+        run: bash scripts/fetch-whisper.sh
+
+      - name: Build gem (tsc)
+        working-directory: voice-hud
+        run: npm run build
+
+      - name: Bundle server (esbuild)
+        working-directory: voice-hud
+        run: npm run bundle:server
+
+      - name: Build${{ startsWith(github.ref, 'refs/tags/') && ' + publish' || '' }} installer
+        working-directory: voice-hud
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx --yes electron-builder --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
+
+      - name: Upload installers (dry runs only)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmwhisper-${{ matrix.platform }}
+          path: |
+            voice-hud/release/*.exe
+            voice-hud/release/*.dmg
+            voice-hud/release/*.AppImage
+          if-no-files-found: warn
