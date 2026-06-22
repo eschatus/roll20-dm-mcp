@@ -17,29 +17,38 @@ import { app } from "electron";
 import * as fs from "fs";
 import * as path from "path";
 
-if (app.isPackaged && !process.env.DMW_DATA_DIR) {
-  const dir = app.getPath("userData");
-  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* best effort */ }
+if (app.isPackaged) {
+  // No Python sidecar is bundled → default STT to the bundled resident whisper.cpp
+  // server (whisper-server.exe + base.en). Without this the factory tries faster-whisper
+  // and fails (spawn …app.asar/stt/.venv/…/python.exe ENOENT). Override with DMW_STT_ENGINE.
+  if (!process.env.DMW_STT_ENGINE) process.env.DMW_STT_ENGINE = "whisperserver";
+  // Bundled read-only assets (whisper bin/model, skills/dm-rules.md) live under resourcesPath.
+  // config.ts/persona.ts read DMW_ASSET_ROOT so they stay electron-free.
+  if (!process.env.DMW_ASSET_ROOT) process.env.DMW_ASSET_ROOT = process.resourcesPath;
 
-  // First-run migration (conservative: copy, never move/delete). Only when an explicit
-  // legacy dir is pointed at AND this per-user dir has no registry yet — so a fresh
-  // install starts clean (the config wizard fills it) and an upgrader can carry data over
-  // with DMW_LEGACY_DATA_DIR=<old data path>.
-  try {
-    const legacy = process.env.DMW_LEGACY_DATA_DIR;
-    if (legacy && fs.existsSync(legacy) && !fs.existsSync(path.join(dir, "campaigns.json"))) {
-      for (const f of fs.readdirSync(legacy)) {
-        const src = path.join(legacy, f);
-        const dst = path.join(dir, f);
-        try { if (fs.statSync(src).isFile() && !fs.existsSync(dst)) fs.copyFileSync(src, dst); } catch { /* skip */ }
+  // Per-user data dir (so an installed build never writes inside its bundle). Set DMW_DATA_DIR
+  // (gem files + shared campaign-context/active-campaign) + ROLL20_DATA_DIR (the supervised
+  // server inherits it → both runtimes share one dir).
+  if (!process.env.DMW_DATA_DIR) {
+    const dir = app.getPath("userData");
+    try { fs.mkdirSync(dir, { recursive: true }); } catch { /* best effort */ }
+
+    // First-run migration (conservative: copy, never move/delete). Only when an explicit
+    // legacy dir is pointed at AND this per-user dir has no registry yet — so a fresh install
+    // starts clean (the wizard fills it) and an upgrader carries data over with
+    // DMW_LEGACY_DATA_DIR=<old data path>.
+    try {
+      const legacy = process.env.DMW_LEGACY_DATA_DIR;
+      if (legacy && fs.existsSync(legacy) && !fs.existsSync(path.join(dir, "campaigns.json"))) {
+        for (const f of fs.readdirSync(legacy)) {
+          const src = path.join(legacy, f);
+          const dst = path.join(dir, f);
+          try { if (fs.statSync(src).isFile() && !fs.existsSync(dst)) fs.copyFileSync(src, dst); } catch { /* skip */ }
+        }
       }
-    }
-  } catch { /* migration is best-effort — never block startup */ }
+    } catch { /* migration is best-effort — never block startup */ }
 
-  process.env.DMW_DATA_DIR = dir;
-  process.env.ROLL20_DATA_DIR = dir;
-  // Where bundled read-only assets live (whisper binary/model, skills/dm-rules.md) in a
-  // packaged build. process.resourcesPath is reliable HERE (we're already in the packaged
-  // branch); config.ts/persona.ts read DMW_ASSET_ROOT so they stay electron-free.
-  process.env.DMW_ASSET_ROOT = process.resourcesPath;
+    process.env.DMW_DATA_DIR = dir;
+    process.env.ROLL20_DATA_DIR = dir;
+  }
 }

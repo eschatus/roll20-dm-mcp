@@ -49,6 +49,11 @@ extraResources:
     filter: ["**/whisper-cli.exe", "**/whisper-server.exe", "**/*.dll"]
   - from: data/models/ggml-base.en.bin
     to: data/models/ggml-base.en.bin
+  # Tactics doctrine — only the 2 MB index (NOT the 16 MB source PDF / scripts beside it).
+  # Bundled server is at resources/server/dist → tactics.ts __dirname/../../data/tactics
+  # resolves to resources/data/tactics, so no code change needed.
+  - from: ../data/tactics/monster-tactics-index.json
+    to: data/tactics/monster-tactics-index.json
   - from: ../dist-server          # produced by `npm run bundle:server` (esbuild) — see doc
     to: server
 
