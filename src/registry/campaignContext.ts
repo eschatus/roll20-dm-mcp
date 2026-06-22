@@ -6,8 +6,9 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import path from "path";
+import { dataPath } from "../dataDir.js";
 
-const CONTEXT_PATH = path.resolve("./data/campaign-context.json");
+const CONTEXT_PATH = dataPath("campaign-context.json");
 
 export interface NicknameAlias {
   nickname: string; // what the DM says, e.g. "Z", "the big guy"

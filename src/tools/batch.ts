@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readdirSync, writeFileSync } from "fs";
 import path from "path";
+import { dataPath } from "../dataDir.js";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import * as roll20 from "../bridge/roll20.js";
@@ -103,7 +104,7 @@ export function registerBatchTools(server: McpServer): void {
 
       const results: object[] = [];
       let successCount = 0, skipCount = 0, failCount = 0;
-      const progressPath = path.join(process.cwd(), "data", "batch-progress.json");
+      const progressPath = dataPath("batch-progress.json");
       const writeProgress = (current: string, phase: string) => {
         try {
           writeFileSync(progressPath, JSON.stringify({

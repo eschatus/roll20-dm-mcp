@@ -5,6 +5,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import path from "path";
+import { dataPath } from "../dataDir.js";
 
 interface CustomStateEntry { tag: string; tokens: string[] }
 interface RelayState { customStates: Record<string, CustomStateEntry> }
@@ -12,7 +13,7 @@ interface RelayState { customStates: Record<string, CustomStateEntry> }
 const cache = new Map<string, RelayState>();
 
 function file(campaignId: string): string {
-  return path.resolve(`./data/relay-state-${campaignId}.json`);
+  return dataPath(`relay-state-${campaignId}.json`);
 }
 
 function load(campaignId: string): RelayState {
