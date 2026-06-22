@@ -812,7 +812,10 @@ let detailOpen = false;
 let inboxCountDisplay = 0;
 
 function updateCombatBand(d) {
-  if (!d || !d.active) {
+  // Hide the band when inactive OR when the current token name hasn't resolved yet —
+  // an empty name with active=true means the id isn't in the roster yet; showing "▸ ? · R1"
+  // is misleading and can linger as stale state after combat ends or a campaign switch.
+  if (!d || !d.active || !d.currentName) {
     body.dataset.combat = "";
     if (detailOpen) closeTacticDetail();
     return;

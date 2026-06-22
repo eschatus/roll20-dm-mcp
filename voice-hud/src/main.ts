@@ -681,6 +681,8 @@ async function refreshRoster(opts: { silent?: boolean; force?: boolean } = {}) {
       combatRound = 0;
       inboxItems.length = 0;
       pushInbox();
+      // Clear the combat band in the renderer so stale turn info doesn't persist after a switch.
+      send("combat-update", { active: false, currentName: "", round: 0, plan: null, allPlans: {} });
       console.error(`[roster] campaign switched to ${activeSlug} — combat state reset`);
     }
 
