@@ -2,6 +2,18 @@
 // the code reads intent, not magic numbers.
 
 import * as path from "path";
+import * as dotenv from "dotenv";
+
+// Load env before anything else so DMW_* vars are available when CONFIG is built below.
+// main.ts imports ./bootstrap then ./config before its own dotenv.config() calls run, so
+// without this, CONFIG is built from a process.env that hasn't seen .env yet — every
+// DMW_* override (PTT key, STT engine, model paths, etc.) silently falls back to its
+// hardcoded default on every dev run. main.ts's own calls become harmless no-ops once
+// these have already loaded the values.
+dotenv.config({ path: path.join(__dirname, "..", "..", ".env") });
+dotenv.config({ path: path.join(__dirname, "..", ".env"), override: true }); // voice-hud local overrides
+// Packaged: also load a .env from the per-user data dir (DMW_DATA_DIR is set by bootstrap).
+if (process.env.DMW_DATA_DIR) dotenv.config({ path: path.join(process.env.DMW_DATA_DIR, ".env") });
 
 // Tool allow-list for LOCAL models. The full 60-tool schema is ~9.9k tokens —
 // most of a 7B's context before the DM even speaks, and it tanks tool selection.
