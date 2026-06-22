@@ -425,10 +425,28 @@ async function loadSetup() {
     item(s.rtToken, "Roll20 connected", "Connect Roll20 (next wizard step)") +
     item(s.cobalt, "D&D Beyond linked (optional)", "set DDB_COBALT");
   // Badge "!" until the three essentials are present.
+  const done = !!(s.apiKey && s.campaigns > 0 && s.rtToken);
   const badge = document.getElementById("setup-tab-count");
-  if (badge) badge.textContent = (s.apiKey && s.campaigns > 0 && s.rtToken) ? "" : "!";
+  if (badge) badge.textContent = done ? "" : "!";
+  // Once the essentials are done, go quiet: hide the intro nag + collapse the input steps, show a
+  // "you're all set" banner. The user can still reveal the steps via "Adjust setup" (re-connect, etc.).
+  const intro = document.getElementById("setup-intro");
+  const doneBanner = document.getElementById("setup-done");
+  const steps = document.getElementById("setup-essential-steps");
+  if (intro) intro.style.display = done ? "none" : "";
+  if (doneBanner) doneBanner.style.display = done ? "" : "none";
+  if (steps && !setupStepsForced) steps.style.display = done ? "none" : "";
   loadSttModels();
 }
+// "Adjust setup" reveals the collapsed steps (e.g. to re-connect a dropped token) without un-doing
+// the quiet state on the next status refresh.
+let setupStepsForced = false;
+document.getElementById("setup-manage")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  setupStepsForced = true;
+  const steps = document.getElementById("setup-essential-steps");
+  if (steps) steps.style.display = "";
+});
 
 async function loadSttModels() {
   if (!window.dmw || !dmw.getSttModels) return;
