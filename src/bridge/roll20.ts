@@ -732,13 +732,13 @@ export async function getCurrentPageId(): Promise<string> {
   return pid;
 }
 
-export async function takeScreenshot(outputPath: string, clip?: { x: number; y: number; width: number; height: number }, dlEditor = false): Promise<void> {
+export async function takeScreenshot(outputPath: string, clip?: { x: number; y: number; width: number; height: number }, dlEditor = false, timeoutMs = 60000): Promise<void> {
   const page = await getEditorPage();
   if (dlEditor) {
     await page.keyboard.press("Control+,");
     await page.waitForTimeout(400);
   }
-  await page.screenshot({ path: outputPath, fullPage: false, ...(clip ? { clip } : {}) });
+  await page.screenshot({ path: outputPath, fullPage: false, timeout: timeoutMs, ...(clip ? { clip } : {}) });
   if (dlEditor) {
     await page.keyboard.press("Control+,");
   }

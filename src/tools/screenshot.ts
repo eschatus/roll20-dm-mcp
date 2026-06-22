@@ -17,12 +17,13 @@ export function registerScreenshotTools(server: McpServer): void {
       clipY: z.number().optional().describe("Screen pixel y to start clip"),
       clipWidth: z.number().optional().describe("Clip width in screen pixels"),
       clipHeight: z.number().optional().describe("Clip height in screen pixels"),
+      timeoutMs: z.number().optional().describe("Playwright screenshot timeout in ms (default 60000). Increase for maps with many DL walls where canvas rendering is slow."),
     },
-    async ({ outputPath, dlEditor, clipX, clipY, clipWidth, clipHeight }) => {
+    async ({ outputPath, dlEditor, clipX, clipY, clipWidth, clipHeight, timeoutMs }) => {
       const clip = (clipX != null && clipY != null && clipWidth != null && clipHeight != null)
         ? { x: clipX, y: clipY, width: clipWidth, height: clipHeight }
         : undefined;
-      await roll20.takeScreenshot(outputPath, clip, dlEditor ?? false);
+      await roll20.takeScreenshot(outputPath, clip, dlEditor ?? false, timeoutMs ?? 60000);
       return { content: [{ type: "text", text: JSON.stringify({ saved: outputPath, dlEditor, clip }) }] };
     }
   );
