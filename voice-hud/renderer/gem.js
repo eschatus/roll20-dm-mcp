@@ -406,10 +406,48 @@ function showTab(name) {
   document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
   if (name === "debug") loadDebugHistory();
   if (name === "config") loadConfig();
+  if (name === "setup") loadSetup();
 }
 document.querySelectorAll(".tabbar button").forEach((b) => {
   b.addEventListener("click", () => showTab(b.dataset.tab));
 });
+
+// ---- setup wizard (first-run onboarding) ----
+async function loadSetup() {
+  if (!window.dmw || !dmw.getSetupStatus) return;
+  const s = await dmw.getSetupStatus();
+  const item = (ok, label, detail) =>
+    `<li>${ok ? "✅" : "⬜"} ${label}${ok ? "" : ` <span class="hint-line">— ${detail}</span>`}</li>`;
+  const ul = document.getElementById("setup-status");
+  if (ul) ul.innerHTML =
+    item(s.apiKey, "Anthropic API key", "enter it below") +
+    item(s.campaigns > 0, "Campaign registered", "register one (Claude Code / Config) — " + s.campaigns + " found") +
+    item(s.rtToken, "Roll20 connected", "Connect Roll20 (next wizard step)") +
+    item(s.cobalt, "D&D Beyond linked (optional)", "set DDB_COBALT");
+  // Badge "!" until the three essentials are present.
+  const badge = document.getElementById("setup-tab-count");
+  if (badge) badge.textContent = (s.apiKey && s.campaigns > 0 && s.rtToken) ? "" : "!";
+}
+document.getElementById("setup-apikey-save")?.addEventListener("click", async () => {
+  const inp = document.getElementById("setup-apikey");
+  const msg = document.getElementById("setup-msg");
+  if (!inp || !window.dmw) return;
+  const r = await dmw.saveApiKey(inp.value);
+  if (r && r.ok) { msg.textContent = "saved ✓ — the agent will use it now"; msg.className = "msg ok"; inp.value = ""; loadSetup(); }
+  else { msg.textContent = (r && r.error) || "save failed"; msg.className = "msg err"; }
+});
+async function runConnect(which, label) {
+  const msg = document.getElementById("setup-connect-msg");
+  if (!window.dmw) return;
+  msg.textContent = `connecting ${label}… a browser window may open — log in there (incl. the "I'm human" check).`;
+  msg.className = "msg";
+  const r = which === "roll20" ? await dmw.connectRoll20() : await dmw.connectDdb();
+  loadSetup(); // the cached-token file is the real success signal, regardless of the tool's return
+  if (r && r.ok) { msg.textContent = `${label} connected ✓`; msg.className = "msg ok"; }
+  else { msg.textContent = `${label}: ${(r && r.error) || "failed"} — if a browser opened, finish logging in and retry.`; msg.className = "msg err"; }
+}
+document.getElementById("setup-connect-roll20")?.addEventListener("click", () => runConnect("roll20", "Roll20"));
+document.getElementById("setup-connect-ddb")?.addEventListener("click", () => runConnect("ddb", "D&D Beyond"));
 
 // ---- debug log tab ----
 const DEBUG_MAX_LINES = 500;
@@ -473,9 +511,6 @@ async function loadConfig() {
     set("cfg-ptt-key", c.pttKey);
     set("cfg-ptt-btn", c.pttMouseButton || 0);
     set("cfg-confirm-key", c.confirmKey);
-    set("cfg-stt-model", c.sttModel);
-    setSel("cfg-stt-device", c.sttDevice);
-    setSel("cfg-stt-compute", c.sttComputeType);
     set("cfg-partial-ms", c.partialMs);
     set("cfg-mcp-url", c.mcpUrl);
     setSel("cfg-provider", c.provider);
@@ -484,6 +519,9 @@ async function loadConfig() {
     set("cfg-ollama-url", c.ollamaUrl);
     set("cfg-ollama-model", c.ollamaModel);
     set("cfg-whisper-clip-ms", c.whisperClipMs);
+    // Local LLM (Ollama) is mothballed behind DMW_ENABLE_LOCAL_LLM — hide its controls unless on.
+    const showLocalLlm = !!c.enableLocalLlm;
+    document.querySelectorAll(".local-llm-only").forEach((el) => { el.style.display = showLocalLlm ? "" : "none"; });
   } catch {}
 }
 
@@ -496,9 +534,6 @@ document.getElementById("config-save-btn")?.addEventListener("click", async () =
     pttKey: get("cfg-ptt-key"),
     pttMouseButton: getNum("cfg-ptt-btn"),
     confirmKey: get("cfg-confirm-key"),
-    sttModel: get("cfg-stt-model"),
-    sttDevice: get("cfg-stt-device"),
-    sttComputeType: get("cfg-stt-compute"),
     partialMs: getNum("cfg-partial-ms"),
     mcpUrl: get("cfg-mcp-url"),
     provider: get("cfg-provider"),
@@ -597,6 +632,7 @@ async function loadWizard() {
   renderNicks();
   document.getElementById("notes").value = wiz.notes || "";
   renderRoster(roster || []);
+  loadSetup(); // populate the Setup tab + its "!" badge whenever the panel opens
   try {
     const s = await dmw.getSettings();
     document.getElementById("agent-sound").checked = !!(s && s.agentSound);

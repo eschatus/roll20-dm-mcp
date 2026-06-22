@@ -621,6 +621,7 @@
       <button data-tab="notes">DM Notes</button>
       <button data-tab="roster">Roster</button>
       <button data-tab="config">Config</button>
+      <button data-tab="setup">Setup <span id="setup-tab-count" class="inbox-tab-count"></span></button>
       <button data-tab="debug">Debug</button>
     </div>
     <div class="tabbody">
@@ -644,6 +645,28 @@
       <div class="tab" data-tab="inbox">
         <div id="inbox-list"></div>
         <div id="inbox-empty">No messages from players.</div>
+      </div>
+
+      <div class="tab" data-tab="setup">
+        <p class="hint-line">First-run setup — each item is needed before the gem can run your game.</p>
+        <ul id="setup-status" style="list-style:none;padding:0;margin:0 0 14px;font-size:13px;line-height:1.8;"></ul>
+        <div class="setup-step">
+          <p class="hint-line">Anthropic API key — the agent's brain. Starts with <code>sk-</code>. Saved to your per-user config.</p>
+          <div class="chip-input">
+            <input id="setup-apikey" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false" />
+            <button class="act" id="setup-apikey-save">Save</button>
+          </div>
+          <div id="setup-msg" class="msg" style="min-height:18px;margin-top:6px;"></div>
+        </div>
+        <div class="setup-step" style="margin-top:14px;">
+          <p class="hint-line">Connect your accounts — a browser window opens for a one-time login (pass the "I'm human" check there), then the token is cached. Re-run anytime a connection drops.</p>
+          <div class="row" style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="act" id="setup-connect-roll20">Connect Roll20</button>
+            <button class="act" id="setup-connect-ddb">Connect D&amp;D Beyond</button>
+          </div>
+          <div id="setup-connect-msg" class="msg" style="min-height:18px;margin-top:6px;"></div>
+          <p class="hint-line" style="margin-top:8px;">Then just ask the gem: <em>"list my campaigns"</em> / <em>"list my games"</em> to pick one.</p>
+        </div>
       </div>
 
       <div class="tab" data-tab="vocab">
@@ -722,34 +745,23 @@
 
         <div class="config-section">
           <div class="config-section-title">Speech recognition ★</div>
-          <div class="config-row"><label>Model</label><input id="cfg-stt-model" placeholder="large-v3-turbo" /></div>
-          <div class="config-row"><label>Device</label>
-            <select id="cfg-stt-device"><option value="cuda">cuda</option><option value="cpu">cpu</option></select>
-          </div>
-          <div class="config-row"><label>Compute type</label>
-            <select id="cfg-stt-compute">
-              <option value="float16">float16</option>
-              <option value="int8_float16">int8_float16</option>
-              <option value="int8">int8</option>
-            </select>
-          </div>
           <div class="config-row"><label>Partial interval (ms)</label><input id="cfg-partial-ms" type="number" min="200" max="5000" /></div>
         </div>
 
         <div class="config-section">
           <div class="config-section-title">Network</div>
           <div class="config-row"><label>MCP URL</label><input id="cfg-mcp-url" placeholder="http://127.0.0.1:39200/mcp" /><button class="act" id="cfg-reconnect-btn" style="margin-left:6px;flex-shrink:0;white-space:nowrap;">Reconnect</button></div>
-          <div class="config-row"><label>Ollama URL</label><input id="cfg-ollama-url" placeholder="http://127.0.0.1:11434/v1" /></div>
+          <div class="config-row local-llm-only"><label>Ollama URL</label><input id="cfg-ollama-url" placeholder="http://127.0.0.1:11434/v1" /></div>
         </div>
 
         <div class="config-section">
           <div class="config-section-title">Language model</div>
-          <div class="config-row"><label>Provider</label>
+          <div class="config-row local-llm-only"><label>Provider</label>
             <select id="cfg-provider"><option value="anthropic">anthropic</option><option value="ollama">ollama</option></select>
           </div>
           <div class="config-row"><label>Cloud model</label><input id="cfg-model" placeholder="claude-haiku-4-5" /></div>
           <div class="config-row"><label>Auto-escalate</label><input type="checkbox" id="cfg-auto-escalate" style="width:auto;" /></div>
-          <div class="config-row"><label>Ollama model</label><input id="cfg-ollama-model" placeholder="qwen2.5:7b-instruct" /></div>
+          <div class="config-row local-llm-only"><label>Ollama model</label><input id="cfg-ollama-model" placeholder="qwen2.5:7b-instruct" /></div>
         </div>
 
         <div class="config-section">

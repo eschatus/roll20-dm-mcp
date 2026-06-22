@@ -578,9 +578,6 @@ function wireWizard() {
     pttKey: CONFIG.pttKey,
     pttMouseButton: CONFIG.pttMouseButton ?? 0,
     confirmKey: CONFIG.confirmKey,
-    sttModel: CONFIG.stt.model,
-    sttDevice: CONFIG.stt.device,
-    sttComputeType: CONFIG.stt.computeType,
     partialMs: CONFIG.partialMs,
     mcpUrl: CONFIG.mcpUrl,
     provider: CONFIG.provider,
@@ -592,12 +589,53 @@ function wireWizard() {
     whisperClipMs: CONFIG.whisperClipMs,
   }));
 
+  // --- Setup wizard (first-run onboarding) ---
+  // What the Setup tab shows: configured vs still-needed. Cheap reads off env + the data dir.
+  ipcMain.handle("get-setup-status", () => {
+    const dataDir = process.env.DMW_DATA_DIR || CONFIG.dataDir;
+    const has = (f: string) => { try { return fs.existsSync(path.join(dataDir, f)); } catch { return false; } };
+    let campaigns = 0;
+    try { campaigns = Object.keys(JSON.parse(fs.readFileSync(path.join(dataDir, "campaigns.json"), "utf-8"))).length; } catch { /* none yet */ }
+    return {
+      dataDir,
+      apiKey: !!process.env.ANTHROPIC_API_KEY,
+      rtToken: has("roll20-rt-token.json"),
+      cobalt: !!process.env.DDB_COBALT || has("ddb-cobalt.json"),
+      campaigns,
+      activeSlug,
+    };
+  });
+
+  // Save the Anthropic API key — live immediately (process.env, next agent call uses it) and
+  // persisted to <dataDir>/.env for next launch.
+  ipcMain.handle("save-api-key", (_e, key: string) => {
+    const k = String(key || "").trim();
+    if (!k.startsWith("sk-")) return { ok: false, error: "expected a key starting with sk-" };
+    process.env.ANTHROPIC_API_KEY = k;
+    try { upsertEnv("ANTHROPIC_API_KEY", k); } catch (e) { return { ok: false, error: (e as Error).message }; }
+    return { ok: true };
+  });
+
+  // Token harvests — force the relevant transport once; the server opens the (visible) browser
+  // for login + caches the token on success. We don't strictly trust the tool's return (the
+  // interactive login can outlast a tool timeout) — the renderer re-reads get-setup-status, and
+  // the cached token file is the real success signal.
+  // Roll20: any relay read drives roll20-rt → intercepts signInWithCustomToken → caches the token.
+  ipcMain.handle("connect-roll20", async () => {
+    try { await mcp.call("list_tokens", {}); return { ok: true }; }
+    catch (e) { return { ok: false, error: (e as Error).message }; }
+  });
+  // D&D Beyond: ddb_list_campaigns harvests the CobaltSession cookie AND returns the games list.
+  ipcMain.handle("connect-ddb", async () => {
+    try { const r = await mcp.call("ddb_list_campaigns", {}); return { ok: true, result: String(r).slice(0, 400) }; }
+    catch (e) { return { ok: false, error: (e as Error).message }; }
+  });
+
   // Config write: update CONFIG in memory (immediate) + persist to voice-hud/.env (restarts).
   // Keys marked ★ in the UI (pttKey, confirmKey, stt.*) need a restart to fully take effect.
   ipcMain.handle("set-config", (_e, updates: Record<string, unknown>) => {
     const envMap: Record<string, string> = {
       pttKey: "DMW_PTT_KEY", pttMouseButton: "DMW_PTT_BUTTON", confirmKey: "DMW_CONFIRM_KEY",
-      sttModel: "DMW_STT_MODEL", sttDevice: "DMW_STT_DEVICE", sttComputeType: "DMW_STT_COMPUTE",
       partialMs: "DMW_PARTIAL_MS", mcpUrl: "DMW_MCP_URL", provider: "DMW_PROVIDER",
       model: "DMW_MODEL", autoEscalate: "DMW_AUTO_ESCALATE",
       ollamaUrl: "DMW_OLLAMA_URL", ollamaModel: "DMW_OLLAMA_MODEL",
@@ -608,9 +646,6 @@ function wireWizard() {
       if (key === "pttKey"         && typeof val === "string")  CONFIG.pttKey = val;
       if (key === "pttMouseButton" && typeof val === "number")  CONFIG.pttMouseButton = val || null;
       if (key === "confirmKey"     && typeof val === "string")  CONFIG.confirmKey = val;
-      if (key === "sttModel"       && typeof val === "string")  CONFIG.stt.model = val;
-      if (key === "sttDevice"      && typeof val === "string")  CONFIG.stt.device = val;
-      if (key === "sttComputeType" && typeof val === "string")  CONFIG.stt.computeType = val;
       if (key === "partialMs"      && typeof val === "number")  CONFIG.partialMs = val;
       if (key === "mcpUrl"         && typeof val === "string")  CONFIG.mcpUrl = val;
       if (key === "provider"       && (val === "ollama" || val === "anthropic")) CONFIG.provider = val;
@@ -703,6 +738,18 @@ function readActiveSlug(): string {
     const p = path.join(process.env.DMW_DATA_DIR || path.join(__dirname, "..", "..", "data"), "active-campaign.json");
     return (JSON.parse(fs.readFileSync(p, "utf-8")) as { slug: string }).slug || "";
   } catch { return ""; }
+}
+
+// Upsert KEY=value into <dataDir>/.env (replace the line if present, else append) so the
+// setup wizard's secrets persist to the per-user dir loaded on next launch.
+function upsertEnv(key: string, value: string): void {
+  const dir = process.env.DMW_DATA_DIR || CONFIG.dataDir;
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, ".env");
+  let txt = ""; try { txt = fs.readFileSync(file, "utf-8"); } catch { /* new file */ }
+  const re = new RegExp(`^${key}=.*$`, "m");
+  txt = re.test(txt) ? txt.replace(re, `${key}=${value}`) : `${txt.replace(/\n?$/, "\n")}${key}=${value}\n`;
+  fs.writeFileSync(file, txt);
 }
 
 app.whenReady().then(async () => {
