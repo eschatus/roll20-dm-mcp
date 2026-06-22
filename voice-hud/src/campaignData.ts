@@ -23,6 +23,10 @@ export interface CampaignData {
   vocab: string[];
   nicknames: NicknameAlias[];
   notes: string;
+  // Learned STT corrections (spoken-form → canonical), fed into the corrector's
+  // literal-map pass. Populated from DM-accepted After-Action-Review proposals — the
+  // reinforcement loop's persisted memory. Keyed lowercased.
+  corrections: Record<string, string>;
 }
 
 type ContextStore = Record<string, Omit<CampaignData, "slug">>;
@@ -42,21 +46,34 @@ function writeStore(store: ContextStore): void {
 }
 
 export function loadCampaignData(slug: string): CampaignData {
-  if (!slug) return { slug: "", vocab: [], nicknames: [], notes: "" };
+  if (!slug) return { slug: "", vocab: [], nicknames: [], notes: "", corrections: {} };
   const entry = readStore()[slug] ?? {};
   return {
     slug,
     vocab: Array.isArray(entry.vocab) ? entry.vocab : [],
     nicknames: Array.isArray(entry.nicknames) ? entry.nicknames : [],
     notes: typeof entry.notes === "string" ? entry.notes : "",
+    corrections: (entry.corrections && typeof entry.corrections === "object") ? entry.corrections : {},
   };
 }
 
 export function saveCampaignData(data: CampaignData): void {
   if (!data.slug) return;
   const store = readStore();
-  store[data.slug] = { vocab: data.vocab, nicknames: data.nicknames, notes: data.notes };
+  store[data.slug] = { vocab: data.vocab, nicknames: data.nicknames, notes: data.notes, corrections: data.corrections };
   writeStore(store);
+}
+
+// Add (or update) a learned spoken→canonical correction and persist. The
+// reinforcement loop's "accept" action. Spoken key is lowercased/trimmed.
+export function addCorrection(slug: string, spoken: string, canonical: string): CampaignData {
+  const data = loadCampaignData(slug);
+  const key = spoken.trim().toLowerCase();
+  if (key && canonical.trim()) {
+    data.corrections[key] = canonical.trim();
+    saveCampaignData(data);
+  }
+  return data;
 }
 
 // The full deduped vocab set: global base vocab (common D&D terms) + campaign vocab

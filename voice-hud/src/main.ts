@@ -16,9 +16,10 @@ import { startStt, startFinalStt, SttEngine } from "./stt";
 import { McpRoll20 } from "./mcp";
 import { DmAgent } from "./agent";
 import { buildRoster, clearRosterCache } from "./roster";
-import { loadCampaignData, saveCampaignData, buildVocabPrompt, buildVocabList, addVocabTerm, CampaignData } from "./campaignData";
+import { loadCampaignData, saveCampaignData, buildVocabPrompt, buildVocabList, addVocabTerm, addCorrection, CampaignData } from "./campaignData";
 import { loadBaseVocab } from "./baseVocab";
-import { correctTranscript } from "./correction";
+import { correctTranscript, DEFAULT_LITERAL_MAP } from "./correction";
+import { runAar } from "./aar";
 import { loadSettings, saveSettings, AppSettings } from "./settings";
 import { setLogSink, persist } from "./logger";
 
@@ -49,7 +50,7 @@ let mode: Mode = "ghost";
 
 // Active campaign + its editable data (vocab/nicknames/notes) and live roster names.
 let activeSlug = "";
-let campaignData: CampaignData = { slug: "", vocab: [], nicknames: [], notes: "" };
+let campaignData: CampaignData = { slug: "", vocab: [], nicknames: [], notes: "", corrections: {} };
 let rosterNames: string[] = [];
 // Global STT base vocab (common D&D terms), loaded once at startup. Separate from
 // per-campaign vocab; extend via <dataDir>/base-vocab.json. Relaunch to pick up edits.
@@ -276,7 +277,10 @@ function wireClipHandler() {
       // Post-STT correction (deterministic, µs): fix mishears against the same
       // glossary — split names, dice/mechanics notation. Only the FINAL transcript
       // is corrected (partials stay raw/fast). Log when it actually changes anything.
-      const corrected = correctTranscript(result.text, { glossary: vocabList });
+      const corrected = correctTranscript(result.text, {
+        glossary: vocabList,
+        literalMap: { ...DEFAULT_LITERAL_MAP, ...campaignData.corrections }, // learned (AAR-accepted) corrections
+      });
       if (corrected !== result.text) console.error(`[correct] "${result.text.slice(0, 60)}" → "${corrected.slice(0, 60)}"`);
       const text = corrected.trim();
       console.error(`[stt] ${Date.now() - t0}ms → "${text.slice(0, 80)}"${text ? "" : " (EMPTY)"}`);
@@ -383,6 +387,15 @@ async function runAgent(transcript: string, lowConfidence = false) {
       onPhaseChange: (phase) => {
         console.error(`[agent] phase → ${phase}`);
         send("phase", { phase });
+        // Combat closing → run the After-Action Review and surface its report +
+        // proposed corrections to the Training panel (the reinforcement loop).
+        if (phase === "CLEANUP") {
+          try {
+            const report = runAar(activeSlug);
+            send("aar", report);
+            console.error(`[aar] ${report.turns} turns, avg ${report.avgSteps} steps; ${report.proposals.length} proposal(s)`);
+          } catch (e) { console.error("[aar] failed:", (e as Error).message); }
+        }
       },
     });
     // Record the turn that was current when the DM just spoke, so the next
@@ -439,6 +452,14 @@ function wireWizard() {
   ipcMain.handle("add-vocab", (_e, term: string) => {
     campaignData = addVocabTerm(activeSlug, term);
     return { ok: true, data: campaignData };
+  });
+  // After-Action Review: run on demand (the auto-run is in onPhaseChange at combat end).
+  ipcMain.handle("run-aar", () => runAar(activeSlug));
+  // Training panel "accept": persist a learned spoken→canonical correction so the
+  // corrector applies it from the next transcript on. The reinforcement loop's write.
+  ipcMain.handle("accept-correction", (_e, p: { spoken: string; canonical: string }) => {
+    campaignData = addCorrection(activeSlug, p.spoken, p.canonical);
+    return { ok: true, corrections: campaignData.corrections };
   });
   ipcMain.handle("rebuild-roster", async () => {
     await refreshRoster({ force: true });

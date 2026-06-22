@@ -617,6 +617,7 @@
       <button data-tab="inbox">Inbox <span id="inbox-tab-count" class="inbox-tab-count"></span></button>
       <button data-tab="vocab">Proper Nouns</button>
       <button data-tab="nick">Nicknames</button>
+      <button data-tab="train">Training <span id="train-tab-count" class="inbox-tab-count"></span></button>
       <button data-tab="notes">DM Notes</button>
       <button data-tab="roster">Roster</button>
       <button data-tab="config">Config</button>
@@ -665,6 +666,19 @@
           <input id="nick-means" placeholder="Strahd" style="flex:1" />
           <button class="act" id="nick-add-btn">+</button>
         </div>
+      </div>
+
+      <div class="tab" data-tab="train">
+        <p class="hint-line">After-Action Review — runs at combat's end. Accept a proposed correction to teach the gem (it's applied from the next transcript on); pick the right name if the suggestion is off; dismiss to ignore.</p>
+        <div class="row">
+          <button class="act" id="aar-run">⟳ Run review</button>
+          <span id="aar-summary" class="hint-line" style="margin:0 0 0 8px;"></span>
+        </div>
+        <table class="nick">
+          <thead><tr><th style="width:38%">You said…</th><th>should be…</th><th style="width:96px"></th></tr></thead>
+          <tbody id="aar-rows"></tbody>
+        </table>
+        <div id="aar-empty" class="hint-line">No proposals yet — finish a combat (say “combat’s over”) or hit Run review.</div>
       </div>
 
       <div class="tab" data-tab="notes">

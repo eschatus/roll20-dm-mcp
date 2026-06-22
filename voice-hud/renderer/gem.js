@@ -657,6 +657,52 @@ document.getElementById("nick-add-btn").addEventListener("click", () => {
   }
 });
 
+// ---- Training tab (After-Action Review → accept/rerank learned corrections) ----
+let aarProposals = [];
+function setTrainCount() {
+  const el = document.getElementById("train-tab-count");
+  if (el) el.textContent = aarProposals.length ? String(aarProposals.length) : "";
+  document.getElementById("aar-empty").style.display = aarProposals.length ? "none" : "block";
+}
+function renderAar(report) {
+  if (!report) return;
+  aarProposals = Array.isArray(report.proposals) ? report.proposals.slice() : [];
+  const s = document.getElementById("aar-summary");
+  if (s) s.textContent = `${report.turns} turns · avg ${report.avgSteps} steps/turn` +
+    (report.struggledTurns?.length ? ` · ${report.struggledTurns.length} slow` : "") +
+    (report.toolErrors?.length ? ` · ${report.toolErrors.length} tool error(s)` : "");
+  const tbody = document.getElementById("aar-rows");
+  tbody.innerHTML = "";
+  aarProposals.forEach((p) => {
+    const tr = document.createElement("tr");
+    const saidTd = document.createElement("td");
+    saidTd.textContent = p.spoken + (p.count > 1 ? `  ×${p.count}` : "");
+    // "should be" — a select of candidates (rerank/pick), defaulting to the suggestion.
+    const meansTd = document.createElement("td");
+    const cands = (p.candidates && p.candidates.length) ? p.candidates : [p.suggested];
+    const sel = document.createElement("select"); sel.style.width = "100%";
+    cands.forEach((c) => { const o = document.createElement("option"); o.value = c; o.textContent = c; if (c === p.suggested) o.selected = true; sel.appendChild(o); });
+    meansTd.appendChild(sel);
+    // Accept + dismiss.
+    const actTd = document.createElement("td");
+    const ok = document.createElement("button"); ok.className = "act"; ok.textContent = "✓"; ok.title = "Teach the gem";
+    const no = document.createElement("span"); no.className = "x"; no.textContent = "✕"; no.style.cssText = "cursor:pointer;color:#d98;margin-left:8px;";
+    const drop = () => { aarProposals = aarProposals.filter((x) => x !== p); tr.remove(); setTrainCount(); };
+    ok.addEventListener("click", async () => {
+      try { await dmw.acceptCorrection({ spoken: p.spoken, canonical: sel.value }); } catch (e) { /* surfaced in debug log */ }
+      drop();
+    });
+    no.addEventListener("click", drop);
+    actTd.append(ok, no);
+    tr.append(saidTd, meansTd, actTd); tbody.appendChild(tr);
+  });
+  setTrainCount();
+}
+if (window.dmw && typeof dmw.onAar === "function") dmw.onAar((r) => renderAar(r));
+document.getElementById("aar-run").addEventListener("click", async () => {
+  try { renderAar(await dmw.runAar()); } catch (e) { /* server may be cold */ }
+});
+
 function renderRoster(names) {
   document.getElementById("roster-list").textContent = names.length ? names.join("\n") : "(empty — rebuild after tokens are deployed)";
 }
