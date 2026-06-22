@@ -745,34 +745,23 @@
 
         <div class="config-section">
           <div class="config-section-title">Speech recognition ★</div>
-          <div class="config-row"><label>Model</label><input id="cfg-stt-model" placeholder="large-v3-turbo" /></div>
-          <div class="config-row"><label>Device</label>
-            <select id="cfg-stt-device"><option value="cuda">cuda</option><option value="cpu">cpu</option></select>
-          </div>
-          <div class="config-row"><label>Compute type</label>
-            <select id="cfg-stt-compute">
-              <option value="float16">float16</option>
-              <option value="int8_float16">int8_float16</option>
-              <option value="int8">int8</option>
-            </select>
-          </div>
           <div class="config-row"><label>Partial interval (ms)</label><input id="cfg-partial-ms" type="number" min="200" max="5000" /></div>
         </div>
 
         <div class="config-section">
           <div class="config-section-title">Network</div>
           <div class="config-row"><label>MCP URL</label><input id="cfg-mcp-url" placeholder="http://127.0.0.1:39200/mcp" /><button class="act" id="cfg-reconnect-btn" style="margin-left:6px;flex-shrink:0;white-space:nowrap;">Reconnect</button></div>
-          <div class="config-row"><label>Ollama URL</label><input id="cfg-ollama-url" placeholder="http://127.0.0.1:11434/v1" /></div>
+          <div class="config-row local-llm-only"><label>Ollama URL</label><input id="cfg-ollama-url" placeholder="http://127.0.0.1:11434/v1" /></div>
         </div>
 
         <div class="config-section">
           <div class="config-section-title">Language model</div>
-          <div class="config-row"><label>Provider</label>
+          <div class="config-row local-llm-only"><label>Provider</label>
             <select id="cfg-provider"><option value="anthropic">anthropic</option><option value="ollama">ollama</option></select>
           </div>
           <div class="config-row"><label>Cloud model</label><input id="cfg-model" placeholder="claude-haiku-4-5" /></div>
           <div class="config-row"><label>Auto-escalate</label><input type="checkbox" id="cfg-auto-escalate" style="width:auto;" /></div>
-          <div class="config-row"><label>Ollama model</label><input id="cfg-ollama-model" placeholder="qwen2.5:7b-instruct" /></div>
+          <div class="config-row local-llm-only"><label>Ollama model</label><input id="cfg-ollama-model" placeholder="qwen2.5:7b-instruct" /></div>
         </div>
 
         <div class="config-section">

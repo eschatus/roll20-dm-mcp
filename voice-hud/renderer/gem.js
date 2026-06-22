@@ -511,9 +511,6 @@ async function loadConfig() {
     set("cfg-ptt-key", c.pttKey);
     set("cfg-ptt-btn", c.pttMouseButton || 0);
     set("cfg-confirm-key", c.confirmKey);
-    set("cfg-stt-model", c.sttModel);
-    setSel("cfg-stt-device", c.sttDevice);
-    setSel("cfg-stt-compute", c.sttComputeType);
     set("cfg-partial-ms", c.partialMs);
     set("cfg-mcp-url", c.mcpUrl);
     setSel("cfg-provider", c.provider);
@@ -522,6 +519,9 @@ async function loadConfig() {
     set("cfg-ollama-url", c.ollamaUrl);
     set("cfg-ollama-model", c.ollamaModel);
     set("cfg-whisper-clip-ms", c.whisperClipMs);
+    // Local LLM (Ollama) is mothballed behind DMW_ENABLE_LOCAL_LLM — hide its controls unless on.
+    const showLocalLlm = !!c.enableLocalLlm;
+    document.querySelectorAll(".local-llm-only").forEach((el) => { el.style.display = showLocalLlm ? "" : "none"; });
   } catch {}
 }
 
@@ -534,9 +534,6 @@ document.getElementById("config-save-btn")?.addEventListener("click", async () =
     pttKey: get("cfg-ptt-key"),
     pttMouseButton: getNum("cfg-ptt-btn"),
     confirmKey: get("cfg-confirm-key"),
-    sttModel: get("cfg-stt-model"),
-    sttDevice: get("cfg-stt-device"),
-    sttComputeType: get("cfg-stt-compute"),
     partialMs: getNum("cfg-partial-ms"),
     mcpUrl: get("cfg-mcp-url"),
     provider: get("cfg-provider"),

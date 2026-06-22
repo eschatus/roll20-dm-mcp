@@ -578,9 +578,6 @@ function wireWizard() {
     pttKey: CONFIG.pttKey,
     pttMouseButton: CONFIG.pttMouseButton ?? 0,
     confirmKey: CONFIG.confirmKey,
-    sttModel: CONFIG.stt.model,
-    sttDevice: CONFIG.stt.device,
-    sttComputeType: CONFIG.stt.computeType,
     partialMs: CONFIG.partialMs,
     mcpUrl: CONFIG.mcpUrl,
     provider: CONFIG.provider,
@@ -639,7 +636,6 @@ function wireWizard() {
   ipcMain.handle("set-config", (_e, updates: Record<string, unknown>) => {
     const envMap: Record<string, string> = {
       pttKey: "DMW_PTT_KEY", pttMouseButton: "DMW_PTT_BUTTON", confirmKey: "DMW_CONFIRM_KEY",
-      sttModel: "DMW_STT_MODEL", sttDevice: "DMW_STT_DEVICE", sttComputeType: "DMW_STT_COMPUTE",
       partialMs: "DMW_PARTIAL_MS", mcpUrl: "DMW_MCP_URL", provider: "DMW_PROVIDER",
       model: "DMW_MODEL", autoEscalate: "DMW_AUTO_ESCALATE",
       ollamaUrl: "DMW_OLLAMA_URL", ollamaModel: "DMW_OLLAMA_MODEL",
@@ -650,9 +646,6 @@ function wireWizard() {
       if (key === "pttKey"         && typeof val === "string")  CONFIG.pttKey = val;
       if (key === "pttMouseButton" && typeof val === "number")  CONFIG.pttMouseButton = val || null;
       if (key === "confirmKey"     && typeof val === "string")  CONFIG.confirmKey = val;
-      if (key === "sttModel"       && typeof val === "string")  CONFIG.stt.model = val;
-      if (key === "sttDevice"      && typeof val === "string")  CONFIG.stt.device = val;
-      if (key === "sttComputeType" && typeof val === "string")  CONFIG.stt.computeType = val;
       if (key === "partialMs"      && typeof val === "number")  CONFIG.partialMs = val;
       if (key === "mcpUrl"         && typeof val === "string")  CONFIG.mcpUrl = val;
       if (key === "provider"       && (val === "ollama" || val === "anthropic")) CONFIG.provider = val;
