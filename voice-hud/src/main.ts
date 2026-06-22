@@ -420,6 +420,10 @@ function wireWizard() {
   // results. Returns the active provider so the UI reflects reality.
   ipcMain.handle("get-provider", () => agent.currentProvider());
   ipcMain.handle("set-provider", (_e, name: "ollama" | "anthropic") => {
+    if (name === "ollama" && !CONFIG.enableLocalLlm) {
+      send("agent", { kind: "info", text: "local LLM is mothballed (set DMW_ENABLE_LOCAL_LLM=1)" });
+      return { ok: false, active: agent.currentProvider(), reason: "local LLM disabled" };
+    }
     const r = agent.switchProvider(name);
     send("agent", { kind: "info", text: r.ok ? `model → ${name}` : `swap refused: ${r.reason}` });
     if (r.ok) { settings = { ...settings, provider: name }; saveSettings(settings); }
@@ -510,6 +514,7 @@ function wireWizard() {
     partialMs: CONFIG.partialMs,
     mcpUrl: CONFIG.mcpUrl,
     provider: CONFIG.provider,
+    enableLocalLlm: CONFIG.enableLocalLlm,
     model: CONFIG.model,
     autoEscalate: CONFIG.autoEscalate,
     ollamaUrl: CONFIG.ollamaUrl,
