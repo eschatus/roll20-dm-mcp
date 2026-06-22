@@ -12,7 +12,7 @@ import {
 import { getLastPing } from "../bridge/roll20-rt.js";
 import {
   type TurnEntry, type BatchResult,
-  text, json, indexBatchResults, coerceStringArray,
+  text, json, indexBatchResults, coerceStringArray, coerceBoolean,
   tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId,
 } from "./combatHelpers.js";
 
@@ -324,14 +324,14 @@ export function registerCombatTools(server: McpServer): void {
     "Roll initiative for tokens on the current (or specified) page and load results into Roll20's turn order tracker. Use names to roll for an EXPLICIT list of named combatants (the common case at combat start, e.g. ['Bugbear','Droop','Iarno']). Use nameFilter for a single substring instead. Use flatInit to place matched tokens at a fixed value instead of rolling. NPCs dropped on the map without an HP bar are auto-initialized from DDB average HP at this point (disable with initHp:false) so AoE/damage actually lands.",
     {
       pageId: z.string().optional().describe("Page to roll for. Defaults to the current player page."),
-      npcOnly: z.boolean().default(true).describe("If true, skip tokens whose controlledby field contains a player ID (i.e. PC tokens)."),
-      clearFirst: z.boolean().default(false).describe("Wipe the existing turn order before adding rolls. Set true at combat start."),
+      npcOnly: z.preprocess(coerceBoolean, z.boolean().default(true)).describe("If true, skip tokens whose controlledby field contains a player ID (i.e. PC tokens). Accepts \"true\"/\"false\" strings for model compatibility."),
+      clearFirst: z.preprocess(coerceBoolean, z.boolean().default(false)).describe("Wipe the existing turn order before adding rolls. Set true at combat start. Accepts \"true\"/\"false\" strings for model compatibility."),
       flatInit: z.number().int().optional().describe("If set, place all matched tokens at this fixed initiative value instead of rolling."),
       names: z.preprocess(coerceStringArray, z.array(z.string())).optional().describe("Explicit list of token names to roll for, e.g. ['Bugbear the Heavy-Handed','Droop','Iarno']. Matches a token if a given name is contained in (or equals) the token's name, case-insensitive — so partial names work. A JSON-stringified array or a single name string are both accepted."),
       nameFilter: z.string().optional().describe("Case-insensitive substring filter on token names. E.g. 'goblin' matches 'Goblin 1', 'Goblin Archer', etc. Prefer `names` for an explicit multi-creature list."),
-      publicRoll: z.boolean().default(true).describe("If true (default), posts a public gothic initiative card to chat showing all rolled tokens sorted by result. Pass false to roll silently."),
+      publicRoll: z.preprocess(coerceBoolean, z.boolean().default(true)).describe("If true (default), posts a public gothic initiative card to chat showing all rolled tokens sorted by result. Pass false to roll silently. Accepts \"true\"/\"false\" strings for model compatibility."),
       nearPcsFeet: z.number().optional().describe("Only include NPCs within this many feet of any PC token — use at combat start so distant mobs elsewhere on the map don't join the fight. 60-90 is a good default when the DM just says 'roll inits'."),
-      initHp: z.boolean().default(true).describe("Auto-initialize bar1/bar1_max from DDB average HP for any NPC combatant with no HP bar set (bar1_max unset → hp:null). PCs are never touched. Set false to skip the DDB lookups."),
+      initHp: z.preprocess(coerceBoolean, z.boolean().default(true)).describe("Auto-initialize bar1/bar1_max from DDB average HP for any NPC combatant with no HP bar set (bar1_max unset → hp:null). PCs are never touched. Set false to skip the DDB lookups. Accepts \"true\"/\"false\" strings for model compatibility."),
     },
     async ({ pageId, npcOnly, clearFirst, flatInit, names, nameFilter, publicRoll, nearPcsFeet, initHp }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
