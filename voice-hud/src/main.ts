@@ -6,7 +6,7 @@
 // for a confirm (PTT tap = confirm, Esc = cancel). Per-campaign vocab/nicknames/
 // notes are editable via the wizard panel (expanded mode).
 
-import { app, BrowserWindow, ipcMain, screen, Menu } from "electron";
+import { app, BrowserWindow, ipcMain, screen, Menu, clipboard } from "electron";
 import "./bootstrap"; // MUST precede ./config — sets DMW_DATA_DIR/ROLL20_DATA_DIR when packaged
 import * as path from "path";
 import * as fs from "fs";
@@ -631,6 +631,51 @@ function wireWizard() {
     catch (e) { return { ok: false, error: (e as Error).message }; }
   });
 
+  // STT model upgrade — base.en ships bundled (fast live partials); the user can download a bigger
+  // model used for FINAL transcription (two-tier via DMW_WHISPER_FINAL_MODEL). No browser needed.
+  ipcMain.handle("get-stt-models", () => {
+    const dir = path.join(process.env.DMW_DATA_DIR || CONFIG.dataDir, "models");
+    const finalPath = process.env.DMW_WHISPER_FINAL_MODEL || CONFIG.whisperFinalModel || "";
+    const current = finalPath ? path.basename(finalPath).replace(/^ggml-|\.bin$/g, "") : "base.en";
+    const models = STT_MODELS.map((m) => ({
+      ...m,
+      present: !!m.bundled || fs.existsSync(path.join(dir, `ggml-${m.id}.bin`)),
+    }));
+    return { models, current };
+  });
+  // Download (if needed) and select a model for FINAL transcription. base.en clears the final
+  // tier (single-tier base). Anything else downloads to <dataDir>/models and becomes the final
+  // model with base.en kept as the fast-partial primary. Restart applies it (★ STT setting).
+  ipcMain.handle("select-stt-model", async (_e, id: string) => {
+    const model = STT_MODELS.find((m) => m.id === id);
+    if (!model) return { ok: false, error: `unknown model: ${id}` };
+    try {
+      if (id === "base.en") {
+        process.env.DMW_WHISPER_FINAL_MODEL = "";
+        upsertEnv("DMW_WHISPER_FINAL_MODEL", "");
+        return { ok: true, restart: true };
+      }
+      const dir = path.join(process.env.DMW_DATA_DIR || CONFIG.dataDir, "models");
+      const dest = path.join(dir, `ggml-${id}.bin`);
+      if (!fs.existsSync(dest)) await downloadModel(id, dest);
+      process.env.DMW_WHISPER_FINAL_MODEL = dest;
+      upsertEnv("DMW_WHISPER_FINAL_MODEL", dest);
+      return { ok: true, restart: true };
+    } catch (e) { return { ok: false, error: (e as Error).message }; }
+  });
+
+  // Copy the ai-relay.js Mod source to the clipboard for manual deploy (Roll20 → Settings → API
+  // Scripts → New Script → paste → Save). Avoids bundling Playwright/Chromium just to automate the
+  // paste; the automated path stays available from Claude Code (`npm run release:mod`).
+  ipcMain.handle("copy-mod-script", () => {
+    try {
+      const assetRoot = process.env.DMW_ASSET_ROOT || path.join(__dirname, "..", "..");
+      const src = fs.readFileSync(path.join(assetRoot, "mod-scripts", "ai-relay.js"), "utf-8");
+      clipboard.writeText(src);
+      return { ok: true, bytes: src.length };
+    } catch (e) { return { ok: false, error: (e as Error).message }; }
+  });
+
   // Config write: update CONFIG in memory (immediate) + persist to voice-hud/.env (restarts).
   // Keys marked ★ in the UI (pttKey, confirmKey, stt.*) need a restart to fully take effect.
   ipcMain.handle("set-config", (_e, updates: Record<string, unknown>) => {
@@ -752,6 +797,41 @@ function upsertEnv(key: string, value: string): void {
   const re = new RegExp(`^${key}=.*$`, "m");
   txt = re.test(txt) ? txt.replace(re, `${key}=${value}`) : `${txt.replace(/\n?$/, "\n")}${key}=${value}\n`;
   fs.writeFileSync(file, txt);
+}
+
+// STT model catalog — ggml whisper.cpp models. base.en ships bundled; the rest download on demand
+// to <dataDir>/models and serve as the two-tier FINAL model (base.en stays the fast-partial primary).
+const STT_MODELS: Array<{ id: string; label: string; sizeMB: number; bundled?: boolean }> = [
+  { id: "base.en",   label: "Base (built-in, fastest)", sizeMB: 148, bundled: true },
+  { id: "small.en",  label: "Small (balanced)",         sizeMB: 488 },
+  { id: "medium.en", label: "Medium (most accurate)",   sizeMB: 1530 },
+];
+
+// Stream a ggml model from HuggingFace to disk, emitting progress to the gem. Writes to a .part
+// file then renames, so a crash never leaves a half file that looks complete.
+async function downloadModel(id: string, dest: string): Promise<void> {
+  const url = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${id}.bin?download=true`;
+  const res = await fetch(url);
+  if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status}`);
+  const total = Number(res.headers.get("content-length")) || 0;
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const tmp = `${dest}.part`;
+  const out = fs.createWriteStream(tmp);
+  let recv = 0, lastPct = -1;
+  const reader = (res.body as { getReader(): { read(): Promise<{ done: boolean; value?: Uint8Array }>; releaseLock?(): void } }).getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      if (!out.write(Buffer.from(value))) await new Promise<void>((r) => out.once("drain", () => r()));
+      recv += value.length;
+      const pct = total ? Math.floor((recv / total) * 100) : 0;
+      if (pct !== lastPct) { lastPct = pct; send("stt-model-progress", { id, pct, recvMB: Math.round(recv / 1e6) }); }
+    }
+  } finally { reader.releaseLock?.(); }
+  await new Promise<void>((resolve, reject) => out.end((e?: Error | null) => (e ? reject(e) : resolve())));
+  fs.renameSync(tmp, dest);
 }
 
 app.whenReady().then(async () => {

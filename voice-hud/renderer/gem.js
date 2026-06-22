@@ -427,7 +427,46 @@ async function loadSetup() {
   // Badge "!" until the three essentials are present.
   const badge = document.getElementById("setup-tab-count");
   if (badge) badge.textContent = (s.apiKey && s.campaigns > 0 && s.rtToken) ? "" : "!";
+  loadSttModels();
 }
+
+async function loadSttModels() {
+  if (!window.dmw || !dmw.getSttModels) return;
+  const wrap = document.getElementById("setup-stt-models");
+  if (!wrap) return;
+  const { models, current } = await dmw.getSttModels();
+  const size = (mb) => (mb >= 1000 ? (mb / 1000).toFixed(1) + "GB" : mb + "MB");
+  wrap.innerHTML = (models || []).map((m) =>
+    `<button class="act stt-model-btn${m.id === current ? " active" : ""}" data-id="${m.id}">` +
+    `${m.label} · ${size(m.sizeMB)}${m.id === current ? " ✓" : m.present ? "" : " ⬇"}</button>`
+  ).join("");
+  wrap.querySelectorAll(".stt-model-btn").forEach((b) => b.addEventListener("click", () => selectSttModel(b.dataset.id)));
+}
+
+async function selectSttModel(id) {
+  const msg = document.getElementById("setup-stt-msg");
+  if (!window.dmw || !msg) return;
+  msg.textContent = "preparing… (large models download once — may take a few minutes)";
+  msg.className = "msg";
+  const r = await dmw.selectSttModel(id);
+  if (r && r.ok) { msg.textContent = "model set ✓ — restart the gem to apply"; msg.className = "msg ok"; loadSttModels(); }
+  else { msg.textContent = (r && r.error) || "failed"; msg.className = "msg err"; }
+}
+
+if (window.dmw && dmw.onSttModelProgress) {
+  dmw.onSttModelProgress((d) => {
+    const msg = document.getElementById("setup-stt-msg");
+    if (msg) { msg.textContent = `downloading ${d.id}… ${d.pct}% (${d.recvMB}MB)`; msg.className = "msg"; }
+  });
+}
+
+document.getElementById("setup-copy-mod")?.addEventListener("click", async () => {
+  const msg = document.getElementById("setup-deploy-msg");
+  if (!window.dmw || !msg) return;
+  const r = await dmw.copyModScript();
+  if (r && r.ok) { msg.textContent = `copied ✓ (${Math.round(r.bytes / 1024)}KB) — paste into Roll20 → Settings → API Scripts → New Script → Save`; msg.className = "msg ok"; }
+  else { msg.textContent = (r && r.error) || "copy failed"; msg.className = "msg err"; }
+});
 document.getElementById("setup-apikey-save")?.addEventListener("click", async () => {
   const inp = document.getElementById("setup-apikey");
   const msg = document.getElementById("setup-msg");
