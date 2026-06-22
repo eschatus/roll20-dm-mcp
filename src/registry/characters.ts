@@ -1,10 +1,9 @@
 import { readFileSync, writeFileSync, existsSync, renameSync } from "fs";
-import path from "path";
+import { dataPath } from "../dataDir.js";
 import { getActiveCampaign } from "./campaigns.js";
 
-// Data dir is overridable via ROLL20_DATA_DIR so tests (and relocated installs)
-// don't read/write the real ./data files.
-const REGISTRY_PATH = path.resolve(process.env.ROLL20_DATA_DIR ?? "./data", "characters.json");
+// Data dir resolved by ../dataDir (ROLL20_DATA_DIR override; default ./data).
+const REGISTRY_PATH = dataPath("characters.json");
 
 export interface CharacterEntry {
   roll20TokenId: string;

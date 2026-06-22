@@ -14,6 +14,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import path from "path";
+import { dataPath } from "../dataDir.js";
 import { getPage, closeBrowser } from "./browser.js";
 
 const AUTH_SVC = "https://auth-service.dndbeyond.com/v1/cobalt-token";
@@ -21,7 +22,7 @@ const CHAR_SVC = "https://character-service.dndbeyond.com/character/v5";
 const MON_SVC = "https://monster-service.dndbeyond.com/v1/Monster";
 const WWW = "https://www.dndbeyond.com";
 
-const COBALT_CACHE = path.resolve("./data/ddb-cobalt.json");
+const COBALT_CACHE = dataPath("ddb-cobalt.json");
 // JWT lives 300s; refresh with a margin so a call never races the expiry.
 const JWT_MARGIN_MS = 30_000;
 
@@ -224,7 +225,7 @@ export function rtRawFetch(url: string, opts: RtFetchOpts = {}): Promise<Respons
 // Best-effort: a fetch failure leaves the baked table in charge — this never throws.
 
 const DDB_CONFIG_URL = `${WWW}/api/config/json`;
-const MON_CONFIG_CACHE = path.resolve("./data/ddb-monster-config.json");
+const MON_CONFIG_CACHE = dataPath("ddb-monster-config.json");
 const MON_CONFIG_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface DamageAdjustmentEntry { name: string; type: 1 | 2 | 3 }

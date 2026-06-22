@@ -16,6 +16,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import path from "path";
+import { dataPath } from "../dataDir.js";
 import { initializeApp, deleteApp, type FirebaseApp } from "firebase/app";
 import { getAuth, signInWithCustomToken, type User } from "firebase/auth";
 import {
@@ -56,7 +57,7 @@ const RELAY_TIMEOUT_MS = 30_000;
 export class RtPreSendError extends Error {
   constructor(msg: string) { super(msg); this.name = "RtPreSendError"; }
 }
-const TOKEN_CACHE = path.resolve("./data/roll20-rt-token.json");
+const TOKEN_CACHE = dataPath("roll20-rt-token.json");
 // Firebase custom tokens are valid ~1h and re-exchangeable; cache below that so quick server
 // restarts skip the browser entirely. Only a cold start past the window touches Chromium.
 const TOKEN_MAX_AGE_MS = 50 * 60_000;

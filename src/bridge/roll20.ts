@@ -1,6 +1,7 @@
 import { Page } from "playwright";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import path from "path";
+import { dataPath } from "../dataDir.js";
 import { getPage, closeBrowser } from "./browser.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
 import { rtEnabled, rtRelayCommand, rtGet } from "./roll20-rt.js";
@@ -461,7 +462,7 @@ async function _relayCommandRaw<T>(cmd: Record<string, unknown>, preAssignedNonc
 // On first successful Playwright upload we capture: the endpoint Roll20's Dropzone POSTed to,
 // and the session cookies. Subsequent uploads skip the browser entirely.
 
-const UPLOAD_CACHE_PATH = path.resolve("./data/roll20-upload-cache.json");
+const UPLOAD_CACHE_PATH = dataPath("roll20-upload-cache.json");
 const UPLOAD_CACHE_TTL_MS = 8 * 60 * 60_000; // 8 h
 
 interface UploadCache {
@@ -678,7 +679,7 @@ export async function uploadArt(localAbsPath: string): Promise<string> {
 
     // Write diagnostic log regardless of outcome
     const { writeFileSync } = await import("fs");
-    const logPath = path.join(process.cwd(), "data", "upload-debug.log");
+    const logPath = dataPath("upload-debug.log");
     writeFileSync(logPath, [`=== upload ${path.basename(localAbsPath)} ${new Date().toISOString()} ===`, ...uploadLog, `capturedUrl: ${capturedUrl ?? "null"}`].join("\n") + "\n", { flag: "a" });
 
     if (!capturedUrl) {
