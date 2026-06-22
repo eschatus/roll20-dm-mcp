@@ -37,6 +37,17 @@ export function coerceStringArray(v: unknown): unknown {
   return v;
 }
 
+// Tolerate the ways small/cloud models pass boolean params: "true"/"false"/"1"/"0"
+// are mapped to native booleans; real booleans pass through unchanged; anything else
+// is returned untouched for Zod to reject. Use as a Zod preprocess:
+//   `z.preprocess(coerceBoolean, z.boolean())`.
+export function coerceBoolean(v: unknown): unknown {
+  if (typeof v === "boolean") return v;
+  if (v === "true" || v === "1") return true;
+  if (v === "false" || v === "0") return false;
+  return v;
+}
+
 // ── Turn order ────────────────────────────────────────────────────────────────
 // Roll20 turn order entry: {id, pr (string), custom, _pageid}. _pageid is
 // required — without it Roll20's tracker shows "no tokens on this stage". The
