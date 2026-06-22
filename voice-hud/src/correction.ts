@@ -132,8 +132,12 @@ export function fuzzyPhoneticCorrect(text: string, glossary: string[]): string {
 
   let w = 0;
   while (w < wordIdx.length) {
-    let applied = false;
-    // Greedy: longest window (3 → 1) wins, so multi-word terms resolve before fragments.
+    // Evaluate every window length (1→3) and pick the BEST-SCORING match, not merely
+    // the longest that clears the floor. Tiebreak → longer span (so multi-word terms
+    // and split names still win over a fragment). This stops a longer window from
+    // swallowing a trailing common word when a shorter window already matches better:
+    // "Ireena is" scored 0.75 vs "Ireena" exact 1.0 → take span 1, keep "is".
+    let winner: { span: number; entry: GlossEntry; score: number } | null = null;
     for (let span = Math.min(3, wordIdx.length - w); span >= 1; span--) {
       const windowWords = [];
       for (let k = 0; k < span; k++) windowWords.push(atoms[wordIdx[w + k]]);
@@ -159,22 +163,26 @@ export function fuzzyPhoneticCorrect(text: string, glossary: string[]): string {
         const score = similarity(key, g.key);
         if (score >= floor && (!best || score > best.score)) best = { entry: g, score };
       }
-
-      if (best) {
-        // Replace the window: first word → canonical term, blank the rest + their
-        // leading gaps. (An exact same-casing match just rewrites identical text;
-        // a name match also canonicalizes casing, e.g. "haregon" → "Haregon".)
-        atoms[wordIdx[w]] = best.entry.term;
-        for (let k = 1; k < span; k++) {
-          atoms[wordIdx[w + k]] = "";
-          atoms[wordIdx[w + k] - 1] = ""; // the gap before it
-        }
-        w += span;
-        applied = true;
-        break;
-      }
+      // Strictly-better shorter span overrides; equal score keeps the longer (first-seen).
+      if (best && (!winner || best.score > winner.score)) winner = { span, entry: best.entry, score: best.score };
+      // INTENTIONAL NON-FIX: merged-common-word cases like "his mark" → "Ismark" are NOT
+      // handled here. Both "his" and "mark" are common English words protected by COMMON_WORDS,
+      // and forcing their merger would risk false positives in ordinary narration
+      // (e.g. "the wolf bears his mark"). Campaign-specific merges like "his mark"→"Ismark"
+      // belong in the per-campaign literalMap or the learned-corrections loop, not this layer.
     }
-    if (!applied) w += 1;
+
+    if (winner) {
+      // Replace the window: first word → canonical term, blank the rest + their leading
+      // gaps. (Exact same-casing match rewrites identical text; a name match also
+      // canonicalizes casing, e.g. "haregon" → "Haregon".)
+      atoms[wordIdx[w]] = winner.entry.term;
+      for (let k = 1; k < winner.span; k++) {
+        atoms[wordIdx[w + k]] = "";
+        atoms[wordIdx[w + k] - 1] = ""; // the gap before it
+      }
+      w += winner.span;
+    } else w += 1;
   }
   return atoms.join("");
 }
