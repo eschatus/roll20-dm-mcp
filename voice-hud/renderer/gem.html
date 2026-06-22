@@ -648,8 +648,15 @@
       </div>
 
       <div class="tab" data-tab="setup">
-        <p class="hint-line">First-run setup — each item is needed before the gem can run your game.</p>
+        <p class="hint-line" id="setup-intro">First-run setup — each item is needed before the gem can run your game.</p>
         <ul id="setup-status" style="list-style:none;padding:0;margin:0 0 14px;font-size:13px;line-height:1.8;"></ul>
+        <!-- Shown once the essentials are done so the tab "goes quiet" instead of nagging. -->
+        <div id="setup-done" class="setup-done" style="display:none;margin:0 0 14px;padding:10px 12px;border-radius:8px;background:rgba(80,200,120,.12);border:1px solid rgba(80,200,120,.35);font-size:13px;">
+          ✓ <strong>You're all set</strong> — DM Whisper is ready to run your game.
+          <a href="#" id="setup-manage" style="margin-left:8px;opacity:.8;">Adjust setup ▾</a>
+        </div>
+        <!-- The essential input steps — collapsed once setup is complete (toggle via "Adjust setup"). -->
+        <div id="setup-essential-steps">
         <div class="setup-step">
           <p class="hint-line">Anthropic API key — the agent's brain. Starts with <code>sk-</code>. Saved to your per-user config.</p>
           <div class="chip-input">
@@ -666,6 +673,7 @@
           </div>
           <div id="setup-connect-msg" class="msg" style="min-height:18px;margin-top:6px;"></div>
           <p class="hint-line" style="margin-top:8px;">Then just ask the gem: <em>"list my campaigns"</em> / <em>"list my games"</em> to pick one.</p>
+        </div>
         </div>
         <div class="setup-step" style="margin-top:14px;">
           <p class="hint-line">Speech model — <code>base.en</code> is built-in for fast live captions. Download a larger model for more accurate <em>final</em> transcription (the committed text the agent acts on); base stays the fast-partial tier. Restart the gem after changing.</p>
