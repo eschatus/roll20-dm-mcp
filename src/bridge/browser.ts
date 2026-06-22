@@ -110,7 +110,13 @@ async function getContext(): Promise<BrowserContext> {
         // DMW_BROWSER_W/H if a tool needs more of the map visible at once.
         const winW = Number(process.env.DMW_BROWSER_W) || 1280;
         const winH = Number(process.env.DMW_BROWSER_H) || 800;
-        const launched = await (await pwChromium()).launchPersistentContext(userDataDir, {
+        const pw = await pwChromium();
+        // Prefer the user's REAL Chrome (channel:"chrome") for the one-time Roll20 login —
+        // it clears Cloudflare Turnstile far better than Playwright's bundled Chromium, which
+        // the "I'm human" check flags as automation. Falls back to bundled if Chrome isn't
+        // installed. Override via DMW_BROWSER_CHANNEL (e.g. "msedge"; "" forces bundled).
+        const launchChannel = process.env.DMW_BROWSER_CHANNEL ?? "chrome";
+        const launchOpts = {
           headless: false,
           viewport: { width: winW, height: winH },
           args: [
@@ -141,7 +147,16 @@ async function getContext(): Promise<BrowserContext> {
               "--disable-features=CalculateNativeWinOcclusion,MediaRouter",
             ]),
           ],
-        });
+        };
+        let launched: BrowserContext;
+        try {
+          launched = await pw.launchPersistentContext(userDataDir, launchChannel ? { ...launchOpts, channel: launchChannel } : launchOpts);
+        } catch (e) {
+          // Chrome (or the chosen channel) not installed → bundled Chromium. Other errors
+          // (e.g. locked profile) propagate to the outer handler.
+          if (!/install|not found|executable|channel|chrome|edge/i.test(String((e as Error).message))) throw e;
+          launched = await pw.launchPersistentContext(userDataDir, launchOpts);
+        }
         // Tuck the window to the taskbar on a fresh launch (it still renders).
         if (HIDE_BROWSER) {
           const p0 = launched.pages()[0] ?? await launched.newPage();
