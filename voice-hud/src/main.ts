@@ -14,6 +14,7 @@ import * as dotenv from "dotenv";
 import { CONFIG } from "./config";
 import { PttHook } from "./ptt";
 import { startStt, startFinalStt, SttEngine } from "./stt";
+import { ensureServerRunning, stopServer } from "./serverSupervisor";
 import { McpRoll20 } from "./mcp";
 import { DmAgent } from "./agent";
 import { buildRoster, clearRosterCache } from "./roster";
@@ -722,6 +723,9 @@ app.whenReady().then(async () => {
     .catch(() => { /* finals fall back to the primary engine */ });
 
   try {
+    // Phase B: when packaged (or DMW_SUPERVISE_SERVER=1), the gem owns the MCP server —
+    // spawn + wait for it to bind before connecting. No-op in dev (external server).
+    await ensureServerRunning((m) => process.stderr.write(m));
     const tools = await mcp.connect();
     console.error(`[mcp] connected — ${tools.length} tools`);
     send("agent", { kind: "info", text: "bound to Roll20" });
@@ -736,12 +740,13 @@ app.whenReady().then(async () => {
 });
 
 let appQuitting = false;
-app.on("before-quit", () => { appQuitting = true; try { sttFinal?.stop(); } catch { /* ignore */ } });
+app.on("before-quit", () => { appQuitting = true; try { sttFinal?.stop(); } catch { /* ignore */ } try { stopServer(); } catch { /* ignore */ } });
 
 app.on("window-all-closed", () => {
   appQuitting = true;
   ptt.stop();
   stt?.stop();
+  stopServer();              // kill the supervised MCP server (no-op if we didn't spawn it)
   mcp.close().catch(() => {});
   app.quit();
 });
