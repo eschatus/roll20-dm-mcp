@@ -406,9 +406,35 @@ function showTab(name) {
   document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
   if (name === "debug") loadDebugHistory();
   if (name === "config") loadConfig();
+  if (name === "setup") loadSetup();
 }
 document.querySelectorAll(".tabbar button").forEach((b) => {
   b.addEventListener("click", () => showTab(b.dataset.tab));
+});
+
+// ---- setup wizard (first-run onboarding) ----
+async function loadSetup() {
+  if (!window.dmw || !dmw.getSetupStatus) return;
+  const s = await dmw.getSetupStatus();
+  const item = (ok, label, detail) =>
+    `<li>${ok ? "✅" : "⬜"} ${label}${ok ? "" : ` <span class="hint-line">— ${detail}</span>`}</li>`;
+  const ul = document.getElementById("setup-status");
+  if (ul) ul.innerHTML =
+    item(s.apiKey, "Anthropic API key", "enter it below") +
+    item(s.campaigns > 0, "Campaign registered", "register one (Claude Code / Config) — " + s.campaigns + " found") +
+    item(s.rtToken, "Roll20 connected", "Connect Roll20 (next wizard step)") +
+    item(s.cobalt, "D&D Beyond linked (optional)", "set DDB_COBALT");
+  // Badge "!" until the three essentials are present.
+  const badge = document.getElementById("setup-tab-count");
+  if (badge) badge.textContent = (s.apiKey && s.campaigns > 0 && s.rtToken) ? "" : "!";
+}
+document.getElementById("setup-apikey-save")?.addEventListener("click", async () => {
+  const inp = document.getElementById("setup-apikey");
+  const msg = document.getElementById("setup-msg");
+  if (!inp || !window.dmw) return;
+  const r = await dmw.saveApiKey(inp.value);
+  if (r && r.ok) { msg.textContent = "saved ✓ — the agent will use it now"; msg.className = "msg ok"; inp.value = ""; loadSetup(); }
+  else { msg.textContent = (r && r.error) || "save failed"; msg.className = "msg err"; }
 });
 
 // ---- debug log tab ----
@@ -597,6 +623,7 @@ async function loadWizard() {
   renderNicks();
   document.getElementById("notes").value = wiz.notes || "";
   renderRoster(roster || []);
+  loadSetup(); // populate the Setup tab + its "!" badge whenever the panel opens
   try {
     const s = await dmw.getSettings();
     document.getElementById("agent-sound").checked = !!(s && s.agentSound);

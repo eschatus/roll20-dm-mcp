@@ -592,6 +592,33 @@ function wireWizard() {
     whisperClipMs: CONFIG.whisperClipMs,
   }));
 
+  // --- Setup wizard (first-run onboarding) ---
+  // What the Setup tab shows: configured vs still-needed. Cheap reads off env + the data dir.
+  ipcMain.handle("get-setup-status", () => {
+    const dataDir = process.env.DMW_DATA_DIR || CONFIG.dataDir;
+    const has = (f: string) => { try { return fs.existsSync(path.join(dataDir, f)); } catch { return false; } };
+    let campaigns = 0;
+    try { campaigns = Object.keys(JSON.parse(fs.readFileSync(path.join(dataDir, "campaigns.json"), "utf-8"))).length; } catch { /* none yet */ }
+    return {
+      dataDir,
+      apiKey: !!process.env.ANTHROPIC_API_KEY,
+      rtToken: has("roll20-rt-token.json"),
+      cobalt: !!process.env.DDB_COBALT || has("ddb-cobalt.json"),
+      campaigns,
+      activeSlug,
+    };
+  });
+
+  // Save the Anthropic API key — live immediately (process.env, next agent call uses it) and
+  // persisted to <dataDir>/.env for next launch.
+  ipcMain.handle("save-api-key", (_e, key: string) => {
+    const k = String(key || "").trim();
+    if (!k.startsWith("sk-")) return { ok: false, error: "expected a key starting with sk-" };
+    process.env.ANTHROPIC_API_KEY = k;
+    try { upsertEnv("ANTHROPIC_API_KEY", k); } catch (e) { return { ok: false, error: (e as Error).message }; }
+    return { ok: true };
+  });
+
   // Config write: update CONFIG in memory (immediate) + persist to voice-hud/.env (restarts).
   // Keys marked ★ in the UI (pttKey, confirmKey, stt.*) need a restart to fully take effect.
   ipcMain.handle("set-config", (_e, updates: Record<string, unknown>) => {
@@ -703,6 +730,18 @@ function readActiveSlug(): string {
     const p = path.join(process.env.DMW_DATA_DIR || path.join(__dirname, "..", "..", "data"), "active-campaign.json");
     return (JSON.parse(fs.readFileSync(p, "utf-8")) as { slug: string }).slug || "";
   } catch { return ""; }
+}
+
+// Upsert KEY=value into <dataDir>/.env (replace the line if present, else append) so the
+// setup wizard's secrets persist to the per-user dir loaded on next launch.
+function upsertEnv(key: string, value: string): void {
+  const dir = process.env.DMW_DATA_DIR || CONFIG.dataDir;
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, ".env");
+  let txt = ""; try { txt = fs.readFileSync(file, "utf-8"); } catch { /* new file */ }
+  const re = new RegExp(`^${key}=.*$`, "m");
+  txt = re.test(txt) ? txt.replace(re, `${key}=${value}`) : `${txt.replace(/\n?$/, "\n")}${key}=${value}\n`;
+  fs.writeFileSync(file, txt);
 }
 
 app.whenReady().then(async () => {

@@ -621,6 +621,7 @@
       <button data-tab="notes">DM Notes</button>
       <button data-tab="roster">Roster</button>
       <button data-tab="config">Config</button>
+      <button data-tab="setup">Setup <span id="setup-tab-count" class="inbox-tab-count"></span></button>
       <button data-tab="debug">Debug</button>
     </div>
     <div class="tabbody">
@@ -644,6 +645,19 @@
       <div class="tab" data-tab="inbox">
         <div id="inbox-list"></div>
         <div id="inbox-empty">No messages from players.</div>
+      </div>
+
+      <div class="tab" data-tab="setup">
+        <p class="hint-line">First-run setup — each item is needed before the gem can run your game.</p>
+        <ul id="setup-status" style="list-style:none;padding:0;margin:0 0 14px;font-size:13px;line-height:1.8;"></ul>
+        <div class="setup-step">
+          <p class="hint-line">Anthropic API key — the agent's brain. Starts with <code>sk-</code>. Saved to your per-user config.</p>
+          <div class="chip-input">
+            <input id="setup-apikey" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false" />
+            <button class="act" id="setup-apikey-save">Save</button>
+          </div>
+          <div id="setup-msg" class="msg" style="min-height:18px;margin-top:6px;"></div>
+        </div>
       </div>
 
       <div class="tab" data-tab="vocab">
