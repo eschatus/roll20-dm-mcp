@@ -13,7 +13,9 @@ import * as fs from "fs";
 import * as path from "path";
 import type { DmPhase } from "./agent";
 
-const RULES_PATH = path.join(__dirname, "..", "..", "skills", "dm-rules.md");
+// Packaged: skills/ is bundled under Electron's resourcesPath (DMW_ASSET_ROOT, set by
+// bootstrap.ts). Dev/tests: unset → __dirname/../../skills (repo-root/skills), unchanged.
+const RULES_PATH = path.join(process.env.DMW_ASSET_ROOT || path.join(__dirname, "..", ".."), "skills", "dm-rules.md");
 
 let _rulesCache: string | null = null;
 function loadRules(): string {

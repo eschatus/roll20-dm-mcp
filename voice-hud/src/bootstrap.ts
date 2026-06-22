@@ -38,4 +38,8 @@ if (app.isPackaged && !process.env.DMW_DATA_DIR) {
 
   process.env.DMW_DATA_DIR = dir;
   process.env.ROLL20_DATA_DIR = dir;
+  // Where bundled read-only assets live (whisper binary/model, skills/dm-rules.md) in a
+  // packaged build. process.resourcesPath is reliable HERE (we're already in the packaged
+  // branch); config.ts/persona.ts read DMW_ASSET_ROOT so they stay electron-free.
+  process.env.DMW_ASSET_ROOT = process.resourcesPath;
 }
