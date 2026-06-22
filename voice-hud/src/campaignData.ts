@@ -10,8 +10,10 @@ import * as fs from "fs";
 import * as path from "path";
 import { DEFAULT_BASE_VOCAB } from "./baseVocab";
 
-// __dirname = voice-hud/dist at compiled runtime → ../../data = repo-root/data
-const CONTEXT_PATH = path.join(__dirname, "..", "..", "data", "campaign-context.json");
+// Shared with the MCP server (same campaign-context.json). DMW_DATA_DIR — set by the
+// packaged gem's bootstrap to the per-user dir — drives the gem and the server to the
+// SAME place; unset in dev → __dirname/../../data = repo-root/data, unchanged.
+const CONTEXT_PATH = path.join(process.env.DMW_DATA_DIR || path.join(__dirname, "..", "..", "data"), "campaign-context.json");
 
 export interface NicknameAlias {
   nickname: string;

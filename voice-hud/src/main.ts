@@ -7,6 +7,7 @@
 // notes are editable via the wizard panel (expanded mode).
 
 import { app, BrowserWindow, ipcMain, screen, Menu } from "electron";
+import "./bootstrap"; // MUST precede ./config — sets DMW_DATA_DIR/ROLL20_DATA_DIR when packaged
 import * as path from "path";
 import * as fs from "fs";
 import * as dotenv from "dotenv";
@@ -684,7 +685,7 @@ async function refreshRoster(opts: { silent?: boolean; force?: boolean } = {}) {
 // --- Determine active campaign from the main project's registry ---
 function readActiveSlug(): string {
   try {
-    const p = path.join(__dirname, "..", "..", "data", "active-campaign.json");
+    const p = path.join(process.env.DMW_DATA_DIR || path.join(__dirname, "..", "..", "data"), "active-campaign.json");
     return (JSON.parse(fs.readFileSync(p, "utf-8")) as { slug: string }).slug || "";
   } catch { return ""; }
 }
