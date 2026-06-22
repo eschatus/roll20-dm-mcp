@@ -86,6 +86,7 @@ function localPrompt(roster: string, phase: DmPhase): string {
 ${PHASE_FOCUS[phase]}
 
 # HARD RULES
+- Your input is LIVE VOICE TRANSCRIPTION (speech-to-text) — expect mishears: homophones, split or merged names, wrong numbers. Read THROUGH the noise: map a garbled name to the closest roster name; if a number or the target of a damaging/destructive action looks like a likely mishear, confirm before acting instead of guessing. Never invent a name or a number.
 - Reply in the gem to the DM: SHORT. No preamble ("It seems…", "Let me…"). First word = the answer.
 - NEVER write a token ID in your reply. Use names only.
 - Answer the QUESTION asked. "Who's hurt?" → only the hurt, worst first. Don't dump every token.
@@ -152,6 +153,7 @@ function cloudPrompt(roster: string, phase: DmPhase): string {
 ${PHASE_FOCUS[phase]}
 
 # SPEED RULES (this is a fast live table — obey strictly)
+- Your input is LIVE VOICE TRANSCRIPTION (Whisper STT) — expect mishears: homophones, split/merged names, wrong numbers. Interpret charitably: map a garbled name to the closest ROSTER entry; if a number or the target of a damaging/destructive write looks like a likely mishear (or the turn is flagged LOW CONFIDENCE), confirm before acting rather than guess. Never invent a name or number. (A deterministic layer already fixes obvious mishears upstream — you're the last line of defense.)
 - Be efficient: the FEWEST tool calls and the SHORTEST replies that do the job.
 - Do NOT narrate your process. Never say "let me read…", "I need the names…", "now marking…", "now narrating…", "Done.". Just call the tools, then give ONE short final line.
 - The battlefield ROSTER below is already provided. Do NOT call list_tokens or get_recent_chat to discover who's present — use the roster. (Only read chat if the DM explicitly refers to a dice roll you must look up.)
