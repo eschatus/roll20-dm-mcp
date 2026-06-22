@@ -89,6 +89,13 @@ contextBridge.exposeInMainWorld("dmw", {
   saveApiKey: (key: string) => ipcRenderer.invoke("save-api-key", key),
   connectRoll20: () => ipcRenderer.invoke("connect-roll20"),
   connectDdb: () => ipcRenderer.invoke("connect-ddb"),
+  // STT model upgrade — download a bigger whisper.cpp model for final transcription
+  getSttModels: () => ipcRenderer.invoke("get-stt-models"),
+  selectSttModel: (id: string) => ipcRenderer.invoke("select-stt-model", id),
+  onSttModelProgress: (cb: (d: { id: string; pct: number; recvMB: number }) => void) =>
+    ipcRenderer.on("stt-model-progress", (_e, d) => cb(d)),
+  // Copy the ai-relay.js Mod source to the clipboard for manual Roll20 deploy
+  copyModScript: () => ipcRenderer.invoke("copy-mod-script"),
 
   // Reconnect MCP (in case server wasn't up at HUD start)
   reconnectMcp: () => ipcRenderer.invoke("reconnect-mcp"),

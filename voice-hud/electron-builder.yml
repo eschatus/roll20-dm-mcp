@@ -41,6 +41,10 @@ extraResources:
   - from: ../skills
     to: skills
     filter: ["dm-rules.md", "dm-map-setup.md"]
+  # The Roll20 Mod source — the setup familiar's "Copy Mod script" button reads this and puts it
+  # on the clipboard for manual deploy (resolved via DMW_ASSET_ROOT = resourcesPath when packaged).
+  - from: ../mod-scripts/ai-relay.js
+    to: mod-scripts/ai-relay.js
   - from: data/whisper
     to: data/whisper
     # Ship only what the gem uses — the CLI + resident server + their shared libs.
