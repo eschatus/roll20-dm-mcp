@@ -1,20 +1,24 @@
 name: Release
 
 # Tag-driven CD: push a `v*` tag → build the DM Whisper installer for Windows, macOS
-# (Apple Silicon) and Linux, then publish all three to a DRAFT GitHub Release named after
-# the version. Review the draft on the repo's Releases page and hit "Publish release".
+# (Apple Silicon) and Linux, then a SINGLE publish job collects all three and creates one
+# draft GitHub Release. Review the draft on the Releases page and hit "Publish release".
 #
 #   git tag v0.1.0 && git push origin v0.1.0
 #
-# `workflow_dispatch` runs the same matrix as a dry build (no publish) and uploads the
-# installers as workflow artifacts so you can smoke-test before tagging.
+# Two stages on purpose: the matrix builds with `--publish never` and uploads artifacts; a
+# lone publish job creates the Release. Letting each matrix leg publish concurrently races —
+# they each try to create the same draft and you get TWO drafts split across platforms.
+#
+# `workflow_dispatch` runs only the build matrix (no publish) and leaves the installers as
+# workflow artifacts so you can smoke-test before tagging.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch: {}
 
 permissions:
-  contents: write          # required for electron-builder to create/upload the Release
+  contents: write          # publish job creates/uploads the Release
 
 jobs:
   build:
@@ -33,8 +37,8 @@ jobs:
         with:
           node-version: "20"
 
-      # The tag must match voice-hud/package.json version — electron-builder names the
-      # Release from package.json, not the git ref, so a mismatch publishes the wrong draft.
+      # The tag must match voice-hud/package.json version — the publish job names the Release
+      # from the tag, and a mismatch means installers labelled differently than the Release.
       - name: Verify tag matches package version
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -70,14 +74,13 @@ jobs:
         working-directory: voice-hud
         run: npm run bundle:server
 
-      - name: Build${{ startsWith(github.ref, 'refs/tags/') && ' + publish' || '' }} installer
+      # BUILD ONLY — no publish here. The publish job (below) uploads everything at once so
+      # the matrix legs never race to create the draft Release.
+      - name: Build installer (no publish)
         working-directory: voice-hud
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx --yes electron-builder --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
+        run: npx --yes electron-builder --publish never
 
-      - name: Upload installers (dry runs only)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
         with:
           name: dmwhisper-${{ matrix.platform }}
@@ -85,4 +88,30 @@ jobs:
             voice-hud/release/*.exe
             voice-hud/release/*.dmg
             voice-hud/release/*.AppImage
-          if-no-files-found: warn
+            voice-hud/release/*.yml
+            voice-hud/release/*.blockmap
+          if-no-files-found: ignore
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true     # flatten every platform's files into dist/
+
+      - name: Create draft Release with all installers
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          files="$(find dist -type f)"
+          echo "publishing:"; echo "$files"
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --title "DM Whisper ${GITHUB_REF_NAME#v}" \
+            --notes "Automated build — release notes pending." \
+            $files
