@@ -15,6 +15,7 @@ import { CONFIG } from "./config";
 import { PttHook } from "./ptt";
 import { startStt, startFinalStt, SttEngine } from "./stt";
 import { ensureServerRunning, stopServer } from "./serverSupervisor";
+import { harvestRoll20, harvestDdb } from "./harvest";
 import { McpRoll20 } from "./mcp";
 import { DmAgent } from "./agent";
 import { buildRoster, clearRosterCache } from "./roster";
@@ -616,20 +617,18 @@ function wireWizard() {
     return { ok: true };
   });
 
-  // Token harvests — force the relevant transport once; the server opens the (visible) browser
-  // for login + caches the token on success. We don't strictly trust the tool's return (the
-  // interactive login can outlast a tool timeout) — the renderer re-reads get-setup-status, and
-  // the cached token file is the real success signal.
-  // Roll20: any relay read drives roll20-rt → intercepts signInWithCustomToken → caches the token.
+  // Token harvests — done NATIVELY in the gem (Electron BrowserWindow), not via the server's
+  // Playwright (which the packaged installer doesn't ship). The gem opens a visible window, the
+  // user logs in, and we write the SAME cache files the server reads. The renderer re-reads
+  // get-setup-status afterward — the cached token file is the real success signal. (See #65.)
+  // Roll20: harvest is per-campaign (RTDB shard), so an active campaign must be registered first.
   ipcMain.handle("connect-roll20", async () => {
-    try { await mcp.call("list_tokens", {}); return { ok: true }; }
-    catch (e) { return { ok: false, error: (e as Error).message }; }
+    const campaignId = readActiveRoll20Id();
+    if (!campaignId) return { ok: false, error: "no active campaign — register/switch to one first, then Connect Roll20" };
+    return harvestRoll20(campaignId, (m) => console.error(m));
   });
-  // D&D Beyond: ddb_list_campaigns harvests the CobaltSession cookie AND returns the games list.
-  ipcMain.handle("connect-ddb", async () => {
-    try { const r = await mcp.call("ddb_list_campaigns", {}); return { ok: true, result: String(r).slice(0, 400) }; }
-    catch (e) { return { ok: false, error: (e as Error).message }; }
-  });
+  // D&D Beyond: harvest the CobaltSession cookie. Afterward ask the gem "list my games" to use it.
+  ipcMain.handle("connect-ddb", async () => harvestDdb((m) => console.error(m)));
 
   // STT model upgrade — base.en ships bundled (fast live partials); the user can download a bigger
   // model used for FINAL transcription (two-tier via DMW_WHISPER_FINAL_MODEL). No browser needed.
@@ -784,6 +783,18 @@ function readActiveSlug(): string {
   try {
     const p = path.join(process.env.DMW_DATA_DIR || path.join(__dirname, "..", "..", "data"), "active-campaign.json");
     return (JSON.parse(fs.readFileSync(p, "utf-8")) as { slug: string }).slug || "";
+  } catch { return ""; }
+}
+
+// The active campaign's Roll20 numeric id (from the shared registry) — the native Roll20 harvest
+// is shard-specific, so it needs this to open the right editor.
+function readActiveRoll20Id(): string {
+  try {
+    const dir = process.env.DMW_DATA_DIR || path.join(__dirname, "..", "..", "data");
+    const slug = readActiveSlug();
+    if (!slug) return "";
+    const campaigns = JSON.parse(fs.readFileSync(path.join(dir, "campaigns.json"), "utf-8")) as Record<string, { roll20CampaignId?: string }>;
+    return campaigns[slug]?.roll20CampaignId || "";
   } catch { return ""; }
 }
 
