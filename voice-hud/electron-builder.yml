@@ -43,6 +43,10 @@ extraResources:
     filter: ["dm-rules.md", "dm-map-setup.md"]
   - from: data/whisper
     to: data/whisper
+    # Ship only what the gem uses — the CLI + resident server + their ggml/whisper DLLs.
+    # The release zip also has parakeet/wchess/talk-llama/stream/bench/test exes (~18)
+    # we never call; excluding them shrinks the installer + skips pointless signing.
+    filter: ["**/whisper-cli.exe", "**/whisper-server.exe", "**/*.dll"]
   - from: data/models/ggml-base.en.bin
     to: data/models/ggml-base.en.bin
   - from: ../dist-server          # produced by `npm run bundle:server` (esbuild) — see doc
