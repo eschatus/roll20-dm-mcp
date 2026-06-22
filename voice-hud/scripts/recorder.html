@@ -25,14 +25,24 @@
   .status { margin-top: 18px; font-size: 13px; color: #9b90b5; }
   .msg { margin-top: 10px; font-size: 13px; min-height: 18px; }
   .ok { color: #7fd99a; } .err { color: #ff8a9b; }
+  .prompt { background: #1d1828; border: 1px solid #352b48; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
+  .prompt-meta { display: flex; justify-content: space-between; font-size: 12px; color: #9b90b5; margin-bottom: 8px; }
+  .prompt-text { font-size: 21px; font-weight: 600; line-height: 1.35; }
+  .nav { background: #2a2238; border: 1px solid #3a2f4f; color: #c9bfe0; border-radius: 6px; padding: 2px 9px; cursor: pointer; font: inherit; font-size: 12px; }
   kbd { background:#2a2238; border:1px solid #3a2f4f; border-radius:4px; padding:1px 5px; font-size:12px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>A/B clip recorder</h1>
-  <div class="sub">Hold the button (or <kbd>Space</kbd>) and speak a real table line. Release, type what you actually
-    said, Save. Clips land in <code>data/ab-clips/</code> in the exact 16 kHz format the gem produces.</div>
+  <div class="sub">Read the line aloud — hold the button (or <kbd>Space</kbd>), speak, release. Play it back, Save.
+    The line is the reference, so scoring is exact. Clips land in <code>data/ab-clips/</code> in the gem's 16 kHz format.</div>
+
+  <div id="prompt" class="prompt" hidden>
+    <div class="prompt-meta"><span id="prompt-idx"></span>
+      <span><button id="prev" class="nav">‹ prev</button> <button id="next" class="nav">next ›</button></span></div>
+    <div id="prompt-text" class="prompt-text"></div>
+  </div>
 
   <button id="rec">🎙 Hold to record</button>
 
@@ -116,13 +126,42 @@ window.addEventListener("keyup", (e) => { if (e.code === "Space" && capturing) {
 
 function setMsg(t, isErr) { const m = document.getElementById("msg"); m.textContent = t; m.className = "msg " + (isErr ? "err" : "ok"); }
 
+let corpusCount = 0;
 async function refreshStatus() {
   try {
-    const r = await fetch("/list"); const d = await r.json();
+    const r = await fetch("/list"); const d = await r.json(); corpusCount = d.count;
     document.getElementById("status").textContent =
       `corpus: ${d.count} clips, ${(d.bytes / 1e6).toFixed(0)} MB / ${(d.maxBytes / 1e6).toFixed(0)} MB cap (max ${d.maxFiles} files)`;
-    if (!document.getElementById("name").value) document.getElementById("name").value = `clip-${String(d.count + 1).padStart(3, "0")}`;
   } catch {}
+}
+
+// ── teleprompter: read-script drives the filename + reference ──
+let prompts = [], pIdx = 0;
+function pad(n) { return String(n).padStart(3, "0"); }
+function renderPrompt() {
+  const box = document.getElementById("prompt");
+  if (!prompts.length) { box.hidden = true; if (!document.getElementById("name").value) document.getElementById("name").value = `clip-${pad(corpusCount + 1)}`; return; }
+  box.hidden = false;
+  pIdx = Math.max(0, Math.min(pIdx, prompts.length));
+  if (pIdx >= prompts.length) {
+    document.getElementById("prompt-idx").textContent = `all ${prompts.length} lines recorded ✓`;
+    document.getElementById("prompt-text").textContent = "Done — run npm run ab:stt. (Use ‹ prev to re-read any line.)";
+    document.getElementById("name").value = ""; document.getElementById("ref").value = "";
+    return;
+  }
+  document.getElementById("prompt-idx").textContent = `line ${pIdx + 1} / ${prompts.length}`;
+  document.getElementById("prompt-text").textContent = prompts[pIdx];
+  document.getElementById("name").value = `read-${pad(pIdx + 1)}`;
+  document.getElementById("ref").value = prompts[pIdx];   // ground truth — editable if you flub
+}
+document.getElementById("prev").addEventListener("click", () => { pIdx = Math.max(0, pIdx - 1); renderPrompt(); });
+document.getElementById("next").addEventListener("click", () => { pIdx = Math.min(prompts.length, pIdx + 1); renderPrompt(); });
+
+async function init() {
+  await refreshStatus();
+  try { prompts = (await (await fetch("/prompts")).json()).prompts || []; } catch { prompts = []; }
+  pIdx = Math.min(corpusCount, prompts.length); // resume where the corpus left off
+  renderPrompt();
 }
 
 document.getElementById("save").addEventListener("click", async () => {
@@ -137,12 +176,13 @@ document.getElementById("save").addEventListener("click", async () => {
     if (!d.ok) { setMsg(d.error || "save failed", true); document.getElementById("save").disabled = false; return; }
     setMsg("saved " + d.file + (ref ? " (+ reference)" : " (no reference — WER off for this clip)"), false);
     lastWavB64 = null; document.getElementById("play").hidden = true;
-    document.getElementById("ref").value = ""; document.getElementById("name").value = "";
     await refreshStatus();
+    if (prompts.length) { pIdx++; renderPrompt(); }            // advance the teleprompter
+    else { document.getElementById("ref").value = ""; document.getElementById("name").value = ""; renderPrompt(); }
   } catch (e) { setMsg("save error: " + e.message, true); document.getElementById("save").disabled = false; }
 });
 
-refreshStatus();
+init();
 </script>
 </body>
 </html>

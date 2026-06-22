@@ -52,6 +52,15 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { count: files.length, bytes: usedBytes(files), maxBytes: MAX_BYTES, maxFiles: MAX_FILES });
     }
 
+    if (req.method === "GET" && url === "/prompts") {
+      const file = process.env.DMW_AB_PROMPTS || path.join(__dirname, "ab-prompts.txt");
+      let lines: string[] = [];
+      try {
+        lines = fs.readFileSync(file, "utf-8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+      } catch { /* none → free-record mode */ }
+      return json(res, 200, { prompts: lines });
+    }
+
     if (req.method === "POST" && url === "/save") {
       const { name, ref, wavB64 } = JSON.parse(await readBody(req)) as { name?: string; ref?: string; wavB64?: string };
       const base = sanitize(name || "");
