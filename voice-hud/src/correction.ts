@@ -108,6 +108,12 @@ const COMMON_WORDS = new Set([
   "more","much","many","let","still","down","off","here","where","why","again","away","through","around",
   "before","big","small","old","right","left","near","far","next","last","each","both","few","own","same",
   "such","being","does","yes","okay","ok","cave","wave","gave","brave","grave","crave","name","game","came",
+  // Combat verbs/nouns that must never be "corrected" into a name — they collide
+  // phonetically with short character names (e.g. kill↔Quill, both metaphone KL).
+  // A real glossary term equal to one of these still matches (the !G guard below).
+  "kill","kills","killed","hit","hits","miss","misses","missed","heal","heals","healed",
+  "cast","casts","move","moves","moved","attack","attacks","damage","save","saves",
+  "roll","rolls","rolled","drop","drops","dead","die","dies","died","hurt","stun","prone",
 ]);
 
 const despace = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
