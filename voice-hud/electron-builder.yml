@@ -43,10 +43,17 @@ extraResources:
     filter: ["dm-rules.md", "dm-map-setup.md"]
   - from: data/whisper
     to: data/whisper
-    # Ship only what the gem uses — the CLI + resident server + their ggml/whisper DLLs.
-    # The release zip also has parakeet/wchess/talk-llama/stream/bench/test exes (~18)
+    # Ship only what the gem uses — the CLI + resident server + their shared libs.
+    # The win release zip also has parakeet/wchess/talk-llama/stream/bench/test exes (~18)
     # we never call; excluding them shrinks the installer + skips pointless signing.
-    filter: ["**/whisper-cli.exe", "**/whisper-server.exe", "**/*.dll"]
+    # Globs cover all three OSes (only the host OS's files are present at build time):
+    #   win → Release\whisper-{cli,server}.exe + *.dll;  mac/linux → whisper-{cli,server} (static).
+    filter:
+      - "**/whisper-cli*"
+      - "**/whisper-server*"
+      - "**/*.dll"
+      - "**/*.dylib"
+      - "**/*.so*"
   - from: data/models/ggml-base.en.bin
     to: data/models/ggml-base.en.bin
   # Tactics doctrine — only the 2 MB index (NOT the 16 MB source PDF / scripts beside it).
@@ -57,15 +64,32 @@ extraResources:
   - from: ../dist-server          # produced by `npm run bundle:server` (esbuild) — see doc
     to: server
 
+# Publish target — electron-builder creates a DRAFT GitHub Release named v${version} and
+# uploads each OS's artifact to it (CI passes --publish always + GH_TOKEN). Review the draft
+# and hit "Publish release" when ready. Bump version in package.json to match the pushed tag.
+publish:
+  provider: github
+  owner: eschatus
+  repo: roll20-dm-mcp
+  releaseType: draft
+
 win:
   target: nsis
   artifactName: ${productName}-${version}-Setup.${ext}
   # signing: set CSC_LINK / CSC_KEY_PASSWORD in CI; unsigned for local dev builds.
 
 mac:
-  target: dmg
+  target:
+    - target: dmg
+      arch: arm64          # Apple Silicon (built on the macos-14 runner); add x64 for Intel.
   category: public.app-category.role-playing-games
+  artifactName: ${productName}-${version}-${arch}.${ext}
   # hardenedRuntime + notarization for distribution (Bill's M4) — TODO in the doc.
+
+linux:
+  target: AppImage
+  category: Game
+  artifactName: ${productName}-${version}-${arch}.${ext}
 
 nsis:
   oneClick: false
