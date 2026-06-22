@@ -6,6 +6,7 @@
 import { SttEngine } from "./engine";
 import { FasterWhisperEngine } from "./fasterWhisper";
 import { WhisperCppEngine } from "./whisperCpp";
+import { WhisperServerEngine } from "./whisperServer";
 import { CONFIG } from "../config";
 
 export { SttEngine, TranscriptResult } from "./engine";
@@ -39,6 +40,28 @@ export async function startStt(onLog: (m: string) => void): Promise<SttEngine> {
       onLog(`[stt] trying ${eng.name}…\n`);
       await eng.start();
       onLog(`[stt] using ${eng.name}\n`);
+      return eng;
+    } catch (e) {
+      lastErr = e as Error;
+      onLog(`[stt] ${eng.name} failed: ${(e as Error).message} — falling back to faster-whisper\n`);
+      eng.stop();
+    }
+  }
+
+  // Resident whisper-server engine (opt-in via DMW_STT_ENGINE=whisperserver). Keeps the
+  // model loaded across all transcribe() calls — eliminates the per-clip model-reload cost
+  // of the one-shot whisper-cli. Falls through to faster-whisper on any startup failure.
+  if (CONFIG.sttEngine === "whisperserver") {
+    const eng = new WhisperServerEngine({
+      binPath: CONFIG.whisperServerBin,
+      modelPath: CONFIG.whisperModel,
+      port: CONFIG.whisperServerPort,
+    });
+    eng.on("log", (m) => onLog(String(m)));
+    try {
+      onLog(`[stt] trying ${eng.name} on port ${CONFIG.whisperServerPort}…\n`);
+      await eng.start();
+      onLog(`[stt] using ${eng.name} (resident, port ${CONFIG.whisperServerPort})\n`);
       return eng;
     } catch (e) {
       lastErr = e as Error;

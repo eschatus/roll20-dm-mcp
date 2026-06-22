@@ -121,9 +121,10 @@ export const CONFIG = {
   confirmKey: process.env.DMW_CONFIRM_KEY || "ShiftRight",
 
   // STT engine selector. "faster-whisper" = the Python sidecar (default). "whispercpp"
-  // = the native prebuilt whisper.cpp binary (no Python, no compiler — spawns whisper-cli;
-  // see docs/whispercpp-spike.md). The factory falls back to faster-whisper if it fails.
-  sttEngine: (process.env.DMW_STT_ENGINE || "faster-whisper") as "faster-whisper" | "whispercpp",
+  // = the native prebuilt whisper.cpp CLI binary (one-shot, reloads per clip). "whisperserver"
+  // = whisper-server.exe kept resident (model loads once; much lower per-clip latency).
+  // The factory falls back to faster-whisper if the selected engine fails to start.
+  sttEngine: (process.env.DMW_STT_ENGINE || "faster-whisper") as "faster-whisper" | "whispercpp" | "whisperserver",
   // whisper.cpp prebuilt CLI binary. Default = the extracted release under the data
   // dir (CPU on win32). Swap to a cuBLAS/Vulkan build via DMW_WHISPER_BIN for GPU.
   whisperBin: process.env.DMW_WHISPER_BIN ||
@@ -131,6 +132,13 @@ export const CONFIG = {
   // whisper.cpp ggml model (.bin) for the native engine. Default under the data dir.
   whisperModel: process.env.DMW_WHISPER_MODEL ||
     path.join(__dirname, "..", "data", "models", "ggml-base.en.bin"),
+  // whisper-server.exe binary path. Default = Release dir alongside whisper-cli.exe.
+  // Set DMW_WHISPER_SERVER_BIN to override (e.g. point at the cuBLAS build for GPU).
+  whisperServerBin: process.env.DMW_WHISPER_SERVER_BIN ||
+    path.join(__dirname, "..", "data", "whisper", process.platform === "win32" ? "Release/whisper-server.exe" : "whisper-server"),
+  // HTTP port for the resident whisper-server (default 18080 — avoids conflicts with
+  // common 8080). Set DMW_WHISPER_SERVER_PORT to override.
+  whisperServerPort: Number(process.env.DMW_WHISPER_SERVER_PORT) || 18080,
 
   // --- STT engine (faster-whisper sidecar) ---
   stt: {
