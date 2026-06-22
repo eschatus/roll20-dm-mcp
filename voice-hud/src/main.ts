@@ -28,6 +28,11 @@ import { setLogSink, persist } from "./logger";
 // Load the repo-root .env so ANTHROPIC_API_KEY is available (shared with the MCP server).
 dotenv.config({ path: path.join(__dirname, "..", "..", ".env") });
 dotenv.config({ path: path.join(__dirname, "..", ".env") }); // optional HUD-local override
+// Packaged: also load a .env from the per-user data dir (DMW_DATA_DIR is set by bootstrap;
+// there's no repo .env inside the bundle). Lets a user/tester drop keys
+// (ANTHROPIC_API_KEY, ROLL20_MCP_TOKEN, DDB_COBALT) in <userData>/.env before the config
+// wizard (#47) automates it. dotenv is first-wins, so a real env var still takes precedence.
+if (process.env.DMW_DATA_DIR) dotenv.config({ path: path.join(process.env.DMW_DATA_DIR, ".env") });
 
 // Trim the HUD's own Chromium footprint. The gem/ledger are plain CSS + a little
 // canvas waveform — they don't need GPU compositing, and the GPU is precious
