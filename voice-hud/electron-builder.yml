@@ -7,6 +7,13 @@ appId: net.roll20dm.dmwhisper
 productName: DM Whisper
 copyright: © Adam Gugliciello
 
+# Skip @electron/rebuild. Our only native dep, uiohook-napi, is built with
+# `prebuildify --napi` (N-API → ABI-stable across Node *and* Electron) and ships a
+# win32-x64 prebuilt that node-gyp-build loads as-is — so recompiling from source is
+# unnecessary AND requires an MSVC toolchain we don't want to demand on the build box.
+# (asarUnpack below keeps the .node prebuilds loadable outside the asar.)
+npmRebuild: false
+
 directories:
   output: release
   buildResources: build   # icons etc. (build/icon.ico, build/icon.icns) — TODO add art

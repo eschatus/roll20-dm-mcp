@@ -33,8 +33,11 @@ The MCP server (`src/`) is a full Node app with heavy deps. It can't ship as raw
 ## Open decisions / TODO before a working installer
 - [ ] **esbuild server bundle** boots under Electron-as-Node with Playwright external (lazy-require
       the browser path). This is the gating item.
-- [ ] **Native rebuild:** confirm electron-builder runs `@electron/rebuild` for `uiohook-napi`
-      against Electron 33's ABI (it should, on install in the build env).
+- [x] **Native rebuild — solved by skipping it.** `uiohook-napi` is `prebuildify --napi` (N-API →
+      ABI-stable across Node *and* Electron) and ships a `win32-x64` prebuilt that `node-gyp-build`
+      loads as-is. So `npmRebuild: false` ships the prebuilt and avoids `@electron/rebuild`'s
+      node-gyp source compile — **no MSVC toolchain needed on the build box**. (Per-OS builds use
+      that OS's prebuilt: build the mac `.dmg` on a Mac, etc.)
 - [ ] **Model bundling:** ship `base.en` (~150 MB) as the offline floor. `medium.en` (the chosen
       default, ~1.5 GB) + the cuBLAS/Metal **GPU** builds are too big/platform-specific to bundle —
       the **wizard (#47) downloads** the hardware-appropriate model + GPU binary on first run. (So
