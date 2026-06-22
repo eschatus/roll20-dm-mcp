@@ -84,6 +84,8 @@ let _agentTurnActive = false;
 let _pendingRosterBlock: string | null = null;
 // Token id→name map (updated from roster, consumed by RTDB event handler)
 let rosterTokenById: Record<string, string> = {};
+// Warn-once when the DMW_SAVE_CLIPS A/B corpus hits its size/count budget.
+let abClipBudgetWarned = false;
 
 // Manual-drag state for the ✥ handle.
 let dragTimer: NodeJS.Timeout | null = null;
@@ -235,6 +237,34 @@ function wireClipHandler() {
   ipcMain.handle("clip", async (_e, buf: ArrayBuffer) => {
     const wavPath = path.join(CONFIG.tmpDir, `clip-${Date.now()}.wav`);
     fs.writeFileSync(wavPath, Buffer.from(buf));
+    // A/B corpus capture: with DMW_SAVE_CLIPS=1, keep a copy of the real production
+    // audio under data/ab-clips/ for `npm run ab:stt`. (The clip is otherwise deleted
+    // in finally.) A .draft.txt with the live transcript is written too — a CONVENIENCE
+    // starting point; the harness ignores it. Edit it to ground truth → <clip>.txt for WER.
+    let abClip: string | null = null;
+    if (process.env.DMW_SAVE_CLIPS === "1") {
+      try {
+        const dir = path.join(__dirname, "..", "data", "ab-clips");
+        fs.mkdirSync(dir, { recursive: true });
+        // Hard budget so an enabled capture never balloons: skip (never delete) once the
+        // corpus would exceed the byte cap (default 1 GB) or the file cap. Override via
+        // DMW_SAVE_CLIPS_MAX_MB / DMW_SAVE_CLIPS_MAX_FILES.
+        const maxBytes = (Number(process.env.DMW_SAVE_CLIPS_MAX_MB) || 1024) * 1024 * 1024;
+        const maxFiles = Number(process.env.DMW_SAVE_CLIPS_MAX_FILES) || 250;
+        const audio = fs.readdirSync(dir).filter((f) => /\.(wav|mp3|ogg|flac)$/i.test(f));
+        const used = audio.reduce((n, f) => { try { return n + fs.statSync(path.join(dir, f)).size; } catch { return n; } }, 0);
+        const incoming = fs.statSync(wavPath).size;
+        if (audio.length >= maxFiles || used + incoming > maxBytes) {
+          if (!abClipBudgetWarned) {
+            console.error(`[ab-clip] corpus full (${audio.length} clips, ${(used / 1e6).toFixed(0)} MB) — not saving more. Prune data/ab-clips/ to resume.`);
+            abClipBudgetWarned = true;
+          }
+        } else {
+          abClip = path.join(dir, path.basename(wavPath));
+          fs.copyFileSync(wavPath, abClip);
+        }
+      } catch (e) { console.error("[ab-clip] save failed: " + (e as Error).message); }
+    }
     try {
       if (!stt) throw new Error("STT not ready");
       if (activeSlug) campaignData = loadCampaignData(activeSlug); // pick up add_vocab writes
@@ -248,6 +278,7 @@ function wireClipHandler() {
       if (corrected !== result.text) console.error(`[correct] "${result.text.slice(0, 60)}" → "${corrected.slice(0, 60)}"`);
       const text = corrected.trim();
       console.error(`[stt] ${Date.now() - t0}ms → "${text.slice(0, 80)}"${text ? "" : " (EMPTY)"}`);
+      if (abClip) { try { fs.writeFileSync(abClip.replace(/\.wav$/i, ".draft.txt"), text); } catch { /* ignore */ } }
       if (mode === "expanded") {
         // Ledger open: dictate into the editable chatbox for review/fix, don't auto-run.
         send("dictate", { text, lowConfidence: result.low_confidence });

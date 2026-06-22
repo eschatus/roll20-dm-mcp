@@ -1,0 +1,43 @@
+# A/B STT read-script — read each line aloud as you'd say it at the table.
+# The recorder shows these one at a time and saves the line as the ground-truth
+# reference, so WER + proper-noun recall are exact. Lines stress the cases that
+# break STT: campaign names, split/merged names, dice notation, numbers, conditions,
+# AoE, homophones. '#' lines and blanks are ignored. Edit freely for your campaign.
+
+# — campaign names, isolation + in sentence —
+Strahd von Zarovich steps out of the shadows.
+Ireena Kolyana stands her ground beside Ismark.
+Rahadin draws his blade and advances on the party.
+Vasili greets you in the halls of Ravenloft.
+
+# — split / merged / hard names (the fuzzy-corrector's job) —
+Haregon moves up and attacks the vampire spawn.
+Brie Mossfrond casts a spell at the wolves.
+Daever Tympania and Dacorath Applebough hold the line.
+Eldran Silvershadow looses an arrow at Rahadin.
+Thorne shoves the swarm of bats off the bridge.
+
+# — dice / mechanics notation —
+Make a DC 15 dexterity saving throw.
+The vampire spawn has an AC of sixteen.
+Roll a d20 and add your proficiency bonus.
+The fireball deals 8d6 fire damage.
+Strahd takes 14 points of necrotic damage.
+Ireena is down to seven hit points.
+
+# — conditions —
+Thorne is poisoned and prone until the end of his turn.
+The dire wolf is frightened of Eldran.
+Rahadin is stunned for one round.
+
+# — area effects / multi-target —
+The fireball hits all three vampire spawn for 28 damage.
+Heal the whole party for eight hit points each.
+
+# — numbers / homophones —
+There are four wolves and two swarms of bats on the map.
+He rolled a natural twenty on the attack.
+
+# — realistic mixed table lines —
+Strahd advances on Ireena and rolls a DC 15 dexterity save.
+Mark Daever Tympania as bloodied and move Thorne to the map layer.
