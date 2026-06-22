@@ -94,12 +94,26 @@ once `data/ab-clips/` would exceed **1 GB** or **250 clips** — override with `
 
 ## Tunables
 
-- **Model size** = speed/accuracy/size: `base.en` (fast, ~150 MB) → `small.en` → `medium.en`
-  (`DMW_WHISPER_MODEL`).
+- **Model size** = speed/accuracy/size (`DMW_WHISPER_MODEL`). **Resident** GPU steady-state on a
+  3080 Ti (per-clip, model loaded once — *not* the one-shot reload cost):
+
+  | model | resident/clip | size | notes |
+  |---|---|---|---|
+  | `base.en`   | ~55 ms  | 150 MB | floor; correction layer carries it |
+  | `small.en`  | ~96 ms  | 470 MB | all names on the read-script |
+  | `medium.en` | ~197 ms | 1.5 GB | best raw accuracy; still well under the 900 ms partial budget |
+
+  So on a CUDA rig there's enough headroom to run `medium.en` for everything. The real constraint is
+  the **slowest target's 900 ms live-partial budget** (Apple-Silicon Metal, lighter boxes) — measure
+  there before defaulting big. Pick the default by detected hardware (the config wizard's job).
+- **Two-tier** (`DMW_WHISPER_FINAL_MODEL`, whisperserver only): fast model for live partials
+  (`DMW_WHISPER_MODEL`, e.g. `base.en`) + a **bigger model for the FINAL committed clip** that drives
+  the agent. A second resident server runs on `whisperServerPort+1`; finals silently fall back to the
+  primary engine if it can't start. Spend the headroom where accuracy matters without lagging partials.
 - **Threads** (CPU): `WhisperCppOpts.threads` (default 4).
-- **Latency upgrade if needed:** this one-shot reloads the model per clip. `whisper-server.exe`
-  (also in the release) keeps it resident behind an HTTP API — a drop-in future engine if per-clip
-  load time hurts at the table.
+- **One-shot vs resident:** the one-shot `whisper-cli` reloads the model every clip (the inflated
+  numbers in `ab:stt`); `whisper-server` keeps it resident (the table above) — use `whisperserver`
+  for live play.
 
 ## If it's good
 

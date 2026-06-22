@@ -139,6 +139,12 @@ export const CONFIG = {
   // HTTP port for the resident whisper-server (default 18080 — avoids conflicts with
   // common 8080). Set DMW_WHISPER_SERVER_PORT to override.
   whisperServerPort: Number(process.env.DMW_WHISPER_SERVER_PORT) || 18080,
+  // Optional TWO-TIER (only with whisperserver): when set, the FINAL committed clip is
+  // transcribed by a second resident server on this bigger/more-accurate model, while
+  // fast live partials keep using whisperModel — spending latency headroom where it
+  // matters (the agent-driving final) without lagging the 900 ms partial loop. Empty =
+  // single-tier. e.g. DMW_WHISPER_FINAL_MODEL=…/ggml-medium.en.bin with a base.en primary.
+  whisperFinalModel: process.env.DMW_WHISPER_FINAL_MODEL || "",
 
   // --- STT engine (faster-whisper sidecar) ---
   stt: {

@@ -12,7 +12,7 @@ import * as fs from "fs";
 import * as dotenv from "dotenv";
 import { CONFIG } from "./config";
 import { PttHook } from "./ptt";
-import { startStt, SttEngine } from "./stt";
+import { startStt, startFinalStt, SttEngine } from "./stt";
 import { McpRoll20 } from "./mcp";
 import { DmAgent } from "./agent";
 import { buildRoster, clearRosterCache } from "./roster";
@@ -40,6 +40,7 @@ app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 let gem: BrowserWindow | null = null;
 const ptt = new PttHook();
 let stt: SttEngine | null = null; // resolved by startStt() (walks the fallback chain)
+let sttFinal: SttEngine | null = null; // optional two-tier: bigger model for the FINAL clip (else falls back to stt)
 const mcp = new McpRoll20();
 const agent = new DmAgent(mcp, loadSettings().provider ?? CONFIG.provider);
 
@@ -270,7 +271,8 @@ function wireClipHandler() {
       if (activeSlug) campaignData = loadCampaignData(activeSlug); // pick up add_vocab writes
       const vocabList = buildVocabList(campaignData, rosterNames, baseVocab);
       const t0 = Date.now();
-      const result = await stt.transcribe(wavPath, vocabList.join(", "));
+      // Final clip → the bigger two-tier engine if configured, else the primary.
+      const result = await (sttFinal ?? stt).transcribe(wavPath, vocabList.join(", "));
       // Post-STT correction (deterministic, µs): fix mishears against the same
       // glossary — split names, dice/mechanics notation. Only the FINAL transcript
       // is corrected (partials stay raw/fast). Log when it actually changes anything.
@@ -685,6 +687,18 @@ app.whenReady().then(async () => {
     })
     .catch((err) => send("agent", { kind: "error", text: "STT failed: " + (err as Error).message }));
 
+  // Two-tier (opt-in): a second resident server on a bigger model for FINAL clips only.
+  // Off unless DMW_WHISPER_FINAL_MODEL is set + whisperserver; null on failure → finals
+  // just use the primary engine. Started in the background; never blocks the gem.
+  startFinalStt((m) => process.stderr.write(m))
+    .then((engine) => {
+      if (!engine) return;
+      sttFinal = engine;
+      sttFinal.on("exit", () => { sttFinal = null; }); // crash → silently fall back to primary
+      send("agent", { kind: "info", text: `two-tier finals: ${engine.name}` });
+    })
+    .catch(() => { /* finals fall back to the primary engine */ });
+
   try {
     const tools = await mcp.connect();
     console.error(`[mcp] connected — ${tools.length} tools`);
@@ -700,7 +714,7 @@ app.whenReady().then(async () => {
 });
 
 let appQuitting = false;
-app.on("before-quit", () => { appQuitting = true; });
+app.on("before-quit", () => { appQuitting = true; try { sttFinal?.stop(); } catch { /* ignore */ } });
 
 app.on("window-all-closed", () => {
   appQuitting = true;
