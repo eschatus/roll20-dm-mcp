@@ -707,7 +707,7 @@ app.whenReady().then(async () => {
   settings = loadSettings();
 
   // Start STT (walks the fallback chain) + MCP in parallel; neither blocks the gem.
-  startStt((m) => process.stderr.write(m))
+  startStt((m) => console.error(String(m).trimEnd()))
     .then((engine) => {
       stt = engine;
       stt.on("exit", (code: number) => send("agent", { kind: "error", text: `STT exited (${code})` }));
@@ -718,7 +718,7 @@ app.whenReady().then(async () => {
   // Two-tier (opt-in): a second resident server on a bigger model for FINAL clips only.
   // Off unless DMW_WHISPER_FINAL_MODEL is set + whisperserver; null on failure → finals
   // just use the primary engine. Started in the background; never blocks the gem.
-  startFinalStt((m) => process.stderr.write(m))
+  startFinalStt((m) => console.error(String(m).trimEnd()))
     .then((engine) => {
       if (!engine) return;
       sttFinal = engine;
@@ -730,7 +730,7 @@ app.whenReady().then(async () => {
   try {
     // Phase B: when packaged (or DMW_SUPERVISE_SERVER=1), the gem owns the MCP server —
     // spawn + wait for it to bind before connecting. No-op in dev (external server).
-    await ensureServerRunning((m) => process.stderr.write(m));
+    await ensureServerRunning((m) => console.error(String(m).trimEnd()));
     const tools = await mcp.connect();
     console.error(`[mcp] connected — ${tools.length} tools`);
     send("agent", { kind: "info", text: "bound to Roll20" });
