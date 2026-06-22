@@ -120,6 +120,14 @@ export const CONFIG = {
   // Right-Shift (UiohookKey "ShiftRight") — pairs with Right-Ctrl PTT. Esc cancels.
   confirmKey: process.env.DMW_CONFIRM_KEY || "ShiftRight",
 
+  // STT engine selector. "faster-whisper" = the Python sidecar (default). "whispercpp"
+  // = the native binding (SPIKE — no Python; needs a ggml model + an Electron rebuild;
+  // see docs/whispercpp-spike.md). The factory falls back to faster-whisper if it fails.
+  sttEngine: (process.env.DMW_STT_ENGINE || "faster-whisper") as "faster-whisper" | "whispercpp",
+  // whisper.cpp ggml model (.bin) for the native engine. Default under the data dir.
+  whisperModel: process.env.DMW_WHISPER_MODEL ||
+    path.join(__dirname, "..", "data", "models", "ggml-base.en.bin"),
+
   // --- STT engine (faster-whisper sidecar) ---
   stt: {
     // The 3.10 venv python that has faster-whisper + CUDA libs installed.
