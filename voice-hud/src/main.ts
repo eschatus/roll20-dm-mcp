@@ -33,6 +33,15 @@ dotenv.config({ path: path.join(__dirname, "..", ".env") }); // optional HUD-loc
 // (ANTHROPIC_API_KEY, ROLL20_MCP_TOKEN, DDB_COBALT) in <userData>/.env before the config
 // wizard (#47) automates it. dotenv is first-wins, so a real env var still takes precedence.
 if (process.env.DMW_DATA_DIR) dotenv.config({ path: path.join(process.env.DMW_DATA_DIR, ".env") });
+// Packaged: ensure a stable MCP auth token shared by the gem AND the server it supervises
+// (the child inherits process.env). Generate once + persist to <userData>/.env so they
+// always agree with no manual step; an existing token (loaded above) wins. Without this the
+// gem connects with an empty bearer while the server auto-generates its own → 401.
+if (process.env.DMW_DATA_DIR && !process.env.ROLL20_MCP_TOKEN) {
+  const tok = require("crypto").randomBytes(24).toString("hex");
+  process.env.ROLL20_MCP_TOKEN = tok;
+  try { fs.appendFileSync(path.join(process.env.DMW_DATA_DIR, ".env"), `ROLL20_MCP_TOKEN=${tok}\n`); } catch { /* best effort */ }
+}
 
 // Trim the HUD's own Chromium footprint. The gem/ledger are plain CSS + a little
 // canvas waveform — they don't need GPU compositing, and the GPU is precious
