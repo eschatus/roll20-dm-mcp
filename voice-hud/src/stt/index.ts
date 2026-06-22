@@ -29,11 +29,11 @@ function chain(): EngineStep[] {
 export async function startStt(onLog: (m: string) => void): Promise<SttEngine> {
   let lastErr: Error | null = null;
 
-  // Native whisper.cpp engine (SPIKE, opt-in via DMW_STT_ENGINE=whispercpp). Try it
-  // first; on any failure (model missing, addon not built) fall through to the
-  // Python faster-whisper chain so the gem always comes up.
+  // Native whisper.cpp engine (opt-in via DMW_STT_ENGINE=whispercpp). Try it first;
+  // on any failure (binary or model missing) fall through to the Python faster-whisper
+  // chain so the gem always comes up.
   if (CONFIG.sttEngine === "whispercpp") {
-    const eng = new WhisperCppEngine({ modelPath: CONFIG.whisperModel, gpu: CONFIG.stt.device !== "cpu" });
+    const eng = new WhisperCppEngine({ binPath: CONFIG.whisperBin, modelPath: CONFIG.whisperModel });
     eng.on("log", (m) => onLog(String(m)));
     try {
       onLog(`[stt] trying ${eng.name}…\n`);

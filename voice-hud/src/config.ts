@@ -121,9 +121,13 @@ export const CONFIG = {
   confirmKey: process.env.DMW_CONFIRM_KEY || "ShiftRight",
 
   // STT engine selector. "faster-whisper" = the Python sidecar (default). "whispercpp"
-  // = the native binding (SPIKE — no Python; needs a ggml model + an Electron rebuild;
+  // = the native prebuilt whisper.cpp binary (no Python, no compiler — spawns whisper-cli;
   // see docs/whispercpp-spike.md). The factory falls back to faster-whisper if it fails.
   sttEngine: (process.env.DMW_STT_ENGINE || "faster-whisper") as "faster-whisper" | "whispercpp",
+  // whisper.cpp prebuilt CLI binary. Default = the extracted release under the data
+  // dir (CPU on win32). Swap to a cuBLAS/Vulkan build via DMW_WHISPER_BIN for GPU.
+  whisperBin: process.env.DMW_WHISPER_BIN ||
+    path.join(__dirname, "..", "data", "whisper", process.platform === "win32" ? "Release/whisper-cli.exe" : "whisper-cli"),
   // whisper.cpp ggml model (.bin) for the native engine. Default under the data dir.
   whisperModel: process.env.DMW_WHISPER_MODEL ||
     path.join(__dirname, "..", "data", "models", "ggml-base.en.bin"),

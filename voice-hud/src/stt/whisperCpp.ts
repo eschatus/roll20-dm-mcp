@@ -1,90 +1,97 @@
-// Native whisper.cpp STT engine (SPIKE, behind DMW_STT_ENGINE=whispercpp).
+// Native whisper.cpp STT engine (behind DMW_STT_ENGINE=whispercpp).
 //
-// Why: it drops the Python faster-whisper sidecar (+ its CUDA-lib install) entirely
-// — the single biggest packaging simplification — using a native node binding
-// (smart-whisper) and one ggml `.bin` model. Same SttEngine contract as
-// FasterWhisperEngine, so main.ts is untouched; the factory (index.ts) picks it.
+// Spawns the official PREBUILT whisper.cpp binary (whisper-cli) — no node-gyp, no
+// native addon, no electron-rebuild, no C++ toolchain on the build box OR the end
+// user's. It reads the gem's 16 kHz/mono/16-bit WAV directly (whisper.cpp decodes
+// WAV itself), so there's no PCM/ffmpeg step either. Same SttEngine contract as
+// FasterWhisperEngine, so main.ts is untouched; the factory (index.ts) picks it and
+// falls back to the Python engine if the binary/model is missing.
 //
-// The gem hand-rolls a 16 kHz / mono / 16-bit PCM WAV (see renderer/gem.js
-// encodeWav), which is exactly whisper.cpp's required input — decode is a plain
-// int16 → float, no ffmpeg/resampling.
-//
-// NOT yet validated end-to-end (native addon needs an Electron ABI rebuild + a
-// model + real audio + a GPU). See docs/whispercpp-spike.md to try it. The binding
-// is lazy-imported so the gem runs fine without it; the factory falls back to the
-// Python engine if this fails to load.
+// GPU is just a different prebuilt binary (CPU vs cuBLAS vs Vulkan) — point
+// whisperBin at it; the spawn args are identical. Resident latency upgrade later:
+// whisper-server.exe keeps the model loaded (this one-shot reloads per clip).
+// See docs/whispercpp-spike.md.
 import { EventEmitter } from "events";
+import { execFile } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { SttEngine, TranscriptResult } from "./engine";
 
-export interface WhisperCppOpts { modelPath: string; gpu: boolean }
+export interface WhisperCppOpts { binPath: string; modelPath: string; threads?: number }
 
 export class WhisperCppEngine extends EventEmitter implements SttEngine {
   readonly name: string;
-  private whisper: import("smart-whisper").Whisper | null = null;
   constructor(private opts: WhisperCppOpts) {
     super();
-    this.name = `whisper.cpp:${path.basename(opts.modelPath)}/${opts.gpu ? "gpu" : "cpu"}`;
+    this.name = `whisper.cpp:${path.basename(opts.modelPath)}`;
   }
 
   async start(): Promise<void> {
+    if (!fs.existsSync(this.opts.binPath)) {
+      throw new Error(`whisper.cpp binary not found: ${this.opts.binPath} — download a release build (see docs/whispercpp-spike.md)`);
+    }
     if (!fs.existsSync(this.opts.modelPath)) {
       throw new Error(`whisper.cpp model not found: ${this.opts.modelPath} — download a ggml .bin (see docs/whispercpp-spike.md)`);
     }
-    let mod: typeof import("smart-whisper");
-    try {
-      mod = await import("smart-whisper");
-    } catch {
-      throw new Error("smart-whisper not installed/built — `npm i smart-whisper` then `npx electron-rebuild` (see docs/whispercpp-spike.md)");
-    }
-    this.whisper = new mod.Whisper(this.opts.modelPath, { gpu: this.opts.gpu });
-    this.emit("ready", { model: this.opts.modelPath, gpu: this.opts.gpu });
+    // No resident process to load (one-shot CLI); just confirm the toolchain is present.
+    this.emit("ready", { model: this.opts.modelPath, bin: this.opts.binPath });
   }
 
-  async transcribe(wavPath: string, initialPrompt?: string): Promise<TranscriptResult> {
-    if (!this.whisper) throw new Error("whisper.cpp engine not started");
+  transcribe(wavPath: string, initialPrompt?: string): Promise<TranscriptResult> {
+    const outPrefix = wavPath.replace(/\.wav$/i, "") + ".out";
+    const jsonPath = outPrefix + ".json";
+    const args = buildWhisperArgs(this.opts, wavPath, outPrefix, initialPrompt);
     const t0 = Date.now();
-    const pcm = decodeWav16ToF32(fs.readFileSync(wavPath));
-    // smart-whisper: transcribe(pcm, opts) → { result: Promise<segments> }. (API
-    // shape can vary by version — this is the one spot to adapt on install.)
-    const task = await this.whisper.transcribe(pcm, { language: "en", prompt: initialPrompt || "" });
-    const segments = await task.result;
-    const text = segments.map((s) => s.text).join("").trim();
-    // Best-effort confidence from per-token probabilities, if the build exposes them.
-    const probs = segments.flatMap((s) => (s.tokens ?? []).map((t) => t.p)).filter((p): p is number => typeof p === "number");
-    const avgP = probs.length ? probs.reduce((a, b) => a + b, 0) / probs.length : 1;
-    return {
-      text,
-      avg_logprob: Math.log(Math.min(Math.max(avgP, 1e-6), 1)),
-      no_speech_prob: 0,
-      low_confidence: text.length > 0 && avgP < 0.5,
-      language: "en",
-      duration: (Date.now() - t0) / 1000,
-    };
+    return new Promise<TranscriptResult>((resolve, reject) => {
+      execFile(this.opts.binPath, args, { windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (err, _stdout, stderr) => {
+        if (err) {
+          fs.promises.unlink(jsonPath).catch(() => {});
+          this.emit("log", `whisper-cli failed: ${stderr || err.message}`);
+          return reject(new Error(`whisper-cli exited with error: ${stderr || err.message}`));
+        }
+        let json: string;
+        try {
+          json = fs.readFileSync(jsonPath, "utf-8");
+        } catch {
+          return reject(new Error("whisper-cli produced no JSON output"));
+        }
+        fs.promises.unlink(jsonPath).catch(() => {});
+        const parsed = parseWhisperJson(json);
+        resolve({ ...parsed, duration: (Date.now() - t0) / 1000 });
+      });
+    });
   }
 
-  stop(): void {
-    try { void this.whisper?.free?.(); } catch { /* ignore */ }
-    this.whisper = null;
-  }
+  stop(): void { /* one-shot CLI — nothing resident to tear down */ }
 }
 
-// 16-bit PCM mono WAV → Float32 [-1, 1]. Scans the RIFF chunks for `data` (the gem
-// writes a canonical 44-byte header, but scanning is robust + cheap). Exported for
-// unit tests — this is the part we CAN verify without the native addon.
-export function decodeWav16ToF32(buf: Buffer): Float32Array {
-  let off = 12; // skip "RIFF"<size>"WAVE"
-  let dataStart = 44;
-  let dataLen = Math.max(0, buf.length - 44);
-  while (off + 8 <= buf.length) {
-    const id = buf.toString("ascii", off, off + 4);
-    const size = buf.readUInt32LE(off + 4);
-    if (id === "data") { dataStart = off + 8; dataLen = size; break; }
-    off += 8 + size + (size & 1); // chunks are word-aligned
-  }
-  const n = Math.min(dataLen, buf.length - dataStart) >> 1;
-  const out = new Float32Array(Math.max(0, n));
-  for (let i = 0; i < out.length; i++) out[i] = buf.readInt16LE(dataStart + i * 2) / 32768;
-  return out;
+// Build the whisper-cli argument vector. Pure/exported for unit tests.
+//  -ojf → JSON with per-token probabilities (for the confidence estimate)
+//  -of  → output file prefix (writes <prefix>.json)
+//  -np  → suppress everything but the result
+export function buildWhisperArgs(opts: WhisperCppOpts, wavPath: string, outPrefix: string, prompt?: string): string[] {
+  const args = ["-m", opts.modelPath, "-f", wavPath, "-l", "en", "-np", "-ojf", "-of", outPrefix, "-t", String(opts.threads ?? 4)];
+  if (prompt && prompt.trim()) args.push("--prompt", prompt);
+  return args;
+}
+
+interface WhisperJsonToken { text?: string; p?: number }
+interface WhisperJsonSegment { text?: string; tokens?: WhisperJsonToken[] }
+interface WhisperJson { transcription?: WhisperJsonSegment[]; result?: { language?: string } }
+
+// Parse whisper.cpp -ojf output → text + a best-effort low_confidence flag from the
+// mean per-token probability. Pure/exported for unit tests.
+export function parseWhisperJson(json: string): Omit<TranscriptResult, "duration"> {
+  const data = JSON.parse(json) as WhisperJson;
+  const segments = data.transcription ?? [];
+  const text = segments.map((s) => s.text ?? "").join("").trim();
+  const probs = segments.flatMap((s) => (s.tokens ?? []).map((t) => t.p)).filter((p): p is number => typeof p === "number");
+  const avgP = probs.length ? probs.reduce((a, b) => a + b, 0) / probs.length : 1;
+  return {
+    text,
+    avg_logprob: Math.log(Math.min(Math.max(avgP, 1e-6), 1)),
+    no_speech_prob: 0,
+    low_confidence: text.length > 0 && avgP < 0.5,
+    language: data.result?.language ?? "en",
+  };
 }
