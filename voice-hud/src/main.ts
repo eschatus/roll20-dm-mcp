@@ -619,6 +619,21 @@ function wireWizard() {
     return { ok: true };
   });
 
+  // Token harvests — force the relevant transport once; the server opens the (visible) browser
+  // for login + caches the token on success. We don't strictly trust the tool's return (the
+  // interactive login can outlast a tool timeout) — the renderer re-reads get-setup-status, and
+  // the cached token file is the real success signal.
+  // Roll20: any relay read drives roll20-rt → intercepts signInWithCustomToken → caches the token.
+  ipcMain.handle("connect-roll20", async () => {
+    try { await mcp.call("list_tokens", {}); return { ok: true }; }
+    catch (e) { return { ok: false, error: (e as Error).message }; }
+  });
+  // D&D Beyond: ddb_list_campaigns harvests the CobaltSession cookie AND returns the games list.
+  ipcMain.handle("connect-ddb", async () => {
+    try { const r = await mcp.call("ddb_list_campaigns", {}); return { ok: true, result: String(r).slice(0, 400) }; }
+    catch (e) { return { ok: false, error: (e as Error).message }; }
+  });
+
   // Config write: update CONFIG in memory (immediate) + persist to voice-hud/.env (restarts).
   // Keys marked ★ in the UI (pttKey, confirmKey, stt.*) need a restart to fully take effect.
   ipcMain.handle("set-config", (_e, updates: Record<string, unknown>) => {

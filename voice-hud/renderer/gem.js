@@ -436,6 +436,18 @@ document.getElementById("setup-apikey-save")?.addEventListener("click", async ()
   if (r && r.ok) { msg.textContent = "saved ✓ — the agent will use it now"; msg.className = "msg ok"; inp.value = ""; loadSetup(); }
   else { msg.textContent = (r && r.error) || "save failed"; msg.className = "msg err"; }
 });
+async function runConnect(which, label) {
+  const msg = document.getElementById("setup-connect-msg");
+  if (!window.dmw) return;
+  msg.textContent = `connecting ${label}… a browser window may open — log in there (incl. the "I'm human" check).`;
+  msg.className = "msg";
+  const r = which === "roll20" ? await dmw.connectRoll20() : await dmw.connectDdb();
+  loadSetup(); // the cached-token file is the real success signal, regardless of the tool's return
+  if (r && r.ok) { msg.textContent = `${label} connected ✓`; msg.className = "msg ok"; }
+  else { msg.textContent = `${label}: ${(r && r.error) || "failed"} — if a browser opened, finish logging in and retry.`; msg.className = "msg err"; }
+}
+document.getElementById("setup-connect-roll20")?.addEventListener("click", () => runConnect("roll20", "Roll20"));
+document.getElementById("setup-connect-ddb")?.addEventListener("click", () => runConnect("ddb", "D&D Beyond"));
 
 // ---- debug log tab ----
 const DEBUG_MAX_LINES = 500;
