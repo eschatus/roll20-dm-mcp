@@ -86,7 +86,12 @@ async function main(): Promise<void> {
   const vocab = [...loadBaseVocab(), ...(process.env.DMW_AB_VOCAB ? process.env.DMW_AB_VOCAB.split(",").map((s) => s.trim()).filter(Boolean) : [])];
   const prompt = vocab.join(", ");
 
-  const [fw, wc] = await Promise.all([startFaster(), startWhisperCpp()]);
+  const want = (process.env.DMW_AB_ENGINES || "faster-whisper,whispercpp").split(",").map((s) => s.trim()).filter(Boolean);
+  console.error(`[ab] requested engines: ${want.join(", ")}`);
+  const [fw, wc] = await Promise.all([
+    want.includes("faster-whisper") ? startFaster() : Promise.resolve(null),
+    want.includes("whispercpp") ? startWhisperCpp() : Promise.resolve(null),
+  ]);
   const engines: Array<{ label: string; eng: SttEngine }> = [];
   if (fw) engines.push({ label: "faster-whisper", eng: fw });
   if (wc) engines.push({ label: "whisper.cpp", eng: wc });
