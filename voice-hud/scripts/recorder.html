@@ -60,40 +60,42 @@
 </div>
 
 <script>
-// ── capture (copied verbatim from renderer/gem.js so clips are byte-identical) ──
-let capturing = false, audioCtx, source, processor, stream, chunks = [], inRate = 48000;
+// ── capture via MediaRecorder (glitch-free, off the main thread, no live monitoring),
+//    then decode + downsample on stop with the gem's exact encodeWav so the saved clip
+//    stays production-faithful 16 kHz/mono/16-bit. ──
+let capturing = false, recStream = null, mediaRecorder = null, recChunks = [];
 let lastWavB64 = null;
 
 async function startCapture() {
   if (capturing) return;
-  capturing = true; chunks = [];
+  capturing = true; recChunks = [];
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    recStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
   } catch (e) { capturing = false; setMsg("no microphone: " + e.message, true); return; }
-  audioCtx = new AudioContext(); inRate = audioCtx.sampleRate;
-  source = audioCtx.createMediaStreamSource(stream);
-  processor = audioCtx.createScriptProcessor(4096, 1, 1);
-  source.connect(processor); processor.connect(audioCtx.destination);
-  processor.onaudioprocess = (e) => { if (capturing) chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+  mediaRecorder = new MediaRecorder(recStream);
+  mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
+  mediaRecorder.start();
 }
 async function stopCapture() {
   if (!capturing) return; capturing = false;
-  try { processor && (processor.onaudioprocess = null); } catch {}
-  try { source && source.disconnect(); } catch {}
-  try { processor && processor.disconnect(); } catch {}
-  try { stream && stream.getTracks().forEach((t) => t.stop()); } catch {}
-  try { audioCtx && (await audioCtx.close()); } catch {}
-  const wav = encodeWav(mergeChunks(chunks), inRate, 16000); chunks = [];
+  const mr = mediaRecorder;
+  try { await new Promise((res) => { mr.onstop = res; mr.stop(); }); } catch {}
+  try { recStream && recStream.getTracks().forEach((t) => t.stop()); } catch {}
+  const blob = new Blob(recChunks, { type: (mr && mr.mimeType) || "audio/webm" }); recChunks = [];
+  if (blob.size < 256) { setMsg("empty clip — hold longer", true); return; }
+  // Decode the recorded container to PCM, then crude-downsample exactly like the gem.
+  const ctx = new AudioContext();
+  let audioBuf;
+  try { audioBuf = await ctx.decodeAudioData(await blob.arrayBuffer()); }
+  catch (e) { setMsg("decode failed: " + e.message, true); try { await ctx.close(); } catch {} return; }
+  const wav = encodeWav(audioBuf.getChannelData(0), audioBuf.sampleRate, 16000);
+  try { await ctx.close(); } catch {}
   if (wav.byteLength <= 44) { setMsg("empty clip — hold longer", true); return; }
   lastWavB64 = abToB64(wav);
   const url = URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
   const play = document.getElementById("play"); play.src = url; play.hidden = false;
   document.getElementById("save").disabled = false;
-  setMsg("recorded " + (wav.byteLength / 1024 | 0) + " KB — play it back, type the reference, Save", false);
-}
-function mergeChunks(list) {
-  let len = 0; for (const c of list) len += c.length;
-  const out = new Float32Array(len); let off = 0; for (const c of list) { out.set(c, off); off += c.length; } return out;
+  setMsg("recorded " + (wav.byteLength / 1024 | 0) + " KB — play it back, then Save", false);
 }
 function encodeWav(samples, inRate, targetRate) {
   const ratio = inRate / targetRate, outLen = Math.floor(samples.length / ratio), out = new Int16Array(outLen);
