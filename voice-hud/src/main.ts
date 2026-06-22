@@ -28,6 +28,20 @@ import { setLogSink, persist } from "./logger";
 // Load the repo-root .env so ANTHROPIC_API_KEY is available (shared with the MCP server).
 dotenv.config({ path: path.join(__dirname, "..", "..", ".env") });
 dotenv.config({ path: path.join(__dirname, "..", ".env") }); // optional HUD-local override
+// Packaged: also load a .env from the per-user data dir (DMW_DATA_DIR is set by bootstrap;
+// there's no repo .env inside the bundle). Lets a user/tester drop keys
+// (ANTHROPIC_API_KEY, ROLL20_MCP_TOKEN, DDB_COBALT) in <userData>/.env before the config
+// wizard (#47) automates it. dotenv is first-wins, so a real env var still takes precedence.
+if (process.env.DMW_DATA_DIR) dotenv.config({ path: path.join(process.env.DMW_DATA_DIR, ".env") });
+// Packaged: ensure a stable MCP auth token shared by the gem AND the server it supervises
+// (the child inherits process.env). Generate once + persist to <userData>/.env so they
+// always agree with no manual step; an existing token (loaded above) wins. Without this the
+// gem connects with an empty bearer while the server auto-generates its own → 401.
+if (process.env.DMW_DATA_DIR && !process.env.ROLL20_MCP_TOKEN) {
+  const tok = require("crypto").randomBytes(24).toString("hex");
+  process.env.ROLL20_MCP_TOKEN = tok;
+  try { fs.appendFileSync(path.join(process.env.DMW_DATA_DIR, ".env"), `ROLL20_MCP_TOKEN=${tok}\n`); } catch { /* best effort */ }
+}
 
 // Trim the HUD's own Chromium footprint. The gem/ledger are plain CSS + a little
 // canvas waveform — they don't need GPU compositing, and the GPU is precious
@@ -702,7 +716,7 @@ app.whenReady().then(async () => {
   settings = loadSettings();
 
   // Start STT (walks the fallback chain) + MCP in parallel; neither blocks the gem.
-  startStt((m) => process.stderr.write(m))
+  startStt((m) => console.error(String(m).trimEnd()))
     .then((engine) => {
       stt = engine;
       stt.on("exit", (code: number) => send("agent", { kind: "error", text: `STT exited (${code})` }));
@@ -713,7 +727,7 @@ app.whenReady().then(async () => {
   // Two-tier (opt-in): a second resident server on a bigger model for FINAL clips only.
   // Off unless DMW_WHISPER_FINAL_MODEL is set + whisperserver; null on failure → finals
   // just use the primary engine. Started in the background; never blocks the gem.
-  startFinalStt((m) => process.stderr.write(m))
+  startFinalStt((m) => console.error(String(m).trimEnd()))
     .then((engine) => {
       if (!engine) return;
       sttFinal = engine;
@@ -725,7 +739,7 @@ app.whenReady().then(async () => {
   try {
     // Phase B: when packaged (or DMW_SUPERVISE_SERVER=1), the gem owns the MCP server —
     // spawn + wait for it to bind before connecting. No-op in dev (external server).
-    await ensureServerRunning((m) => process.stderr.write(m));
+    await ensureServerRunning((m) => console.error(String(m).trimEnd()));
     const tools = await mcp.connect();
     console.error(`[mcp] connected — ${tools.length} tools`);
     send("agent", { kind: "info", text: "bound to Roll20" });

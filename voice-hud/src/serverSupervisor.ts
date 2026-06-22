@@ -37,7 +37,9 @@ export function portUp(port = PORT, host = HOST, timeoutMs = 1000): Promise<bool
 // for tests. (The packaged layout is finalized with electron-builder in Phase 4.)
 export function buildServerSpawn(packaged: boolean, resourcesPath: string, repoRoot: string): { entry: string; cwd: string } {
   return packaged
-    ? { entry: path.join(resourcesPath, "server", "dist", "index-http.js"), cwd: path.join(resourcesPath, "server") }
+    // Packaged: the esbuild ESM bundle (npm run bundle:server) — runs without node_modules.
+    ? { entry: path.join(resourcesPath, "server", "dist", "index-http.mjs"), cwd: path.join(resourcesPath, "server") }
+    // Dev-supervised: the tsc build (ESM, repo type:module). Run `npm run build` first.
     : { entry: path.join(repoRoot, "dist", "index-http.js"), cwd: repoRoot };
 }
 

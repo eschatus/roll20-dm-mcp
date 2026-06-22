@@ -1,5 +1,6 @@
 {
   "name": "dm-whisper-hud",
+  "productName": "DM Whisper",
   "version": "0.1.0",
   "description": "DM Whisper — voice PTT + transparent scrying-gem HUD for the Roll20 DM assistant",
   "main": "dist/main.js",
@@ -10,7 +11,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "ab:stt": "tsx scripts/ab-stt.ts",
-    "record": "tsx scripts/record-clips.ts"
+    "record": "tsx scripts/record-clips.ts",
+    "bundle:server": "npx --yes esbuild ../src/index-http.ts --bundle --platform=node --format=esm --outfile=../dist-server/dist/index-http.mjs --external:playwright --external:sharp --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\"",
+    "dist:dir": "npm run build && npm run bundle:server && npx --yes electron-builder --dir",
+    "dist": "npm run build && npm run bundle:server && npx --yes electron-builder"
   },
   "license": "ISC",
   "devDependencies": {

@@ -125,17 +125,19 @@ export const CONFIG = {
   // = whisper-server.exe kept resident (model loads once; much lower per-clip latency).
   // The factory falls back to faster-whisper if the selected engine fails to start.
   sttEngine: (process.env.DMW_STT_ENGINE || "faster-whisper") as "faster-whisper" | "whispercpp" | "whisperserver",
-  // whisper.cpp prebuilt CLI binary. Default = the extracted release under the data
-  // dir (CPU on win32). Swap to a cuBLAS/Vulkan build via DMW_WHISPER_BIN for GPU.
+  // whisper.cpp prebuilt CLI binary. Default = the bundled release under the asset root
+  // (CPU on win32). DMW_ASSET_ROOT is set by bootstrap.ts to Electron's resourcesPath in a
+  // packaged build; in dev it's unset → __dirname/.. (= voice-hud/data), unchanged.
+  // Swap to a cuBLAS/Vulkan build via DMW_WHISPER_BIN for GPU.
   whisperBin: process.env.DMW_WHISPER_BIN ||
-    path.join(__dirname, "..", "data", "whisper", process.platform === "win32" ? "Release/whisper-cli.exe" : "whisper-cli"),
-  // whisper.cpp ggml model (.bin) for the native engine. Default under the data dir.
+    path.join(process.env.DMW_ASSET_ROOT || path.join(__dirname, ".."), "data", "whisper", process.platform === "win32" ? "Release/whisper-cli.exe" : "whisper-cli"),
+  // whisper.cpp ggml model (.bin) for the native engine. Default under the asset root.
   whisperModel: process.env.DMW_WHISPER_MODEL ||
-    path.join(__dirname, "..", "data", "models", "ggml-base.en.bin"),
+    path.join(process.env.DMW_ASSET_ROOT || path.join(__dirname, ".."), "data", "models", "ggml-base.en.bin"),
   // whisper-server.exe binary path. Default = Release dir alongside whisper-cli.exe.
   // Set DMW_WHISPER_SERVER_BIN to override (e.g. point at the cuBLAS build for GPU).
   whisperServerBin: process.env.DMW_WHISPER_SERVER_BIN ||
-    path.join(__dirname, "..", "data", "whisper", process.platform === "win32" ? "Release/whisper-server.exe" : "whisper-server"),
+    path.join(process.env.DMW_ASSET_ROOT || path.join(__dirname, ".."), "data", "whisper", process.platform === "win32" ? "Release/whisper-server.exe" : "whisper-server"),
   // HTTP port for the resident whisper-server (default 18080 — avoids conflicts with
   // common 8080). Set DMW_WHISPER_SERVER_PORT to override.
   whisperServerPort: Number(process.env.DMW_WHISPER_SERVER_PORT) || 18080,

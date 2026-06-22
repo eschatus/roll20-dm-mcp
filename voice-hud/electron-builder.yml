@@ -1,0 +1,74 @@
+# electron-builder config for DM Whisper (packaging Phase 4, #48).
+#
+# SCAFFOLD — gets the GEM + assets packaged and the paths aligned with the runtime
+# (bootstrap.ts DMW_ASSET_ROOT, serverSupervisor resources/server). The SERVER bundle
+# (esbuild + playwright handling) is the remaining piece — see docs/packaging-installer.md.
+appId: net.roll20dm.dmwhisper
+productName: DM Whisper
+copyright: © Adam Gugliciello
+
+# Skip @electron/rebuild. Our only native dep, uiohook-napi, is built with
+# `prebuildify --napi` (N-API → ABI-stable across Node *and* Electron) and ships a
+# win32-x64 prebuilt that node-gyp-build loads as-is — so recompiling from source is
+# unnecessary AND requires an MSVC toolchain we don't want to demand on the build box.
+# (asarUnpack below keeps the .node prebuilds loadable outside the asar.)
+npmRebuild: false
+
+directories:
+  output: release
+  buildResources: build   # icons etc. (build/icon.ico, build/icon.icns) — TODO add art
+
+# App code shipped inside the asar. Renderer is plain HTML/CSS/JS.
+files:
+  - dist/**/*
+  - renderer/**/*
+  - package.json
+
+# uiohook-napi is a NATIVE addon — it must live OUTSIDE the asar to load, and be rebuilt
+# for Electron's ABI (electron-builder runs @electron/rebuild automatically on install).
+asarUnpack:
+  - "**/node_modules/uiohook-napi/**"
+
+# Read-only bundled assets. Resolved at runtime via DMW_ASSET_ROOT = process.resourcesPath
+# (set by bootstrap.ts when packaged) → these land under <resources>/…:
+#   skills/dm-rules.md          (persona.ts)
+#   data/whisper/Release/*      (config.ts whisperBin / whisperServerBin — CPU build)
+#   data/models/ggml-base.en.bin(config.ts whisperModel — the offline floor model)
+#   server/**                   (serverSupervisor spawns <resources>/server/… — SEE DOC:
+#                                this must be the esbuild server BUNDLE, not raw dist/,
+#                                so it runs without node_modules. Wired in the doc's step.)
+extraResources:
+  - from: ../skills
+    to: skills
+    filter: ["dm-rules.md", "dm-map-setup.md"]
+  - from: data/whisper
+    to: data/whisper
+    # Ship only what the gem uses — the CLI + resident server + their ggml/whisper DLLs.
+    # The release zip also has parakeet/wchess/talk-llama/stream/bench/test exes (~18)
+    # we never call; excluding them shrinks the installer + skips pointless signing.
+    filter: ["**/whisper-cli.exe", "**/whisper-server.exe", "**/*.dll"]
+  - from: data/models/ggml-base.en.bin
+    to: data/models/ggml-base.en.bin
+  # Tactics doctrine — only the 2 MB index (NOT the 16 MB source PDF / scripts beside it).
+  # Bundled server is at resources/server/dist → tactics.ts __dirname/../../data/tactics
+  # resolves to resources/data/tactics, so no code change needed.
+  - from: ../data/tactics/monster-tactics-index.json
+    to: data/tactics/monster-tactics-index.json
+  - from: ../dist-server          # produced by `npm run bundle:server` (esbuild) — see doc
+    to: server
+
+win:
+  target: nsis
+  artifactName: ${productName}-${version}-Setup.${ext}
+  # signing: set CSC_LINK / CSC_KEY_PASSWORD in CI; unsigned for local dev builds.
+
+mac:
+  target: dmg
+  category: public.app-category.role-playing-games
+  # hardenedRuntime + notarization for distribution (Bill's M4) — TODO in the doc.
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false   # keep the user's per-user data (campaigns, tokens) on uninstall
