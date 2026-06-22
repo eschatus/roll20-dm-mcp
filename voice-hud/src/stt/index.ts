@@ -11,6 +11,30 @@ import { CONFIG } from "../config";
 
 export { SttEngine, TranscriptResult } from "./engine";
 
+// Optional second engine for the FINAL clip in a two-tier setup (config.whisperFinalModel):
+// a bigger/more-accurate resident model for the agent-driving transcript, while fast live
+// partials keep using the primary engine. Only meaningful with the resident whisper-server;
+// returns null otherwise (caller then uses the primary engine for finals too). Runs on
+// whisperServerPort+1 to coexist with the partial-tier server; null on any failure.
+export async function startFinalStt(onLog: (m: string) => void): Promise<SttEngine | null> {
+  if (!CONFIG.whisperFinalModel || CONFIG.sttEngine !== "whisperserver") return null;
+  const eng = new WhisperServerEngine({
+    binPath: CONFIG.whisperServerBin,
+    modelPath: CONFIG.whisperFinalModel,
+    port: CONFIG.whisperServerPort + 1,
+  });
+  eng.on("log", (m) => onLog(String(m)));
+  try {
+    onLog(`[stt] two-tier: final clips → ${eng.name} (port ${CONFIG.whisperServerPort + 1})\n`);
+    await eng.start();
+    return eng;
+  } catch (e) {
+    onLog(`[stt] two-tier final engine failed: ${(e as Error).message} — finals use the primary engine\n`);
+    eng.stop();
+    return null;
+  }
+}
+
 interface EngineStep { model: string; device: string; computeType: string }
 
 export interface SttHandle {
