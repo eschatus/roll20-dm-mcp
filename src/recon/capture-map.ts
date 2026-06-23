@@ -70,7 +70,7 @@ export async function captureMapImage(
       if (active === pageId) break;
       await page.waitForTimeout(500);
     }
-    if (active !== pageId) return null;
+    if (active !== pageId) { console.error(`[capture] NAV FAIL ${pageName}: active=${active} want=${pageId}`); return null; }
     await page.waitForTimeout(3500); // let the SW finish caching the full-res texture
 
     // In-page canvas readback: try files.d20.io variants of the map (the SW serves cached CORS-clean
@@ -92,6 +92,7 @@ export async function captureMapImage(
       }
       const urls = Array.from(new Set(raw.filter((u) => u)));
       let best: any = null;
+      const verdicts: string[] = [];
       for (const u of urls.slice(0, 24)) {
         const r: any = await new Promise((resolve) => {
           const img = new Image();
@@ -107,15 +108,18 @@ export async function captureMapImage(
           img.src = u;
           setTimeout(() => resolve({ url: u, ok: false }), 15000);
         });
+        verdicts.push(`${r.ok ? "OK " + r.w + "x" + r.h : "x"} ${u.slice(0, 70)}`);
         if (r.ok && (!best || r.w * r.h > best.w * best.h)) best = r; // keep the largest readable
       }
-      return best;
+      return { best, verdicts, tried: urls.length };
     }, imgsrc);
+    if (!res?.best) console.error(`[capture] NO READABLE URL ${pageName} (tried ${res?.tried}):\n  ${(res?.verdicts ?? []).join("\n  ")}`);
+    const best = res?.best;
 
-    if (!res?.ok || !res.data) return null;
-    const buf = Buffer.from(res.data.split(",")[1], "base64");
+    if (!best?.ok || !best.data) return null;
+    const buf = Buffer.from(best.data.split(",")[1], "base64");
     void expected; // exact-asset readback already matches the placed graphic; kept for signature compat
-    return { buf, w: res.w, h: res.h, url: res.url };
+    return { buf, w: best.w, h: best.h, url: best.url };
   } catch {
     return null;
   }
