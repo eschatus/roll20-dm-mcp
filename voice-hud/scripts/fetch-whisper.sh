@@ -28,12 +28,22 @@ fi
 # 2) whisper.cpp CPU binaries — built static from a pinned tag.
 if [ ! -x "$WDIR/whisper-server" ]; then
   SRC="$(mktemp -d)/whisper.cpp"
-  echo "==> building whisper.cpp $TAG (static, CPU)"
   git clone --depth 1 --branch "$TAG" https://github.com/ggerganov/whisper.cpp "$SRC"
+  # macOS (Apple Silicon): Metal is on by default, but WITHOUT embedding the shader library the
+  # standalone binary looks for a default.metallib at runtime (which we don't ship) and silently
+  # falls back to CPU. Embed it so the shipped binary actually uses the GPU. Linux stays CPU.
+  EXTRA=""
+  if [ "$(uname -s)" = "Darwin" ]; then
+    EXTRA="-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON"
+    echo "==> building whisper.cpp $TAG (static, Metal/GPU embedded)"
+  else
+    echo "==> building whisper.cpp $TAG (static, CPU)"
+  fi
   cmake -S "$SRC" -B "$SRC/build" \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIBS=OFF \
-    -DWHISPER_BUILD_TESTS=OFF
+    -DWHISPER_BUILD_TESTS=OFF \
+    $EXTRA
   cmake --build "$SRC/build" --config Release -j
   cp "$SRC/build/bin/whisper-cli" "$WDIR/"
   cp "$SRC/build/bin/whisper-server" "$WDIR/"

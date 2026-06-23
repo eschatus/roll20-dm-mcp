@@ -30,7 +30,17 @@ import { EventEmitter } from "events";
 import * as fs from "fs";
 import * as path from "path";
 import * as http from "http";
+import * as os from "os";
 import { spawn, ChildProcess } from "child_process";
+
+// CPU threads for whisper-server. The old hardcoded 4 left most of the CPU idle (and made the
+// CPU build's medium.en crawl + queue). Default to most cores; override with DMW_WHISPER_THREADS.
+// (Ignored by GPU builds, which do inference on the device.)
+function defaultThreads(): number {
+  const env = Number(process.env.DMW_WHISPER_THREADS);
+  if (env > 0) return env;
+  return Math.max(4, ((os.cpus() || []).length || 8) - 2);
+}
 import { SttEngine, TranscriptResult } from "./engine";
 
 export interface WhisperServerOpts {
@@ -69,7 +79,7 @@ export class WhisperServerEngine extends EventEmitter implements SttEngine {
       "-m", this.opts.modelPath,
       "--host", this.host,
       "--port", String(this.port),
-      "-t", String(this.opts.threads ?? 4),
+      "-t", String(this.opts.threads ?? defaultThreads()),
       "-l", "en",
     ];
 
