@@ -263,7 +263,9 @@ function wireClipHandler() {
     let abClip: string | null = null;
     if (process.env.DMW_SAVE_CLIPS === "1") {
       try {
-        const dir = path.join(__dirname, "..", "data", "ab-clips");
+        // Per-user data dir (DMW_DATA_DIR when packaged) — NOT __dirname-relative, which in a
+        // packaged build resolves inside the read-only app.asar and silently fails to write.
+        const dir = path.join(process.env.DMW_DATA_DIR || CONFIG.dataDir, "ab-clips");
         fs.mkdirSync(dir, { recursive: true });
         // Hard budget so an enabled capture never balloons: skip (never delete) once the
         // corpus would exceed the byte cap (default 1 GB) or the file cap. Override via
@@ -275,7 +277,7 @@ function wireClipHandler() {
         const incoming = fs.statSync(wavPath).size;
         if (audio.length >= maxFiles || used + incoming > maxBytes) {
           if (!abClipBudgetWarned) {
-            console.error(`[ab-clip] corpus full (${audio.length} clips, ${(used / 1e6).toFixed(0)} MB) — not saving more. Prune data/ab-clips/ to resume.`);
+            console.error(`[ab-clip] corpus full (${audio.length} clips, ${(used / 1e6).toFixed(0)} MB) — not saving more. Prune ${dir} to resume.`);
             abClipBudgetWarned = true;
           }
         } else {
