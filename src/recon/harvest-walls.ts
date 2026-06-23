@@ -41,8 +41,9 @@ interface GraphicInfo { id: string; layer?: string; imgsrc?: string; left?: numb
 interface RtPath { layer?: string; left?: number; top?: number; width?: number; height?: number; rotation?: number; path?: string }
 // pathv2 (UDL) walls, if a campaign uses them — getWalls includePoints gives absolute page px.
 interface Pathv2Wall { id: string; kind: "pathv2"; points?: [number, number][] }
-interface Opening { id: string; type: string; x: number; y: number; handle0?: { x?: number; y?: number }; handle1?: { x?: number; y?: number }; isSecret?: boolean }
-interface DoorsResult { doors: Opening[]; windows: Opening[] }
+// Door/window as stored in RTDB: x normal, y NEGATED; handles under path.{handle0,handle1},
+// relative to (x,y), y also negated.
+interface RtOpening { x: number; y: number; path?: { handle0?: { x?: number; y?: number }; handle1?: { x?: number; y?: number } }; isSecret?: boolean }
 
 // Parse a legacy `path` object into a page-pixel polyline. Roll20 stores path data in a
 // local canvas-px frame whose bounding box is centered on (left, top); map each axis from
@@ -178,8 +179,10 @@ async function harvestPage(
   if (pathv2Polys.length) flags.push(`pathv2:${pathv2Polys.length}`);
   if (wallPolysPage.length === 0) return { pageId: page.id, pageName: page.name, skipped: "no-walls" };
 
-  // 2. Map graphic — page-pixel geometry of the background image.
-  const graphics = await r<GraphicInfo[]>({ action: "getTokens", pageId: page.id });
+  // 2. Map graphic — page-pixel geometry of the background image. Read straight from the RTDB
+  //    (graphics store left/top un-negated, verified == getTokens) so the harvest needs no Mod.
+  const graphicsObj = await rtGet<Record<string, GraphicInfo>>(`graphics/page/${page.id}`);
+  const graphics = Object.values(graphicsObj ?? {});
   const { g, multiMap } = pickMapGraphic(graphics);
   if (!g || !g.imgsrc) return { pageId: page.id, pageName: page.name, skipped: "no-map-graphic" };
   if (sourceFilter && sourceClass(g.imgsrc) !== sourceFilter) {
@@ -235,18 +238,20 @@ async function harvestPage(
 
   const walls = wallPolysPage.map(poly => poly.map(([px, py]) => toImg(px, py)));
 
-  // 5. Doors / windows (best-effort; relay un-negates y; handles are RELATIVE to center).
+  // 5. Doors / windows (best-effort, from RTDB — no Mod). In RTDB the object x is normal but y is
+  //    NEGATED, and handles live under path.{handle0,handle1} RELATIVE to (x,y), y also negated.
+  //    Absolute normal coords: x = o.x + h.x ; y = -(o.y) + -(h.y) = -(o.y + h.y).
   let doors: HarvestRecord["doors"] = [];
   let windows: HarvestRecord["windows"] = [];
   try {
-    const od = await r<DoorsResult>({ action: "getDoors", pageId: page.id });
-    const seg = (o: Opening) => ({
-      from: toImg(o.x + (o.handle0?.x ?? 0), o.y + (o.handle0?.y ?? 0)),
-      to:   toImg(o.x + (o.handle1?.x ?? 0), o.y + (o.handle1?.y ?? 0)),
-    });
-    doors = (od.doors ?? []).map(o => ({ ...seg(o), isSecret: o.isSecret }));
-    windows = (od.windows ?? []).map(o => seg(o));
-  } catch { flags.push("getDoors-failed"); }
+    const seg = (o: RtOpening, h: "handle0" | "handle1") => {
+      const hh = o.path?.[h] ?? {};
+      return toImg(o.x + (hh.x ?? 0), -((o.y ?? 0) + (hh.y ?? 0)));
+    };
+    const read = async (kind: "doors" | "windows") => Object.values(await rtGet<Record<string, RtOpening>>(`${kind}/page/${page.id}`) ?? {});
+    doors = (await read("doors")).map(o => ({ from: seg(o, "handle0"), to: seg(o, "handle1"), isSecret: o.isSecret }));
+    windows = (await read("windows")).map(o => ({ from: seg(o, "handle0"), to: seg(o, "handle1") }));
+  } catch { flags.push("doors-failed"); }
 
   // 6. Persist image + record.
   const imgPath = path.join(outDir, imageFile);
