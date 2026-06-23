@@ -62,8 +62,11 @@ const TOKEN_CACHE = dataPath("roll20-rt-token.json");
 // restarts skip the browser entirely. Only a cold start past the window touches Chromium.
 const TOKEN_MAX_AGE_MS = 50 * 60_000;
 
+// Browserless RTDB transport is the DEFAULT now — combat must not silently depend on a browser
+// (a packaged install ships none). Opt OUT to the legacy browser→chat relay with
+// ROLL20_TRANSPORT=browser (dev only). Mirrors DDB_TRANSPORT's default-rt/opt-out-browser shape.
 export function rtEnabled(): boolean {
-  return (process.env.ROLL20_TRANSPORT || "").toLowerCase() === "rt";
+  return (process.env.ROLL20_TRANSPORT || "rt").toLowerCase() !== "browser";
 }
 
 // --- Firebase custom-token harvest (browser touched once at cold start, then cached) ---

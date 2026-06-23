@@ -42,15 +42,18 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
 
 `Claude → MCP tool (TS) → roll20.relayCommand({action,…}) → ai-relay.js (Mod sandbox) → Roll20 objects`
 
-- **`ROLL20_TRANSPORT=rt` is OPT-IN** (unset = Playwright). When set, `relayCommand` pushes
-  `!ai-relay {JSON}` over the campaign's Firebase RTDB and reads `AIBRIDGE_RESULT` back over an
-  RTDB child listener (~50ms). It carries **reads AND writes** — the Mod executes every action
-  regardless of transport. Some reads are served even more directly (`CLIENT_READS` in `roll20.ts`
-  off live Backbone; `rtGet`/`tryDirectRead` off RTDB).
-- **Playwright is the fallback** for any action when RT is down/unset (types into chat, reads the
-  `/w gm` result via MutationObserver). A single nonce is generated once per command and threaded
-  through, so rt→browser fallback re-sends the same nonce and the Mod's `PROCESSED_NONCES` LRU
-  deduplicates — fallback is idempotent even for mutations.
+- **RT is the DEFAULT and combat is browserless** (`ROLL20_TRANSPORT` defaults to `rt`; set
+  `=browser` to opt OUT to the legacy relay, dev only). `relayCommand` pushes `!ai-relay {JSON}`
+  over the campaign's Firebase RTDB and reads `AIBRIDGE_RESULT` back over an RTDB child listener
+  (~50ms). It carries **reads AND writes** — the Mod executes every action regardless of transport.
+  Some reads are served even more directly (`rtGet`/`tryDirectRead` off RTDB; `CLIENT_READS` in
+  `roll20.ts` off live Backbone, but only on the explicit `=browser` path).
+- **No silent browser fallback on the combat relay.** A packaged install ships no Playwright, so an
+  RT failure SURFACES (clear error → re-harvest the token in the gem) rather than quietly reaching
+  for a Chromium that isn't there. The browser→chat relay (types into chat, reads `/w gm` via
+  MutationObserver) runs ONLY under `ROLL20_TRANSPORT=browser`. Token harvest itself is first-party
+  session capture in the gem's own Electron browser (intercept Roll20's `signInWithCustomToken` /
+  read DDB's `CobaltSession` cookie) — NOT OAuth, no registered client. (See issue #83.)
 - **D&D Beyond is READ-ONLY and browserless** (`DDB_TRANSPORT` defaults to `rt`): `CobaltSession`
   cookie → short-lived JWT → `character-service`/`monster-service`. No DDB writes exist; all the
   write tools were removed.

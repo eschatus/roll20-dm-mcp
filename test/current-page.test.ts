@@ -11,7 +11,8 @@ let h: Harness | undefined;
 
 beforeEach(() => {
   // Force the browser/evaluate path (not the rt branch) so this exercises the guard.
-  delete process.env.ROLL20_TRANSPORT;
+  // RT is the default now, so set browser explicitly (deleting it would select RT).
+  process.env.ROLL20_TRANSPORT = "browser";
 });
 afterEach(() => h?.teardown());
 
