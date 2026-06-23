@@ -389,9 +389,11 @@ if (window.dmw) {
   dmw.onTranscript((t) => { showCaption(t.text, t.lowConfidence, "dm"); pushChat("dm", t.text); });
   dmw.onAgent((m) => {
     if (m.kind === "confirm") {
-      // Write-confirmation request: show the human-readable action IN the gem (visible even in
-      // ghost mode) so it's clear what's being asked, plus a distinguished pending chat entry.
-      showCaption("The thing I'm trying to do is: " + m.text, false, "agent");
+      // Write-confirmation request: the familiar (Dusty — see persona memory) asks the DM's leave,
+      // in his voice rather than a robotic status line. The humanized action is an imperative
+      // ("deal 12 damage to Strahd"), so "Shall I …?" reads naturally. Shown IN the gem (visible
+      // even in ghost mode) plus a distinguished pending chat entry.
+      showCaption("Shall I " + m.text + "?", false, "agent");
       pushConfirm(m.text);
       return;
     }
