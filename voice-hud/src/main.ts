@@ -594,9 +594,11 @@ function wireWizard() {
 
   ipcMain.on("quit-app", () => {
     ptt.stop();
-    stt?.stop();
-    mcp.close().catch(() => {});
-    app.quit();
+    void (async () => {
+      try { await stt?.stop(); } catch { /* ignore */ }
+      mcp.close().catch(() => {});
+      app.quit();
+    })();
   });
 
   // Settings (agent whisper sound).
@@ -1130,15 +1132,31 @@ app.whenReady().then(async () => {
 });
 
 let appQuitting = false;
-app.on("before-quit", () => { appQuitting = true; try { sttFinal?.stop(); } catch { /* ignore */ } try { stopServer(); } catch { /* ignore */ } });
+let quitCleanupDone = false;
+// stt.stop()/stopServer() now actually wait for their child processes to exit (escalating to
+// SIGKILL if needed — see procUtil.killAndWait), instead of firing SIGTERM and hoping. That
+// only helps if we actually await them before the app exits, so preventDefault the first
+// before-quit, run cleanup, then quit for real — otherwise Electron can tear down the process
+// mid-cleanup and leave an orphaned whisper-server/MCP-server behind (confirmed in practice:
+// a whisper-server child survived a quit+restart for 18+ hours).
+app.on("before-quit", (event) => {
+  appQuitting = true;
+  if (quitCleanupDone) return;
+  event.preventDefault();
+  void (async () => {
+    try { await stt?.stop(); } catch { /* ignore */ }
+    try { await sttFinal?.stop(); } catch { /* ignore */ }
+    try { await stopServer(); } catch { /* ignore */ }
+    quitCleanupDone = true;
+    app.quit();
+  })();
+});
 
 app.on("window-all-closed", () => {
   appQuitting = true;
   ptt.stop();
-  stt?.stop();
-  stopServer();              // kill the supervised MCP server (no-op if we didn't spawn it)
   mcp.close().catch(() => {});
-  app.quit();
+  app.quit(); // routes through before-quit above, which does the async stt/server cleanup
 });
 
 let _gemBoundsBeforeExpand: { x: number; y: number } | null = null;

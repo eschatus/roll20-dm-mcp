@@ -12,6 +12,7 @@ import { app } from "electron";
 import { spawn, ChildProcess } from "child_process";
 import * as net from "net";
 import * as path from "path";
+import { killAndWait } from "./procUtil";
 
 const PORT = Number(process.env.ROLL20_HTTP_PORT) || 39200;
 const HOST = "127.0.0.1";
@@ -90,9 +91,13 @@ function spawnServer(onLog: (m: string) => void): void {
   });
 }
 
-export function stopServer(): void {
+// Resolves only once the child is actually dead — see procUtil.killAndWait. A bare
+// child.kill() lies here too: dist/index-http.js has been observed ignoring SIGTERM
+// outright, leaving an orphaned server bound to :39200 after the app "quit".
+export async function stopServer(): Promise<void> {
   quitting = true;
   if (healthyTimer) { clearTimeout(healthyTimer); healthyTimer = null; }
-  try { child?.kill(); } catch { /* ignore */ }
+  const proc = child;
   child = null;
+  await killAndWait(proc);
 }

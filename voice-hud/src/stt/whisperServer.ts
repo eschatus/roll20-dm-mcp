@@ -31,7 +31,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as http from "http";
 import * as os from "os";
+import * as net from "net";
 import { spawn, ChildProcess } from "child_process";
+import { killAndWait } from "../procUtil";
 
 // CPU threads for whisper-server. The old hardcoded 4 left most of the CPU idle (and made the
 // CPU build's medium.en crawl + queue). Default to most cores; override with DMW_WHISPER_THREADS.
@@ -75,6 +77,21 @@ export class WhisperServerEngine extends EventEmitter implements SttEngine {
       throw new Error(`whisper-server model not found: ${this.opts.modelPath}`);
     }
 
+    // Refuse to start if something is ALREADY listening on our port. waitReady() below
+    // only polls the TCP port, not "is this actually our process" — if a foreign/stale
+    // process is squatting there (e.g. a previous run whose stop() didn't really kill
+    // it), waitReady would happily report "ready" against THAT process while ours fails
+    // to bind and silently exits in the background. Caught in practice: two consecutive
+    // ab-stt runs configured for different models both transcribed against the same
+    // stale resident process because of exactly this gap.
+    if (await portOccupied(this.host, this.port)) {
+      throw new Error(
+        `port ${this.port} is already in use by another process — refusing to start a ` +
+        `second whisper-server there (it would silently bind to the wrong model). ` +
+        `Kill whatever's on that port first (lsof -i :${this.port}).`
+      );
+    }
+
     const args = [
       "-m", this.opts.modelPath,
       "--host", this.host,
@@ -108,6 +125,12 @@ export class WhisperServerEngine extends EventEmitter implements SttEngine {
     const deadline = Date.now() + timeoutMs;
     return new Promise<void>((resolve, reject) => {
       const probe = () => {
+        // Our own spawned process already died (e.g. EADDRINUSE on a port a stale
+        // process still holds) — bail immediately rather than keep polling, which would
+        // eventually "succeed" against that unrelated process instead.
+        if (!this.proc) {
+          return reject(new Error(`whisper-server process exited before becoming ready on port ${this.port}`));
+        }
         if (Date.now() > deadline) {
           return reject(new Error(`whisper-server did not become ready within ${timeoutMs}ms on port ${this.port}`));
         }
@@ -204,12 +227,22 @@ export class WhisperServerEngine extends EventEmitter implements SttEngine {
     });
   }
 
-  stop(): void {
-    if (this.proc) {
-      this.proc.kill("SIGTERM");
-      this.proc = null;
-    }
+  async stop(): Promise<void> {
+    const proc = this.proc;
+    this.proc = null;
+    await killAndWait(proc);
   }
+}
+
+// TCP liveness probe — true if ANYTHING is listening on host:port, regardless of what it is.
+function portOccupied(host: string, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = net.createConnection({ host, port });
+    const done = (up: boolean) => { sock.removeAllListeners(); sock.destroy(); resolve(up); };
+    sock.once("connect", () => done(true));
+    sock.once("error", () => done(false));
+    sock.setTimeout(1000, () => done(false));
+  });
 }
 
 // ── Response parsing ──────────────────────────────────────────────────────────

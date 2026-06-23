@@ -30,7 +30,7 @@ export async function startFinalStt(onLog: (m: string) => void): Promise<SttEngi
     return eng;
   } catch (e) {
     onLog(`[stt] two-tier final engine failed: ${(e as Error).message} — finals use the primary engine\n`);
-    eng.stop();
+    await eng.stop();
     return null;
   }
 }
@@ -75,7 +75,7 @@ export async function startStt(onLog: (m: string) => void): Promise<SttEngine> {
       } catch (e) {
         lastErr = e as Error;
         onLog(`[stt] ${eng.name} failed: ${(e as Error).message}\n`);
-        eng.stop();
+        await eng.stop();
       }
     }
     throw new Error("whisper.cpp STT failed to start (server + cli). Last error: " + (lastErr?.message ?? "unknown"));
@@ -97,7 +97,7 @@ export async function startStt(onLog: (m: string) => void): Promise<SttEngine> {
     } catch (e) {
       lastErr = e as Error;
       onLog(`[stt] ${eng.name} failed: ${(e as Error).message} — falling back\n`);
-      eng.stop();
+      await eng.stop();
     }
   }
   throw new Error("All STT engines failed to start. Last error: " + (lastErr?.message ?? "unknown"));

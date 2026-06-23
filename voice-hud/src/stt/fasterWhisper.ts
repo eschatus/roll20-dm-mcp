@@ -6,6 +6,7 @@ import { spawn, ChildProcessWithoutNullStreams } from "child_process";
 import * as readline from "readline";
 import { EventEmitter } from "events";
 import { SttEngine, TranscriptResult } from "./engine";
+import { killAndWait } from "../procUtil";
 
 export interface FasterWhisperOpts {
   python: string;
@@ -73,9 +74,10 @@ export class FasterWhisperEngine extends EventEmitter implements SttEngine {
     });
   }
 
-  stop() {
-    this.proc?.kill();
+  async stop(): Promise<void> {
+    const proc = this.proc;
     this.proc = null;
     this.ready = false;
+    await killAndWait(proc);
   }
 }
