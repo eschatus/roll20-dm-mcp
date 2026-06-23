@@ -76,18 +76,23 @@ export async function captureMapImage(
     // In-page canvas readback: try files.d20.io variants of the map (the SW serves cached CORS-clean
     // bytes for the host files.d20.io even though s3.amazonaws.com/... 403s), plus any DOM originals.
     const res: any = await page.evaluate(async (imgsrcIn) => {
-      const urls = new Set<string>();
+      // The service worker caches the map under the EXACT url it requested (query string included),
+      // so try the DOM url verbatim first, then a query-stripped form, then imgsrc-derived variants.
+      // NOTE: no named helper arrows here — tsx/esbuild wraps them with __name (undefined in-page).
+      const raw: string[] = [];
       for (const i of Array.from(document.querySelectorAll("img"))) {
         const u = (i as HTMLImageElement).currentSrc || (i as HTMLImageElement).src;
-        if (u && /files\.d20\.io\/(images|marketplace)\//.test(u) && /\/(original|max)\./.test(u)) urls.add(u.split("?")[0]);
+        if (u && /files\.d20\.io\/(images|marketplace)\//.test(u) && /\/(original|max)\./.test(u)) { raw.push(u); raw.push(u.split("?")[0]); }
       }
       if (imgsrcIn && imgsrcIn.indexOf("files.d20.io/") >= 0) {
+        const q = imgsrcIn.indexOf("?") >= 0 ? imgsrcIn.slice(imgsrcIn.indexOf("?")) : "";
         const tail = imgsrcIn.split("files.d20.io/")[1].split("?")[0];
         const base = "https://files.d20.io/" + tail.replace(/\/(original|max|thumb|med|min)\.(jpg|jpeg|png|webp)$/i, "");
-        for (const v of ["original", "max"]) for (const e of ["jpg", "webp", "png", "jpeg"]) urls.add(`${base}/${v}.${e}`);
+        for (const v of ["original", "max"]) for (const e of ["webp", "jpg", "png", "jpeg"]) { raw.push(`${base}/${v}.${e}${q}`); raw.push(`${base}/${v}.${e}`); }
       }
+      const urls = Array.from(new Set(raw.filter((u) => u)));
       let best: any = null;
-      for (const u of Array.from(urls).slice(0, 12)) {
+      for (const u of urls.slice(0, 24)) {
         const r: any = await new Promise((resolve) => {
           const img = new Image();
           img.crossOrigin = "anonymous";
