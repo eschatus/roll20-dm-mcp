@@ -309,46 +309,108 @@ function encodeWav(samples, inRate, targetRate) {
   return buffer;
 }
 
-// ---- confirm banner ----
+// ---- confirm banner (legacy element — kept so body[data-state="confirm"] ring animation still
+//      works; no longer the primary UI surface; use pushConfirm() for the chat ledger) ----
 const confirmEl = document.getElementById("confirm");
-function showConfirm(text) {
-  confirmEl.innerHTML = "<b>confirm:</b> " + escapeHtml(text) +
-    "<span class='hint'>Right-Shift to confirm · Esc to cancel</span>";
-  confirmEl.classList.add("show");
-}
+function showConfirm() { /* noop — primary confirm surface is now the chat ledger */ }
 function hideConfirm() { confirmEl.classList.remove("show"); }
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c])); }
+
+// ---- ephemeral "thinking" entry in the chat ledger (#69) ----
+// A single element placed at the bottom of the chatlog and removed once the turn produces output.
+// Never accumulates — replace in-place, never append-and-keep.
+let thinkingEl = null;
+function pushThinking() {
+  if (!chatlog) return;
+  if (thinkingEl) return; // already showing — don't duplicate
+  thinkingEl = document.createElement("div");
+  thinkingEl.className = "msg thinking";
+  thinkingEl.innerHTML = '<span class="who">gem</span><span class="thinking-dots">scrying…</span>';
+  chatlog.appendChild(thinkingEl);
+  chatlog.scrollTop = chatlog.scrollHeight;
+}
+function clearThinking() {
+  if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+}
+
+// ---- pending-confirm entry in the chat ledger (#68) ----
+// Rendered as a distinguished bubble; annotated in-place when confirmed or cancelled.
+let confirmChatEl = null;
+function pushConfirm(text) {
+  if (!chatlog) return;
+  if (confirmChatEl) { confirmChatEl.remove(); confirmChatEl = null; } // discard stale pending entry
+  clearThinking(); // thinking → confirm transition: replace the spinner with the prompt
+  confirmChatEl = document.createElement("div");
+  confirmChatEl.className = "msg confirm-pending";
+  confirmChatEl.innerHTML =
+    '<span class="who">confirm?</span>' +
+    '<span class="confirm-text">' + escapeHtml(text) + '</span>' +
+    '<span class="confirm-hint">Right-Shift to confirm \xb7 Esc to cancel</span>';
+  chatlog.appendChild(confirmChatEl);
+  chatlog.scrollTop = chatlog.scrollHeight;
+}
+function resolveConfirm(accepted) {
+  if (!confirmChatEl) return;
+  // Annotate in-place: swap class + update hint to show the outcome.
+  confirmChatEl.className = "msg confirm-" + (accepted ? "accepted" : "cancelled");
+  const hint = confirmChatEl.querySelector(".confirm-hint");
+  if (hint) hint.textContent = accepted ? "confirmed ✓" : "cancelled ✗";
+  confirmChatEl = null; // leave annotated entry in scrollback; no longer "pending"
+}
 
 // ---- main → renderer ----
 if (window.dmw) {
   dmw.onState((s) => {
     setState(s);
-    // Clear the confirm banner on ANY non-confirm state. (Bug: this used to live
-    // in an else-if chain, so "thinking" — what the confirm key sends — skipped it,
-    // leaving the last card stuck open.)
-    if (s !== "confirm") hideConfirm();
-    if (s === "listening") startCapture();
-    else if (s === "thinking") {
+    if (s === "listening") {
+      // New voice hold: clear any leftover thinking entry and start capture.
+      clearThinking();
+      startCapture();
+    } else if (s === "thinking") {
       stopCapture();
+      // Push a "scrying…" entry into the chat ledger — ephemeral feedback inside the channel.
+      pushThinking();
       // In ledger mode, releasing PTT kicks off transcription that lands seconds
       // later in the chatbox — show a pending indicator so it's not a silent wait.
       if (document.body.dataset.mode === "expanded") {
         pendingDictations++;
         document.getElementById("dictating").classList.add("show");
       }
+    } else if (s === "confirm") {
+      // Ring animation handled by CSS body[data-state="confirm"]; chat entry via onAgent below.
+    } else if (s === "idle") {
+      // Returning to idle (cancel, empty transcript, etc.) — clear the thinking spinner.
+      clearThinking();
+      hideConfirm(); // defensive: clear legacy element
+    } else if (s === "expanded") {
+      document.body.dataset.mode = "expanded"; loadWizard();
     }
-    if (s === "expanded") { document.body.dataset.mode = "expanded"; loadWizard(); }
   });
   dmw.onTranscript((t) => { showCaption(t.text, t.lowConfidence, "dm"); pushChat("dm", t.text); });
   dmw.onAgent((m) => {
-    if (m.kind === "confirm") { showConfirm(m.text); pushChat("confirm", "confirm: " + m.text); return; }
-    // Any non-confirm agent event means a prior proposal resolved — clear the banner.
-    hideConfirm();
-    if (m.kind === "say") { showCaption(m.text, false, "agent"); pushChat("agent", m.text); }
-    else if (m.kind === "error") { showCaption(m.text, true, "agent"); pushChat("err", m.text); }
-    else if (m.kind === "tool") pushChat("tool", "→ " + m.text);
-    else if (m.kind === "result") pushChat("tool", m.text + (m.detail ? "\n" + m.detail : ""));
-    else if (m.kind === "info") pushChat("tool", m.text);
+    if (m.kind === "confirm") {
+      // Write-confirmation request: route into the chat ledger as a distinguished pending entry.
+      pushConfirm(m.text);
+      return;
+    }
+    // Any non-confirm agent event means the turn produced output — clear the thinking indicator.
+    clearThinking();
+    if (m.kind === "say") {
+      // Agent spoke: a pending confirm (if any) resolved as accepted.
+      resolveConfirm(true);
+      showCaption(m.text, false, "agent"); pushChat("agent", m.text);
+    } else if (m.kind === "info") {
+      // "cancelled" is sent by main on Esc; any other info means the turn continued normally.
+      resolveConfirm(m.text !== "cancelled");
+      pushChat("tool", m.text);
+    } else if (m.kind === "error") {
+      resolveConfirm(false);
+      showCaption(m.text, true, "agent"); pushChat("err", m.text);
+    } else if (m.kind === "tool") {
+      pushChat("tool", "→ " + m.text);
+    } else if (m.kind === "result") {
+      pushChat("tool", m.text + (m.detail ? "\n" + m.detail : ""));
+    }
   });
   dmw.onSettings((s) => { agentSound = !!s.agentSound; if (s.theme) applyTheme(s.theme); });
   dmw.onWheel((d) => nudgeScroll(d.rotation));
