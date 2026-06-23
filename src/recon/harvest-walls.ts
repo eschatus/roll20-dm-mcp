@@ -24,7 +24,7 @@ import { pathToFileURL } from "url";
 import { writeFileSync, mkdirSync } from "fs";
 import path from "path";
 import sharp from "sharp";
-import { relayCommand, getEditorPage, reconnectRoll20 } from "../bridge/roll20.js";
+import { getEditorPage, reconnectRoll20 } from "../bridge/roll20.js";
 import { rtGet } from "../bridge/roll20-rt.js";
 import { dataPath } from "../dataDir.js";
 import { getActiveCampaign, setActiveCampaign, toSlug } from "../registry/campaigns.js";
@@ -38,9 +38,21 @@ interface PageInfo { id: string; name: string; width: number; height: number } /
 interface GraphicInfo { id: string; layer?: string; imgsrc?: string; left?: number; top?: number; width?: number; height?: number }
 // Legacy DL wall as stored in RTDB paths/page/<pageId>. left/top = CENTER (normal,
 // un-negated coords). `path` is a JSON string of SVG-ish commands in canvas-px local space.
-interface RtPath { layer?: string; left?: number; top?: number; width?: number; height?: number; rotation?: number; path?: string }
-// pathv2 (UDL) walls, if a campaign uses them — getWalls includePoints gives absolute page px.
-interface Pathv2Wall { id: string; kind: "pathv2"; points?: [number, number][] }
+// A walls-layer object in RTDB paths/page/<id>. Legacy DL = `path` (SVG-string, left/top center).
+// UDL pathv2 = `shape:"pol"` + `points` (array of [dx,dy] relative to the x,y anchor; first point [0,0]).
+interface RtPath { layer?: string; left?: number; top?: number; width?: number; height?: number; rotation?: number; path?: string; shape?: string; points?: [number, number][] | string; x?: number; y?: number }
+
+// pathv2 (UDL) wall → absolute page-pixel polyline: anchor (x,y) + each relative point. No Mod needed.
+function pathv2RtToPage(p: RtPath): [number, number][] {
+  let pts: unknown = p.points;
+  if (typeof pts === "string") { try { pts = JSON.parse(pts); } catch { return []; } }
+  if (!Array.isArray(pts)) return [];
+  const x = p.x ?? 0, y = p.y ?? 0;
+  const out = pts
+    .filter((q): q is [number, number] => Array.isArray(q) && typeof q[0] === "number" && typeof q[1] === "number")
+    .map(([dx, dy]) => [x + dx, y + dy] as [number, number]);
+  return out.length >= 2 ? out : [];
+}
 // Door/window as stored in RTDB: x normal, y NEGATED; handles under path.{handle0,handle1},
 // relative to (x,y), y also negated.
 interface RtOpening { x: number; y: number; path?: { handle0?: { x?: number; y?: number }; handle1?: { x?: number; y?: number } }; isSecret?: boolean }
@@ -98,8 +110,6 @@ interface HarvestRecord {
   windows: { from: [number, number]; to: [number, number] }[];
   flags: string[];              // QC hints surfaced at harvest time
 }
-
-const r = <T>(cmd: Record<string, unknown>) => relayCommand<T>(cmd);
 
 function parseArgs(argv: string[]) {
   const out: { campaign?: string; page?: string; limit?: number; imageUrl?: string; capture?: boolean; source?: string } = {};
@@ -160,19 +170,12 @@ async function harvestPage(
 ): Promise<HarvestRecord | { pageId: string; pageName: string; skipped: string }> {
   const flags: string[] = [];
 
-  // 1. Walls — read straight from the RTDB (the Mod's getWalls misses legacy paths).
-  //    Legacy DL: `path` objects on the walls layer → parse + transform to page px.
-  //    UDL: pathv2 objects (getWalls includePoints) → already absolute page px.
+  // 1. Walls — read straight from the RTDB walls layer (NO Mod, no relay). Two DL formats coexist:
+  //    legacy `path` (SVG string) and UDL `pathv2` (shape:"pol" + points). Both are in paths/page.
   const rtPaths = await rtGet<Record<string, RtPath>>(`paths/page/${page.id}`);
-  const legacyPolys = Object.values(rtPaths ?? {})
-    .filter(p => p.layer === "walls" && p.path)
-    .map(legacyPathToPage)
-    .filter(poly => poly.length >= 2);
-
-  const pathv2Objs = await r<Pathv2Wall[]>({ action: "getWalls", pageId: page.id, includePoints: true })
-    .then(ws => (ws ?? []).filter(w => w.kind === "pathv2"))
-    .catch(() => [] as Pathv2Wall[]);
-  const pathv2Polys = pathv2Objs.map(w => (w.points ?? []).map(([x, y]) => [x, y] as [number, number])).filter(poly => poly.length >= 2);
+  const wallObjs = Object.values(rtPaths ?? {}).filter(p => p.layer === "walls");
+  const legacyPolys = wallObjs.filter(p => p.path).map(legacyPathToPage).filter(poly => poly.length >= 2);
+  const pathv2Polys = wallObjs.filter(p => p.shape === "pol" && p.points).map(pathv2RtToPage).filter(poly => poly.length >= 2);
 
   const wallPolysPage = [...legacyPolys, ...pathv2Polys];
   if (legacyPolys.length) flags.push(`legacy:${legacyPolys.length}`);
@@ -289,7 +292,10 @@ export async function harvest(opts: { campaign?: string; page?: string; limit?: 
   }
   console.error(`\n[harvest] campaign "${campaign.name}" (${campaign.roll20CampaignId})${editorPage ? " [render-capture]" : ""} → ${outDir}\n`);
 
-  let pages = await r<PageInfo[]>({ action: "listPages" });
+  // Pages straight from RTDB (no relay/Mod) — the harvest now makes ZERO relay calls, so it works
+  // identically on any campaign regardless of whether the Mod is deployed.
+  const pagesObj = await rtGet<Record<string, { id: string; name: string; width: number; height: number }>>("pages");
+  let pages: PageInfo[] = Object.values(pagesObj ?? {}).map(p => ({ id: p.id, name: p.name, width: p.width, height: p.height }));
   if (opts.page) pages = pages.filter(p => p.id === opts.page);
   console.error(`[harvest] ${pages.length} page(s) to scan\n`);
 
