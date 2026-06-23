@@ -785,6 +785,9 @@
         <div class="config-section">
           <div class="config-section-title">Audio</div>
           <div class="config-row"><label>Whisper clip (ms)</label><input id="cfg-whisper-clip-ms" type="number" min="100" max="5000" /></div>
+          <div class="config-row"><label title="Keep a copy of each final clip under data/ab-clips/ for STT A/B tuning (npm run ab:stt). Off by default.">Save A/B clips</label><input type="checkbox" id="cfg-save-clips" style="width:auto;" /></div>
+          <div class="config-row"><label>A/B budget (MB)</label><input id="cfg-save-clips-mb" type="number" min="0" max="100000" /></div>
+          <div class="config-row"><label>A/B budget (files)</label><input id="cfg-save-clips-files" type="number" min="0" max="100000" /></div>
         </div>
 
         <div class="row" style="margin-top:4px;">

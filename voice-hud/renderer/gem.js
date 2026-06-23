@@ -576,6 +576,9 @@ async function loadConfig() {
     set("cfg-ollama-url", c.ollamaUrl);
     set("cfg-ollama-model", c.ollamaModel);
     set("cfg-whisper-clip-ms", c.whisperClipMs);
+    setChk("cfg-save-clips", c.saveClips);
+    set("cfg-save-clips-mb", c.saveClipsMaxMb);
+    set("cfg-save-clips-files", c.saveClipsMaxFiles);
     // Local LLM (Ollama) is mothballed behind DMW_ENABLE_LOCAL_LLM — hide its controls unless on.
     const showLocalLlm = !!c.enableLocalLlm;
     document.querySelectorAll(".local-llm-only").forEach((el) => { el.style.display = showLocalLlm ? "" : "none"; });
@@ -599,6 +602,9 @@ document.getElementById("config-save-btn")?.addEventListener("click", async () =
     ollamaUrl: get("cfg-ollama-url"),
     ollamaModel: get("cfg-ollama-model"),
     whisperClipMs: getNum("cfg-whisper-clip-ms"),
+    saveClips: getChk("cfg-save-clips"),
+    saveClipsMaxMb: getNum("cfg-save-clips-mb"),
+    saveClipsMaxFiles: getNum("cfg-save-clips-files"),
   };
   const r = await dmw.setConfig(updates);
   const msg = document.getElementById("config-saved-msg");
