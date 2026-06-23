@@ -95,6 +95,11 @@ contextBridge.exposeInMainWorld("dmw", {
   selectSttModel: (id: string) => ipcRenderer.invoke("select-stt-model", id),
   onSttModelProgress: (cb: (d: { id: string; pct: number; recvMB: number }) => void) =>
     ipcRenderer.on("stt-model-progress", (_e, d) => cb(d)),
+  // GPU acceleration — detect hardware + download the matching whisper.cpp GPU build
+  getGpuStatus: () => ipcRenderer.invoke("get-gpu-status"),
+  enableGpu: () => ipcRenderer.invoke("enable-gpu"),
+  onGpuProgress: (cb: (d: { pct: number; recvMB: number }) => void) =>
+    ipcRenderer.on("gpu-progress", (_e, d) => cb(d)),
   // Copy the ai-relay.js Mod source to the clipboard for manual Roll20 deploy
   copyModScript: () => ipcRenderer.invoke("copy-mod-script"),
 

@@ -722,6 +722,21 @@
           <div id="setup-stt-msg" class="msg" style="min-height:18px;margin-top:6px;"></div>
         </div>
         <div class="setup-step" style="margin-top:14px;">
+          <p class="hint-line">Speech engine acceleration — uses your GPU for real-time transcription. Without GPU acceleration, <code>medium.en</code> takes ~20s/turn on CPU; with it, transcription is real-time.</p>
+          <div id="setup-gpu-status" style="font-size:12.5px;color:#c9a9b4;margin-bottom:8px;min-height:18px;">detecting hardware…</div>
+          <div id="setup-gpu-actions" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+          <div class="hint-line" id="setup-gpu-warn" style="display:none;margin-top:6px;color:#ffb86c;">
+            CPU-only detected — <code>medium.en</code> will take ~20s/turn. Consider using <code>base.en</code> or <code>small.en</code> above for faster response.
+          </div>
+          <div id="setup-gpu-progress" style="display:none;margin-top:6px;">
+            <div style="height:6px;background:rgba(60,16,32,.7);border-radius:3px;overflow:hidden;">
+              <div id="setup-gpu-progress-bar" style="height:100%;width:0%;background:rgba(220,120,150,.8);transition:width 200ms;border-radius:3px;"></div>
+            </div>
+            <div id="setup-gpu-progress-label" style="font-size:11px;color:#9a6a78;margin-top:3px;">0%</div>
+          </div>
+          <div id="setup-gpu-msg" class="msg" style="min-height:18px;margin-top:6px;"></div>
+        </div>
+        <div class="setup-step" style="margin-top:14px;">
           <p class="hint-line">Install the assistant's Mod in Roll20 (runs combat). Copy the script, then in Roll20 open <strong>Settings → API Scripts (Mods)</strong>, paste into a <strong>New Script</strong>, and Save. <em>(Or run the automated deploy from Claude Code: <code>npm run release:mod</code>.)</em></p>
           <button class="act" id="setup-copy-mod">Copy Mod script to clipboard</button>
           <div id="setup-deploy-msg" class="msg" style="min-height:18px;margin-top:6px;"></div>
