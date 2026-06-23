@@ -79,7 +79,7 @@ publish:
 
 win:
   target: nsis
-  artifactName: ${productName}-${version}-Setup.${ext}
+  artifactName: DM-Whisper-${version}-Setup.${ext}
   # signing: set CSC_LINK / CSC_KEY_PASSWORD in CI; unsigned for local dev builds.
 
 mac:
@@ -87,13 +87,13 @@ mac:
     - target: dmg
       arch: arm64          # Apple Silicon (built on the macos-14 runner); add x64 for Intel.
   category: public.app-category.role-playing-games
-  artifactName: ${productName}-${version}-${arch}.${ext}
+  artifactName: DM-Whisper-${version}-${arch}.${ext}
   # hardenedRuntime + notarization for distribution (Bill's M4) — TODO in the doc.
 
 linux:
   target: AppImage
   category: Game
-  artifactName: ${productName}-${version}-${arch}.${ext}
+  artifactName: DM-Whisper-${version}-${arch}.${ext}
 
 nsis:
   oneClick: false
