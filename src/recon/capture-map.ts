@@ -1,32 +1,77 @@
 // Capture a page's full-res map image from Roll20 for the wall dataset.
 //
-// Roll20 (esp. the Jumpgate WebGL renderer) signs/proxies map URLs and serves them from a
-// service-worker cache, so direct fetch 403/404s and page-level network interception sees nothing.
-// BUT WebGL requires CORS-clean textures, so the map is loaded crossOrigin-enabled and lives decoded
-// in the browser. We exploit that: drive the editor to the page, then IN-PAGE load the map via a
-// crossOrigin <Image> (the service worker serves the cached, CORS-clean bytes) and read it off a
-// <canvas> at native resolution. Works for marketplace + uploaded art, Jumpgate + legacy. The bytes
-// are the exact asset the walls were drawn against, so wall page-pixels register 1:1.
+// Roll20 serves map textures CORS-clean (WebGL needs that), so we read the image off a <canvas>
+// in-page. TWO paths:
+//   1. DIRECT (no navigation): for uploaded art (files.d20.io/images/…) the service worker serves
+//      the CORS-clean original from ANY editor view — so we just load the imgsrc-derived URL via a
+//      crossOrigin <Image> and read it. No toolbar, no per-page nav, no plan-gates. Fast + robust.
+//   2. NAV fallback: gated marketplace art is only retrievable after Roll20 renders the page, so we
+//      drive the page-toolbar to display it, then read back. Used only when (1) returns nothing.
 //
-// NOTE: navigates the GM's active page — run OUTSIDE a live session.
+// Bytes are the exact placed asset, so wall page-pixels register 1:1. Re-encoded JPEG q0.92
+// (visually lossless, avoids OOM on very large canvases). Run OUTSIDE a live session (path 2
+// navigates the GM's active page).
 import type { Page } from "playwright";
 
 export interface CapturedImage { buf: Buffer; w: number; h: number; url: string }
 
-// Double-click a page card by id+name: filter the (virtualised) list to it, neutralise the
-// vue-virtual-scroller translate offset so it's on-screen, then issue a trusted dblclick.
+// In-page crossOrigin canvas readback of the map's files.d20.io variants. Returns the largest
+// readable variant, or null (gated art that isn't cached/servable from the current view).
+async function readbackInPage(page: Page, imgsrc: string): Promise<CapturedImage | null> {
+  const res: any = await page.evaluate(async (imgsrcIn) => {
+    const raw: string[] = [];
+    for (const i of Array.from(document.querySelectorAll("img"))) {
+      const u = (i as HTMLImageElement).currentSrc || (i as HTMLImageElement).src;
+      if (u && /files\.d20\.io\/(images|marketplace)\//.test(u) && /\/(original|max)\./.test(u)) { raw.push(u); raw.push(u.split("?")[0]); }
+    }
+    if (imgsrcIn && imgsrcIn.indexOf("files.d20.io/") >= 0) {
+      const q = imgsrcIn.indexOf("?") >= 0 ? imgsrcIn.slice(imgsrcIn.indexOf("?")) : "";
+      const tail = imgsrcIn.split("files.d20.io/")[1].split("?")[0];
+      const base = "https://files.d20.io/" + tail.replace(/\/(original|max|thumb|med|min)\.(jpg|jpeg|png|webp)$/i, "");
+      for (const v of ["original", "max"]) for (const e of ["jpg", "webp", "png", "jpeg"]) { raw.push(`${base}/${v}.${e}${q}`); raw.push(`${base}/${v}.${e}`); }
+    }
+    const urls = Array.from(new Set(raw.filter((u) => u)));
+    let best: any = null;
+    for (const u of urls.slice(0, 24)) {
+      const r: any = await new Promise((resolve) => {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+          try {
+            const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight;
+            (c.getContext("2d") as CanvasRenderingContext2D).drawImage(img, 0, 0);
+            resolve({ url: u, ok: true, w: img.naturalWidth, h: img.naturalHeight, data: c.toDataURL("image/jpeg", 0.92) });
+          } catch { resolve({ url: u, ok: false }); }
+        };
+        img.onerror = () => resolve({ url: u, ok: false });
+        img.src = u;
+        setTimeout(() => resolve({ url: u, ok: false }), 20000);
+      });
+      if (r.ok && (!best || r.w * r.h > best.w * best.h)) best = r;
+    }
+    return best;
+  }, imgsrc);
+  if (!res?.ok || !res.data) return null;
+  return { buf: Buffer.from(res.data.split(",")[1], "base64"), w: res.w, h: res.h, url: res.url };
+}
+
+// Drive the page-toolbar to display a page (fallback for gated marketplace art that must render
+// first). Filters the (virtualised) list to the target, neutralises vue-virtual-scroller transforms,
+// and dblclicks the card.
 async function navigateToCard(page: Page, pid: string, name: string): Promise<void> {
+  await page.evaluate(() => {
+    if (document.querySelector("div.page-card[data-page-id]")) return;
+    const t = Array.from(document.querySelectorAll("span.grimoire__roll20-icon")).find((s) => s.textContent?.trim() === "pageList");
+    (t?.closest("button") ?? (t as HTMLElement))?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await page.waitForTimeout(1200);
   const search = page.locator(".page-search-input input, input.page-search-input").first();
   await search.fill("").catch(() => {});
   await search.fill(name).catch(() => {});
   await page.waitForTimeout(1000);
   await page.evaluate((id) => {
     const c = document.querySelector(`div.page-card[data-page-id="${id}"]`) as HTMLElement | null;
-    for (let el: HTMLElement | null = c; el; el = el.parentElement) {
-      el.scrollTop = 0;
-      const tf = getComputedStyle(el).transform;
-      if (tf && tf !== "none") el.style.transform = "none";
-    }
+    for (let el: HTMLElement | null = c; el; el = el.parentElement) { el.scrollTop = 0; const tf = getComputedStyle(el).transform; if (tf && tf !== "none") el.style.transform = "none"; }
   }, pid);
   await page.locator(`div.page-card[data-page-id="${pid}"] .vtt-page-card.is-page`).first().dblclick({ timeout: 10_000 });
 }
@@ -39,87 +84,26 @@ export async function captureMapImage(
   expected?: { w: number; h: number },
   opts: { settleMs?: number } = {},
 ): Promise<CapturedImage | null> {
+  void expected;
   try {
-    // Open the page toolbar (idempotent).
-    await page.evaluate(() => {
-      if (document.querySelector("div.page-card[data-page-id]")) return;
-      const t = Array.from(document.querySelectorAll("span.grimoire__roll20-icon")).find((s) => s.textContent?.trim() === "pageList");
-      (t?.closest("button") ?? (t as HTMLElement))?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await page.waitForTimeout(1200);
+    // 1. DIRECT readback — no navigation. Works for uploaded art from any editor view.
+    const direct = await readbackInPage(page, imgsrc);
+    if (direct) return direct;
 
-    // The map texture only loads into the SW cache on a real page TRANSITION. If already on the
-    // target, hop to another page first so navigating back re-renders (and re-caches) the map.
-    const activeAtStart = await page.evaluate(() => (window as any).Campaign?.activePage?.()?.id).catch(() => "");
-    if (activeAtStart === pageId) {
-      const other = await page.evaluate((pid) => {
-        const c = Array.from(document.querySelectorAll<HTMLElement>("div.page-card[data-page-id]")).find((e) => e.getAttribute("data-page-id") !== pid);
-        return c ? { id: c.getAttribute("data-page-id"), name: c.querySelector(".vtt-page-title")?.textContent?.trim() ?? "" } : null;
-      }, pageId);
-      if (other?.id) { await navigateToCard(page, other.id, other.name).catch(() => {}); await page.waitForTimeout(2500); }
-    }
-
+    // 2. NAV fallback — gated marketplace art: render the page, then read back.
     await navigateToCard(page, pageId, pageName);
-
-    // Wait for the GM canvas to settle on this page so its texture is loaded/cached.
-    const settle = opts.settleMs ?? 8000;
-    const deadline = Date.now() + settle;
+    const deadline = Date.now() + (opts.settleMs ?? 8000);
     let active = "";
     while (Date.now() < deadline) {
       active = await page.evaluate(() => (window as any).Campaign?.activePage?.()?.id).catch(() => "");
       if (active === pageId) break;
       await page.waitForTimeout(500);
     }
-    if (active !== pageId) { console.error(`[capture] NAV FAIL ${pageName}: active=${active} want=${pageId}`); return null; }
-    await page.waitForTimeout(3500); // let the SW finish caching the full-res texture
-
-    // In-page canvas readback: try files.d20.io variants of the map (the SW serves cached CORS-clean
-    // bytes for the host files.d20.io even though s3.amazonaws.com/... 403s), plus any DOM originals.
-    const res: any = await page.evaluate(async (imgsrcIn) => {
-      // The service worker caches the map under the EXACT url it requested (query string included),
-      // so try the DOM url verbatim first, then a query-stripped form, then imgsrc-derived variants.
-      // NOTE: no named helper arrows here — tsx/esbuild wraps them with __name (undefined in-page).
-      const raw: string[] = [];
-      for (const i of Array.from(document.querySelectorAll("img"))) {
-        const u = (i as HTMLImageElement).currentSrc || (i as HTMLImageElement).src;
-        if (u && /files\.d20\.io\/(images|marketplace)\//.test(u) && /\/(original|max)\./.test(u)) { raw.push(u); raw.push(u.split("?")[0]); }
-      }
-      if (imgsrcIn && imgsrcIn.indexOf("files.d20.io/") >= 0) {
-        const q = imgsrcIn.indexOf("?") >= 0 ? imgsrcIn.slice(imgsrcIn.indexOf("?")) : "";
-        const tail = imgsrcIn.split("files.d20.io/")[1].split("?")[0];
-        const base = "https://files.d20.io/" + tail.replace(/\/(original|max|thumb|med|min)\.(jpg|jpeg|png|webp)$/i, "");
-        for (const v of ["original", "max"]) for (const e of ["webp", "jpg", "png", "jpeg"]) { raw.push(`${base}/${v}.${e}${q}`); raw.push(`${base}/${v}.${e}`); }
-      }
-      const urls = Array.from(new Set(raw.filter((u) => u)));
-      let best: any = null;
-      const verdicts: string[] = [];
-      for (const u of urls.slice(0, 24)) {
-        const r: any = await new Promise((resolve) => {
-          const img = new Image();
-          img.crossOrigin = "anonymous";
-          img.onload = () => {
-            try {
-              const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight;
-              (c.getContext("2d") as CanvasRenderingContext2D).drawImage(img, 0, 0);
-              resolve({ url: u, ok: true, w: img.naturalWidth, h: img.naturalHeight, data: c.toDataURL("image/png") });
-            } catch { resolve({ url: u, ok: false }); }
-          };
-          img.onerror = () => resolve({ url: u, ok: false });
-          img.src = u;
-          setTimeout(() => resolve({ url: u, ok: false }), 15000);
-        });
-        verdicts.push(`${r.ok ? "OK " + r.w + "x" + r.h : "x"} ${u.slice(0, 70)}`);
-        if (r.ok && (!best || r.w * r.h > best.w * best.h)) best = r; // keep the largest readable
-      }
-      return { best, verdicts, tried: urls.length };
-    }, imgsrc);
-    if (!res?.best) console.error(`[capture] NO READABLE URL ${pageName} (tried ${res?.tried}):\n  ${(res?.verdicts ?? []).join("\n  ")}`);
-    const best = res?.best;
-
-    if (!best?.ok || !best.data) return null;
-    const buf = Buffer.from(best.data.split(",")[1], "base64");
-    void expected; // exact-asset readback already matches the placed graphic; kept for signature compat
-    return { buf, w: best.w, h: best.h, url: best.url };
+    if (active !== pageId) { console.error(`[capture] NAV FAIL ${pageName}: active=${active}`); return null; }
+    await page.waitForTimeout(3500);
+    const navd = await readbackInPage(page, imgsrc);
+    if (!navd) console.error(`[capture] NO READABLE URL ${pageName}`);
+    return navd;
   } catch (e) {
     console.error(`[capture] EXCEPTION ${pageName}: ${String(e).slice(0, 160)}`);
     return null;

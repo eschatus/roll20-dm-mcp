@@ -227,7 +227,7 @@ async function harvestPage(
     if (!buf) return { pageId: page.id, pageName: page.name, skipped: `image-fetch-${lastStatus || "err"}` };
   }
   // Canvas-readback always yields PNG bytes; otherwise derive the extension from the source URL.
-  const ext = editorPage ? "png" : (imgsrc.match(/\.(png|jpg|jpeg|webp)/i)?.[1] ?? "png").toLowerCase();
+  const ext = editorPage ? "jpg" : (imgsrc.match(/\.(png|jpg|jpeg|webp)/i)?.[1] ?? "png").toLowerCase();
   const imageFile = `${page.id}.${ext}`;
 
   // 4. The alignment transform: page px → image-file px.
