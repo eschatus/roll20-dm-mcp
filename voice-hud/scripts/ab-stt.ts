@@ -15,6 +15,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { FasterWhisperEngine } from "../src/stt/fasterWhisper";
 import { WhisperCppEngine } from "../src/stt/whisperCpp";
+import { WhisperServerEngine } from "../src/stt/whisperServer";
 import { SttEngine } from "../src/stt/engine";
 import { CONFIG } from "../src/config";
 import { loadBaseVocab } from "../src/baseVocab";
@@ -72,6 +73,14 @@ async function startWhisperCpp(): Promise<SttEngine | null> {
   try { await e.start(); console.error(`[ab] whisper.cpp up: ${e.name}`); return e; }
   catch (err) { console.error(`[ab] whisper.cpp failed: ${(err as Error).message}`); return null; }
 }
+// The RESIDENT whisper-server — what the gem actually uses (model loads once). DMW_WHISPER_SERVER_BIN
+// + DMW_WHISPER_MODEL + DMW_WHISPER_SERVER_PORT select the binary/model/port, so the same harness
+// run can benchmark a CPU build vs a cuBLAS/Metal GPU build by swapping the bin.
+async function startWhisperServer(): Promise<SttEngine | null> {
+  const e = new WhisperServerEngine({ binPath: CONFIG.whisperServerBin, modelPath: CONFIG.whisperModel, port: CONFIG.whisperServerPort });
+  try { await e.start(); console.error(`[ab] whisper-server up: ${e.name} (port ${CONFIG.whisperServerPort})`); return e; }
+  catch (err) { console.error(`[ab] whisper-server failed: ${(err as Error).message}`); return null; }
+}
 
 interface Row { engine: string; ms: number; raw: string; corr: string; lowConf: boolean; werRaw?: number; werCorr?: number; hit?: number; tot?: number }
 interface Agg { ms: number[]; werRaw: number[]; werCorr: number[]; hit: number; tot: number; low: number }
@@ -88,13 +97,15 @@ async function main(): Promise<void> {
 
   const want = (process.env.DMW_AB_ENGINES || "faster-whisper,whispercpp").split(",").map((s) => s.trim()).filter(Boolean);
   console.error(`[ab] requested engines: ${want.join(", ")}`);
-  const [fw, wc] = await Promise.all([
+  const [fw, wc, ws] = await Promise.all([
     want.includes("faster-whisper") ? startFaster() : Promise.resolve(null),
     want.includes("whispercpp") ? startWhisperCpp() : Promise.resolve(null),
+    want.includes("whisperserver") ? startWhisperServer() : Promise.resolve(null),
   ]);
   const engines: Array<{ label: string; eng: SttEngine }> = [];
   if (fw) engines.push({ label: "faster-whisper", eng: fw });
   if (wc) engines.push({ label: "whisper.cpp", eng: wc });
+  if (ws) engines.push({ label: "whisper-server", eng: ws });
   if (!engines.length) { console.error("\n[ab] no engines started — nothing to compare.\n"); return; }
 
   const agg: Record<string, Agg> = {};
