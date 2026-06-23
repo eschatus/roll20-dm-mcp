@@ -10,6 +10,7 @@ import { app, BrowserWindow, ipcMain, screen, Menu, clipboard } from "electron";
 import "./bootstrap"; // MUST precede ./config — sets DMW_DATA_DIR/ROLL20_DATA_DIR when packaged
 import * as path from "path";
 import * as fs from "fs";
+import * as child_process from "child_process";
 import * as dotenv from "dotenv";
 import { CONFIG } from "./config";
 import { PttHook } from "./ptt";
@@ -674,6 +675,113 @@ function wireWizard() {
     } catch (e) { return { ok: false, error: (e as Error).message }; }
   });
 
+  // GPU status — detect NVIDIA/Apple/CPU and return the result to the Setup tab.
+  ipcMain.handle("get-gpu-status", async () => detectGpu());
+
+  // GPU engine download — NVIDIA only. Downloads the matching whisper-cublas zip from the
+  // whisper.cpp release page, extracts it, wires up DMW_WHISPER_SERVER_BIN/DMW_WHISPER_BIN,
+  // and persists the paths to <dataDir>/.env. Mirrors the downloadModel() pattern.
+  ipcMain.handle("enable-gpu", async () => {
+    let gpu: GpuStatus;
+    try { gpu = await detectGpu(); } catch (e) { return { ok: false, error: (e as Error).message }; }
+    if (gpu.kind !== "nvidia") return { ok: false, error: "NVIDIA GPU not detected" };
+
+    // Pick CUDA tier from the driver/runtime version string (e.g. "12.4", "11.8.89", "527.00").
+    // nvidia-smi --query-gpu=driver_version on Windows returns the Windows display driver version
+    // (e.g. "527.00") where the CUDA major version is floor(driverVer / 10).  On Linux it
+    // returns the CUDA runtime version directly. We do a simple major-version parse on whatever
+    // we got and clamp to 11 or 12.
+    const rawVer = gpu.cudaVersion || "0";
+    const major = parseInt(rawVer.split(".")[0], 10) || 0;
+    // Windows display-driver numbering: >=512 → CUDA 12; >=452 → CUDA 11; else assume CPU epoch.
+    const cudaTier = (major >= 12 || major >= 512) ? "12.4.0"
+                   : (major >= 11 || major >= 452) ? "11.8.0"
+                   : "12.4.0"; // default to 12 if we can't parse
+
+    const tag = "v1.7.5";
+    const zipName = `whisper-cublas-${cudaTier}-bin-x64.zip`;
+    const url = `https://github.com/ggerganov/whisper.cpp/releases/download/${tag}/${zipName}`;
+    const dataDir = process.env.DMW_DATA_DIR || CONFIG.dataDir;
+    const destDir = path.join(dataDir, "whisper-cublas");
+    const zipPath = path.join(dataDir, zipName);
+    const zipPart = `${zipPath}.part`;
+
+    try {
+      fs.mkdirSync(destDir, { recursive: true });
+      // Stream download with progress (same pattern as downloadModel).
+      const res = await fetch(url);
+      if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status}`);
+      const total = Number(res.headers.get("content-length")) || 0;
+      const out = fs.createWriteStream(zipPart);
+      let recv = 0, lastPct = -1;
+      const reader = (res.body as { getReader(): { read(): Promise<{ done: boolean; value?: Uint8Array }>; releaseLock?(): void } }).getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          if (!out.write(Buffer.from(value))) await new Promise<void>((r) => out.once("drain", () => r()));
+          recv += value.length;
+          const pct = total ? Math.floor((recv / total) * 100) : 0;
+          if (pct !== lastPct) { lastPct = pct; send("gpu-progress", { pct, recvMB: Math.round(recv / 1e6) }); }
+        }
+      } finally { reader.releaseLock?.(); }
+      await new Promise<void>((resolve, reject) => out.end((e?: Error | null) => (e ? reject(e) : resolve())));
+      fs.renameSync(zipPart, zipPath);
+
+      // Extract zip using Windows 10+ bsdtar (bundled as tar.exe) which handles .zip natively.
+      await new Promise<void>((resolve, reject) => {
+        const tar = child_process.spawn("tar", ["-xf", zipPath, "-C", destDir], {
+          windowsHide: true,
+        });
+        let errOut = "";
+        tar.stderr.on("data", (d: Buffer) => { errOut += d.toString(); });
+        tar.on("error", reject);
+        tar.on("close", (code: number | null) => {
+          if (code !== 0) reject(new Error(`tar failed (${code}): ${errOut}`));
+          else resolve();
+        });
+      });
+      // Clean up the zip after extraction.
+      fs.promises.unlink(zipPath).catch(() => {});
+
+      // Find the server binary inside the extracted dir (may be in a sub-folder).
+      // whisper-cublas zips typically have a top-level flat layout or a single sub-dir.
+      const binName = process.platform === "win32" ? "whisper-server.exe" : "whisper-server";
+      const mainBinName = process.platform === "win32" ? "whisper.exe" : "whisper";
+      function findBin(dir: string, target: string): string | null {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const e of entries) {
+          if (e.isFile() && e.name === target) return path.join(dir, e.name);
+          if (e.isDirectory()) {
+            const found = findBin(path.join(dir, e.name), target);
+            if (found) return found;
+          }
+        }
+        return null;
+      }
+      const serverBin = findBin(destDir, binName);
+      const mainBin   = findBin(destDir, mainBinName);
+
+      if (serverBin) {
+        process.env.DMW_WHISPER_SERVER_BIN = serverBin;
+        upsertEnv("DMW_WHISPER_SERVER_BIN", serverBin);
+      }
+      if (mainBin) {
+        process.env.DMW_WHISPER_BIN = mainBin;
+        upsertEnv("DMW_WHISPER_BIN", mainBin);
+      }
+      if (!serverBin && !mainBin) {
+        return { ok: false, error: `extracted zip but could not find ${binName} or ${mainBinName} inside ${destDir}` };
+      }
+      return { ok: true, restart: true, serverBin, mainBin, cudaTier };
+    } catch (e) {
+      // Clean up partial files on failure.
+      try { fs.promises.unlink(zipPart).catch(() => {}); } catch { /* ignore */ }
+      return { ok: false, error: (e as Error).message };
+    }
+  });
+
   // Copy the ai-relay.js Mod source to the clipboard for manual deploy (Roll20 → Settings → API
   // Scripts → New Script → paste → Save). Avoids bundling Playwright/Chromium just to automate the
   // paste; the automated path stays available from Claude Code (`npm run release:mod`).
@@ -853,6 +961,51 @@ function upsertEnv(key: string, value: string): void {
   const re = new RegExp(`^${key}=.*$`, "m");
   txt = re.test(txt) ? txt.replace(re, `${key}=${value}`) : `${txt.replace(/\n?$/, "\n")}${key}=${value}\n`;
   fs.writeFileSync(file, txt);
+}
+
+// GPU detection result type.
+type GpuKind = "nvidia" | "apple" | "cpu";
+interface GpuStatus { kind: GpuKind; name?: string; cudaVersion?: string }
+
+// Detect the GPU type at runtime.
+// NVIDIA: runs nvidia-smi and parses the GPU name + CUDA driver version.
+// Apple Silicon: darwin + arm64 → Metal (built into the binary, no download).
+// Otherwise: CPU.
+async function detectGpu(): Promise<GpuStatus> {
+  if (process.platform === "darwin" && process.arch === "arm64") {
+    return { kind: "apple" };
+  }
+  return new Promise((resolve) => {
+    // Try the system PATH first, then the Windows default location.
+    const candidates = process.platform === "win32"
+      ? ["nvidia-smi", "C:\\Windows\\System32\\nvidia-smi.exe"]
+      : ["nvidia-smi"];
+    let tried = 0;
+    const tryNext = () => {
+      if (tried >= candidates.length) { resolve({ kind: "cpu" }); return; }
+      const cmd = candidates[tried++];
+      const proc = child_process.spawn(cmd, ["--query-gpu=name,driver_version", "--format=csv,noheader"], {
+        timeout: 5000, windowsHide: true,
+      });
+      let out = "";
+      proc.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+      proc.on("error", tryNext);
+      proc.on("close", (code: number | null) => {
+        if (code !== 0 || !out.trim()) { tryNext(); return; }
+        const [name, driverVer] = out.trim().split(",").map((s) => s.trim());
+        // CUDA driver version is e.g. "527.92" (Windows) or "12.4...." — normalise to major.minor.
+        // The CUDA runtime version is ≤ the driver version; for download selection we care about major.
+        let cudaVersion: string | undefined;
+        if (driverVer) {
+          // nvidia-smi --format=csv gives the CUDA runtime version string (e.g. "12.4"), not the
+          // driver version, when using --query-gpu=driver_version on newer drivers. Keep as-is.
+          cudaVersion = driverVer;
+        }
+        resolve({ kind: "nvidia", name: name || undefined, cudaVersion });
+      });
+    };
+    tryNext();
+  });
 }
 
 // STT model catalog — ggml whisper.cpp models. base.en ships bundled; the rest download on demand

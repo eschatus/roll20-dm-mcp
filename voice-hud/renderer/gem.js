@@ -517,6 +517,7 @@ async function loadSetup() {
   if (doneBanner) doneBanner.style.display = done ? "" : "none";
   if (steps && !setupStepsForced) steps.style.display = done ? "none" : "";
   loadSttModels();
+  loadGpuStatus();
 }
 // "Adjust setup" reveals the collapsed steps (e.g. to re-connect a dropped token) without un-doing
 // the quiet state on the next status refresh.
@@ -555,6 +556,82 @@ if (window.dmw && dmw.onSttModelProgress) {
   dmw.onSttModelProgress((d) => {
     const msg = document.getElementById("setup-stt-msg");
     if (msg) { msg.textContent = `downloading ${d.id}… ${d.pct}% (${d.recvMB}MB)`; msg.className = "msg"; }
+  });
+}
+
+// ---- GPU acceleration section ----
+async function loadGpuStatus() {
+  if (!window.dmw || !dmw.getGpuStatus) return;
+  const statusEl = document.getElementById("setup-gpu-status");
+  const actionsEl = document.getElementById("setup-gpu-actions");
+  const warnEl = document.getElementById("setup-gpu-warn");
+  const msgEl = document.getElementById("setup-gpu-msg");
+  if (!statusEl || !actionsEl) return;
+
+  statusEl.textContent = "detecting hardware…";
+  actionsEl.innerHTML = "";
+  if (warnEl) warnEl.style.display = "none";
+  if (msgEl) msgEl.textContent = "";
+
+  let gpu;
+  try {
+    gpu = await dmw.getGpuStatus();
+  } catch (e) {
+    statusEl.textContent = "GPU detection failed";
+    return;
+  }
+
+  if (gpu.kind === "nvidia") {
+    const cudaLabel = gpu.cudaVersion ? ` · CUDA ${gpu.cudaVersion}` : "";
+    statusEl.textContent = `NVIDIA ${gpu.name || "GPU"}${cudaLabel}`;
+    const btn = document.createElement("button");
+    btn.className = "act";
+    btn.id = "setup-gpu-enable-btn";
+    btn.textContent = "Enable GPU acceleration (downloads ~650 MB)";
+    btn.addEventListener("click", () => enableGpuAcceleration(btn));
+    actionsEl.appendChild(btn);
+  } else if (gpu.kind === "apple") {
+    statusEl.textContent = "Apple Silicon — Metal GPU (built in, no download needed)";
+    const note = document.createElement("span");
+    note.style.cssText = "font-size:12px;color:#9fd49f;";
+    note.textContent = "Real-time transcription available — no setup needed.";
+    actionsEl.appendChild(note);
+  } else {
+    statusEl.textContent = "CPU only";
+    if (warnEl) warnEl.style.display = "";
+  }
+}
+
+async function enableGpuAcceleration(btn) {
+  if (!window.dmw || !dmw.enableGpu) return;
+  const msgEl = document.getElementById("setup-gpu-msg");
+  const progressEl = document.getElementById("setup-gpu-progress");
+  const progressBar = document.getElementById("setup-gpu-progress-bar");
+  const progressLabel = document.getElementById("setup-gpu-progress-label");
+
+  if (btn) { btn.disabled = true; btn.textContent = "Downloading…"; }
+  if (msgEl) { msgEl.textContent = "downloading whisper-cublas… (one-time, ~650 MB)"; msgEl.className = "msg"; }
+  if (progressEl) progressEl.style.display = "";
+
+  const r = await dmw.enableGpu();
+  if (progressEl) progressEl.style.display = "none";
+  if (btn) { btn.disabled = false; }
+
+  if (r && r.ok) {
+    if (btn) btn.textContent = "GPU acceleration enabled ✓";
+    if (msgEl) { msgEl.textContent = "GPU engine installed — restart the gem to apply"; msgEl.className = "msg ok"; }
+  } else {
+    if (btn) btn.textContent = "Enable GPU acceleration (downloads ~650 MB)";
+    if (msgEl) { msgEl.textContent = (r && r.error) || "GPU setup failed"; msgEl.className = "msg err"; }
+  }
+}
+
+if (window.dmw && dmw.onGpuProgress) {
+  dmw.onGpuProgress((d) => {
+    const bar = document.getElementById("setup-gpu-progress-bar");
+    const label = document.getElementById("setup-gpu-progress-label");
+    if (bar) bar.style.width = d.pct + "%";
+    if (label) label.textContent = `${d.pct}% (${d.recvMB} MB)`;
   });
 }
 
