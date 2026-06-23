@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   // requireExisting: a release must only ever OVERWRITE the relay tab, never create a
   // second one. getModPage now waits for the tab bar to render (the real fix); this is
   // the belt-and-suspenders — if the match still fails, throw instead of duplicating.
-  const r = await deployModScript(roll20CampaignId, scriptPath, { requireExisting: true });
+  const r = await deployModScript(roll20CampaignId, scriptPath, { requireExisting: true, tabName: "ai-relay.js" });
   console.error(`[release] deployed ${r.linesWritten} lines (created=${r.created}).`);
 
   // The save REBOOTS the sandbox. Wait for it to warm before soaking — a cold sandbox
