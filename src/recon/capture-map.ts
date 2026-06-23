@@ -120,7 +120,8 @@ export async function captureMapImage(
     const buf = Buffer.from(best.data.split(",")[1], "base64");
     void expected; // exact-asset readback already matches the placed graphic; kept for signature compat
     return { buf, w: best.w, h: best.h, url: best.url };
-  } catch {
+  } catch (e) {
+    console.error(`[capture] EXCEPTION ${pageName}: ${String(e).slice(0, 160)}`);
     return null;
   }
 }
