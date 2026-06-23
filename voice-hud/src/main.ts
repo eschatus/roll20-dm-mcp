@@ -401,7 +401,7 @@ async function runAgent(transcript: string, lowConfidence = false) {
       onToolResult: (name, resultText) => { console.error(`[agent] tool ✓ ${name}: ${resultText.slice(0, 60)}`); send("agent", { kind: "result", text: `${name} ✓`, detail: resultText }); },
       onProposeWrite: (name, args) => new Promise<boolean>((resolve) => {
         pendingConfirm = resolve;
-        send("agent", { kind: "confirm", text: `${name}(${shortArgs(args)})` });
+        send("agent", { kind: "confirm", text: humanizeToolCall(name, args) });
         send("state", "confirm");
       }),
       onPhaseChange: (phase) => {
@@ -442,6 +442,44 @@ function shortArgs(args: unknown): string {
     const s = JSON.stringify(args);
     return s.length > 80 ? s.slice(0, 77) + "…" : s;
   } catch { return ""; }
+}
+
+// Turn a pending write-tool call into a human-readable sentence for the confirm prompt — so the DM
+// reads "deal 12 damage to Strahd", not update_token_hp({"id":"-Abc","hp":12}). Token ids resolve to
+// names via rosterTokenById; anything unmapped falls back to a de-snaked name + its readable args.
+function humanizeToolCall(name: string, args: unknown): string {
+  const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
+  const nameOf = (k: string): string => { const v = a[k]; return typeof v === "string" ? (rosterTokenById[v] || v) : ""; };
+  const who = nameOf("tokenId") || nameOf("id") || (typeof a.name === "string" ? a.name : "") || "a token";
+  const num = (k: string): number | undefined => (typeof a[k] === "number" ? (a[k] as number) : undefined);
+  switch (name) {
+    case "update_token_hp": {
+      const hp = num("hp"); const d = num("delta") ?? num("damage") ?? num("amount");
+      if (hp !== undefined) return `set ${who}'s HP to ${hp}`;
+      if (d !== undefined) return d < 0 ? `deal ${-d} damage to ${who}` : `heal ${who} for ${d}`;
+      return `change ${who}'s HP`;
+    }
+    case "update_hp_many": case "resolve_aoe": return "apply area-of-effect damage to the targets";
+    case "set_token_marker": case "toggle_condition": case "toggleCondition": {
+      const c = (a.marker || a.condition || a.state || "a condition") as string;
+      const off = a.on === false || a.remove === true;
+      return `${off ? "remove" : "give"} ${who} the ${c} ${a.condition ? "condition" : "marker"}`;
+    }
+    case "send_narration": return `narrate to the players: "${String(a.text || a.message || "").slice(0, 90)}"`;
+    case "advance_turn": return "advance to the next turn";
+    case "roll_initiative": return "roll initiative";
+    case "create_zone": return `create the ${a.name || a.type || "spell"} zone`;
+    case "clear_zone": return "clear a zone";
+    case "set_token_props": return `update ${who}`;
+    default: {
+      const verb = name.replace(/_/g, " ");
+      const parts = Object.entries(a)
+        .filter(([, v]) => v != null && typeof v !== "object")
+        .slice(0, 3)
+        .map(([k, v]) => `${k} ${typeof v === "string" && rosterTokenById[v] ? rosterTokenById[v] : v}`);
+      return parts.length ? `${verb} — ${parts.join(", ")}` : verb;
+    }
+  }
 }
 
 // Write/merge key=value pairs into voice-hud/.env for persistence across restarts.

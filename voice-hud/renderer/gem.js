@@ -389,7 +389,11 @@ if (window.dmw) {
   dmw.onTranscript((t) => { showCaption(t.text, t.lowConfidence, "dm"); pushChat("dm", t.text); });
   dmw.onAgent((m) => {
     if (m.kind === "confirm") {
-      // Write-confirmation request: route into the chat ledger as a distinguished pending entry.
+      // Write-confirmation request: the familiar (Dusty — see persona memory) asks the DM's leave,
+      // in his voice rather than a robotic status line. The humanized action is an imperative
+      // ("deal 12 damage to Strahd"), so "Shall I …?" reads naturally. Shown IN the gem (visible
+      // even in ghost mode) plus a distinguished pending chat entry.
+      showCaption("Shall I " + m.text + "?", false, "agent");
       pushConfirm(m.text);
       return;
     }
