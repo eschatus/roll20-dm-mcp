@@ -339,10 +339,51 @@
   .model-btn.active { background:rgba(150,40,66,.7); color:#ffe0e8; border-color:rgba(220,120,150,.7); }
   .chat-toolbar label { display:flex; align-items:center; gap:5px; font-size:11px; color:#9a7a86; cursor:pointer; }
   .chat-toolbar input { width:auto; }
+  /* Legacy .confirm class (kept in case any code still emits it) */
   .msg.confirm { align-self:center; background:rgba(40,24,2,.7); border:1px solid rgba(220,170,60,.55);
                  color:#ffe6a8; font-size:12.5px; text-align:center; }
   .msg.err { align-self:flex-start; background:rgba(40,8,8,.6); border:1px solid rgba(200,70,70,.5); color:#ffb0b0; }
   .msg .who { display:block; font-size:10px; letter-spacing:1px; text-transform:uppercase; opacity:.6; margin-bottom:2px; }
+
+  /* ---- Ephemeral "thinking" entry in the chat ledger (#69) ---- */
+  .msg.thinking {
+    align-self:flex-start; background:rgba(30,20,50,.5); border:1px solid rgba(140,110,210,.35);
+    color:#c8b0ff; font-size:12.5px; font-style:italic; letter-spacing:.3px;
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  .msg.thinking .thinking-dots::after {
+    content: ''; animation: think-dots 1.4s steps(3, end) infinite;
+  }
+  @keyframes think-dots { 0%{content:'.';} 33%{content:'..';} 66%{content:'...';} 100%{content:'';} }
+
+  /* ---- Pending / resolved confirm entries in the chat ledger (#68) ---- */
+  /* pending: gold pulsing border — "action awaiting approval" */
+  .msg.confirm-pending {
+    align-self:center; max-width:94%;
+    background:rgba(40,24,2,.75); border:1px solid rgba(220,170,60,.7);
+    color:#ffe6a8; font-size:12.5px; text-align:center;
+    animation: confirm-pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes confirm-pulse { 0%,100%{border-color:rgba(220,170,60,.5);} 50%{border-color:rgba(240,200,90,.95);} }
+  .msg.confirm-pending .confirm-text { display:block; font-weight:bold; margin:2px 0 5px; color:#fff4d6; }
+  .msg.confirm-pending .confirm-hint { display:block; font-size:10.5px; color:#caa86a; letter-spacing:1px; }
+  /* accepted: green — confirmed */
+  .msg.confirm-accepted {
+    align-self:center; max-width:94%;
+    background:rgba(2,28,10,.6); border:1px solid rgba(60,170,90,.5);
+    color:#b0f0c0; font-size:12.5px; text-align:center;
+  }
+  .msg.confirm-accepted .confirm-text { display:block; font-weight:bold; margin:2px 0 5px; color:#c8ffd8; }
+  .msg.confirm-accepted .confirm-hint { display:block; font-size:10.5px; color:#80c890; letter-spacing:1px; }
+  /* cancelled: muted red — rejected */
+  .msg.confirm-cancelled {
+    align-self:center; max-width:94%;
+    background:rgba(30,6,6,.55); border:1px solid rgba(180,60,60,.4);
+    color:#e0a0a0; font-size:12.5px; text-align:center; opacity:.75;
+  }
+  .msg.confirm-cancelled .confirm-text { display:block; font-weight:bold; margin:2px 0 5px; color:#f0b8b8; }
+  .msg.confirm-cancelled .confirm-hint { display:block; font-size:10.5px; color:#c07070; letter-spacing:1px; }
+
   .chat-input { display:flex; gap:6px; padding-top:10px; }
   .chat-input input { flex:1; }
   /* pending-dictation indicator: shows a snippet is being transcribed in flight */
