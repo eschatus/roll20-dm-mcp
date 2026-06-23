@@ -29,6 +29,12 @@ export interface CampaignData {
   // literal-map pass. Populated from DM-accepted After-Action-Review proposals — the
   // reinforcement loop's persisted memory. Keyed lowercased.
   corrections: Record<string, string>;
+  // Optional pronoun sets for proper nouns (PCs, NPCs, deities, places). Keyed by
+  // the canonical proper-noun term (exact match preferred; see lookupPronoun for
+  // case-insensitive fallback). Values are free-form, e.g. "she/her", "they/them",
+  // "he/him", "it/its", "xe/xem". Absent key means no pronoun annotation.
+  // Back-compat: missing field on old JSON is normalised to {} by loadCampaignData.
+  pronouns: Record<string, string>;
 }
 
 type ContextStore = Record<string, Omit<CampaignData, "slug">>;
@@ -48,7 +54,7 @@ function writeStore(store: ContextStore): void {
 }
 
 export function loadCampaignData(slug: string): CampaignData {
-  if (!slug) return { slug: "", vocab: [], nicknames: [], notes: "", corrections: {} };
+  if (!slug) return { slug: "", vocab: [], nicknames: [], notes: "", corrections: {}, pronouns: {} };
   const entry = readStore()[slug] ?? {};
   return {
     slug,
@@ -56,13 +62,23 @@ export function loadCampaignData(slug: string): CampaignData {
     nicknames: Array.isArray(entry.nicknames) ? entry.nicknames : [],
     notes: typeof entry.notes === "string" ? entry.notes : "",
     corrections: (entry.corrections && typeof entry.corrections === "object") ? entry.corrections : {},
+    // Back-compat: old JSON has no pronouns field → default to empty map.
+    pronouns: (entry.pronouns && typeof entry.pronouns === "object" && !Array.isArray(entry.pronouns))
+      ? entry.pronouns as Record<string, string>
+      : {},
   };
 }
 
 export function saveCampaignData(data: CampaignData): void {
   if (!data.slug) return;
   const store = readStore();
-  store[data.slug] = { vocab: data.vocab, nicknames: data.nicknames, notes: data.notes, corrections: data.corrections };
+  store[data.slug] = {
+    vocab: data.vocab,
+    nicknames: data.nicknames,
+    notes: data.notes,
+    corrections: data.corrections,
+    pronouns: data.pronouns ?? {},
+  };
   writeStore(store);
 }
 
@@ -106,6 +122,39 @@ export function buildVocabPrompt(
   baseVocab: string[] = DEFAULT_BASE_VOCAB,
 ): string {
   return buildVocabList(data, rosterNames, baseVocab).join(", ");
+}
+
+// Look up the pronoun for a name, with case-insensitive fallback.
+// Returns the pronoun string (e.g. "they/them") or undefined if not set.
+export function lookupPronoun(data: CampaignData, name: string): string | undefined {
+  const p = data.pronouns;
+  if (!p) return undefined;
+  // Exact match first, then case-insensitive.
+  if (name in p) return p[name];
+  const lower = name.toLowerCase();
+  const key = Object.keys(p).find((k) => k.toLowerCase() === lower);
+  return key !== undefined ? p[key] : undefined;
+}
+
+// Set (or clear) the pronoun for a term and persist. Pass an empty string to remove.
+export function setPronoun(slug: string, term: string, pronouns: string): CampaignData {
+  const data = loadCampaignData(slug);
+  const t = term.trim();
+  if (!t) return data;
+  if (pronouns.trim()) {
+    data.pronouns[t] = pronouns.trim();
+  } else {
+    delete data.pronouns[t];
+  }
+  saveCampaignData(data);
+  return data;
+}
+
+// Annotate a name with its pronouns if set, e.g. "Winsome (she/her)".
+// Used by roster/vocab builders to surface pronouns to the agent.
+export function annotateName(data: CampaignData, name: string): string {
+  const p = lookupPronoun(data, name);
+  return p ? `${name} (${p})` : name;
 }
 
 // Append a corrected proper noun learned from a transcript edit (dedup).

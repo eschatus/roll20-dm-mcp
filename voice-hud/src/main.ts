@@ -19,7 +19,7 @@ import { harvestRoll20, harvestDdb } from "./harvest";
 import { McpRoll20 } from "./mcp";
 import { DmAgent } from "./agent";
 import { buildRoster, clearRosterCache } from "./roster";
-import { loadCampaignData, saveCampaignData, buildVocabPrompt, buildVocabList, addVocabTerm, addCorrection, CampaignData } from "./campaignData";
+import { loadCampaignData, saveCampaignData, buildVocabPrompt, buildVocabList, addVocabTerm, addCorrection, setPronoun, annotateName, CampaignData } from "./campaignData";
 import { loadBaseVocab } from "./baseVocab";
 import { correctTranscript, DEFAULT_LITERAL_MAP } from "./correction";
 import { runAar } from "./aar";
@@ -67,7 +67,7 @@ let mode: Mode = "ghost";
 
 // Active campaign + its editable data (vocab/nicknames/notes) and live roster names.
 let activeSlug = "";
-let campaignData: CampaignData = { slug: "", vocab: [], nicknames: [], notes: "", corrections: {} };
+let campaignData: CampaignData = { slug: "", vocab: [], nicknames: [], notes: "", corrections: {}, pronouns: {} };
 let rosterNames: string[] = [];
 // Global STT base vocab (common D&D terms), loaded once at startup. Separate from
 // per-campaign vocab; extend via <dataDir>/base-vocab.json. Relaunch to pick up edits.
@@ -472,6 +472,11 @@ function wireWizard() {
     campaignData = addVocabTerm(activeSlug, term);
     return { ok: true, data: campaignData };
   });
+  // Set (or clear) pronouns for a proper noun. Empty pronouns string removes the entry.
+  ipcMain.handle("set-pronoun", (_e, p: { term: string; pronouns: string }) => {
+    campaignData = setPronoun(activeSlug, p.term, p.pronouns);
+    return { ok: true, data: campaignData };
+  });
   // After-Action Review: run on demand (the auto-run is in onPhaseChange at combat end).
   ipcMain.handle("run-aar", () => runAar(activeSlug));
   // Training panel "accept": persist a learned spoken→canonical correction so the
@@ -771,13 +776,41 @@ async function refreshRoster(opts: { silent?: boolean; force?: boolean } = {}) {
     // Fold the campaign's nickname aliases + notes into the roster block so the
     // agent can resolve "Ryan"/"Diver"→character and has party context. (These
     // were previously only used for STT vocab biasing, never shown to the model.)
-    let block = combatHeader + text;
+
+    // Annotate every name in the roster text with its pronouns where set.
+    // This replaces occurrences of the bare name with "Name (pronoun)" so the
+    // agent sees e.g. "Winsome (she/her)" and "Lachlan (they/them)" in context.
+    // We iterate names longest-first so "Vampire Spawn" is matched before "Vampire".
+    let annotatedText = text;
+    if (campaignData.pronouns && Object.keys(campaignData.pronouns).length) {
+      const sortedNames = [...names].sort((a, b) => b.length - a.length);
+      for (const name of sortedNames) {
+        const annotated = annotateName(campaignData, name);
+        if (annotated !== name) {
+          // Replace the bare name with the annotated version in the roster block.
+          // Use a word-boundary-style replace: match the name when NOT immediately
+          // followed by " (" (already annotated) to avoid double-annotation.
+          annotatedText = annotatedText.split(name + " (").join("\x00SKIP\x00")
+            .split(name).join(annotated)
+            .split("\x00SKIP\x00").join(name + " (");
+        }
+      }
+    }
+
+    let block = combatHeader + annotatedText;
     if (campaignData.nicknames?.length) {
       block += "\n\nAliases (say → means):\n" +
         campaignData.nicknames.map((n) => `- ${n.nickname} → ${n.target}`).join("\n");
     }
     if (campaignData.notes?.trim()) {
       block += "\n\nCampaign notes:\n" + campaignData.notes.trim();
+    }
+    // Surface all set pronouns explicitly so the model has them even for names
+    // not on the current map (deities, absent NPCs, etc.).
+    const pronounEntries = Object.entries(campaignData.pronouns ?? {});
+    if (pronounEntries.length) {
+      block += "\n\nPronouns:\n" +
+        pronounEntries.map(([name, p]) => `- ${name}: ${p}`).join("\n");
     }
     if (_agentTurnActive) {
       _pendingRosterBlock = block;
