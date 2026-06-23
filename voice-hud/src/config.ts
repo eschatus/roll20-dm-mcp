@@ -132,11 +132,12 @@ export const CONFIG = {
   // Right-Shift (UiohookKey "ShiftRight") — pairs with Right-Ctrl PTT. Esc cancels.
   confirmKey: process.env.DMW_CONFIRM_KEY || "ShiftRight",
 
-  // STT engine selector. "faster-whisper" = the Python sidecar (default). "whispercpp"
-  // = the native prebuilt whisper.cpp CLI binary (one-shot, reloads per clip). "whisperserver"
-  // = whisper-server.exe kept resident (model loads once; much lower per-clip latency).
-  // The factory falls back to faster-whisper if the selected engine fails to start.
-  sttEngine: (process.env.DMW_STT_ENGINE || "faster-whisper") as "faster-whisper" | "whispercpp" | "whisperserver",
+  // STT engine selector. "whisperserver" (DEFAULT) = whisper-server.exe kept resident (the
+  // vendored whisper.cpp; model loads once, low per-clip latency). "whispercpp" = the one-shot
+  // whisper.cpp CLI (reloads per clip). "faster-whisper" = the Python sidecar — MOTHBALLED (#46):
+  // it's never used unless explicitly selected here, so no Python is required by default anywhere.
+  // The factory only falls between the two whisper.cpp engines; it never falls back to Python.
+  sttEngine: (process.env.DMW_STT_ENGINE || "whisperserver") as "faster-whisper" | "whispercpp" | "whisperserver",
   // whisper.cpp prebuilt CLI binary. Default = the bundled release under the asset root
   // (CPU on win32). DMW_ASSET_ROOT is set by bootstrap.ts to Electron's resourcesPath in a
   // packaged build; in dev it's unset → __dirname/.. (= voice-hud/data), unchanged.
