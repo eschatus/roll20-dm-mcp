@@ -702,12 +702,13 @@ document.querySelectorAll(".model-btn").forEach((b) => {
 });
 
 // ---- wizard state + rendering ----
-let wiz = { slug: "", vocab: [], nicknames: [], notes: "" };
+let wiz = { slug: "", vocab: [], nicknames: [], notes: "", pronouns: {} };
 
 async function loadWizard() {
   if (!window.dmw) return;
   const { data, roster } = await dmw.getCampaignData();
   wiz = data || wiz;
+  if (!wiz.pronouns) wiz.pronouns = {};
   document.getElementById("panel-slug").textContent = wiz.slug || "(no campaign)";
   renderVocab();
   renderNicks();
@@ -733,11 +734,50 @@ document.getElementById("agent-sound").addEventListener("change", async (e) => {
 function renderVocab() {
   const box = document.getElementById("vocab-chips");
   box.innerHTML = "";
+  if (!wiz.pronouns) wiz.pronouns = {};
   wiz.vocab.forEach((term, i) => {
     const el = document.createElement("div");
     el.className = "chip";
-    el.innerHTML = escapeHtml(term) + " <span class='x'>✕</span>";
-    el.querySelector(".x").addEventListener("click", () => { wiz.vocab.splice(i, 1); renderVocab(); });
+    el.style.flexDirection = "column";
+    el.style.alignItems = "flex-start";
+    el.style.gap = "3px";
+
+    // Top row: term label + remove button
+    const topRow = document.createElement("div");
+    topRow.style.cssText = "display:flex;align-items:center;gap:6px;";
+    const termSpan = document.createElement("span");
+    termSpan.textContent = term;
+    const x = document.createElement("span");
+    x.className = "x"; x.textContent = "✕";
+    x.addEventListener("click", () => {
+      // Also clear any stored pronoun for this term.
+      if (wiz.pronouns[term]) {
+        delete wiz.pronouns[term];
+        if (window.dmw) dmw.setPronoun({ term, pronouns: "" }).catch(() => {});
+      }
+      wiz.vocab.splice(i, 1); renderVocab();
+    });
+    topRow.append(termSpan, x);
+
+    // Pronoun row: a small inline input, auto-saved on blur/enter.
+    const pronounRow = document.createElement("div");
+    pronounRow.style.cssText = "display:flex;align-items:center;gap:4px;";
+    const pronounInput = document.createElement("input");
+    pronounInput.placeholder = "pronouns (she/her…)";
+    pronounInput.style.cssText = "width:120px;font-size:11px;padding:3px 6px;";
+    pronounInput.value = wiz.pronouns[term] || "";
+    const savePronoun = async () => {
+      const v = pronounInput.value.trim();
+      if (v !== (wiz.pronouns[term] || "")) {
+        if (v) { wiz.pronouns[term] = v; } else { delete wiz.pronouns[term]; }
+        if (window.dmw) { try { await dmw.setPronoun({ term, pronouns: v }); } catch {} }
+      }
+    };
+    pronounInput.addEventListener("blur", savePronoun);
+    pronounInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { pronounInput.blur(); } });
+    pronounRow.append(pronounInput);
+
+    el.append(topRow, pronounRow);
     box.appendChild(el);
   });
 }
