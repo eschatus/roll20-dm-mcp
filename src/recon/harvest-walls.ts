@@ -283,21 +283,24 @@ export async function harvest(opts: { campaign?: string; page?: string; limit?: 
   const campaign = getActiveCampaign();
   const outDir = dataPath(path.join("wall-dataset", "raw", toSlug(campaign.name)));
   mkdirSync(outDir, { recursive: true });
-  // Acquire the editor page for capture; if the shared Chromium died (closed tab / contention with
-  // another process), hard-relaunch once before giving up.
+  console.error(`\n[harvest] campaign "${campaign.name}" (${campaign.roll20CampaignId})${opts.capture ? " [render-capture]" : ""} → ${outDir}\n`);
+
+  // Pages straight from RTDB (no relay/Mod) — zero relay calls, works on any campaign with/without
+  // the Mod. IMPORTANT: do this RTDB read FIRST so the RT custom-token harvest (which calls
+  // closeBrowser() once per campaign) happens BEFORE we acquire the editor page — otherwise it
+  // closes the very browser the capture needs ("Target closed"). Token is cached after this, so the
+  // editor page acquired next stays alive for all captures this campaign.
+  const pagesObj = await rtGet<Record<string, { id: string; name: string; width: number; height: number }>>("pages");
+  let pages: PageInfo[] = Object.values(pagesObj ?? {}).map(p => ({ id: p.id, name: p.name, width: p.width, height: p.height }));
+  if (opts.page) pages = pages.filter(p => p.id === opts.page);
+  console.error(`[harvest] ${pages.length} page(s) to scan\n`);
+
+  // Now acquire the editor page (token cached → no further closeBrowser this campaign).
   let editorPage: Page | undefined;
   if (opts.capture) {
     try { editorPage = await getEditorPage(); }
     catch { await reconnectRoll20({ hard: true }).catch(() => {}); editorPage = await getEditorPage(); }
   }
-  console.error(`\n[harvest] campaign "${campaign.name}" (${campaign.roll20CampaignId})${editorPage ? " [render-capture]" : ""} → ${outDir}\n`);
-
-  // Pages straight from RTDB (no relay/Mod) — the harvest now makes ZERO relay calls, so it works
-  // identically on any campaign regardless of whether the Mod is deployed.
-  const pagesObj = await rtGet<Record<string, { id: string; name: string; width: number; height: number }>>("pages");
-  let pages: PageInfo[] = Object.values(pagesObj ?? {}).map(p => ({ id: p.id, name: p.name, width: p.width, height: p.height }));
-  if (opts.page) pages = pages.filter(p => p.id === opts.page);
-  console.error(`[harvest] ${pages.length} page(s) to scan\n`);
 
   const emitted: HarvestRecord[] = [];
   const skipped: { pageId: string; pageName: string; skipped: string }[] = [];
