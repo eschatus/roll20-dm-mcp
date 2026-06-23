@@ -389,7 +389,9 @@ if (window.dmw) {
   dmw.onTranscript((t) => { showCaption(t.text, t.lowConfidence, "dm"); pushChat("dm", t.text); });
   dmw.onAgent((m) => {
     if (m.kind === "confirm") {
-      // Write-confirmation request: route into the chat ledger as a distinguished pending entry.
+      // Write-confirmation request: show the human-readable action IN the gem (visible even in
+      // ghost mode) so it's clear what's being asked, plus a distinguished pending chat entry.
+      showCaption("The thing I'm trying to do is: " + m.text, false, "agent");
       pushConfirm(m.text);
       return;
     }
