@@ -82,28 +82,42 @@ export async function deployModScript(
   const page = await getModPage(campaignId);
 
   // Match an existing tab by filename. Tab text is icon-prefixed (e.g. "G\n\nai-relay.js"), so
-  // compare with `includes`, not `===` (the old `===` never matched and always clobbered).
+  // split on whitespace and match by token equality — `includes` is too broad and would match
+  // "old-ai-relay.js" when looking for "ai-relay.js".
   // tabName overrides the default (basename of scriptPath) — used when deploying a minified
   // artifact (.ai-relay.deploy.js) that should update the canonical "ai-relay.js" tab.
   const scriptName = opts.tabName ?? scriptPath.split(/[\\/]/).pop() ?? "ai-relay.js";
-  const tabHref: string | null = await page.evaluate((name: string) => {
+
+  interface TabResult { href: string | null; isFallback: boolean }
+  const tabResult: TabResult = await page.evaluate((name: string) => {
     const tabs = [...document.querySelectorAll('#scriptorder a[data-toggle="tab"]')];
     const userTabs = tabs.filter(a => {
       const href = a.getAttribute("href") ?? "";
       return href.startsWith("#script-") && href !== "#script-library" && href !== "#script-new";
     });
-    const byName = userTabs.find(a => (a.textContent ?? "").trim().toLowerCase().includes(name.toLowerCase()));
-    if (byName) return byName.getAttribute("href");
+    const byName = userTabs.find(a => {
+      const tokens = (a.textContent ?? "").trim().toLowerCase().split(/\s+/);
+      return tokens.includes(name.toLowerCase());
+    });
+    if (byName) return { href: byName.getAttribute("href"), isFallback: false };
     // If exactly one user tab exists and we can't match by name, return it — the tab may have
     // been created under a different name (e.g. "api-relay.js" or a Roll20 auto-name).
     // The caller still controls whether to use this via requireExisting semantics.
-    return userTabs.length === 1 ? (userTabs[0].getAttribute("href") + ":fallback") : null;
+    return userTabs.length === 1
+      ? { href: userTabs[0].getAttribute("href"), isFallback: true }
+      : { href: null, isFallback: false };
   }, scriptName);
 
-  // tabHref may have ":fallback" suffix when we matched by position (single tab, no name match).
-  const isFallback = typeof tabHref === "string" && tabHref.endsWith(":fallback");
-  const resolvedTabHref = isFallback ? tabHref.slice(0, -":fallback".length) : tabHref;
+  const { href: resolvedTabHref, isFallback } = tabResult;
   if (isFallback) {
+    // Bug #85: refuse the fallback when requireExisting is set — the single existing tab is not
+    // the relay and overwriting it would clobber an unrelated Mod.
+    if (opts.requireExisting) {
+      throw new Error(
+        `deployModScript: no tab named "${scriptName}" found; single-tab fallback refused because requireExisting is set — ` +
+        `the existing tab is not the relay. Deploy the first copy via the MCP deploy_mod_script tool, then retry.`
+      );
+    }
     console.error(`[mod-editor] no tab named "${scriptName}" found; updating the only existing user script tab (single-tab fallback)`);
   }
 

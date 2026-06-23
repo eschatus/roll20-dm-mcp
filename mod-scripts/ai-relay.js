@@ -385,16 +385,6 @@ function getMonsterEpithets(tokenName) {
   return GENERIC_EPITHETS;
 }
 
-// Fisher-Yates shuffle (returns a new array) so epithet assignment varies between rolls.
-function shuffled(arr) {
-  let a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    let j = Math.floor(Math.random() * (i + 1));
-    let t = a[i]; a[i] = a[j]; a[j] = t;
-  }
-  return a;
-}
-
 // Produce a name "<baseName> the <Epithet>" that is GUARANTEED unique within `used`
 // (a map of full-name -> true that the caller threads across the whole group), no matter
 // how large the group is relative to the epithet bank. Escalation, cheapest first:
@@ -404,15 +394,15 @@ function shuffled(arr) {
 // `used` is mutated to reserve the returned name.
 function nextEpithetName(baseName, pool, used) {
   // 1) single adjective, randomized
-  let singles = shuffled(pool);
+  let singles = _.shuffle(pool);
   for (let i = 0; i < singles.length; i++) {
     let cand = baseName + " the " + singles[i];
     if (!used[cand]) { used[cand] = true; return cand; }
   }
   // 2) two distinct adjectives, randomized pairing
-  let firsts = shuffled(pool);
+  let firsts = _.shuffle(pool);
   for (let a = 0; a < firsts.length; a++) {
-    let seconds = shuffled(pool);
+    let seconds = _.shuffle(pool);
     for (let b = 0; b < seconds.length; b++) {
       if (seconds[b] === firsts[a]) continue;
       let cand = baseName + " the " + firsts[a] + " " + seconds[b];
@@ -2371,15 +2361,6 @@ on("chat:message", function (msg) {
   }
 });
 
-// Build a reverse map from marker tag → condition name (for statusmarkers → condition names).
-function buildMarkerToCondition() {
-  let map = {};
-  Object.keys(CONDITION_MARKERS).forEach(function(cond) {
-    map[CONDITION_MARKERS[cond]] = cond;
-  });
-  return map;
-}
-
 // Read combatant status for a turn order entry. Returns a display string.
 function combatantStatusLine(entry) {
   if (!entry || !entry.id) return null;
@@ -2389,7 +2370,7 @@ function combatantStatusLine(entry) {
   let eff = effectiveHp(t);
   let hp = eff.hp;
   let maxHp = eff.maxHp;
-  let markerMap = buildMarkerToCondition();
+  let markerMap = _.invert(CONDITION_MARKERS);
   let markers = (t.get("statusmarkers") || "").split(",").filter(Boolean);
   let conditions = markers.map(function(m) { return markerMap[m]; }).filter(Boolean);
   // De-duplicate (dead/unconscious share a marker)
@@ -2456,7 +2437,7 @@ on("change:campaign:turnorder", function(obj, prev) {
   let eff = token ? effectiveHp(token) : { hp: null, maxHp: null, note: null };
   let hp = eff.hp;
   let maxHp = eff.maxHp;
-  let markerMap = buildMarkerToCondition();
+  let markerMap = _.invert(CONDITION_MARKERS);
   let markers = token ? (token.get("statusmarkers") || "").split(",").filter(Boolean) : [];
   let condSet = {};
   markers.forEach(function(m) { let c = markerMap[m]; if (c) condSet[c] = true; });

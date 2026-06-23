@@ -11,25 +11,6 @@ import { recordSuccess, recordFailure } from "./transport-health.js";
 const RELAY_TIMEOUT_MS = 30_000;
 
 
-// Pure decision: should an RT transport error allow falling back to the browser path?
-//
-// Truth table:
-//   Read-only,  any error          → true   (retries are always safe; no side effects)
-//   Mutating,   RtPreSendError     → true   (never reached /chat; no idempotency hazard)
-//   Mutating,   post-send timeout  → true   (safe ONLY when the same nonce is re-sent;
-//                                            the Mod's LRU deduplicates the resend so the
-//                                            action will not double-apply)
-//
-// IMPORTANT: callers MUST pass the same nonce when falling back on a post-send timeout.
-// `relayCommand` in this file enforces this by generating the nonce before both transports
-// and threading it through via `assignedNonce`.
-export function shouldFallback(action: string, _err: Error): boolean {
-  // All cases now fall back — the idempotency guarantee comes from the Mod's nonce LRU
-  // (PROCESSED_NONCES in ai-relay.js) and the caller's obligation to reuse the same nonce.
-  void action; // parameter kept for API compatibility and documentation clarity
-  return true;
-}
-
 // ─── Test seam ────────────────────────────────────────────────────────────────
 // When set (only by the test harness), relay/evaluate calls route here instead of
 // the live browser → chat → sandbox path, so the real combat/tactics tools can run
@@ -336,6 +317,9 @@ export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
   // explicit dev opt-out via ROLL20_TRANSPORT=browser.
   if (rtEnabled()) {
     const action = cmd.action as string;
+    // Nonce must be generated BEFORE the call and reused on retry — the Mod's
+    // PROCESSED_NONCES LRU deduplicates same-nonce resends server-side. A fresh
+    // nonce on retry would re-execute the action (double-apply damage, etc.).
     const nonce = newNonce();
     return rtRelayCommand<T>(cmd, { assignedNonce: nonce }).catch((err: Error) => {
       recordFailure("rt");
