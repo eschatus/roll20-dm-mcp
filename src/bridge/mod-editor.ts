@@ -76,14 +76,16 @@ export async function readModConsole(campaignId: string): Promise<string[]> {
 export async function deployModScript(
   campaignId: string,
   scriptPath: string,
-  opts: { requireExisting?: boolean } = {}
+  opts: { requireExisting?: boolean; tabName?: string } = {}
 ): Promise<{ saved: boolean; linesWritten: number; created: boolean }> {
   const content = readFileSync(scriptPath, "utf-8");
   const page = await getModPage(campaignId);
 
   // Match an existing tab by filename. Tab text is icon-prefixed (e.g. "G\n\nai-relay.js"), so
   // compare with `includes`, not `===` (the old `===` never matched and always clobbered).
-  const scriptName = scriptPath.split(/[\\/]/).pop() ?? "ai-relay.js";
+  // tabName overrides the default (basename of scriptPath) — used when deploying a minified
+  // artifact (.ai-relay.deploy.js) that should update the canonical "ai-relay.js" tab.
+  const scriptName = opts.tabName ?? scriptPath.split(/[\\/]/).pop() ?? "ai-relay.js";
   const tabHref: string | null = await page.evaluate((name: string) => {
     const tabs = [...document.querySelectorAll('#scriptorder a[data-toggle="tab"]')];
     const userTabs = tabs.filter(a => {
@@ -91,13 +93,24 @@ export async function deployModScript(
       return href.startsWith("#script-") && href !== "#script-library" && href !== "#script-new";
     });
     const byName = userTabs.find(a => (a.textContent ?? "").trim().toLowerCase().includes(name.toLowerCase()));
-    return byName ? byName.getAttribute("href") : null;
+    if (byName) return byName.getAttribute("href");
+    // If exactly one user tab exists and we can't match by name, return it — the tab may have
+    // been created under a different name (e.g. "api-relay.js" or a Roll20 auto-name).
+    // The caller still controls whether to use this via requireExisting semantics.
+    return userTabs.length === 1 ? (userTabs[0].getAttribute("href") + ":fallback") : null;
   }, scriptName);
 
-  // --- Update path: an ai-relay.js tab already exists ---
-  if (tabHref) {
-    await page.click(`a[href="${tabHref}"]`);
-    const paneId = tabHref.slice(1);
+  // tabHref may have ":fallback" suffix when we matched by position (single tab, no name match).
+  const isFallback = typeof tabHref === "string" && tabHref.endsWith(":fallback");
+  const resolvedTabHref = isFallback ? tabHref.slice(0, -":fallback".length) : tabHref;
+  if (isFallback) {
+    console.error(`[mod-editor] no tab named "${scriptName}" found; updating the only existing user script tab (single-tab fallback)`);
+  }
+
+  // --- Update path: an ai-relay.js tab already exists (or single-tab fallback) ---
+  if (resolvedTabHref) {
+    await page.click(`a[href="${resolvedTabHref}"]`);
+    const paneId = resolvedTabHref.slice(1);
     await page.waitForFunction(
       (id: string) => document.getElementById(id)?.classList.contains("active"),
       paneId,

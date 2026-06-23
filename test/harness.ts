@@ -82,6 +82,11 @@ export interface HarnessOptions {
 }
 
 export function setupHarness(opts: HarnessOptions = {}): Harness {
+  // RT is now the default transport, but the harness only mocks the browser/relay seam
+  // (__setBridgeTestTransport) — NOT the direct-RTDB read paths (getCurrentPageId etc. branch on
+  // rtEnabled()). Force browser mode so those reads go through the emulator, not real Firebase.
+  const _prevTransport = process.env.ROLL20_TRANSPORT;
+  process.env.ROLL20_TRANSPORT = "browser";
   const emu = new Roll20Emulator({ seed: opts.seed });
   emu.load();
 
@@ -114,7 +119,14 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
     return { text, json };
   }
 
-  return { emu, server, mock, callTool, teardown: () => roll20.__setBridgeTestTransport(null) };
+  return {
+    emu, server, mock, callTool,
+    teardown: () => {
+      roll20.__setBridgeTestTransport(null);
+      if (_prevTransport === undefined) delete process.env.ROLL20_TRANSPORT;
+      else process.env.ROLL20_TRANSPORT = _prevTransport;
+    },
+  };
 }
 
 // ── Scenario: a diverse tiered warband ───────────────────────────────────────

@@ -24,6 +24,9 @@ src/**/*.js.map
 !assets/*.jpeg
 voice-hud/stt/.venv/
 
+# minified Mod build artifact (release:mod minifies ai-relay.js → here before deploy)
+mod-scripts/.ai-relay.deploy.js
+
 # test scratch
 .tmp-test-data/
 src/recon/ddb-ac-diag.ts

@@ -6,7 +6,7 @@ import { relayCommand } from "../bridge/roll20.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
 
 async function main() {
-  delete process.env.ROLL20_TRANSPORT; // force the browser relay path
+  process.env.ROLL20_TRANSPORT = "browser"; // force the legacy browser relay (RT is the default now)
   const camp = getActiveCampaign();
   console.error(`[browser-relay] campaign: ${camp.name} (${camp.roll20CampaignId})`);
   console.error("[browser-relay] getPcHp (Mod round-trip via Playwright chat relay)...");
