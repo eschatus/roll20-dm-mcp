@@ -73,6 +73,10 @@ const sw = Math.max(2, Math.round(tw / 600));
 const parts = [`<svg xmlns="http://www.w3.org/2000/svg" width="${tw}" height="${th}">`];
 for (const poly of ddbWalls) { if (poly.length < 2) continue; parts.push(`<polyline points="${poly.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ")}" fill="none" stroke="#0044FF" stroke-width="${sw}" stroke-opacity="0.85"/>`); }
 parts.push(`</svg>`);
+// Persist dataset files: the DDB image + walls in DDB-px (Phase 2 prefers .ddb.json over the
+// wrong-image .json for these maps).
+writeFileSync(path.join(dir, `${rec.pageId}.ddb.jpg`), await sharp(buf).jpeg({ quality: 92 }).toBuffer());
+writeFileSync(path.join(dir, `${rec.pageId}.ddb.json`), JSON.stringify({ pageId: rec.pageId, pageName: rec.pageName, source: "ddb", url, fileW: ddbW, fileH: ddbH, cellPx: { x: cX, y: cY }, origin: { x: gx0, y: gy0 }, walls: ddbWalls }));
 const outDir = path.join(dataDir(), "wall-dataset", "ddb-test"); mkdirSync(outDir, { recursive: true });
 const outPath = path.join(outDir, `${slug}__${nameSub.replace(/\W+/g, "_")}.qc.png`);
 const overlay = await sharp(Buffer.from(parts.join("")), { density: 72 }).resize(tw, th, { fit: "fill" }).png().toBuffer();
