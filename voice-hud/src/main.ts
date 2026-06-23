@@ -588,6 +588,10 @@ function wireWizard() {
     ollamaUrl: CONFIG.ollamaUrl,
     ollamaModel: CONFIG.ollamaModel,
     whisperClipMs: CONFIG.whisperClipMs,
+    // A/B clip corpus (data/ab-clips/) — env-driven, read live per clip in the clip handler.
+    saveClips: process.env.DMW_SAVE_CLIPS === "1",
+    saveClipsMaxMb: Number(process.env.DMW_SAVE_CLIPS_MAX_MB) || 1024,
+    saveClipsMaxFiles: Number(process.env.DMW_SAVE_CLIPS_MAX_FILES) || 250,
   }));
 
   // --- Setup wizard (first-run onboarding) ---
@@ -684,6 +688,7 @@ function wireWizard() {
       model: "DMW_MODEL", autoEscalate: "DMW_AUTO_ESCALATE",
       ollamaUrl: "DMW_OLLAMA_URL", ollamaModel: "DMW_OLLAMA_MODEL",
       whisperClipMs: "DMW_WHISPER_CLIP_MS",
+      saveClips: "DMW_SAVE_CLIPS", saveClipsMaxMb: "DMW_SAVE_CLIPS_MAX_MB", saveClipsMaxFiles: "DMW_SAVE_CLIPS_MAX_FILES",
     };
     const envUpdates: Record<string, string> = {};
     for (const [key, val] of Object.entries(updates)) {
@@ -698,6 +703,11 @@ function wireWizard() {
       if (key === "ollamaUrl"      && typeof val === "string")  CONFIG.ollamaUrl = val;
       if (key === "ollamaModel"    && typeof val === "string")  CONFIG.ollamaModel = val;
       if (key === "whisperClipMs"  && typeof val === "number")  CONFIG.whisperClipMs = val;
+      // A/B clip flags are read live from process.env per clip, so set them now (effective with no
+      // restart) in addition to persisting via envMap below. Re-arm the "corpus full" warn-once.
+      if (key === "saveClips"         && typeof val === "boolean") { process.env.DMW_SAVE_CLIPS = val ? "1" : "0"; abClipBudgetWarned = false; }
+      if (key === "saveClipsMaxMb"    && typeof val === "number")  process.env.DMW_SAVE_CLIPS_MAX_MB = String(val);
+      if (key === "saveClipsMaxFiles" && typeof val === "number")  process.env.DMW_SAVE_CLIPS_MAX_FILES = String(val);
       if (envMap[key] !== undefined) {
         let envVal = String(val);
         if (typeof val === "boolean") envVal = val ? "1" : "0";
