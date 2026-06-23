@@ -14,12 +14,34 @@ const PREFIX = process.argv[3] ?? "https://media.dndbeyond.com/compendium-images
 const dir = path.join(dataDir(), "wall-dataset", "raw", slug);
 const outDir = path.join(dataDir(), "wall-dataset", "ddb-test"); mkdirSync(outDir, { recursive: true });
 
-function urlFor(name: string): string | null {
-  const m = name.match(/Level\s+(\d+)\s*:\s*(.+)/i);
-  if (!m) return null; // Skullport etc. handled separately
-  const nn = m[1].padStart(2, "0");
-  const sl = m[2].toLowerCase().replace(/'/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-  return `${PREFIX}/map-${nn}.01-${sl}-player.jpg`;
+// Pages that don't follow "Level N:" — full DDB map number (incl. sub-part) + slug. Skullport is
+// level 24 with sub-maps .01/.02/.03.
+const OVERRIDES: Record<string, { num: string; sl: string }> = {
+  "Skullport: Skull Island": { num: "24.01", sl: "skull-island" },
+  "Skullport Lower & Middle": { num: "24.02", sl: "skullport-lower-and-middle-levels" },
+  "Skullport Upper": { num: "24.03", sl: "skullport-upper-level" }, // guess
+};
+function urlsFor(name: string): string[] {
+  let num: string, sl: string;
+  const ov = OVERRIDES[name];
+  if (ov) { num = ov.num; sl = ov.sl; }
+  else {
+    const m = name.match(/Level\s+(\d+)\s*:\s*(.+)/i);
+    if (!m) return [];
+    num = m[1].padStart(2, "0") + ".01";
+    sl = m[2].toLowerCase().replace(/'/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  }
+  // both the number<sep>slug separator (- vs .) and the suffix (player vs players) vary per map
+  const out: string[] = [];
+  for (const sep of ["-", "."]) for (const suf of ["player", "players"]) out.push(`${PREFIX}/map-${num}${sep}${sl}-${suf}.jpg`);
+  return out;
+}
+async function fetchFirst(urls: string[]): Promise<{ buf: ArrayBuffer; url: string } | null> {
+  for (const url of urls) {
+    const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0", Referer: "https://www.dndbeyond.com/" } });
+    if (resp.ok) return { buf: await resp.arrayBuffer(), url };
+  }
+  return null;
 }
 
 // Fit the known canonical grid (cols x rows cells) to the image; return per-axis cell px + origin.
@@ -53,12 +75,13 @@ const files = readdirSync(dir).filter(f => f.endsWith(".json") && !f.endsWith(".
 const results: string[] = [];
 for (const f of files) {
   const rec = JSON.parse(readFileSync(path.join(dir, f), "utf-8"));
-  const url = urlFor(rec.pageName);
-  if (!url) { results.push(`SKIP (no level#)   ${rec.pageName}`); continue; }
+  const urls = urlsFor(rec.pageName);
+  if (!urls.length) { results.push(`SKIP (no level#)   ${rec.pageName}`); continue; }
   try {
-    const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0", Referer: "https://www.dndbeyond.com/" } });
-    if (!resp.ok) { results.push(`${resp.status}              ${rec.pageName}   ${url.split("/").pop()}`); continue; }
-    const buf = await sharp(Buffer.from(await resp.arrayBuffer())).rotate().png().toBuffer();
+    const got = await fetchFirst(urls);
+    if (!got) { results.push(`40x              ${rec.pageName}   ${urls[0].split("/").pop()}`); continue; }
+    const url = got.url;
+    const buf = await sharp(Buffer.from(got.buf)).rotate().png().toBuffer();
     const r = await register(buf, rec);
     const base = `${rec.pageId}`;
     writeFileSync(path.join(dir, `${base}.ddb.jpg`), await sharp(buf).jpeg({ quality: 92 }).toBuffer());
