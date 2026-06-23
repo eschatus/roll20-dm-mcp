@@ -10,6 +10,32 @@ import { recordSuccess, recordFailure } from "./transport-health.js";
 
 const RELAY_TIMEOUT_MS = 30_000;
 
+// Lightweight circuit breaker for the RT transport.
+// Opens after CB_THRESHOLD consecutive failures — while open, throws immediately
+// so a stuck/expired token doesn't hang every command for RELAY_TIMEOUT_MS per call.
+// Half-opens after CB_RESET_MS: lets one probe through to check liveness.
+const CB_THRESHOLD = 3;
+const CB_RESET_MS = 30_000;
+let _cbFailures = 0;
+let _cbOpenedAt: number | null = null;
+
+function _cbCheck(action: string): void {
+  if (_cbOpenedAt === null) return;
+  const elapsed = Date.now() - _cbOpenedAt;
+  if (elapsed >= CB_RESET_MS) { _cbOpenedAt = null; _cbFailures = 0; return; } // half-open
+  const secsLeft = Math.ceil((CB_RESET_MS - elapsed) / 1000);
+  throw new Error(
+    `Roll20 RT circuit open after ${CB_THRESHOLD} consecutive failures — skipping "${action}". ` +
+    `Will probe again in ${secsLeft}s. Reconnect Roll20 in the gem to re-harvest the token.`
+  );
+}
+function _cbSuccess(): void { _cbFailures = 0; _cbOpenedAt = null; }
+function _cbFail(): void {
+  if (++_cbFailures >= CB_THRESHOLD && _cbOpenedAt === null) {
+    _cbOpenedAt = Date.now();
+    console.error(`[roll20] RT circuit breaker OPEN after ${CB_THRESHOLD} consecutive failures.`);
+  }
+}
 
 // ─── Test seam ────────────────────────────────────────────────────────────────
 // When set (only by the test harness), relay/evaluate calls route here instead of
@@ -317,11 +343,17 @@ export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
   // explicit dev opt-out via ROLL20_TRANSPORT=browser.
   if (rtEnabled()) {
     const action = cmd.action as string;
+    _cbCheck(action); // throws immediately if circuit open — no 30s hang
     // Nonce must be generated BEFORE the call and reused on retry — the Mod's
     // PROCESSED_NONCES LRU deduplicates same-nonce resends server-side. A fresh
     // nonce on retry would re-execute the action (double-apply damage, etc.).
     const nonce = newNonce();
-    return rtRelayCommand<T>(cmd, { assignedNonce: nonce }).catch((err: Error) => {
+    return rtRelayCommand<T>(cmd, { assignedNonce: nonce }).then((result) => {
+      _cbSuccess();
+      recordSuccess("rt");
+      return result;
+    }).catch((err: Error) => {
+      _cbFail();
       recordFailure("rt");
       console.error(`[roll20] rt ${action} failed (browserless — no fallback): ${err.message}`);
       throw new Error(
