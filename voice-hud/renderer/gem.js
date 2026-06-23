@@ -153,7 +153,9 @@ function playWhisper() {
 let audioCtx = null;
 let stream = null;
 let source = null;
-let processor = null;
+let processor = null;      // legacy ScriptProcessor — used only as a fallback if AudioWorklet fails
+let workletNode = null;    // AudioWorklet capture node (primary path, #43)
+let sink = null;           // zero-gain GainNode: keeps the graph pulling without routing mic→speakers
 let chunks = [];
 let capturing = false;
 
@@ -178,14 +180,27 @@ async function startCapture() {
   audioCtx = new AudioContext();
   inRate = audioCtx.sampleRate;
   source = audioCtx.createMediaStreamSource(stream);
-  // ScriptProcessor is deprecated but dependency-free and fine for PTT-length clips.
-  processor = audioCtx.createScriptProcessor(4096, 1, 1);
-  source.connect(processor);
-  processor.connect(audioCtx.destination);
-  processor.onaudioprocess = (e) => {
-    if (!capturing) return;
-    chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-  };
+  // Zero-gain sink: connecting capture → sink → destination keeps the audio graph pulling, but the
+  // mic never reaches the speakers (gain 0) — no live monitoring/echo. (#43)
+  sink = audioCtx.createGain();
+  sink.gain.value = 0;
+  sink.connect(audioCtx.destination);
+  // Primary: AudioWorklet (off the main thread, so GC/UI stalls can't cause dropouts). Falls back to
+  // the deprecated ScriptProcessor only if the worklet module can't load (still via the zero-gain
+  // sink, so the echo fix holds either way). Both push mono Float32 frames into `chunks` unchanged.
+  try {
+    await audioCtx.audioWorklet.addModule(new URL("capture-worklet.js", document.baseURI).href);
+    workletNode = new AudioWorkletNode(audioCtx, "capture-processor", { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
+    workletNode.port.onmessage = (e) => { if (capturing && e.data && e.data.length) chunks.push(e.data); };
+    source.connect(workletNode);
+    workletNode.connect(sink);
+  } catch (err) {
+    console.error("[capture] AudioWorklet unavailable — falling back to ScriptProcessor:", (err && err.message) || err);
+    processor = audioCtx.createScriptProcessor(4096, 1, 1);
+    processor.onaudioprocess = (e) => { if (capturing) chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+    source.connect(processor);
+    processor.connect(sink); // sink, NOT destination → no echo even on the fallback path
+  }
   if (window.dmw) dmw.recStarted();
 
   // Decide the live target for this hold and remember the chatbox base text.
@@ -229,11 +244,14 @@ async function stopCapture() {
   if (!capturing) return;
   capturing = false;
   if (partialTimer) { clearInterval(partialTimer); partialTimer = null; }
+  try { if (workletNode) { workletNode.port.onmessage = null; workletNode.disconnect(); } } catch {}
   try { processor && (processor.onaudioprocess = null); } catch {}
   try { source && source.disconnect(); } catch {}
   try { processor && processor.disconnect(); } catch {}
+  try { sink && sink.disconnect(); } catch {}
   try { stream && stream.getTracks().forEach((t) => t.stop()); } catch {}
   try { audioCtx && (await audioCtx.close()); } catch {}
+  workletNode = null; processor = null; sink = null;
 
   const wav = encodeWav(mergeChunks(chunks), inRate, 16000);
   chunks = [];
