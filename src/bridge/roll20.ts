@@ -93,7 +93,7 @@ const OBSERVER_SCRIPT = `(function() {
   }).observe(chat, { childList: true, subtree: true });
 })()`;
 
-async function getEditorPage(): Promise<Page> {
+export async function getEditorPage(): Promise<Page> {
   const { roll20CampaignId } = getActiveCampaign();
 
   // Discard a cached editor page that's been closed (Roll20 tab/window closed, or the
