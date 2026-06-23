@@ -54,46 +54,34 @@ function chain(): EngineStep[] {
 export async function startStt(onLog: (m: string) => void): Promise<SttEngine> {
   let lastErr: Error | null = null;
 
-  // Native whisper.cpp engine (opt-in via DMW_STT_ENGINE=whispercpp). Try it first;
-  // on any failure (binary or model missing) fall through to the Python faster-whisper
-  // chain so the gem always comes up.
-  if (CONFIG.sttEngine === "whispercpp") {
-    const eng = new WhisperCppEngine({ binPath: CONFIG.whisperBin, modelPath: CONFIG.whisperModel });
-    eng.on("log", (m) => onLog(String(m)));
-    try {
-      onLog(`[stt] trying ${eng.name}…\n`);
-      await eng.start();
-      onLog(`[stt] using ${eng.name}\n`);
-      return eng;
-    } catch (e) {
-      lastErr = e as Error;
-      onLog(`[stt] ${eng.name} failed: ${(e as Error).message} — falling back to faster-whisper\n`);
-      eng.stop();
+  // Default + blessed path: whisper.cpp. The resident whisper-server is primary (model loads once);
+  // the one-shot whisper-cli is the cpp-only fallback. The Python faster-whisper sidecar below is
+  // MOTHBALLED (#46) — reached ONLY when explicitly selected via DMW_STT_ENGINE=faster-whisper, so
+  // no Python is ever required by default. A cpp engine never falls back to Python.
+  if (CONFIG.sttEngine === "whisperserver" || CONFIG.sttEngine === "whispercpp") {
+    // Try the selected cpp engine first, then the other cpp engine — never Python.
+    const order: Array<"whisperserver" | "whispercpp"> =
+      CONFIG.sttEngine === "whispercpp" ? ["whispercpp", "whisperserver"] : ["whisperserver", "whispercpp"];
+    for (const which of order) {
+      const eng = which === "whisperserver"
+        ? new WhisperServerEngine({ binPath: CONFIG.whisperServerBin, modelPath: CONFIG.whisperModel, port: CONFIG.whisperServerPort })
+        : new WhisperCppEngine({ binPath: CONFIG.whisperBin, modelPath: CONFIG.whisperModel });
+      eng.on("log", (m) => onLog(String(m)));
+      try {
+        onLog(`[stt] trying ${eng.name}…\n`);
+        await eng.start();
+        onLog(`[stt] using ${eng.name}\n`);
+        return eng;
+      } catch (e) {
+        lastErr = e as Error;
+        onLog(`[stt] ${eng.name} failed: ${(e as Error).message}\n`);
+        eng.stop();
+      }
     }
+    throw new Error("whisper.cpp STT failed to start (server + cli). Last error: " + (lastErr?.message ?? "unknown"));
   }
 
-  // Resident whisper-server engine (opt-in via DMW_STT_ENGINE=whisperserver). Keeps the
-  // model loaded across all transcribe() calls — eliminates the per-clip model-reload cost
-  // of the one-shot whisper-cli. Falls through to faster-whisper on any startup failure.
-  if (CONFIG.sttEngine === "whisperserver") {
-    const eng = new WhisperServerEngine({
-      binPath: CONFIG.whisperServerBin,
-      modelPath: CONFIG.whisperModel,
-      port: CONFIG.whisperServerPort,
-    });
-    eng.on("log", (m) => onLog(String(m)));
-    try {
-      onLog(`[stt] trying ${eng.name} on port ${CONFIG.whisperServerPort}…\n`);
-      await eng.start();
-      onLog(`[stt] using ${eng.name} (resident, port ${CONFIG.whisperServerPort})\n`);
-      return eng;
-    } catch (e) {
-      lastErr = e as Error;
-      onLog(`[stt] ${eng.name} failed: ${(e as Error).message} — falling back to faster-whisper\n`);
-      eng.stop();
-    }
-  }
-
+  // Mothballed Python faster-whisper sidecar — explicit opt-in only (DMW_STT_ENGINE=faster-whisper).
   const steps = chain();
   for (const step of steps) {
     const eng = new FasterWhisperEngine({
