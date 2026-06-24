@@ -3,7 +3,10 @@
 import { newBrowserPage } from "../bridge/browser.js";
 
 const CAMPAIGN = "17491327";
-const KEEP_NAME = "ai-relay.js";
+
+// Only tabs whose name is exactly one of these artifact filenames should ever be deleted.
+// This prevents broad substring matching from wiping ai-relay-v2.js, ai-relay-backup, etc.
+const ARTIFACT_NAMES = [".ai-relay.deploy.js", "ai-relay.deploy.js"];
 
 const page = await newBrowserPage();
 await page.goto(`https://app.roll20.net/campaigns/scripts/${CAMPAIGN}`, { waitUntil: "domcontentloaded" });
@@ -21,11 +24,16 @@ const tabs: Array<{ href: string; text: string }> = await page.evaluate(() => {
 
 console.log("User tabs:", JSON.stringify(tabs, null, 2));
 
-// Only delete tabs whose name looks like a relay artifact (contains "ai-relay"), NOT other scripts.
-const toDelete = tabs.filter(t =>
-  t.text.toLowerCase().includes("ai-relay") &&
-  !t.text.toLowerCase().includes(KEEP_NAME.toLowerCase()),
-);
+// Only delete tabs whose name is exactly one of the known artifact names (whitespace-tokenized).
+// Never use a broad substring match — that would silently wipe ai-relay-v2.js, ai-relay-backup, etc.
+const toDelete = tabs.filter(t => {
+  const text = t.text.toLowerCase().trim();
+  return ARTIFACT_NAMES.some(name => {
+    const tokens = text.split(/\s+/);
+    return tokens.includes(name);
+  });
+});
+console.log("Tabs to delete:", JSON.stringify(toDelete, null, 2));
 if (!toDelete.length) {
   console.log("No duplicate tabs found — nothing to delete.");
   process.exit(0);

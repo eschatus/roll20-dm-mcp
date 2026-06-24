@@ -190,7 +190,7 @@ export function registerCampaignTools(server: McpServer): void {
     async ({ scriptPath }) => {
       const { roll20CampaignId } = campaigns.getActiveCampaign();
       const resolvedPath = scriptPath ?? (await import("path")).default.resolve("mod-scripts/ai-relay.js");
-      const result = await deployModScript(roll20CampaignId, resolvedPath);
+      const result = await deployModScript(roll20CampaignId, resolvedPath, { tabName: "ai-relay.js" });
       return {
         content: [{ type: "text", text: `Deployed ${result.linesWritten} lines to campaign ${roll20CampaignId}.` }],
       };
