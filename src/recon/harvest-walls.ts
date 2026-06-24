@@ -112,10 +112,11 @@ interface HarvestRecord {
 }
 
 function parseArgs(argv: string[]) {
-  const out: { campaign?: string; page?: string; limit?: number; imageUrl?: string; capture?: boolean; source?: string } = {};
+  const out: { campaign?: string; page?: string; pageIds?: string[]; limit?: number; imageUrl?: string; capture?: boolean; source?: string } = {};
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--campaign") out.campaign = argv[++i];
     else if (argv[i] === "--page") out.page = argv[++i];
+    else if (argv[i] === "--pageIds") out.pageIds = (argv[++i] ?? "").split(",").map(s => s.trim()).filter(Boolean); // harvest an explicit set of pages
     else if (argv[i] === "--limit") out.limit = parseInt(argv[++i] ?? "", 10);
     else if (argv[i] === "--imageUrl") out.imageUrl = argv[++i]; // override gated Roll20 art with a public URL (e.g. DDB compendium)
     else if (argv[i] === "--capture") out.capture = true; // render-capture the image from Roll20 (handles gated art); navigates the GM page
@@ -293,6 +294,7 @@ export async function harvest(opts: { campaign?: string; page?: string; limit?: 
   const pagesObj = await rtGet<Record<string, { id: string; name: string; width: number; height: number }>>("pages");
   let pages: PageInfo[] = Object.values(pagesObj ?? {}).map(p => ({ id: p.id, name: p.name, width: p.width, height: p.height }));
   if (opts.page) pages = pages.filter(p => p.id === opts.page);
+  if (opts.pageIds?.length) pages = pages.filter(p => opts.pageIds!.includes(p.id));
   console.error(`[harvest] ${pages.length} page(s) to scan\n`);
 
   // Now acquire the editor page (token cached → no further closeBrowser this campaign).
