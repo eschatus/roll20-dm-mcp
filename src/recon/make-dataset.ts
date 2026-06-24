@@ -26,6 +26,15 @@ interface MapRec {
 
 const segsOf = (walls: any[]) => walls.reduce((s, p) => s + Math.max(0, p.length - 1), 0);
 
+// Human GT verdicts (from the labeling app): keep only good+partial; exclude wrong-image/misplaced
+// and anything unlabeled (user: "unlabeled = doesn't belong"). null when no verdicts file yet.
+const verdictsPath = path.join(dataDir(), "wall-dataset", "qc-app", "qc-verdicts.json");
+const KEEP: Set<string> | null = existsSync(verdictsPath)
+  ? new Set(Object.entries(JSON.parse(readFileSync(verdictsPath, "utf-8")) as Record<string, string>)
+      .filter(([, v]) => v === "good" || v === "partial").map(([k]) => k))
+  : null;
+if (KEEP) console.error(`GT verdicts: keeping ${KEEP.size} good+partial maps`);
+
 // ---- 1. Enumerate, choosing the best source per page ----------------------------------------
 const maps: MapRec[] = [];
 for (const camp of readdirSync(raw)) {
@@ -34,6 +43,7 @@ for (const camp of readdirSync(raw)) {
   for (const f of files) {
     let rec: any; try { rec = JSON.parse(readFileSync(path.join(dir, f), "utf-8")); } catch { continue; }
     if (!rec.graphic?.width) continue;
+    if (KEEP && !KEEP.has(rec.pageId)) continue; // drop human-flagged bad GT (wrong-image/misplaced) + unlabeled
     const cols = Math.round(rec.graphic.width / CELL), rows = Math.round(rec.graphic.height / CELL);
     if (cols < 2 || rows < 2) continue;
     const ddbPath = path.join(dir, `${rec.pageId}.ddb.json`);
