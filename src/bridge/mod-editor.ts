@@ -95,9 +95,16 @@ export async function deployModScript(
       const href = a.getAttribute("href") ?? "";
       return href.startsWith("#script-") && href !== "#script-library" && href !== "#script-new";
     });
+    // Match by exact token equality against EITHER the full name ("ai-relay.js") or its
+    // base name with the extension stripped ("ai-relay"): Roll20 strips the extension when it
+    // auto-names a script tab whose filename contains a dot (bug #98), so the tab text tokenizes
+    // to ["ai-relay"] and would never equal "ai-relay.js". We keep this token-EXACT (not substring)
+    // to preserve the #87 fix that prevents matching "old-ai-relay.js".
+    const want = name.toLowerCase();
+    const wantBase = want.replace(/\.[^.]+$/, ""); // "ai-relay.js" -> "ai-relay"
     const byName = userTabs.find(a => {
       const tokens = (a.textContent ?? "").trim().toLowerCase().split(/\s+/);
-      return tokens.includes(name.toLowerCase());
+      return tokens.includes(want) || tokens.includes(wantBase);
     });
     if (byName) return { href: byName.getAttribute("href"), isFallback: false };
     // If exactly one user tab exists and we can't match by name, return it — the tab may have

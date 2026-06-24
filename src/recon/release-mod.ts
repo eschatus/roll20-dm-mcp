@@ -27,9 +27,10 @@ import { runSoak } from "./soak-test.js";
 // intact. es2019 target keeps the output within the sandbox engine. node --check fails the release
 // if the minified output isn't valid JS, so a bad minify can never reach the live campaign.
 function minifyForSandbox(srcPath: string): string {
+  const projectRoot = resolve(__dirname, "../.."); // esbuild/.bin resolves relative to cwd, not the script dir
   const outPath = resolve(__dirname, "../../mod-scripts/.ai-relay.deploy.js"); // gitignored build artifact
-  execSync(`node_modules/.bin/esbuild "${srcPath}" --minify --target=es2019 --outfile="${outPath}"`, { stdio: "inherit" });
-  execSync(`node --check "${outPath}"`, { stdio: "inherit" });
+  execSync(`node_modules/.bin/esbuild "${srcPath}" --minify --target=es2019 --outfile="${outPath}"`, { cwd: projectRoot, stdio: "inherit" });
+  execSync(`node --check "${outPath}"`, { cwd: projectRoot, stdio: "inherit" });
   const before = statSync(srcPath).size, after = statSync(outPath).size;
   console.error(`[release] minified ${(before / 1024).toFixed(0)}KB → ${(after / 1024).toFixed(0)}KB (${100 - Math.round((after * 100) / before)}% smaller)`);
   return outPath;

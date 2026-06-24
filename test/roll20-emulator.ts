@@ -268,6 +268,25 @@ export class Roll20Emulator {
       log: this.log,
       state: this.state,
       Math: seededMath,
+      // Underscore — Roll20's sandbox ships `_` as a global. ai-relay.js uses
+      // `_.shuffle` and `_.invert`. We provide a faithful minimal shim rather than
+      // the real module so shuffle draws from the SEEDED RNG (determinism). If the
+      // relay starts using more `_` methods, add them here.
+      _: {
+        shuffle: (arr: unknown[]): unknown[] => {
+          const a = [...arr];
+          for (let i = a.length - 1; i > 0; i--) {
+            const j = Math.floor(seededMath.random() * (i + 1));
+            [a[i], a[j]] = [a[j], a[i]];
+          }
+          return a;
+        },
+        invert: (obj: Record<string, string>): Record<string, string> => {
+          const r: Record<string, string> = {};
+          for (const k of Object.keys(obj)) r[obj[k]] = k;
+          return r;
+        },
+      },
       console,
       JSON,
       parseInt,
