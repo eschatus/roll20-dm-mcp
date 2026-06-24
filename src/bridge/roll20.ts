@@ -6,65 +6,9 @@ import { getPage, closeBrowser } from "./browser.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
 import { rtEnabled, rtRelayCommand, rtGet } from "./roll20-rt.js";
 import { READONLY_ACTIONS, newNonce } from "./actions.js";
-import { recordSuccess, recordFailure } from "./transport-health.js";
+import { recordSuccess, recordFailure, circuitOpen } from "./transport-health.js";
 
 const RELAY_TIMEOUT_MS = 30_000;
-
-// Lightweight circuit breaker for the RT transport.
-// Opens after CB_THRESHOLD consecutive failures — while open, throws immediately
-// so a stuck/expired token doesn't hang every command for RELAY_TIMEOUT_MS per call.
-// Half-opens after CB_RESET_MS: lets one probe through to check liveness.
-const CB_THRESHOLD = 3;
-const CB_RESET_MS = 30_000;
-let _cbFailures = 0;
-let _cbOpenedAt: number | null = null;
-// True while a single half-open probe is in flight (circuit was open, CB_RESET_MS elapsed,
-// one call let through to test liveness). A FAILED probe must re-open immediately rather than
-// merely incrementing the failure counter from 0 — otherwise a dead transport gets 3 free
-// retries per reset window. (Bug #97.)
-let _cbHalfOpen = false;
-
-function _cbCheck(action: string): void {
-  if (_cbOpenedAt === null) return;
-  const elapsed = Date.now() - _cbOpenedAt;
-  if (elapsed >= CB_RESET_MS) {
-    // Half-open: let exactly one probe through. Close the open window but FLAG it as a probe so
-    // _cbFail can re-open instantly if the probe fails. (Don't zero _cbFailures here — _cbSuccess
-    // does that on a passing probe; _cbFail re-opens on a failing one.)
-    _cbOpenedAt = null;
-    _cbHalfOpen = true;
-    return;
-  }
-  const secsLeft = Math.ceil((CB_RESET_MS - elapsed) / 1000);
-  throw new Error(
-    `Roll20 RT circuit open after ${CB_THRESHOLD} consecutive failures — skipping "${action}". ` +
-    `Will probe again in ${secsLeft}s. Reconnect Roll20 in the gem to re-harvest the token.`
-  );
-}
-function _cbSuccess(): void {
-  // Probe (or any call) succeeded — fully close the circuit.
-  // NOTE: transport-health recording (recordSuccess/recordFailure for "rt") is owned by
-  // roll20-rt.ts (rtRelayCommand records both success and failure) so the two stay in sync and
-  // never double-count. The half-open probe is a real call through rtRelayCommand, so a passing
-  // probe already resets transport-health there — we only manage the circuit-breaker state here.
-  _cbFailures = 0;
-  _cbOpenedAt = null;
-  _cbHalfOpen = false;
-}
-function _cbFail(): void {
-  // A failed half-open probe means the transport is still dead — re-open immediately rather than
-  // accumulating from a zeroed counter (which would grant CB_THRESHOLD free retries). (Bug #97.)
-  if (_cbHalfOpen) {
-    _cbHalfOpen = false;
-    _cbOpenedAt = Date.now();
-    console.error(`[roll20] RT circuit breaker RE-OPEN after failed half-open probe.`);
-    return;
-  }
-  if (++_cbFailures >= CB_THRESHOLD && _cbOpenedAt === null) {
-    _cbOpenedAt = Date.now();
-    console.error(`[roll20] RT circuit breaker OPEN after ${CB_THRESHOLD} consecutive failures.`);
-  }
-}
 
 // ─── Test seam ────────────────────────────────────────────────────────────────
 // When set (only by the test harness), relay/evaluate calls route here instead of
@@ -372,18 +316,30 @@ export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
   // explicit dev opt-out via ROLL20_TRANSPORT=browser.
   if (rtEnabled()) {
     const action = cmd.action as string;
-    _cbCheck(action); // throws immediately if circuit open — no 30s hang
+
+    // Circuit-breaker gate (single source of truth in transport-health.ts, issue #102).
+    // When OPEN we throw immediately WITHOUT calling rtRelayCommand — so no failure is recorded
+    // for a skipped call (we never count a call we didn't make). After the reset window elapses,
+    // circuitOpen() transitions to half-open and returns { open: false } so exactly the next call
+    // probes liveness; a failed probe re-opens instantly (rtRelayCommand → recordFailure → the
+    // half-open re-open path in transport-health). Success/failure recording for "rt" stays owned
+    // by roll20-rt.ts (rtRelayCommand), so we DON'T record here — that's what advances the circuit
+    // counter, and double-recording would corrupt it. (Bug #99.)
+    const gate = circuitOpen("rt");
+    if (gate.open) {
+      throw new Error(
+        `Roll20 RT circuit open after consecutive failures — skipping "${action}". ` +
+        `Will probe again in ${gate.secsLeft}s. Reconnect Roll20 in the gem to re-harvest the token.`,
+      );
+    }
+
     // Nonce must be generated BEFORE the call and reused on retry — the Mod's
     // PROCESSED_NONCES LRU deduplicates same-nonce resends server-side. A fresh
     // nonce on retry would re-execute the action (double-apply damage, etc.).
     const nonce = newNonce();
-    return rtRelayCommand<T>(cmd, { assignedNonce: nonce }).then((result) => {
-      // Circuit-breaker state only. Transport-health (recordSuccess/recordFailure "rt") is recorded
-      // by rtRelayCommand in roll20-rt.ts — recording it here too would double-count. (Bug #99.)
-      _cbSuccess();
-      return result;
-    }).catch((err: Error) => {
-      _cbFail();
+    return rtRelayCommand<T>(cmd, { assignedNonce: nonce }).catch((err: Error) => {
+      // No circuit/health recording here — rtRelayCommand already recorded the failure ("rt"),
+      // which is what advances the shared circuit counter. We only reshape the error message.
       console.error(`[roll20] rt ${action} failed (browserless — no fallback): ${err.message}`);
       throw new Error(
         `Roll20 realtime transport failed for "${action}": ${err.message}. ` +
