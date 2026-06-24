@@ -1,6 +1,6 @@
 // Global push-to-talk via uiohook-napi. Electron's globalShortcut can't reliably
 // do hold-to-talk (no keyup, no mouse buttons), so we use a native input hook.
-// Supports either a keyboard key (default CapsLock) or a mouse side-button.
+// Supports either a keyboard key (default Right-Ctrl, "CtrlRight") or a mouse side-button.
 // Emits "down"/"up"/"tap"; "cancel" on Esc.
 //
 // Caveat: uiohook is a passive listener — it cannot swallow the key. So CapsLock

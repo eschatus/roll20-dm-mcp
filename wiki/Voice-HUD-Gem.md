@@ -195,7 +195,7 @@ Click **✦** on the gem (or press the scry button) to expand the full panel. Cl
 
 The main conversation interface. Type anything here — questions, multi-step requests, anything that needs more than one short utterance. The Gem replies in themed text (your words in serif italic, agent replies in blackletter).
 
-Switch between cloud (Anthropic) and local (Ollama) brain using the buttons at the top. Cloud handles complex multi-target operations better; local is faster and free but less accurate with complicated narration.
+By default the Gem runs on the cloud Anthropic brain (Claude Haiku) only — there is no visible brain toggle. Local Ollama is **mothballed and off by default**; the cloud/local brain buttons only appear when you start the Gem with `DMW_ENABLE_LOCAL_LLM=1`. With the toggle enabled, cloud handles complex multi-target operations better; local is faster and free but less accurate with complicated narration.
 
 Toggle **show tool activity** to see the tool calls the Gem is making in real time — useful for debugging or learning what's happening under the hood.
 

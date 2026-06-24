@@ -84,13 +84,15 @@ behind a flag, or a mocked relay):
 The new tests immediately earned their keep — two real issues surfaced:
 
 1. ~~**RT transport falls back to the browser on a *Mod error*, not just a transport failure.**~~
-   ✅ **RESOLVED — via a different mechanism than originally proposed.** Rather than tagging
-   `RelayModError` and re-throwing, the nonce is now generated ONCE per command (before either
-   transport) and threaded through, so an rt→browser fallback re-sends the *same* nonce. The Mod's
-   `PROCESSED_NONCES` LRU deduplicates the resend, making any post-send fallback (including for
-   mutating commands) idempotent. `shouldFallback` (`roll20.ts`) therefore now returns `true`
-   unconditionally — the double-apply hazard the original fix targeted no longer exists. See
-   `src/bridge/relay-fallback.test.ts`.
+   ✅ **RESOLVED — and the cross-transport fallback was subsequently removed entirely.** RT is now
+   the default transport and combat is **browserless with no Playwright fallback**: `relayCommand`'s
+   RT branch (`roll20.ts`) re-throws on failure (clear "reconnect to re-harvest the token" error)
+   rather than reaching for a browser a packaged install doesn't ship. `shouldFallback` was therefore
+   **deleted** (zero references in `src/`); the double-apply hazard it targeted can't arise because
+   the combat RT relay never changes transport. The same-nonce idempotency machinery still exists
+   (nonce generated once per command, deduplicated by the Mod's `PROCESSED_NONCES` LRU) but only
+   guards the explicit `ROLL20_TRANSPORT=browser` path's internal retries. `relay-fallback.test.ts`
+   was rewritten to verify nonce/transport pass-through only.
 
 2. **`getCharacterStats`/`getRawCharacter` can't read player-owned DDB characters (403).** They use
    the direct character-service API, which only serves characters the account owns or that are

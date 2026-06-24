@@ -79,8 +79,8 @@ Deep dives: `docs/decisions.md`, `docs/roll20-api-coverage.md`, `docs/roll20-rea
   `src/bridge/markers.ts` Record, `mod-scripts/ai-relay.js`) and they are **not identical**
   (`wounded`/`bloodied` is a condition in `combat.ts` but a pseudo-marker in the other two). Edit
   all relevant copies together.
-- **MCP tool inputs are Zod-validated**; relay actions are a hardcoded `switch` in `ai-relay.js`
-  (no eval/shell). GM-only sender check (`senderIsGM`) is the authorization boundary — chat is
+- **MCP tool inputs are Zod-validated**; relay actions are a hardcoded `ACTIONS` map (object
+  dispatch) in `ai-relay.js` (no eval/shell). GM-only sender check (`senderIsGM`) is the authorization boundary — chat is
   player-writable.
 - Registry files (`data/campaigns.json`, `characters.json`, `active-campaign.json`) are written
   atomically (temp-then-rename). `data/` is gitignored and holds live credentials — never commit it.
@@ -103,7 +103,7 @@ test/                    integration tests + the Roll20 emulator (roll20-emulato
 ```
 
 Adding a tool: write `register*Tools(server)` with a Zod schema in the right `src/tools/*.ts`, wire
-any new relay action into `mod-scripts/ai-relay.js`'s `switch` (then redeploy the Mod), and register
+any new relay action into `mod-scripts/ai-relay.js`'s `ACTIONS` map (then redeploy the Mod), and register
 the tool in the correct server — **`server-combat.ts`** (roll20-dm) or **`index-maps.ts`**
 (roll20-dm-maps). Add a unit test (pure logic) and/or a `test/` emulator test.
 
@@ -130,7 +130,7 @@ the registration; the rest of vision/wall tooling is maps-only.)
 
 **Map gotchas:**
 - **Wall color:** `auto_place_dl_walls` and `place_polyline_walls` default `strokeColor` to yellow
-  `#FFFF00`. **Always pass `#0044FF`** (project convention: blue walls, green windows) — the default
+  `#FFFF00`. **Always pass `#0044FF`** (project convention: blue walls, cyan windows (#00FFFF)) — the default
   violates it.
 - `pathv2` re-anchors to the first point regardless of passed x/y — build paths first-point-as-center.
 - **Upload dedup:** `upload_and_place` reuses a stale art-library asset by filename — use a unique

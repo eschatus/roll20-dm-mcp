@@ -7,9 +7,12 @@ the `!ai-relay` chat message and reads the `AIBRIDGE_RESULT` whisper back — **
 
 ## STATUS: ✅ VALIDATED end-to-end (2026-06-05)
 
-Implemented in `src/bridge/roll20-rt.ts`, behind `ROLL20_TRANSPORT=rt` with automatic Playwright
-fallback. Live round-trip confirmed: **~420ms cold / ~49ms warm** (vs. the much slower chat-typing
-relay). The Mod script, all ~40 relay actions, and the `AIBRIDGE_RESULT` protocol are unchanged.
+Implemented in `src/bridge/roll20-rt.ts`. **RT is the DEFAULT transport now** (`rtEnabled()` =
+`ROLL20_TRANSPORT` unset or anything but `browser`); combat is browserless and an RT failure
+**surfaces** (no automatic Playwright fallback). Opt OUT to the legacy browser→chat relay with
+`ROLL20_TRANSPORT=browser` (dev only). Live round-trip confirmed: **~420ms cold / ~49ms warm**
+(vs. the much slower chat-typing relay). The Mod script, all ~40 relay actions, and the
+`AIBRIDGE_RESULT` protocol are unchanged.
 
 Roll20's tabletop state and chat live in a **Firebase Realtime Database**. The Mod sandbox reacts
 to `on("chat:message")`. Chat is written **exclusively over Firebase** (confirmed: no chat XHR
@@ -128,8 +131,12 @@ signaling). Not used for chat or object state; irrelevant to the relay.
 This was the plan; it shipped. Current state:
 
 - `src/bridge/roll20-rt.ts` implements the same `relayCommand` interface as `roll20.ts`, backed by an
-  authenticated RTDB connection. Playwright `roll20.ts` remains the fallback transport (guarded by
-  `ROLL20_TRANSPORT`), so a Roll20 frontend change can't fully brick the relay.
+  authenticated RTDB connection. **RT is the default and combat never silently falls back to a
+  browser** — on the default path an RT failure re-throws (a clear "reconnect to re-harvest the token"
+  error) instead of reaching for a Chromium a packaged install doesn't ship. The Playwright
+  `roll20.ts` path is reachable **only** under `ROLL20_TRANSPORT=browser` (legacy dev opt-out). A
+  circuit breaker (`circuitOpen` in `src/bridge/transport-health.ts`) fast-fails RT calls once it has
+  seen consecutive failures, rather than paying the full timeout each time.
 - Direct reads exist on **both** paths: `rtGet`/`tryDirectRead` reads the campaign storage subtree
   directly — tokens at `<storagePath>/graphics/page/<pid>`, paths at `paths/page/<pageId>`,
   doors/windows at `doors|windows/page/<pageId>`, and the page list at top-level `pages` (serving

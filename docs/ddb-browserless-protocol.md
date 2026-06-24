@@ -4,8 +4,9 @@ Reverse-engineered auth + endpoints that let the DDB bridge run **without a head
 mirroring the Roll20 RTDB transport ([roll20-realtime-protocol.md](roll20-realtime-protocol.md)).
 The browser is touched **once** (cold start) to harvest the long-lived `CobaltSession` cookie; every
 read after that is plain Node `fetch`. Implemented in [`src/bridge/ddb-rt.ts`](../src/bridge/ddb-rt.ts);
-[`src/bridge/dndbeyond.ts`](../src/bridge/dndbeyond.ts) routes through it and falls back to the
-browser on any failure.
+[`src/bridge/dndbeyond.ts`](../src/bridge/dndbeyond.ts) routes through it; only the character-sheet
+read (`getCharacter`) falls back to the browser intercept, and only on a 403 — monster/campaign
+reads do not fall back.
 
 ## Auth chain
 
