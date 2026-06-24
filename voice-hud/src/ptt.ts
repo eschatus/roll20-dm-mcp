@@ -19,6 +19,13 @@ export class PttHook extends EventEmitter {
   private downAt = 0;
   private keycode: number | null = null;
   private confirmCode: number | null = null;
+  // Stuck-key guards (issue #107). The sweep timer runs ONLY while held.
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  // Last time we saw a keydown for our PTT key (incl. OS auto-repeat while held).
+  private lastKeydownAt = 0;
+  // True when the active press came from a mouse button (no auto-repeat → the
+  // sweep's staleness signal doesn't apply; the max-hold backstop covers it).
+  private downFromMouse = false;
 
   start() {
     const useMouse = CONFIG.pttMouseButton != null;
@@ -31,7 +38,12 @@ export class PttHook extends EventEmitter {
         this.keycode = UiohookKey.CapsLock;
       }
       uIOhook.on("keydown", (e: { keycode: number }) => {
-        if (e.keycode === this.keycode) this.press();
+        if (e.keycode === this.keycode) {
+          // Every keydown — including OS auto-repeat while physically held —
+          // refreshes the liveness timestamp the sweep uses to detect a stuck key.
+          this.lastKeydownAt = Date.now();
+          this.press(false);
+        }
       });
       uIOhook.on("keyup", (e: { keycode: number }) => {
         if (e.keycode === this.keycode) {
@@ -41,7 +53,7 @@ export class PttHook extends EventEmitter {
       });
     } else {
       uIOhook.on("mousedown", (e: { button: number }) => {
-        if (e.button === CONFIG.pttMouseButton) this.press();
+        if (e.button === CONFIG.pttMouseButton) this.press(true);
       });
       uIOhook.on("mouseup", (e: { button: number }) => {
         if (e.button === CONFIG.pttMouseButton) this.release();
@@ -73,22 +85,68 @@ export class PttHook extends EventEmitter {
       + `; confirm=${CONFIG.confirmKey}, cancel=Esc`);
   }
 
-  private press() {
+  private press(fromMouse: boolean) {
     if (this.isDown) return; // ignore auto-repeat
     this.isDown = true;
+    this.downFromMouse = fromMouse;
     this.downAt = Date.now();
     this.emit("log", "PTT down");
     this.emit("down");
+    this.startSweep();
   }
 
   private release() {
     if (!this.isDown) return;
     this.isDown = false;
+    this.stopSweep();
     this.emit("log", `PTT up (held ${Date.now() - this.downAt}ms)`);
     this.emit("up");
   }
 
+  // Stuck-key watchdog (issue #107). Runs ONLY while held; cleared on release.
+  // Two guards, both funneled through release() so the normal "up" path (stop
+  // capture, flush, stop re-transcription) always runs:
+  //   1) auto-repeat staleness — for the keyboard case, the OS emits periodic
+  //      keydown auto-repeat while a key is physically held, refreshing
+  //      lastKeydownAt. If we're "down" but no keydown has arrived within
+  //      pttStaleMs, the key is no longer held (the keyup was missed) → release.
+  //      We chose auto-repeat over polling GetAsyncKeyState because the latter
+  //      needs a uiohook-keycode→Win32-VK map and a per-tick PowerShell spawn
+  //      (expensive on a 1.5s loop, Windows-only); auto-repeat is a free,
+  //      cross-platform signal already flowing through the existing hook. Its one
+  //      gap — mouse buttons don't auto-repeat — is covered by guard (2).
+  //   2) max-hold backstop — force release once held past pttMaxHoldMs no matter
+  //      what; the guaranteed catch-all (and the only physical check for mouse).
+  private startSweep() {
+    this.stopSweep();
+    this.sweepTimer = setInterval(() => {
+      if (!this.isDown) { this.stopSweep(); return; }
+      const now = Date.now();
+      const held = now - this.downAt;
+      if (held >= CONFIG.pttMaxHoldMs) {
+        this.emit("log", `PTT force-released after max-hold (${held}ms)`);
+        this.release();
+        return;
+      }
+      // Auto-repeat staleness applies to the keyboard case only (mouse buttons
+      // don't auto-repeat — guard (2) above is their backstop). Give the first
+      // repeat time to arrive by waiting at least pttStaleMs after the press.
+      if (!this.downFromMouse && held >= CONFIG.pttStaleMs &&
+          now - this.lastKeydownAt >= CONFIG.pttStaleMs) {
+        this.emit("log", "PTT force-released — stuck key detected by sweep");
+        this.release();
+      }
+    }, CONFIG.pttSweepMs);
+    // Don't let the watchdog hold the event loop / process open.
+    this.sweepTimer.unref?.();
+  }
+
+  private stopSweep() {
+    if (this.sweepTimer) { clearInterval(this.sweepTimer); this.sweepTimer = null; }
+  }
+
   stop() {
+    this.stopSweep();
     try { uIOhook.stop(); } catch { /* ignore */ }
   }
 }
