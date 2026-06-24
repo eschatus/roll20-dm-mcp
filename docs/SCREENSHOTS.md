@@ -32,9 +32,9 @@ A token wearing the campaign's custom 5e-condition markers — makes
 ## Where each appears
 | File | Used in |
 |---|---|
-| `assets/gem-hud.png` | top of the README; the **Voice HUD Gem** wiki page |
+| `assets/gem-in-play.png` | top of the README; the **Voice HUD Gem** wiki page |
 | `assets/roll20-map.png` | README maps section; `skills/dm-map-setup.md` |
 | `assets/token-markers.png` | `docs/roll20-token-markers.md` |
 
 ## Adding one
-Drop the PNG in `assets/`, then reference it, e.g. `![DM gem](assets/gem-hud.png)`.
+Drop the PNG in `assets/`, then reference it, e.g. `![DM gem](assets/gem-in-play.png)`.

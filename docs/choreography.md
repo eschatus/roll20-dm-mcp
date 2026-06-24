@@ -96,20 +96,19 @@ Claude (MCP client)
 MCP Server — src/tools/combat.ts
   │
   │  resolveTokenOrThrow("Eli") → fuzzy-matches the live page token list → tokenId "tok_abc"
-  │
-  │  Read current HP from the Roll20 token (source of truth):
-  │    relayCommand({ action: "getTokenById", tokenId: "tok_abc" })
-  │    → { bar1_value: 37, bar1_max: 45 }
-  │  → newHp = max(0, 37 - 9) = 28
+  │  → reads the token, computes isPcToken(token) (by `controlledby`). Eli is a PC.
   │
   │  D&D Beyond is READ-ONLY — no HP/condition write is issued.
   │  (Optional, read-only: ddb_get_character may be polled at round start to spot-check
   │   drift; it is never written.)
   │
-  │  Write HP back to the Roll20 token via the relay:
-  │    relayCommand({ action: "setTokenProps", tokenId: "tok_abc", props: { bar1_value: 28 } })
-  │  (update_token_hp writes bar1 on the resolved token directly. See the note below on the
-  │   intended PC-HP-to-relay-state model and where it actually applies.)
+  │  PC branch: HP lives in relay state (a block in the token's gmnotes), NOT the visible
+  │  token bar — Beyond20 owns a player's bar1, so it is NEVER written. The relay does the
+  │  read-compute-write on the tracked block:
+  │    relayCommand({ action: "adjustPcHp", tokenId: "tok_abc", damage: 9 })
+  │    → { current: 28, max: 45 }
+  │  (If Eli were an NPC, this branch instead writes the bar:
+  │   setTokenProps {bar1_value}. update_hp_many and resolve_aoe route PCs/NPCs the same way.)
   │
   ▼  (separate tool call for the condition — update_token_hp is HP-only by convention)
   │
@@ -125,26 +124,26 @@ Roll20 Mod Sandbox — mod-scripts/ai-relay.js
   │  token.set({ statusmarkers: "...,Poisoned::4444329" }) + tracks active_conditions
   ▼
 Roll20 Campaign
-  │  → Eli's token: bar1_value = 28, statusmarkers includes Poisoned::4444329
+  │  → Eli's tracked HP (gmnotes/relay state) = 28/45; bar1 untouched.
+  │  → Eli's token: statusmarkers includes Poisoned::4444329
 
 Claude reports (DM-facing markdown report — numbers stay here, never in player chat):
-  - **Eli** — 9 damage → 28/45 HP, now Poisoned.
-  Changes: Eli bar1 37→28; +Poisoned.
+  - **Eli** — 9 damage → 28/45 HP (tracked), now Poisoned.
+  Changes: Eli HP 37→28 (tracked); +Poisoned.
   Actions: update_token_hp, set_token_marker.
 
 (If the DM wants a player-visible line, send_narration carries NO numbers — e.g.
  "The naga's fangs find their mark — Eli reels, venom in his veins." See dm-rules.md.)
 ```
 
-**Total hops:** DM → Claude → MCP Server → Roll20 relay (HP via setTokenProps + condition via toggleCondition) → Roll20 token updated
+**Total hops:** DM → Claude → MCP Server → Roll20 relay (HP via adjustPcHp for a PC / setTokenProps for an NPC + condition via toggleCondition) → Roll20 token/state updated
 
-**Note on the Roll20-only write model:** NPC HP and all conditions are written to the Roll20
-token. The *intended* design (see memory / `skills/dm-rules.md`) is that PC HP is tracked in
-relay state (routed by `controlledby`) and the PC token's bar is never touched (Beyond20 owns
-it). In current code that routing is implemented in the **AoE path** (`resolve_aoe` → `adjustPcHp`);
-`update_token_hp` itself still writes `bar1` on whatever token it resolves, PC or NPC — so the
-"never touch a PC bar" guarantee is not yet enforced on the single-target path. The token/state
-is the source of truth for live combat.
+**Note on the HP write model:** routing is by `controlledby` (`isPcToken`). A **PC's** HP is
+tracked in relay state (a block in the token's gmnotes) via `adjustPcHp`, and the visible token
+bar is **never** written — Beyond20 owns a player's bar1. An **NPC's** HP is `bar1` on the token.
+This split is enforced identically across `update_token_hp` (single), `update_hp_many` (AoE), and
+`resolve_aoe` — the "never touch a PC bar" guarantee holds on all of them. Conditions are always
+written to the Roll20 token. The token/state is the source of truth for live combat.
 D&D Beyond write code (`patchCharacter`, `applyCondition`, `ddb_update_hp`, and the old
 `apply_damage` / `heal_character` DDB branches) has been **removed** — DDB condition writes
 returned 405 and HP writes were unreliable. DDB remains available read-only (character/monster

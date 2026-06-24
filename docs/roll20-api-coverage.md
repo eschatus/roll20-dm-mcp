@@ -36,7 +36,7 @@ DDB    → MCP tool (TS) → REST (Bearer cobalt) / page-context fetch / DOM scr
 ```
 
 **Three layers of "can do":**
-1. **Relay actions** (~70 `case` handlers in `ai-relay.js`, plus `batchExec` sub-actions) — the real Roll20 API surface this project uses.
+1. **Relay actions** (70 action handlers in the `ACTIONS` dispatch map in `ai-relay.js`, plus `batchExec` sub-actions) — the real Roll20 API surface this project uses.
 2. **Browser-bridge functions** (Playwright) — for things the Mod sandbox cannot do.
 3. **DDB bridge** — separate system, read-mostly.
 
@@ -128,7 +128,8 @@ Campaign specials: `change:campaign:turnorder`, `change:campaign:playerpageid`, 
 | `setMobPlan`/`getMobPlans`/`clearMobPlans` | plan_tactics, plan_all_tactics, get_mob_plans, clear_tactic_memory | combat | tactical whisper cards |
 | `getCustomStates` | list_custom_states | combat | tier-2 ad-hoc DM states + holders |
 | `setCharacterAttributes`/`getCharacterAttributes` | set/get/read_character_attribute(s), full_sync_character | combat | sheet attrs |
-| `getRepeatingSection` | plan_tactics | combat | **read-only** (e.g. npcaction); no row cap/projection |
+| `getRepeatingSection` | plan_tactics | combat | **read-only** (e.g. npcaction); row cap (maxRows default 60, `__truncated` flag); no field projection |
+| `editCharacter` | set_character_props | combat | edit top-level character fields (name/bio/avatar/controlledby/archived/inplayerjournals) |
 | `batchExec` | batch_exec | combat | runs N token actions in one relay round-trip |
 | `getJournalFolder`/`setJournalFolder` | get/set_journal_folder | combat | journal folder tree read/write |
 | `createHandout` | create_handout | maps | lore/player handout (name, notes, gmnotes) |
@@ -180,7 +181,7 @@ Legend: ✅ exposed · 🟡 partial · ❌ API-reachable but **not exposed** (ad
 ### Partial (🟡)
 - **`pathv2` DL barriers** — *read* via `getWalls`; `createWalls` now *creates* native `pathv2` (falling back to legacy `path` only if `pathv2` returns undefined). `drawLayerTest` deliberately creates `path`.
 - **Door/window** — create/read/delete only; **no update** (open/close, lock, toggle secret) — all API-reachable.
-- **Repeating sections** — read only; **no write** (no row-id generation / `generateRowID` helper); read has no row cap/field projection.
+- **Repeating sections** — read only; **no write** (no row-id generation / `generateRowID` helper); read has a row cap (maxRows default 60, `__truncated` flag) but no field projection.
 - **Page properties** — only name/size/scale/grid/bg; UDL lighting/fog/explorer-mode/grid-type/diagonal props not exposed (all API-reachable).
 - **Token↔sheet linking** — `setDefaultTokenForCharacter` IS exposed (via `setDefaultToken` / `batch_exec`), but `createToken` still doesn't set `represents` on creation, so freshly-created tokens aren't sheet-bound until a default-token call runs.
 - **Events** — `chat:message`, `change:campaign:turnorder`, `add:graphic`, and `ready` wired; `destroy:graphic`, `change:graphic:statusmarkers`, etc. still unused.
@@ -193,7 +194,7 @@ These are the "stop hitting the wall" items. None need the browser.
 - **Cards/decks** — `deck`/`card`/`hand` (e.g. **Tarokka deck for Curse of Strahd**). Nothing exposed.
 - **Abilities & macros** — `ability` (token actions) / `macro` CRUD. Nothing exposed.
 - **Text objects** — floating map labels/annotations. Not created, read, or removed.
-- **Character object** — `createCharacter` creates a stub; full name/bio/avatar/controlledby/archived/inplayerjournals editing is still not exposed.
+- **Character object** — `createCharacter` creates a stub; top-level field editing (name/bio/avatar/controlledby/archived/inplayerjournals) **is** exposed via `editCharacter` / `set_character_props`.
 - **More on() hooks** — `destroy:graphic` (auto-detect token deaths), `change:graphic:statusmarkers`, etc.
 
 ### Shipped since this doc's first draft (✅ — no longer gaps)

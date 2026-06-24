@@ -114,15 +114,17 @@ messages sent after reconnect still arrive. `npm run build` passes.
 
 ## Prompt 4 — Writes must never cross transports after a timeout
 
-> **⚠ SUPERSEDED — the shipped fix is the opposite of this prompt.** Rather than blocking
-> cross-transport fallback for mutating post-send timeouts, the implementation made the fallback
-> *idempotent*: a single nonce is generated once per command (before either transport) and threaded
-> through, so an rt→browser fallback re-sends the **same** nonce. The Mod's `PROCESSED_NONCES` LRU
-> deduplicates the resend, so re-running a mutating command on the browser path can't double-apply.
-> `shouldFallback(action, err)` therefore now returns `true` unconditionally (see
-> `src/bridge/relay-fallback.test.ts`). The `RtPreSendError` / "must re-throw / verify state"
-> design below was **not** adopted — ignore it for current behavior. (The circuit-breaker fast-fail
-> in Prompt 5 *did* ship.)
+> **⚠ SUPERSEDED — and overtaken again since.** This prompt's "block cross-transport fallback"
+> design was first replaced by an *idempotent* fallback (a single nonce generated once per command
+> and reused, deduplicated by the Mod's `PROCESSED_NONCES` LRU). That interim step is itself now
+> stale: **RT became the default transport and the combat RT relay no longer falls back to the
+> browser at all** — `relayCommand`'s RT branch re-throws on failure (clear "reconnect to re-harvest
+> the token" error), since a packaged install ships no Chromium to fall back to. Consequently
+> `shouldFallback` was **DELETED** (zero references in `src/`); `relay-fallback.test.ts` was rewritten
+> to verify nonce/transport pass-through only. The same-nonce idempotency machinery survives but only
+> guards the explicit `ROLL20_TRANSPORT=browser` path's internal retries. The `RtPreSendError` /
+> "must re-throw / verify state" design below was **not** adopted — ignore it for current behavior.
+> (The circuit-breaker fast-fail in Prompt 5 *did* ship; see its note for as-built thresholds.)
 
 **Problem (as originally framed).** In `src/bridge/roll20.ts` (`relayCommand`), RT mode does:
 `rtRelayCommand<T>(cmd).catch(err => _relayDefault<T>(cmd))` — for **all** actions.
@@ -159,6 +161,14 @@ heavy, test the decision function by extracting it as a pure helper
 ---
 
 ## Prompt 5 — Transport health: circuit breaker + tiered timeouts
+
+> **✅ SHIPPED — with different thresholds than written below.** As built, the circuit breaker lives
+> in `src/bridge/transport-health.ts` and opens after **3 consecutive failures** with a **30 s**
+> reset/probe window (not the 2-failures / 60 s sketched here). The module exports `circuitOpen`
+> (the call-gate used by `relayCommand`'s RT branch in `roll20.ts`), `recordSuccess`/`recordFailure`,
+> `recordFallback`, `getStats`, and `resetHealth`. The `Health` enum (`ok | degraded | down`) is
+> unchanged. Note that combat RT no longer falls back to the browser at all (see Prompt 4), so the
+> circuit breaker now fast-fails RT itself rather than rerouting to a browser path.
 
 **Problem.** Every layer discovers failure by flat 30 s timeout
 (`RELAY_TIMEOUT_MS` in both `roll20.ts` and `roll20-rt.ts`), and nothing remembers the

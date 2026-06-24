@@ -1,5 +1,7 @@
 # Voice HUD — whisper.cpp STT test on Apple Silicon (M4)
 
+> **Status:** whisper.cpp won this spike and is now the **default STT engine** (bundled resident `whisper-server` + `ggml-base.en.bin`, no Python); faster-whisper is mothballed. The A/B harness steps below still work for re-running or comparing engines on your own hardware.
+
 Hey Bill! This guide gets you running the A/B STT harness on your Mac using
 **whisper.cpp with Metal acceleration** — the engine we're evaluating to replace
 faster-whisper (which is painful to install on Apple Silicon). The whole thing
