@@ -251,6 +251,20 @@ Fixed AoEs that stay put → **zones**.
 > Exercises launch + supervision, the **Setup ("familiar")** flow, PTT →
 > whisper.cpp STT → cloud Haiku agent → **humanized confirm** → tool execution,
 > the **Inbox** reply→whisper, and the unread badge.
+>
+> **Voice/PTT evidence is read from the logs after the session, not live.** The
+> gem persists every log line — including PTT events — to **`hud.log`** (JSONL
+> `{ts, level, kind, msg}`) under `DMW_DATA_DIR` (default `voice-hud/data/hud.log`;
+> packaged: Electron `userData`). It survives the detached launch. So just *do*
+> the voice steps below, then review the log afterward:
+>
+> - **PTT timing/watchdog:** `grep "\[ptt\]" hud.log` → you'll see `PTT down`,
+>   `PTT up (held <ms>ms)`, and any `PTT force-released …` (max-hold or sweep) lines.
+> - **STT accuracy/correction:** before launching, set **`DMW_SAVE_CLIPS=1`** to
+>   keep the A/B corpus under `data/ab-clips/` — each clip writes `.wav` + a
+>   `.draft.txt` (raw STT) you can diff against the corrected final. (`npm run ab:stt`
+>   scores a corpus.) Tool calls and confirms are also in `hud.log` (`grep` the
+>   tool names / `[ptt]`).
 
 ### 7A — Launch & setup
 
@@ -270,7 +284,7 @@ Fixed AoEs that stay put → **zones**.
 | 7.7 | Press **Right-Shift** | tool executes (Ogre bar1 −10); report renders in the ledger | [ ] |
 | 7.8 | Repeat, then press **Esc** at the confirm | action **cancelled**, no write | [ ] |
 | 7.9 | STT correction spot-check: speak a campaign proper noun (add it via the **Proper Nouns** tab first) and a split name | correction layer fixes it on the committed transcript (partials may show raw) | [ ] |
-| 7.10 | **PTT watchdog:** hold, then (simulate) a missed key-up | recording **force-releases** within `DMW_PTT_STALE_MS` (2500ms) / by `DMW_PTT_MAX_HOLD_MS` (75s) — no runaway re-transcription | [ ] |
+| 7.10 | **PTT watchdog:** hold, then (simulate) a missed key-up | recording **force-releases** within `DMW_PTT_STALE_MS` (2500ms) / by `DMW_PTT_MAX_HOLD_MS` (75s) — no runaway re-transcription. **Verify after** in `hud.log`: `grep "\[ptt\]"` shows `PTT down` then `PTT force-released …`. | [ ] |
 
 ### 7C — Inbox
 
@@ -331,6 +345,12 @@ For each narrated turn, save:
 
 > The gem already streams `onToolStart` / `onToolResult` and renders a per-turn
 > report; the IDE shows tool calls inline. Either is a fine capture source.
+>
+> **For the gem/voice turns, capture post-hoc from the logs** rather than live:
+> `hud.log` (under `DMW_DATA_DIR`) holds the tool calls, confirms, and `[ptt]`
+> events; `data/ab-clips/*.draft.txt` (with `DMW_SAVE_CLIPS=1`) holds the raw vs
+> corrected STT for **D6**. Run the combat, then read the log and feed the
+> relevant lines to the judge.
 
 ### 10.2 Rubric (score each 1–5; cite evidence)
 
@@ -416,3 +436,7 @@ Output JSON:
   emanations (move with caster); **`create_zone`** for fixed areas.
 - **Never:** wholesale `setTurnOrder`, roll PC initiative, auto-advance the turn,
   put numbers in player-visible chat, chain a tool right after `switch_campaign`.
+- **Logs (post-hoc review):** `hud.log` (JSONL, under `DMW_DATA_DIR`, default
+  `voice-hud/data/`) — all gem log lines incl. `[ptt]` PTT down/up/force-release,
+  tool calls, confirms. STT corpus: `data/ab-clips/*.{wav,draft.txt}` when
+  `DMW_SAVE_CLIPS=1`; score with `npm run ab:stt`. Combat AAR reports: `aar/`.
