@@ -510,6 +510,17 @@ function hudEnvPath(): string {
   return path.join(process.env.DMW_DATA_DIR || CONFIG.dataDir, ".env");
 }
 
+// The SHARED data dir — tokens (roll20-rt-token.json, ddb-cobalt.json), the campaign registry,
+// active-campaign, and campaign-context: the SAME files the supervised MCP server reads/writes, and
+// where harvest.ts/campaignData.ts write. Packaged: DMW_DATA_DIR (bootstrap sets it; the server
+// inherits it via ROLL20_DATA_DIR). Dev: <repo>/data — one level ABOVE voice-hud (note the extra
+// ".."), since the server runs from the repo root. This is DISTINCT from CONFIG.dataDir, the gem's
+// PRIVATE dir (voice-hud/data: hud.log, models, .env). Conflating the two is why the Setup checks
+// went stale — they looked in the gem-private dir for files the harvest wrote to the shared dir.
+function sharedDataDir(): string {
+  return process.env.DMW_DATA_DIR || process.env.ROLL20_DATA_DIR || path.join(__dirname, "..", "..", "data");
+}
+
 function writeHudEnv(updates: Record<string, string>) {
   const envPath = hudEnvPath();
   fs.mkdirSync(path.dirname(envPath), { recursive: true });
@@ -672,7 +683,9 @@ function wireWizard() {
   // --- Setup wizard (first-run onboarding) ---
   // What the Setup tab shows: configured vs still-needed. Cheap reads off env + the data dir.
   ipcMain.handle("get-setup-status", () => {
-    const dataDir = process.env.DMW_DATA_DIR || CONFIG.dataDir;
+    // Tokens + campaign registry live in the SHARED dir (where harvest.ts writes), NOT CONFIG.dataDir
+    // (gem-private). Checking the wrong dir here is what left the green checks stale after a connect.
+    const dataDir = sharedDataDir();
     const has = (f: string) => { try { return fs.existsSync(path.join(dataDir, f)); } catch { return false; } };
     let campaigns = 0;
     try { campaigns = Object.keys(JSON.parse(fs.readFileSync(path.join(dataDir, "campaigns.json"), "utf-8"))).length; } catch { /* none yet */ }
@@ -1040,7 +1053,7 @@ async function refreshRoster(opts: { silent?: boolean; force?: boolean } = {}) {
 // --- Determine active campaign from the main project's registry ---
 function readActiveSlug(): string {
   try {
-    const p = path.join(process.env.DMW_DATA_DIR || path.join(__dirname, "..", "..", "data"), "active-campaign.json");
+    const p = path.join(sharedDataDir(), "active-campaign.json");
     return (JSON.parse(fs.readFileSync(p, "utf-8")) as { slug: string }).slug || "";
   } catch { return ""; }
 }
@@ -1049,7 +1062,7 @@ function readActiveSlug(): string {
 // is shard-specific, so it needs this to open the right editor.
 function readActiveRoll20Id(): string {
   try {
-    const dir = process.env.DMW_DATA_DIR || path.join(__dirname, "..", "..", "data");
+    const dir = sharedDataDir();
     const slug = readActiveSlug();
     if (!slug) return "";
     const campaigns = JSON.parse(fs.readFileSync(path.join(dir, "campaigns.json"), "utf-8")) as Record<string, { roll20CampaignId?: string }>;
