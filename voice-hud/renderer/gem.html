@@ -435,8 +435,9 @@
   #debug-log { flex: 1; overflow-y: auto; font-family: ui-monospace, Consolas, monospace;
     font-size: 11px; line-height: 1.65; padding-right: 4px; color: #b09898; }
   .log-line { padding: 0 4px; white-space: pre-wrap; word-break: break-all; }
-  .log-line.log-err { color: #ff9080; }
-  .log-line.log-ok  { color: #80d880; }
+  .log-line.log-err  { color: #ff9080; }
+  .log-line.log-warn { color: #e0c060; }
+  .log-line.log-ok   { color: #80d880; }
   .log-ts { color: rgba(150,100,110,.55); margin-right: 6px; user-select: none; }
 
   /* ---- SVG jeweler's setting overlay — fixed, never scaled ---- */
@@ -850,6 +851,7 @@
         <div class="config-section">
           <div class="config-section-title">Speech recognition ★</div>
           <div class="config-row"><label>Partial interval (ms)</label><input id="cfg-partial-ms" type="number" min="200" max="5000" /></div>
+          <div class="config-row"><label title="Release base URL the 'Enable GPU acceleration' download pulls the whisper-cublas binaries from. The matching zip name is appended automatically. Change this if whisper.cpp moves org or tag.">GPU binaries URL</label><input id="cfg-whisper-cublas-url" placeholder="https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1" /></div>
         </div>
 
         <div class="config-section">
