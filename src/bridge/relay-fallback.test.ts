@@ -1,42 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { shouldFallback } from "./roll20.js";
-import { RtPreSendError } from "./roll20-rt.js";
-
-const timeoutErr = new Error("rt relay timeout after 30000ms for action: apply_damage");
-const preSendErr = new RtPreSendError("rt pre-send (getConn): auth failed");
-
-describe("shouldFallback", () => {
-  it("(a) read-only timeout: falls back", () => {
-    expect(shouldFallback("getTokens", timeoutErr)).toBe(true);
-  });
-
-  it("(a) read-only pre-send: falls back", () => {
-    expect(shouldFallback("getTurnOrder", preSendErr)).toBe(true);
-  });
-
-  it("(b) mutating post-send timeout: NOW falls back (same-nonce resend is idempotent via Mod LRU)", () => {
-    // Previously this returned false to prevent double-apply. Now that the Mod's
-    // PROCESSED_NONCES LRU deduplicates same-nonce resends, and relayCommand threads
-    // the same nonce into the fallback transport, this is safe.
-    expect(shouldFallback("apply_damage", timeoutErr)).toBe(true);
-    expect(shouldFallback("update_token_hp", timeoutErr)).toBe(true);
-    expect(shouldFallback("advance_turn", timeoutErr)).toBe(true);
-  });
-
-  it("(c) mutating pre-send failure: falls back", () => {
-    expect(shouldFallback("apply_damage", preSendErr)).toBe(true);
-    expect(shouldFallback("advance_turn", preSendErr)).toBe(true);
-  });
-
-  it("(d) any action with any error: always falls back", () => {
-    // shouldFallback is now unconditionally true — the nonce thread-through in
-    // relayCommand is the mechanism that prevents double-apply, not the fallback gate.
-    const genericErr = new Error("connection reset");
-    expect(shouldFallback("createObj", genericErr)).toBe(true);
-    expect(shouldFallback("batchExec", timeoutErr)).toBe(true);
-    expect(shouldFallback("send_narration", preSendErr)).toBe(true);
-  });
-});
+import { describe, it, expect, afterEach } from "vitest";
 
 describe("relayCommand nonce pass-through (via __setBridgeTestTransport)", () => {
   // These tests verify that relayCommand generates a nonce and uses the test transport.

@@ -274,7 +274,7 @@ async function harvestPage(
   return rec;
 }
 
-export async function harvest(opts: { campaign?: string; page?: string; limit?: number; imageUrl?: string; capture?: boolean; source?: string } = {}): Promise<number> {
+export async function harvest(opts: { campaign?: string; page?: string; pageIds?: string[]; limit?: number; imageUrl?: string; capture?: boolean; source?: string } = {}): Promise<number> {
   if (opts.campaign) {
     setActiveCampaign(opts.campaign);
     // Rebind the editor (and lazily the RT connection) to the newly-active campaign — otherwise a

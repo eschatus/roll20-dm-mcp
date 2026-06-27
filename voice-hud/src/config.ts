@@ -132,11 +132,36 @@ export const CONFIG = {
   // Right-Shift (UiohookKey "ShiftRight") — pairs with Right-Ctrl PTT. Esc cancels.
   confirmKey: process.env.DMW_CONFIRM_KEY || "ShiftRight",
 
-  // STT engine selector. "faster-whisper" = the Python sidecar (default). "whispercpp"
-  // = the native prebuilt whisper.cpp CLI binary (one-shot, reloads per clip). "whisperserver"
-  // = whisper-server.exe kept resident (model loads once; much lower per-clip latency).
-  // The factory falls back to faster-whisper if the selected engine fails to start.
-  sttEngine: (process.env.DMW_STT_ENGINE || "faster-whisper") as "faster-whisper" | "whispercpp" | "whisperserver",
+  // --- PTT stuck-key guards (issue #107) ---
+  // uiohook is a passive listener: if the keyup/mouseup is ever MISSED (focus
+  // switch, OS swallowing the event, hook stall, lock screen, a modifier combo
+  // eating the up), the hook would latch "down" forever — recording never stops
+  // and the partial loop keeps shipping useless transcriptions to Claude. Two
+  // complementary guards (both routed through the normal release path) prevent it.
+  //
+  // 1) Stuck-key sweep (watchdog): while held, on this interval we check whether
+  // the key is ACTUALLY still physically pressed; if not, force a release. The
+  // cross-platform signal we rely on is uiohook auto-repeat keydown events, which
+  // the OS emits periodically while a key is physically held — see ptt.ts.
+  pttSweepMs: Number(process.env.DMW_PTT_SWEEP_MS) || 1500,
+  // Staleness window for the sweep: if we're "down" but have seen NO keydown for
+  // our PTT key within this many ms, the key is almost certainly no longer held
+  // (auto-repeat has stopped) → force release. Kept generous because OS auto-repeat
+  // rates vary (typical first-repeat delay 250–1000 ms, then ~30–500 ms cadence);
+  // must comfortably exceed the slowest repeat interval to avoid false releases.
+  pttStaleMs: Number(process.env.DMW_PTT_STALE_MS) || 2500,
+  // 2) Max-hold backstop: force release after a press is held longer than this,
+  // regardless of physical state. Guaranteed catch-all for when auto-repeat polling
+  // is unavailable or wrong (notably the mouse-button case, which has no repeat).
+  // Generous so a legitimately long-but-intentional hold isn't cut short.
+  pttMaxHoldMs: Number(process.env.DMW_PTT_MAX_HOLD_MS) || 75000,
+
+  // STT engine selector. "whisperserver" (DEFAULT) = whisper-server.exe kept resident (the
+  // vendored whisper.cpp; model loads once, low per-clip latency). "whispercpp" = the one-shot
+  // whisper.cpp CLI (reloads per clip). "faster-whisper" = the Python sidecar — MOTHBALLED (#46):
+  // it's never used unless explicitly selected here, so no Python is required by default anywhere.
+  // The factory only falls between the two whisper.cpp engines; it never falls back to Python.
+  sttEngine: (process.env.DMW_STT_ENGINE || "whisperserver") as "faster-whisper" | "whispercpp" | "whisperserver",
   // whisper.cpp prebuilt CLI binary. Default = the bundled release under the asset root
   // (CPU on win32). DMW_ASSET_ROOT is set by bootstrap.ts to Electron's resourcesPath in a
   // packaged build; in dev it's unset → __dirname/.. (= voice-hud/data), unchanged.

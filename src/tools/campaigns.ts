@@ -1,4 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import path from "path";
 import { z } from "zod";
 import * as campaigns from "../registry/campaigns.js";
 import { reconnectRoll20 } from "../bridge/roll20.js";
@@ -189,8 +190,8 @@ export function registerCampaignTools(server: McpServer): void {
     },
     async ({ scriptPath }) => {
       const { roll20CampaignId } = campaigns.getActiveCampaign();
-      const resolvedPath = scriptPath ?? (await import("path")).default.resolve("mod-scripts/ai-relay.js");
-      const result = await deployModScript(roll20CampaignId, resolvedPath);
+      const resolvedPath = scriptPath ?? path.resolve("mod-scripts/ai-relay.js");
+      const result = await deployModScript(roll20CampaignId, resolvedPath, { tabName: "ai-relay.js" });
       return {
         content: [{ type: "text", text: `Deployed ${result.linesWritten} lines to campaign ${roll20CampaignId}.` }],
       };

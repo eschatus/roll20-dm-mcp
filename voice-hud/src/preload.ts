@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld("dmw", {
   getCampaignData: () => ipcRenderer.invoke("get-campaign-data"),
   saveCampaignData: (data: unknown) => ipcRenderer.invoke("save-campaign-data", data),
   addVocab: (term: string) => ipcRenderer.invoke("add-vocab", term),
+  setPronoun: (p: { term: string; pronouns: string }) => ipcRenderer.invoke("set-pronoun", p),
   rebuildRoster: () => ipcRenderer.invoke("rebuild-roster"),
 
   // Training panel / After-Action Review (the reinforcement loop)
@@ -89,6 +90,18 @@ contextBridge.exposeInMainWorld("dmw", {
   saveApiKey: (key: string) => ipcRenderer.invoke("save-api-key", key),
   connectRoll20: () => ipcRenderer.invoke("connect-roll20"),
   connectDdb: () => ipcRenderer.invoke("connect-ddb"),
+  // STT model upgrade — download a bigger whisper.cpp model for final transcription
+  getSttModels: () => ipcRenderer.invoke("get-stt-models"),
+  selectSttModel: (id: string) => ipcRenderer.invoke("select-stt-model", id),
+  onSttModelProgress: (cb: (d: { id: string; pct: number; recvMB: number }) => void) =>
+    ipcRenderer.on("stt-model-progress", (_e, d) => cb(d)),
+  // GPU acceleration — detect hardware + download the matching whisper.cpp GPU build
+  getGpuStatus: () => ipcRenderer.invoke("get-gpu-status"),
+  enableGpu: () => ipcRenderer.invoke("enable-gpu"),
+  onGpuProgress: (cb: (d: { pct: number; recvMB: number }) => void) =>
+    ipcRenderer.on("gpu-progress", (_e, d) => cb(d)),
+  // Copy the ai-relay.js Mod source to the clipboard for manual Roll20 deploy
+  copyModScript: () => ipcRenderer.invoke("copy-mod-script"),
 
   // Reconnect MCP (in case server wasn't up at HUD start)
   reconnectMcp: () => ipcRenderer.invoke("reconnect-mcp"),

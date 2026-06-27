@@ -4,7 +4,20 @@ import { newBrowserPage } from "./browser.js";
 
 let _modPage: Page | null = null;
 
-async function getModPage(campaignId: string): Promise<Page> {
+// Match an API-editor tab by filename. Tab text is icon-prefixed (e.g. "G\n\nai-relay.js"), so we
+// split on whitespace and match by TOKEN equality — `includes` (substring) is too broad and would
+// match "old-ai-relay.js" when looking for "ai-relay.js" (the #87 fix). We accept EITHER the full
+// name ("ai-relay.js") or its base name with the extension stripped ("ai-relay"): Roll20 strips the
+// extension when it auto-names a script tab whose filename contains a dot (bug #98), so the tab text
+// tokenizes to ["ai-relay"] and would never equal "ai-relay.js".
+export function tabNameMatches(tabText: string, name: string): boolean {
+  const tokens = tabText.trim().toLowerCase().split(/\s+/);
+  const want = name.toLowerCase();
+  const wantBase = want.replace(/\.[^.]+$/, ""); // "ai-relay.js" -> "ai-relay"
+  return tokens.includes(want) || tokens.includes(wantBase);
+}
+
+export async function getModPage(campaignId: string): Promise<Page> {
   const modUrl = `https://app.roll20.net/campaigns/scripts/${campaignId}`;
 
   let page: Page;
@@ -76,28 +89,60 @@ export async function readModConsole(campaignId: string): Promise<string[]> {
 export async function deployModScript(
   campaignId: string,
   scriptPath: string,
-  opts: { requireExisting?: boolean } = {}
+  opts: { requireExisting?: boolean; tabName?: string } = {}
 ): Promise<{ saved: boolean; linesWritten: number; created: boolean }> {
   const content = readFileSync(scriptPath, "utf-8");
   const page = await getModPage(campaignId);
 
-  // Match an existing tab by filename. Tab text is icon-prefixed (e.g. "G\n\nai-relay.js"), so
-  // compare with `includes`, not `===` (the old `===` never matched and always clobbered).
-  const scriptName = scriptPath.split(/[\\/]/).pop() ?? "ai-relay.js";
-  const tabHref: string | null = await page.evaluate((name: string) => {
-    const tabs = [...document.querySelectorAll('#scriptorder a[data-toggle="tab"]')];
-    const userTabs = tabs.filter(a => {
-      const href = a.getAttribute("href") ?? "";
-      return href.startsWith("#script-") && href !== "#script-library" && href !== "#script-new";
-    });
-    const byName = userTabs.find(a => (a.textContent ?? "").trim().toLowerCase().includes(name.toLowerCase()));
-    return byName ? byName.getAttribute("href") : null;
-  }, scriptName);
+  // tabName overrides the default (basename of scriptPath) — used when deploying a minified
+  // artifact (.ai-relay.deploy.js) that should update the canonical "ai-relay.js" tab.
+  const scriptName = opts.tabName ?? scriptPath.split(/[\\/]/).pop() ?? "ai-relay.js";
 
-  // --- Update path: an ai-relay.js tab already exists ---
-  if (tabHref) {
-    await page.click(`a[href="${tabHref}"]`);
-    const paneId = tabHref.slice(1);
+  // Pull the raw tab list (href + text) out of the page as plain data, then do all name-matching
+  // in Node via `tabNameMatches`. Keeping the matcher Node-side (not inside page.evaluate, which
+  // can't reference Node functions) makes `tabNameMatches` the single source of truth shared with
+  // delete-duplicate-relay.ts.
+  const userTabs: Array<{ href: string; text: string }> = await page.evaluate(() => {
+    return [...document.querySelectorAll('#scriptorder a[data-toggle="tab"]')]
+      .filter(a => {
+        const href = a.getAttribute("href") ?? "";
+        return href.startsWith("#script-") && href !== "#script-library" && href !== "#script-new";
+      })
+      .map(a => ({ href: a.getAttribute("href") ?? "", text: a.textContent ?? "" }));
+  });
+
+  const byName = userTabs.find(t => tabNameMatches(t.text, scriptName));
+  let resolvedTabHref: string | null;
+  let isFallback: boolean;
+  if (byName) {
+    resolvedTabHref = byName.href;
+    isFallback = false;
+  } else if (userTabs.length === 1) {
+    // If exactly one user tab exists and we can't match by name, use it — the tab may have been
+    // created under a different name (e.g. "api-relay.js" or a Roll20 auto-name). The caller still
+    // controls whether to accept this via requireExisting semantics.
+    resolvedTabHref = userTabs[0].href;
+    isFallback = true;
+  } else {
+    resolvedTabHref = null;
+    isFallback = false;
+  }
+  if (isFallback) {
+    // Bug #85: refuse the fallback when requireExisting is set — the single existing tab is not
+    // the relay and overwriting it would clobber an unrelated Mod.
+    if (opts.requireExisting) {
+      throw new Error(
+        `deployModScript: no tab named "${scriptName}" found; single-tab fallback refused because requireExisting is set — ` +
+        `the existing tab is not the relay. Deploy the first copy via the MCP deploy_mod_script tool, then retry.`
+      );
+    }
+    console.error(`[mod-editor] no tab named "${scriptName}" found; updating the only existing user script tab (single-tab fallback)`);
+  }
+
+  // --- Update path: an ai-relay.js tab already exists (or single-tab fallback) ---
+  if (resolvedTabHref) {
+    await page.click(`a[href="${resolvedTabHref}"]`);
+    const paneId = resolvedTabHref.slice(1);
     await page.waitForFunction(
       (id: string) => document.getElementById(id)?.classList.contains("active"),
       paneId,

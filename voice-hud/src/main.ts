@@ -6,19 +6,21 @@
 // for a confirm (PTT tap = confirm, Esc = cancel). Per-campaign vocab/nicknames/
 // notes are editable via the wizard panel (expanded mode).
 
-import { app, BrowserWindow, ipcMain, screen, Menu } from "electron";
+import { app, BrowserWindow, ipcMain, screen, Menu, clipboard } from "electron";
 import "./bootstrap"; // MUST precede ./config — sets DMW_DATA_DIR/ROLL20_DATA_DIR when packaged
 import * as path from "path";
 import * as fs from "fs";
+import * as child_process from "child_process";
 import * as dotenv from "dotenv";
 import { CONFIG } from "./config";
 import { PttHook } from "./ptt";
 import { startStt, startFinalStt, SttEngine } from "./stt";
 import { ensureServerRunning, stopServer } from "./serverSupervisor";
+import { harvestRoll20, harvestDdb } from "./harvest";
 import { McpRoll20 } from "./mcp";
 import { DmAgent } from "./agent";
 import { buildRoster, clearRosterCache } from "./roster";
-import { loadCampaignData, saveCampaignData, buildVocabPrompt, buildVocabList, addVocabTerm, addCorrection, CampaignData } from "./campaignData";
+import { loadCampaignData, saveCampaignData, buildVocabPrompt, buildVocabList, addVocabTerm, addCorrection, setPronoun, annotateName, CampaignData } from "./campaignData";
 import { loadBaseVocab } from "./baseVocab";
 import { correctTranscript, DEFAULT_LITERAL_MAP } from "./correction";
 import { runAar } from "./aar";
@@ -66,7 +68,7 @@ let mode: Mode = "ghost";
 
 // Active campaign + its editable data (vocab/nicknames/notes) and live roster names.
 let activeSlug = "";
-let campaignData: CampaignData = { slug: "", vocab: [], nicknames: [], notes: "", corrections: {} };
+let campaignData: CampaignData = { slug: "", vocab: [], nicknames: [], notes: "", corrections: {}, pronouns: {} };
 let rosterNames: string[] = [];
 // Global STT base vocab (common D&D terms), loaded once at startup. Separate from
 // per-campaign vocab; extend via <dataDir>/base-vocab.json. Relaunch to pick up edits.
@@ -262,7 +264,9 @@ function wireClipHandler() {
     let abClip: string | null = null;
     if (process.env.DMW_SAVE_CLIPS === "1") {
       try {
-        const dir = path.join(__dirname, "..", "data", "ab-clips");
+        // Per-user data dir (DMW_DATA_DIR when packaged) — NOT __dirname-relative, which in a
+        // packaged build resolves inside the read-only app.asar and silently fails to write.
+        const dir = path.join(process.env.DMW_DATA_DIR || CONFIG.dataDir, "ab-clips");
         fs.mkdirSync(dir, { recursive: true });
         // Hard budget so an enabled capture never balloons: skip (never delete) once the
         // corpus would exceed the byte cap (default 1 GB) or the file cap. Override via
@@ -274,7 +278,7 @@ function wireClipHandler() {
         const incoming = fs.statSync(wavPath).size;
         if (audio.length >= maxFiles || used + incoming > maxBytes) {
           if (!abClipBudgetWarned) {
-            console.error(`[ab-clip] corpus full (${audio.length} clips, ${(used / 1e6).toFixed(0)} MB) — not saving more. Prune data/ab-clips/ to resume.`);
+            console.error(`[ab-clip] corpus full (${audio.length} clips, ${(used / 1e6).toFixed(0)} MB) — not saving more. Prune ${dir} to resume.`);
             abClipBudgetWarned = true;
           }
         } else {
@@ -397,7 +401,7 @@ async function runAgent(transcript: string, lowConfidence = false) {
       onToolResult: (name, resultText) => { console.error(`[agent] tool ✓ ${name}: ${resultText.slice(0, 60)}`); send("agent", { kind: "result", text: `${name} ✓`, detail: resultText }); },
       onProposeWrite: (name, args) => new Promise<boolean>((resolve) => {
         pendingConfirm = resolve;
-        send("agent", { kind: "confirm", text: `${name}(${shortArgs(args)})` });
+        send("agent", { kind: "confirm", text: humanizeToolCall(name, args) });
         send("state", "confirm");
       }),
       onPhaseChange: (phase) => {
@@ -440,6 +444,44 @@ function shortArgs(args: unknown): string {
   } catch { return ""; }
 }
 
+// Turn a pending write-tool call into a human-readable sentence for the confirm prompt — so the DM
+// reads "deal 12 damage to Strahd", not update_token_hp({"id":"-Abc","hp":12}). Token ids resolve to
+// names via rosterTokenById; anything unmapped falls back to a de-snaked name + its readable args.
+function humanizeToolCall(name: string, args: unknown): string {
+  const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
+  const nameOf = (k: string): string => { const v = a[k]; return typeof v === "string" ? (rosterTokenById[v] || v) : ""; };
+  const who = nameOf("tokenId") || nameOf("id") || (typeof a.name === "string" ? a.name : "") || "a token";
+  const num = (k: string): number | undefined => (typeof a[k] === "number" ? (a[k] as number) : undefined);
+  switch (name) {
+    case "update_token_hp": {
+      const hp = num("hp"); const d = num("delta") ?? num("damage") ?? num("amount");
+      if (hp !== undefined) return `set ${who}'s HP to ${hp}`;
+      if (d !== undefined) return d < 0 ? `deal ${-d} damage to ${who}` : `heal ${who} for ${d}`;
+      return `change ${who}'s HP`;
+    }
+    case "update_hp_many": case "resolve_aoe": return "apply area-of-effect damage to the targets";
+    case "set_token_marker": case "toggle_condition": case "toggleCondition": {
+      const c = (a.marker || a.condition || a.state || "a condition") as string;
+      const off = a.on === false || a.remove === true;
+      return `${off ? "remove" : "give"} ${who} the ${c} ${a.condition ? "condition" : "marker"}`;
+    }
+    case "send_narration": return `narrate to the players: "${String(a.text || a.message || "").slice(0, 90)}"`;
+    case "advance_turn": return "advance to the next turn";
+    case "roll_initiative": return "roll initiative";
+    case "create_zone": return `create the ${a.name || a.type || "spell"} zone`;
+    case "clear_zone": return "clear a zone";
+    case "set_token_props": return `update ${who}`;
+    default: {
+      const verb = name.replace(/_/g, " ");
+      const parts = Object.entries(a)
+        .filter(([, v]) => v != null && typeof v !== "object")
+        .slice(0, 3)
+        .map(([k, v]) => `${k} ${typeof v === "string" && rosterTokenById[v] ? rosterTokenById[v] : v}`);
+      return parts.length ? `${verb} — ${parts.join(", ")}` : verb;
+    }
+  }
+}
+
 // Write/merge key=value pairs into voice-hud/.env for persistence across restarts.
 function writeHudEnv(updates: Record<string, string>) {
   const envPath = path.join(__dirname, "..", ".env");
@@ -467,6 +509,11 @@ function wireWizard() {
   });
   ipcMain.handle("add-vocab", (_e, term: string) => {
     campaignData = addVocabTerm(activeSlug, term);
+    return { ok: true, data: campaignData };
+  });
+  // Set (or clear) pronouns for a proper noun. Empty pronouns string removes the entry.
+  ipcMain.handle("set-pronoun", (_e, p: { term: string; pronouns: string }) => {
+    campaignData = setPronoun(activeSlug, p.term, p.pronouns);
     return { ok: true, data: campaignData };
   });
   // After-Action Review: run on demand (the auto-run is in onPhaseChange at combat end).
@@ -587,6 +634,10 @@ function wireWizard() {
     ollamaUrl: CONFIG.ollamaUrl,
     ollamaModel: CONFIG.ollamaModel,
     whisperClipMs: CONFIG.whisperClipMs,
+    // A/B clip corpus (data/ab-clips/) — env-driven, read live per clip in the clip handler.
+    saveClips: process.env.DMW_SAVE_CLIPS === "1",
+    saveClipsMaxMb: Number(process.env.DMW_SAVE_CLIPS_MAX_MB) || 1024,
+    saveClipsMaxFiles: Number(process.env.DMW_SAVE_CLIPS_MAX_FILES) || 250,
   }));
 
   // --- Setup wizard (first-run onboarding) ---
@@ -616,19 +667,169 @@ function wireWizard() {
     return { ok: true };
   });
 
-  // Token harvests — force the relevant transport once; the server opens the (visible) browser
-  // for login + caches the token on success. We don't strictly trust the tool's return (the
-  // interactive login can outlast a tool timeout) — the renderer re-reads get-setup-status, and
-  // the cached token file is the real success signal.
-  // Roll20: any relay read drives roll20-rt → intercepts signInWithCustomToken → caches the token.
+  // Token harvests — done NATIVELY in the gem (Electron BrowserWindow), not via the server's
+  // Playwright (which the packaged installer doesn't ship). The gem opens a visible window, the
+  // user logs in, and we write the SAME cache files the server reads. The renderer re-reads
+  // get-setup-status afterward — the cached token file is the real success signal. (See #65.)
+  // Roll20: harvest is per-campaign (RTDB shard), so an active campaign must be registered first.
   ipcMain.handle("connect-roll20", async () => {
-    try { await mcp.call("list_tokens", {}); return { ok: true }; }
-    catch (e) { return { ok: false, error: (e as Error).message }; }
+    const campaignId = readActiveRoll20Id();
+    if (!campaignId) return { ok: false, error: "no active campaign — register/switch to one first, then Connect Roll20" };
+    return harvestRoll20(campaignId, (m) => console.error(m));
   });
-  // D&D Beyond: ddb_list_campaigns harvests the CobaltSession cookie AND returns the games list.
-  ipcMain.handle("connect-ddb", async () => {
-    try { const r = await mcp.call("ddb_list_campaigns", {}); return { ok: true, result: String(r).slice(0, 400) }; }
-    catch (e) { return { ok: false, error: (e as Error).message }; }
+  // D&D Beyond: harvest the CobaltSession cookie. Afterward ask the gem "list my games" to use it.
+  ipcMain.handle("connect-ddb", async () => harvestDdb((m) => console.error(m)));
+
+  // STT model upgrade — base.en ships bundled (fast live partials); the user can download a bigger
+  // model used for FINAL transcription (two-tier via DMW_WHISPER_FINAL_MODEL). No browser needed.
+  ipcMain.handle("get-stt-models", () => {
+    const dir = path.join(process.env.DMW_DATA_DIR || CONFIG.dataDir, "models");
+    const finalPath = process.env.DMW_WHISPER_FINAL_MODEL || CONFIG.whisperFinalModel || "";
+    const current = finalPath ? path.basename(finalPath).replace(/^ggml-|\.bin$/g, "") : "base.en";
+    const models = STT_MODELS.map((m) => ({
+      ...m,
+      present: !!m.bundled || fs.existsSync(path.join(dir, `ggml-${m.id}.bin`)),
+    }));
+    return { models, current };
+  });
+  // Download (if needed) and select a model for FINAL transcription. base.en clears the final
+  // tier (single-tier base). Anything else downloads to <dataDir>/models and becomes the final
+  // model with base.en kept as the fast-partial primary. Restart applies it (★ STT setting).
+  ipcMain.handle("select-stt-model", async (_e, id: string) => {
+    const model = STT_MODELS.find((m) => m.id === id);
+    if (!model) return { ok: false, error: `unknown model: ${id}` };
+    try {
+      if (id === "base.en") {
+        process.env.DMW_WHISPER_FINAL_MODEL = "";
+        upsertEnv("DMW_WHISPER_FINAL_MODEL", "");
+        return { ok: true, restart: true };
+      }
+      const dir = path.join(process.env.DMW_DATA_DIR || CONFIG.dataDir, "models");
+      const dest = path.join(dir, `ggml-${id}.bin`);
+      if (!fs.existsSync(dest)) await downloadModel(id, dest);
+      process.env.DMW_WHISPER_FINAL_MODEL = dest;
+      upsertEnv("DMW_WHISPER_FINAL_MODEL", dest);
+      return { ok: true, restart: true };
+    } catch (e) { return { ok: false, error: (e as Error).message }; }
+  });
+
+  // GPU status — detect NVIDIA/Apple/CPU and return the result to the Setup tab.
+  ipcMain.handle("get-gpu-status", async () => detectGpu());
+
+  // GPU engine download — NVIDIA only. Downloads the matching whisper-cublas zip from the
+  // whisper.cpp release page, extracts it, wires up DMW_WHISPER_SERVER_BIN/DMW_WHISPER_BIN,
+  // and persists the paths to <dataDir>/.env. Mirrors the downloadModel() pattern.
+  ipcMain.handle("enable-gpu", async () => {
+    let gpu: GpuStatus;
+    try { gpu = await detectGpu(); } catch (e) { return { ok: false, error: (e as Error).message }; }
+    if (gpu.kind !== "nvidia") return { ok: false, error: "NVIDIA GPU not detected" };
+
+    // Pick CUDA tier from the driver/runtime version string (e.g. "12.4", "11.8.89", "527.00").
+    // nvidia-smi --query-gpu=driver_version on Windows returns the Windows display driver version
+    // (e.g. "527.00") where the CUDA major version is floor(driverVer / 10).  On Linux it
+    // returns the CUDA runtime version directly. We do a simple major-version parse on whatever
+    // we got and clamp to 11 or 12.
+    const rawVer = gpu.cudaVersion || "0";
+    const major = parseInt(rawVer.split(".")[0], 10) || 0;
+    // Windows display-driver numbering: >=512 → CUDA 12; >=452 → CUDA 11; else assume CPU epoch.
+    const cudaTier = (major >= 12 || major >= 512) ? "12.4.0"
+                   : (major >= 11 || major >= 452) ? "11.8.0"
+                   : "12.4.0"; // default to 12 if we can't parse
+
+    const tag = "v1.7.5";
+    const zipName = `whisper-cublas-${cudaTier}-bin-x64.zip`;
+    const url = `https://github.com/ggerganov/whisper.cpp/releases/download/${tag}/${zipName}`;
+    const dataDir = process.env.DMW_DATA_DIR || CONFIG.dataDir;
+    const destDir = path.join(dataDir, "whisper-cublas");
+    const zipPath = path.join(dataDir, zipName);
+    const zipPart = `${zipPath}.part`;
+
+    try {
+      fs.mkdirSync(destDir, { recursive: true });
+      // Stream download with progress (same pattern as downloadModel).
+      const res = await fetch(url);
+      if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status}`);
+      const total = Number(res.headers.get("content-length")) || 0;
+      const out = fs.createWriteStream(zipPart);
+      let recv = 0, lastPct = -1;
+      const reader = (res.body as { getReader(): { read(): Promise<{ done: boolean; value?: Uint8Array }>; releaseLock?(): void } }).getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          if (!out.write(Buffer.from(value))) await new Promise<void>((r) => out.once("drain", () => r()));
+          recv += value.length;
+          const pct = total ? Math.floor((recv / total) * 100) : 0;
+          if (pct !== lastPct) { lastPct = pct; send("gpu-progress", { pct, recvMB: Math.round(recv / 1e6) }); }
+        }
+      } finally { reader.releaseLock?.(); }
+      await new Promise<void>((resolve, reject) => out.end((e?: Error | null) => (e ? reject(e) : resolve())));
+      fs.renameSync(zipPart, zipPath);
+
+      // Extract zip using Windows 10+ bsdtar (bundled as tar.exe) which handles .zip natively.
+      await new Promise<void>((resolve, reject) => {
+        const tar = child_process.spawn("tar", ["-xf", zipPath, "-C", destDir], {
+          windowsHide: true,
+        });
+        let errOut = "";
+        tar.stderr.on("data", (d: Buffer) => { errOut += d.toString(); });
+        tar.on("error", reject);
+        tar.on("close", (code: number | null) => {
+          if (code !== 0) reject(new Error(`tar failed (${code}): ${errOut}`));
+          else resolve();
+        });
+      });
+      // Clean up the zip after extraction.
+      fs.promises.unlink(zipPath).catch(() => {});
+
+      // Find the server binary inside the extracted dir (may be in a sub-folder).
+      // whisper-cublas zips typically have a top-level flat layout or a single sub-dir.
+      const binName = process.platform === "win32" ? "whisper-server.exe" : "whisper-server";
+      const mainBinName = process.platform === "win32" ? "whisper.exe" : "whisper";
+      function findBin(dir: string, target: string): string | null {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const e of entries) {
+          if (e.isFile() && e.name === target) return path.join(dir, e.name);
+          if (e.isDirectory()) {
+            const found = findBin(path.join(dir, e.name), target);
+            if (found) return found;
+          }
+        }
+        return null;
+      }
+      const serverBin = findBin(destDir, binName);
+      const mainBin   = findBin(destDir, mainBinName);
+
+      if (serverBin) {
+        process.env.DMW_WHISPER_SERVER_BIN = serverBin;
+        upsertEnv("DMW_WHISPER_SERVER_BIN", serverBin);
+      }
+      if (mainBin) {
+        process.env.DMW_WHISPER_BIN = mainBin;
+        upsertEnv("DMW_WHISPER_BIN", mainBin);
+      }
+      if (!serverBin && !mainBin) {
+        return { ok: false, error: `extracted zip but could not find ${binName} or ${mainBinName} inside ${destDir}` };
+      }
+      return { ok: true, restart: true, serverBin, mainBin, cudaTier };
+    } catch (e) {
+      // Clean up partial files on failure.
+      try { fs.promises.unlink(zipPart).catch(() => {}); } catch { /* ignore */ }
+      return { ok: false, error: (e as Error).message };
+    }
+  });
+
+  // Copy the ai-relay.js Mod source to the clipboard for manual deploy (Roll20 → Settings → API
+  // Scripts → New Script → paste → Save). Avoids bundling Playwright/Chromium just to automate the
+  // paste; the automated path stays available from Claude Code (`npm run release:mod`).
+  ipcMain.handle("copy-mod-script", () => {
+    try {
+      const assetRoot = process.env.DMW_ASSET_ROOT || path.join(__dirname, "..", "..");
+      const src = fs.readFileSync(path.join(assetRoot, "mod-scripts", "ai-relay.js"), "utf-8");
+      clipboard.writeText(src);
+      return { ok: true, bytes: src.length };
+    } catch (e) { return { ok: false, error: (e as Error).message }; }
   });
 
   // Config write: update CONFIG in memory (immediate) + persist to voice-hud/.env (restarts).
@@ -640,6 +841,7 @@ function wireWizard() {
       model: "DMW_MODEL", autoEscalate: "DMW_AUTO_ESCALATE",
       ollamaUrl: "DMW_OLLAMA_URL", ollamaModel: "DMW_OLLAMA_MODEL",
       whisperClipMs: "DMW_WHISPER_CLIP_MS",
+      saveClips: "DMW_SAVE_CLIPS", saveClipsMaxMb: "DMW_SAVE_CLIPS_MAX_MB", saveClipsMaxFiles: "DMW_SAVE_CLIPS_MAX_FILES",
     };
     const envUpdates: Record<string, string> = {};
     for (const [key, val] of Object.entries(updates)) {
@@ -654,6 +856,11 @@ function wireWizard() {
       if (key === "ollamaUrl"      && typeof val === "string")  CONFIG.ollamaUrl = val;
       if (key === "ollamaModel"    && typeof val === "string")  CONFIG.ollamaModel = val;
       if (key === "whisperClipMs"  && typeof val === "number")  CONFIG.whisperClipMs = val;
+      // A/B clip flags are read live from process.env per clip, so set them now (effective with no
+      // restart) in addition to persisting via envMap below. Re-arm the "corpus full" warn-once.
+      if (key === "saveClips"         && typeof val === "boolean") { process.env.DMW_SAVE_CLIPS = val ? "1" : "0"; abClipBudgetWarned = false; }
+      if (key === "saveClipsMaxMb"    && typeof val === "number")  process.env.DMW_SAVE_CLIPS_MAX_MB = String(val);
+      if (key === "saveClipsMaxFiles" && typeof val === "number")  process.env.DMW_SAVE_CLIPS_MAX_FILES = String(val);
       if (envMap[key] !== undefined) {
         let envVal = String(val);
         if (typeof val === "boolean") envVal = val ? "1" : "0";
@@ -715,13 +922,41 @@ async function refreshRoster(opts: { silent?: boolean; force?: boolean } = {}) {
     // Fold the campaign's nickname aliases + notes into the roster block so the
     // agent can resolve "Ryan"/"Diver"→character and has party context. (These
     // were previously only used for STT vocab biasing, never shown to the model.)
-    let block = combatHeader + text;
+
+    // Annotate every name in the roster text with its pronouns where set.
+    // This replaces occurrences of the bare name with "Name (pronoun)" so the
+    // agent sees e.g. "Winsome (she/her)" and "Lachlan (they/them)" in context.
+    // We iterate names longest-first so "Vampire Spawn" is matched before "Vampire".
+    let annotatedText = text;
+    if (campaignData.pronouns && Object.keys(campaignData.pronouns).length) {
+      const sortedNames = [...names].sort((a, b) => b.length - a.length);
+      for (const name of sortedNames) {
+        const annotated = annotateName(campaignData, name);
+        if (annotated !== name) {
+          // Replace the bare name with the annotated version in the roster block.
+          // Use a word-boundary-style replace: match the name when NOT immediately
+          // followed by " (" (already annotated) to avoid double-annotation.
+          annotatedText = annotatedText.split(name + " (").join("\x00SKIP\x00")
+            .split(name).join(annotated)
+            .split("\x00SKIP\x00").join(name + " (");
+        }
+      }
+    }
+
+    let block = combatHeader + annotatedText;
     if (campaignData.nicknames?.length) {
       block += "\n\nAliases (say → means):\n" +
         campaignData.nicknames.map((n) => `- ${n.nickname} → ${n.target}`).join("\n");
     }
     if (campaignData.notes?.trim()) {
       block += "\n\nCampaign notes:\n" + campaignData.notes.trim();
+    }
+    // Surface all set pronouns explicitly so the model has them even for names
+    // not on the current map (deities, absent NPCs, etc.).
+    const pronounEntries = Object.entries(campaignData.pronouns ?? {});
+    if (pronounEntries.length) {
+      block += "\n\nPronouns:\n" +
+        pronounEntries.map(([name, p]) => `- ${name}: ${p}`).join("\n");
     }
     if (_agentTurnActive) {
       _pendingRosterBlock = block;
@@ -742,6 +977,18 @@ function readActiveSlug(): string {
   } catch { return ""; }
 }
 
+// The active campaign's Roll20 numeric id (from the shared registry) — the native Roll20 harvest
+// is shard-specific, so it needs this to open the right editor.
+function readActiveRoll20Id(): string {
+  try {
+    const dir = process.env.DMW_DATA_DIR || path.join(__dirname, "..", "..", "data");
+    const slug = readActiveSlug();
+    if (!slug) return "";
+    const campaigns = JSON.parse(fs.readFileSync(path.join(dir, "campaigns.json"), "utf-8")) as Record<string, { roll20CampaignId?: string }>;
+    return campaigns[slug]?.roll20CampaignId || "";
+  } catch { return ""; }
+}
+
 // Upsert KEY=value into <dataDir>/.env (replace the line if present, else append) so the
 // setup wizard's secrets persist to the per-user dir loaded on next launch.
 function upsertEnv(key: string, value: string): void {
@@ -752,6 +999,86 @@ function upsertEnv(key: string, value: string): void {
   const re = new RegExp(`^${key}=.*$`, "m");
   txt = re.test(txt) ? txt.replace(re, `${key}=${value}`) : `${txt.replace(/\n?$/, "\n")}${key}=${value}\n`;
   fs.writeFileSync(file, txt);
+}
+
+// GPU detection result type.
+type GpuKind = "nvidia" | "apple" | "cpu";
+interface GpuStatus { kind: GpuKind; name?: string; cudaVersion?: string }
+
+// Detect the GPU type at runtime.
+// NVIDIA: runs nvidia-smi and parses the GPU name + CUDA driver version.
+// Apple Silicon: darwin + arm64 → Metal (built into the binary, no download).
+// Otherwise: CPU.
+async function detectGpu(): Promise<GpuStatus> {
+  if (process.platform === "darwin" && process.arch === "arm64") {
+    return { kind: "apple" };
+  }
+  return new Promise((resolve) => {
+    // Try the system PATH first, then the Windows default location.
+    const candidates = process.platform === "win32"
+      ? ["nvidia-smi", "C:\\Windows\\System32\\nvidia-smi.exe"]
+      : ["nvidia-smi"];
+    let tried = 0;
+    const tryNext = () => {
+      if (tried >= candidates.length) { resolve({ kind: "cpu" }); return; }
+      const cmd = candidates[tried++];
+      const proc = child_process.spawn(cmd, ["--query-gpu=name,driver_version", "--format=csv,noheader"], {
+        timeout: 5000, windowsHide: true,
+      });
+      let out = "";
+      proc.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+      proc.on("error", tryNext);
+      proc.on("close", (code: number | null) => {
+        if (code !== 0 || !out.trim()) { tryNext(); return; }
+        const [name, driverVer] = out.trim().split(",").map((s) => s.trim());
+        // CUDA driver version is e.g. "527.92" (Windows) or "12.4...." — normalise to major.minor.
+        // The CUDA runtime version is ≤ the driver version; for download selection we care about major.
+        let cudaVersion: string | undefined;
+        if (driverVer) {
+          // nvidia-smi --format=csv gives the CUDA runtime version string (e.g. "12.4"), not the
+          // driver version, when using --query-gpu=driver_version on newer drivers. Keep as-is.
+          cudaVersion = driverVer;
+        }
+        resolve({ kind: "nvidia", name: name || undefined, cudaVersion });
+      });
+    };
+    tryNext();
+  });
+}
+
+// STT model catalog — ggml whisper.cpp models. base.en ships bundled; the rest download on demand
+// to <dataDir>/models and serve as the two-tier FINAL model (base.en stays the fast-partial primary).
+const STT_MODELS: Array<{ id: string; label: string; sizeMB: number; bundled?: boolean }> = [
+  { id: "base.en",   label: "Base (built-in, fastest)", sizeMB: 148, bundled: true },
+  { id: "small.en",  label: "Small (balanced)",         sizeMB: 488 },
+  { id: "medium.en", label: "Medium (most accurate)",   sizeMB: 1530 },
+];
+
+// Stream a ggml model from HuggingFace to disk, emitting progress to the gem. Writes to a .part
+// file then renames, so a crash never leaves a half file that looks complete.
+async function downloadModel(id: string, dest: string): Promise<void> {
+  const url = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${id}.bin?download=true`;
+  const res = await fetch(url);
+  if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status}`);
+  const total = Number(res.headers.get("content-length")) || 0;
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const tmp = `${dest}.part`;
+  const out = fs.createWriteStream(tmp);
+  let recv = 0, lastPct = -1;
+  const reader = (res.body as { getReader(): { read(): Promise<{ done: boolean; value?: Uint8Array }>; releaseLock?(): void } }).getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      if (!out.write(Buffer.from(value))) await new Promise<void>((r) => out.once("drain", () => r()));
+      recv += value.length;
+      const pct = total ? Math.floor((recv / total) * 100) : 0;
+      if (pct !== lastPct) { lastPct = pct; send("stt-model-progress", { id, pct, recvMB: Math.round(recv / 1e6) }); }
+    }
+  } finally { reader.releaseLock?.(); }
+  await new Promise<void>((resolve, reject) => out.end((e?: Error | null) => (e ? reject(e) : resolve())));
+  fs.renameSync(tmp, dest);
 }
 
 app.whenReady().then(async () => {

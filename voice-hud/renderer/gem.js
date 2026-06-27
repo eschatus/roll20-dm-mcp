@@ -153,7 +153,9 @@ function playWhisper() {
 let audioCtx = null;
 let stream = null;
 let source = null;
-let processor = null;
+let processor = null;      // legacy ScriptProcessor — used only as a fallback if AudioWorklet fails
+let workletNode = null;    // AudioWorklet capture node (primary path, #43)
+let sink = null;           // zero-gain GainNode: keeps the graph pulling without routing mic→speakers
 let chunks = [];
 let capturing = false;
 
@@ -178,14 +180,27 @@ async function startCapture() {
   audioCtx = new AudioContext();
   inRate = audioCtx.sampleRate;
   source = audioCtx.createMediaStreamSource(stream);
-  // ScriptProcessor is deprecated but dependency-free and fine for PTT-length clips.
-  processor = audioCtx.createScriptProcessor(4096, 1, 1);
-  source.connect(processor);
-  processor.connect(audioCtx.destination);
-  processor.onaudioprocess = (e) => {
-    if (!capturing) return;
-    chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-  };
+  // Zero-gain sink: connecting capture → sink → destination keeps the audio graph pulling, but the
+  // mic never reaches the speakers (gain 0) — no live monitoring/echo. (#43)
+  sink = audioCtx.createGain();
+  sink.gain.value = 0;
+  sink.connect(audioCtx.destination);
+  // Primary: AudioWorklet (off the main thread, so GC/UI stalls can't cause dropouts). Falls back to
+  // the deprecated ScriptProcessor only if the worklet module can't load (still via the zero-gain
+  // sink, so the echo fix holds either way). Both push mono Float32 frames into `chunks` unchanged.
+  try {
+    await audioCtx.audioWorklet.addModule(new URL("capture-worklet.js", document.baseURI).href);
+    workletNode = new AudioWorkletNode(audioCtx, "capture-processor", { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
+    workletNode.port.onmessage = (e) => { if (capturing && e.data && e.data.length) chunks.push(e.data); };
+    source.connect(workletNode);
+    workletNode.connect(sink);
+  } catch (err) {
+    console.error("[capture] AudioWorklet unavailable — falling back to ScriptProcessor:", (err && err.message) || err);
+    processor = audioCtx.createScriptProcessor(4096, 1, 1);
+    processor.onaudioprocess = (e) => { if (capturing) chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+    source.connect(processor);
+    processor.connect(sink); // sink, NOT destination → no echo even on the fallback path
+  }
   if (window.dmw) dmw.recStarted();
 
   // Decide the live target for this hold and remember the chatbox base text.
@@ -229,11 +244,14 @@ async function stopCapture() {
   if (!capturing) return;
   capturing = false;
   if (partialTimer) { clearInterval(partialTimer); partialTimer = null; }
+  try { if (workletNode) { workletNode.port.onmessage = null; workletNode.disconnect(); } } catch {}
   try { processor && (processor.onaudioprocess = null); } catch {}
   try { source && source.disconnect(); } catch {}
   try { processor && processor.disconnect(); } catch {}
+  try { sink && sink.disconnect(); } catch {}
   try { stream && stream.getTracks().forEach((t) => t.stop()); } catch {}
   try { audioCtx && (await audioCtx.close()); } catch {}
+  workletNode = null; processor = null; sink = null;
 
   const wav = encodeWav(mergeChunks(chunks), inRate, 16000);
   chunks = [];
@@ -291,46 +309,112 @@ function encodeWav(samples, inRate, targetRate) {
   return buffer;
 }
 
-// ---- confirm banner ----
+// ---- confirm banner (legacy element — kept so body[data-state="confirm"] ring animation still
+//      works; no longer the primary UI surface; use pushConfirm() for the chat ledger) ----
 const confirmEl = document.getElementById("confirm");
-function showConfirm(text) {
-  confirmEl.innerHTML = "<b>confirm:</b> " + escapeHtml(text) +
-    "<span class='hint'>Right-Shift to confirm · Esc to cancel</span>";
-  confirmEl.classList.add("show");
-}
+function showConfirm() { /* noop — primary confirm surface is now the chat ledger */ }
 function hideConfirm() { confirmEl.classList.remove("show"); }
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c])); }
+
+// ---- ephemeral "thinking" entry in the chat ledger (#69) ----
+// A single element placed at the bottom of the chatlog and removed once the turn produces output.
+// Never accumulates — replace in-place, never append-and-keep.
+let thinkingEl = null;
+function pushThinking() {
+  if (!chatlog) return;
+  if (thinkingEl) return; // already showing — don't duplicate
+  thinkingEl = document.createElement("div");
+  thinkingEl.className = "msg thinking";
+  thinkingEl.innerHTML = '<span class="who">gem</span><span class="thinking-dots">scrying…</span>';
+  chatlog.appendChild(thinkingEl);
+  chatlog.scrollTop = chatlog.scrollHeight;
+}
+function clearThinking() {
+  if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+}
+
+// ---- pending-confirm entry in the chat ledger (#68) ----
+// Rendered as a distinguished bubble; annotated in-place when confirmed or cancelled.
+let confirmChatEl = null;
+function pushConfirm(text) {
+  if (!chatlog) return;
+  if (confirmChatEl) { confirmChatEl.remove(); confirmChatEl = null; } // discard stale pending entry
+  clearThinking(); // thinking → confirm transition: replace the spinner with the prompt
+  confirmChatEl = document.createElement("div");
+  confirmChatEl.className = "msg confirm-pending";
+  confirmChatEl.innerHTML =
+    '<span class="who">confirm?</span>' +
+    '<span class="confirm-text">' + escapeHtml(text) + '</span>' +
+    '<span class="confirm-hint">Right-Shift to confirm \xb7 Esc to cancel</span>';
+  chatlog.appendChild(confirmChatEl);
+  chatlog.scrollTop = chatlog.scrollHeight;
+}
+function resolveConfirm(accepted) {
+  if (!confirmChatEl) return;
+  // Annotate in-place: swap class + update hint to show the outcome.
+  confirmChatEl.className = "msg confirm-" + (accepted ? "accepted" : "cancelled");
+  const hint = confirmChatEl.querySelector(".confirm-hint");
+  if (hint) hint.textContent = accepted ? "confirmed ✓" : "cancelled ✗";
+  confirmChatEl = null; // leave annotated entry in scrollback; no longer "pending"
+}
 
 // ---- main → renderer ----
 if (window.dmw) {
   dmw.onState((s) => {
     setState(s);
-    // Clear the confirm banner on ANY non-confirm state. (Bug: this used to live
-    // in an else-if chain, so "thinking" — what the confirm key sends — skipped it,
-    // leaving the last card stuck open.)
-    if (s !== "confirm") hideConfirm();
-    if (s === "listening") startCapture();
-    else if (s === "thinking") {
+    if (s === "listening") {
+      // New voice hold: clear any leftover thinking entry and start capture.
+      clearThinking();
+      startCapture();
+    } else if (s === "thinking") {
       stopCapture();
+      // Push a "scrying…" entry into the chat ledger — ephemeral feedback inside the channel.
+      pushThinking();
       // In ledger mode, releasing PTT kicks off transcription that lands seconds
       // later in the chatbox — show a pending indicator so it's not a silent wait.
       if (document.body.dataset.mode === "expanded") {
         pendingDictations++;
         document.getElementById("dictating").classList.add("show");
       }
+    } else if (s === "confirm") {
+      // Ring animation handled by CSS body[data-state="confirm"]; chat entry via onAgent below.
+    } else if (s === "idle") {
+      // Returning to idle (cancel, empty transcript, etc.) — clear the thinking spinner.
+      clearThinking();
+      hideConfirm(); // defensive: clear legacy element
+    } else if (s === "expanded") {
+      document.body.dataset.mode = "expanded"; loadWizard();
     }
-    if (s === "expanded") { document.body.dataset.mode = "expanded"; loadWizard(); }
   });
   dmw.onTranscript((t) => { showCaption(t.text, t.lowConfidence, "dm"); pushChat("dm", t.text); });
   dmw.onAgent((m) => {
-    if (m.kind === "confirm") { showConfirm(m.text); pushChat("confirm", "confirm: " + m.text); return; }
-    // Any non-confirm agent event means a prior proposal resolved — clear the banner.
-    hideConfirm();
-    if (m.kind === "say") { showCaption(m.text, false, "agent"); pushChat("agent", m.text); }
-    else if (m.kind === "error") { showCaption(m.text, true, "agent"); pushChat("err", m.text); }
-    else if (m.kind === "tool") pushChat("tool", "→ " + m.text);
-    else if (m.kind === "result") pushChat("tool", m.text + (m.detail ? "\n" + m.detail : ""));
-    else if (m.kind === "info") pushChat("tool", m.text);
+    if (m.kind === "confirm") {
+      // Write-confirmation request: the familiar (Dusty — see persona memory) asks the DM's leave,
+      // in his voice rather than a robotic status line. The humanized action is an imperative
+      // ("deal 12 damage to Strahd"), so "Shall I …?" reads naturally. Shown IN the gem (visible
+      // even in ghost mode) plus a distinguished pending chat entry.
+      showCaption("Shall I " + m.text + "?", false, "agent");
+      pushConfirm(m.text);
+      return;
+    }
+    // Any non-confirm agent event means the turn produced output — clear the thinking indicator.
+    clearThinking();
+    if (m.kind === "say") {
+      // Agent spoke: a pending confirm (if any) resolved as accepted.
+      resolveConfirm(true);
+      showCaption(m.text, false, "agent"); pushChat("agent", m.text);
+    } else if (m.kind === "info") {
+      // "cancelled" is sent by main on Esc; any other info means the turn continued normally.
+      resolveConfirm(m.text !== "cancelled");
+      pushChat("tool", m.text);
+    } else if (m.kind === "error") {
+      resolveConfirm(false);
+      showCaption(m.text, true, "agent"); pushChat("err", m.text);
+    } else if (m.kind === "tool") {
+      pushChat("tool", "→ " + m.text);
+    } else if (m.kind === "result") {
+      pushChat("tool", m.text + (m.detail ? "\n" + m.detail : ""));
+    }
   });
   dmw.onSettings((s) => { agentSound = !!s.agentSound; if (s.theme) applyTheme(s.theme); });
   dmw.onWheel((d) => nudgeScroll(d.rotation));
@@ -425,9 +509,143 @@ async function loadSetup() {
     item(s.rtToken, "Roll20 connected", "Connect Roll20 (next wizard step)") +
     item(s.cobalt, "D&D Beyond linked (optional)", "set DDB_COBALT");
   // Badge "!" until the three essentials are present.
+  const done = !!(s.apiKey && s.campaigns > 0 && s.rtToken);
   const badge = document.getElementById("setup-tab-count");
-  if (badge) badge.textContent = (s.apiKey && s.campaigns > 0 && s.rtToken) ? "" : "!";
+  if (badge) badge.textContent = done ? "" : "!";
+  // Once the essentials are done, go quiet: hide the intro nag + collapse the input steps, show a
+  // "you're all set" banner. The user can still reveal the steps via "Adjust setup" (re-connect, etc.).
+  const intro = document.getElementById("setup-intro");
+  const doneBanner = document.getElementById("setup-done");
+  const steps = document.getElementById("setup-essential-steps");
+  if (intro) intro.style.display = done ? "none" : "";
+  if (doneBanner) doneBanner.style.display = done ? "" : "none";
+  if (steps && !setupStepsForced) steps.style.display = done ? "none" : "";
+  loadSttModels();
+  loadGpuStatus();
 }
+// "Adjust setup" reveals the collapsed steps (e.g. to re-connect a dropped token) without un-doing
+// the quiet state on the next status refresh.
+let setupStepsForced = false;
+document.getElementById("setup-manage")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  setupStepsForced = true;
+  const steps = document.getElementById("setup-essential-steps");
+  if (steps) steps.style.display = "";
+});
+
+async function loadSttModels() {
+  if (!window.dmw || !dmw.getSttModels) return;
+  const wrap = document.getElementById("setup-stt-models");
+  if (!wrap) return;
+  const { models, current } = await dmw.getSttModels();
+  const size = (mb) => (mb >= 1000 ? (mb / 1000).toFixed(1) + "GB" : mb + "MB");
+  wrap.innerHTML = (models || []).map((m) =>
+    `<button class="act stt-model-btn${m.id === current ? " active" : ""}" data-id="${m.id}">` +
+    `${m.label} · ${size(m.sizeMB)}${m.id === current ? " ✓" : m.present ? "" : " ⬇"}</button>`
+  ).join("");
+  wrap.querySelectorAll(".stt-model-btn").forEach((b) => b.addEventListener("click", () => selectSttModel(b.dataset.id)));
+}
+
+async function selectSttModel(id) {
+  const msg = document.getElementById("setup-stt-msg");
+  if (!window.dmw || !msg) return;
+  msg.textContent = "preparing… (large models download once — may take a few minutes)";
+  msg.className = "msg";
+  const r = await dmw.selectSttModel(id);
+  if (r && r.ok) { msg.textContent = "model set ✓ — restart the gem to apply"; msg.className = "msg ok"; loadSttModels(); }
+  else { msg.textContent = (r && r.error) || "failed"; msg.className = "msg err"; }
+}
+
+if (window.dmw && dmw.onSttModelProgress) {
+  dmw.onSttModelProgress((d) => {
+    const msg = document.getElementById("setup-stt-msg");
+    if (msg) { msg.textContent = `downloading ${d.id}… ${d.pct}% (${d.recvMB}MB)`; msg.className = "msg"; }
+  });
+}
+
+// ---- GPU acceleration section ----
+async function loadGpuStatus() {
+  if (!window.dmw || !dmw.getGpuStatus) return;
+  const statusEl = document.getElementById("setup-gpu-status");
+  const actionsEl = document.getElementById("setup-gpu-actions");
+  const warnEl = document.getElementById("setup-gpu-warn");
+  const msgEl = document.getElementById("setup-gpu-msg");
+  if (!statusEl || !actionsEl) return;
+
+  statusEl.textContent = "detecting hardware…";
+  actionsEl.innerHTML = "";
+  if (warnEl) warnEl.style.display = "none";
+  if (msgEl) msgEl.textContent = "";
+
+  let gpu;
+  try {
+    gpu = await dmw.getGpuStatus();
+  } catch (e) {
+    statusEl.textContent = "GPU detection failed";
+    return;
+  }
+
+  if (gpu.kind === "nvidia") {
+    const cudaLabel = gpu.cudaVersion ? ` · CUDA ${gpu.cudaVersion}` : "";
+    statusEl.textContent = `NVIDIA ${gpu.name || "GPU"}${cudaLabel}`;
+    const btn = document.createElement("button");
+    btn.className = "act";
+    btn.id = "setup-gpu-enable-btn";
+    btn.textContent = "Enable GPU acceleration (downloads ~650 MB)";
+    btn.addEventListener("click", () => enableGpuAcceleration(btn));
+    actionsEl.appendChild(btn);
+  } else if (gpu.kind === "apple") {
+    statusEl.textContent = "Apple Silicon — Metal GPU (built in, no download needed)";
+    const note = document.createElement("span");
+    note.style.cssText = "font-size:12px;color:#9fd49f;";
+    note.textContent = "Real-time transcription available — no setup needed.";
+    actionsEl.appendChild(note);
+  } else {
+    statusEl.textContent = "CPU only";
+    if (warnEl) warnEl.style.display = "";
+  }
+}
+
+async function enableGpuAcceleration(btn) {
+  if (!window.dmw || !dmw.enableGpu) return;
+  const msgEl = document.getElementById("setup-gpu-msg");
+  const progressEl = document.getElementById("setup-gpu-progress");
+  const progressBar = document.getElementById("setup-gpu-progress-bar");
+  const progressLabel = document.getElementById("setup-gpu-progress-label");
+
+  if (btn) { btn.disabled = true; btn.textContent = "Downloading…"; }
+  if (msgEl) { msgEl.textContent = "downloading whisper-cublas… (one-time, ~650 MB)"; msgEl.className = "msg"; }
+  if (progressEl) progressEl.style.display = "";
+
+  const r = await dmw.enableGpu();
+  if (progressEl) progressEl.style.display = "none";
+  if (btn) { btn.disabled = false; }
+
+  if (r && r.ok) {
+    if (btn) btn.textContent = "GPU acceleration enabled ✓";
+    if (msgEl) { msgEl.textContent = "GPU engine installed — restart the gem to apply"; msgEl.className = "msg ok"; }
+  } else {
+    if (btn) btn.textContent = "Enable GPU acceleration (downloads ~650 MB)";
+    if (msgEl) { msgEl.textContent = (r && r.error) || "GPU setup failed"; msgEl.className = "msg err"; }
+  }
+}
+
+if (window.dmw && dmw.onGpuProgress) {
+  dmw.onGpuProgress((d) => {
+    const bar = document.getElementById("setup-gpu-progress-bar");
+    const label = document.getElementById("setup-gpu-progress-label");
+    if (bar) bar.style.width = d.pct + "%";
+    if (label) label.textContent = `${d.pct}% (${d.recvMB} MB)`;
+  });
+}
+
+document.getElementById("setup-copy-mod")?.addEventListener("click", async () => {
+  const msg = document.getElementById("setup-deploy-msg");
+  if (!window.dmw || !msg) return;
+  const r = await dmw.copyModScript();
+  if (r && r.ok) { msg.textContent = `copied ✓ (${Math.round(r.bytes / 1024)}KB) — paste into Roll20 → Settings → API Scripts → New Script → Save`; msg.className = "msg ok"; }
+  else { msg.textContent = (r && r.error) || "copy failed"; msg.className = "msg err"; }
+});
 document.getElementById("setup-apikey-save")?.addEventListener("click", async () => {
   const inp = document.getElementById("setup-apikey");
   const msg = document.getElementById("setup-msg");
@@ -519,6 +737,9 @@ async function loadConfig() {
     set("cfg-ollama-url", c.ollamaUrl);
     set("cfg-ollama-model", c.ollamaModel);
     set("cfg-whisper-clip-ms", c.whisperClipMs);
+    setChk("cfg-save-clips", c.saveClips);
+    set("cfg-save-clips-mb", c.saveClipsMaxMb);
+    set("cfg-save-clips-files", c.saveClipsMaxFiles);
     // Local LLM (Ollama) is mothballed behind DMW_ENABLE_LOCAL_LLM — hide its controls unless on.
     const showLocalLlm = !!c.enableLocalLlm;
     document.querySelectorAll(".local-llm-only").forEach((el) => { el.style.display = showLocalLlm ? "" : "none"; });
@@ -542,6 +763,9 @@ document.getElementById("config-save-btn")?.addEventListener("click", async () =
     ollamaUrl: get("cfg-ollama-url"),
     ollamaModel: get("cfg-ollama-model"),
     whisperClipMs: getNum("cfg-whisper-clip-ms"),
+    saveClips: getChk("cfg-save-clips"),
+    saveClipsMaxMb: getNum("cfg-save-clips-mb"),
+    saveClipsMaxFiles: getNum("cfg-save-clips-files"),
   };
   const r = await dmw.setConfig(updates);
   const msg = document.getElementById("config-saved-msg");
@@ -621,12 +845,13 @@ document.querySelectorAll(".model-btn").forEach((b) => {
 });
 
 // ---- wizard state + rendering ----
-let wiz = { slug: "", vocab: [], nicknames: [], notes: "" };
+let wiz = { slug: "", vocab: [], nicknames: [], notes: "", pronouns: {} };
 
 async function loadWizard() {
   if (!window.dmw) return;
   const { data, roster } = await dmw.getCampaignData();
   wiz = data || wiz;
+  if (!wiz.pronouns) wiz.pronouns = {};
   document.getElementById("panel-slug").textContent = wiz.slug || "(no campaign)";
   renderVocab();
   renderNicks();
@@ -652,11 +877,50 @@ document.getElementById("agent-sound").addEventListener("change", async (e) => {
 function renderVocab() {
   const box = document.getElementById("vocab-chips");
   box.innerHTML = "";
+  if (!wiz.pronouns) wiz.pronouns = {};
   wiz.vocab.forEach((term, i) => {
     const el = document.createElement("div");
     el.className = "chip";
-    el.innerHTML = escapeHtml(term) + " <span class='x'>✕</span>";
-    el.querySelector(".x").addEventListener("click", () => { wiz.vocab.splice(i, 1); renderVocab(); });
+    el.style.flexDirection = "column";
+    el.style.alignItems = "flex-start";
+    el.style.gap = "3px";
+
+    // Top row: term label + remove button
+    const topRow = document.createElement("div");
+    topRow.style.cssText = "display:flex;align-items:center;gap:6px;";
+    const termSpan = document.createElement("span");
+    termSpan.textContent = term;
+    const x = document.createElement("span");
+    x.className = "x"; x.textContent = "✕";
+    x.addEventListener("click", () => {
+      // Also clear any stored pronoun for this term.
+      if (wiz.pronouns[term]) {
+        delete wiz.pronouns[term];
+        if (window.dmw) dmw.setPronoun({ term, pronouns: "" }).catch(() => {});
+      }
+      wiz.vocab.splice(i, 1); renderVocab();
+    });
+    topRow.append(termSpan, x);
+
+    // Pronoun row: a small inline input, auto-saved on blur/enter.
+    const pronounRow = document.createElement("div");
+    pronounRow.style.cssText = "display:flex;align-items:center;gap:4px;";
+    const pronounInput = document.createElement("input");
+    pronounInput.placeholder = "pronouns (she/her…)";
+    pronounInput.style.cssText = "width:120px;font-size:11px;padding:3px 6px;";
+    pronounInput.value = wiz.pronouns[term] || "";
+    const savePronoun = async () => {
+      const v = pronounInput.value.trim();
+      if (v !== (wiz.pronouns[term] || "")) {
+        if (v) { wiz.pronouns[term] = v; } else { delete wiz.pronouns[term]; }
+        if (window.dmw) { try { await dmw.setPronoun({ term, pronouns: v }); } catch {} }
+      }
+    };
+    pronounInput.addEventListener("blur", savePronoun);
+    pronounInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { pronounInput.blur(); } });
+    pronounRow.append(pronounInput);
+
+    el.append(topRow, pronounRow);
     box.appendChild(el);
   });
 }

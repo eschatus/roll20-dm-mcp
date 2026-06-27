@@ -12,20 +12,39 @@
 // it's safe to gate a "relay is live and healthy" claim on it.
 process.env.ROLL20_TRANSPORT = "rt";
 
-import { resolve } from "path";
+import { fileURLToPath } from "url";
+import { dirname, resolve } from "path";
+import { execSync } from "child_process";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+import { statSync } from "fs";
 import * as campaigns from "../registry/campaigns.js";
 import { deployModScript } from "../bridge/mod-editor.js";
 import { runSoak } from "./soak-test.js";
 
+// Minify ai-relay.js before deploy. The commented source (~the sandbox size cap) stays in git;
+// the sandbox gets the stripped version. esbuild removes comments/whitespace + mangles LOCALS only
+// — the Roll20 sandbox globals (on, findObjs, sendChat, state, …) are free identifiers and are left
+// intact. es2019 target keeps the output within the sandbox engine. node --check fails the release
+// if the minified output isn't valid JS, so a bad minify can never reach the live campaign.
+function minifyForSandbox(srcPath: string): string {
+  const projectRoot = resolve(__dirname, "../.."); // esbuild/.bin resolves relative to cwd, not the script dir
+  const outPath = resolve(__dirname, "../../mod-scripts/.ai-relay.deploy.js"); // gitignored build artifact
+  execSync(`node_modules/.bin/esbuild "${srcPath}" --minify --target=es2019 --outfile="${outPath}"`, { cwd: projectRoot, stdio: "inherit" });
+  execSync(`node --check "${outPath}"`, { cwd: projectRoot, stdio: "inherit" });
+  const before = statSync(srcPath).size, after = statSync(outPath).size;
+  console.error(`[release] minified ${(before / 1024).toFixed(0)}KB → ${(after / 1024).toFixed(0)}KB (${100 - Math.round((after * 100) / before)}% smaller)`);
+  return outPath;
+}
+
 async function main(): Promise<void> {
   const { roll20CampaignId, slug } = campaigns.getActiveCampaign();
-  const scriptPath = resolve("mod-scripts/ai-relay.js");
+  const scriptPath = minifyForSandbox(resolve(__dirname, "../../mod-scripts/ai-relay.js"));
 
-  console.error(`[release] deploying ai-relay.js → campaign ${roll20CampaignId} (${slug})`);
+  console.error(`[release] deploying ai-relay.js (minified) → campaign ${roll20CampaignId} (${slug})`);
   // requireExisting: a release must only ever OVERWRITE the relay tab, never create a
   // second one. getModPage now waits for the tab bar to render (the real fix); this is
   // the belt-and-suspenders — if the match still fails, throw instead of duplicating.
-  const r = await deployModScript(roll20CampaignId, scriptPath, { requireExisting: true });
+  const r = await deployModScript(roll20CampaignId, scriptPath, { requireExisting: true, tabName: "ai-relay.js" });
   console.error(`[release] deployed ${r.linesWritten} lines (created=${r.created}).`);
 
   // The save REBOOTS the sandbox. Wait for it to warm before soaking — a cold sandbox

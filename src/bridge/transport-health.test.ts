@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import {
   getHealth, recordSuccess, recordFailure, recordFallback, getStats, _resetForTest,
+  resetHealth, circuitOpen,
   type TransportName,
 } from "./transport-health.js";
 
@@ -23,13 +24,13 @@ describe("degraded after 1 failure", () => {
   });
 });
 
-describe("down after 2+ consecutive failures", () => {
-  it("rt goes down after 2 failures", () => {
+describe("down once the circuit opens (CB_THRESHOLD=3 consecutive failures)", () => {
+  it("rt is still degraded after 2 failures (below threshold)", () => {
     recordFailure("rt");
     recordFailure("rt");
-    expect(getHealth("rt")).toBe("down");
+    expect(getHealth("rt")).toBe("degraded");
   });
-  it("rt stays down after 3 failures", () => {
+  it("rt goes down at 3 failures (circuit open)", () => {
     recordFailure("rt");
     recordFailure("rt");
     recordFailure("rt");
@@ -38,7 +39,8 @@ describe("down after 2+ consecutive failures", () => {
 });
 
 describe("success clears failures", () => {
-  it("success after 2 failures resets to ok", () => {
+  it("success after 3 failures resets to ok", () => {
+    recordFailure("rt");
     recordFailure("rt");
     recordFailure("rt");
     expect(getHealth("rt")).toBe("down");
@@ -52,26 +54,27 @@ describe("success clears failures", () => {
   });
 });
 
-describe("quiet window clears down state", () => {
-  it("returns ok after 60s of quiet following failures", () => {
+describe("reset window clears stale-failure down state", () => {
+  it("returns ok after 30s of quiet following sub-threshold failures", () => {
     vi.useFakeTimers();
     recordFailure("rt");
     recordFailure("rt");
-    expect(getHealth("rt")).toBe("down");
-    vi.advanceTimersByTime(60_001);
+    expect(getHealth("rt")).toBe("degraded");
+    vi.advanceTimersByTime(30_001);
     expect(getHealth("rt")).toBe("ok");
   });
-  it("stays down before 60s quiet window expires", () => {
+  it("stays degraded before the 30s window expires", () => {
     vi.useFakeTimers();
     recordFailure("rt");
     recordFailure("rt");
-    vi.advanceTimersByTime(59_999);
-    expect(getHealth("rt")).toBe("down");
+    vi.advanceTimersByTime(29_999);
+    expect(getHealth("rt")).toBe("degraded");
   });
 });
 
 describe("transports are independent", () => {
   it("rt down does not affect browser", () => {
+    recordFailure("rt");
     recordFailure("rt");
     recordFailure("rt");
     expect(getHealth("rt")).toBe("down");
@@ -192,5 +195,84 @@ describe("_resetForTest clears new counters", () => {
     expect(s.lastFailureAt).toBeNull();
     expect(s.lastFailureAction).toBeNull();
     expect(s.consecutiveFailures).toBe(0);
+  });
+  it("resetHealth also clears circuit fields (openedAt, halfOpen) — issue #103", () => {
+    recordFailure("rt");
+    recordFailure("rt");
+    recordFailure("rt"); // circuit open
+    expect(getStats().rt.circuitOpen).toBe(true);
+    resetHealth();
+    const s = getStats().rt;
+    expect(s.circuitOpen).toBe(false);
+    expect(s.halfOpen).toBe(false);
+    expect(getHealth("rt")).toBe("ok");
+    // circuitOpen() sees a clean machine.
+    expect(circuitOpen("rt").open).toBe(false);
+  });
+});
+
+describe("circuit breaker (folded into transport-health, issue #102)", () => {
+  it("circuit is closed until CB_THRESHOLD consecutive failures", () => {
+    recordFailure("rt");
+    recordFailure("rt");
+    expect(circuitOpen("rt").open).toBe(false);
+    recordFailure("rt"); // 3rd → open
+    expect(circuitOpen("rt").open).toBe(true);
+    expect(circuitOpen("rt").secsLeft).toBeGreaterThan(0);
+  });
+
+  it("a success closes the circuit (self-heal)", () => {
+    recordFailure("rt");
+    recordFailure("rt");
+    recordFailure("rt");
+    expect(circuitOpen("rt").open).toBe(true);
+    recordSuccess("rt");
+    expect(circuitOpen("rt").open).toBe(false);
+    expect(getStats().rt.circuitOpen).toBe(false);
+  });
+
+  it("half-open probe is allowed through after the reset window", () => {
+    vi.useFakeTimers();
+    recordFailure("rt");
+    recordFailure("rt");
+    recordFailure("rt");
+    expect(circuitOpen("rt").open).toBe(true);
+    vi.advanceTimersByTime(30_001);
+    const decision = circuitOpen("rt");
+    expect(decision.open).toBe(false);
+    expect(decision.halfOpen).toBe(true);
+  });
+
+  it("a FAILED half-open probe re-opens immediately (issue #97)", () => {
+    vi.useFakeTimers();
+    recordFailure("rt");
+    recordFailure("rt");
+    recordFailure("rt");
+    vi.advanceTimersByTime(30_001);
+    expect(circuitOpen("rt").halfOpen).toBe(true); // probe allowed
+    recordFailure("rt"); // probe failed → re-open NOW (not after 3 more)
+    expect(circuitOpen("rt").open).toBe(true);
+  });
+
+  it("a SUCCESSFUL half-open probe closes the circuit", () => {
+    vi.useFakeTimers();
+    recordFailure("rt");
+    recordFailure("rt");
+    recordFailure("rt");
+    vi.advanceTimersByTime(30_001);
+    expect(circuitOpen("rt").halfOpen).toBe(true);
+    recordSuccess("rt"); // probe succeeded
+    expect(circuitOpen("rt").open).toBe(false);
+    expect(getStats().rt.halfOpen).toBe(false);
+    expect(getHealth("rt")).toBe("ok");
+  });
+
+  it("getHealth reports down exactly while the circuit is open (no divergence, #102)", () => {
+    vi.useFakeTimers();
+    recordFailure("rt");
+    recordFailure("rt");
+    recordFailure("rt");
+    expect(getHealth("rt")).toBe("down");
+    expect(getStats().rt.circuitOpen).toBe(true);
   });
 });

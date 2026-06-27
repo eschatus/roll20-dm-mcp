@@ -339,10 +339,51 @@
   .model-btn.active { background:rgba(150,40,66,.7); color:#ffe0e8; border-color:rgba(220,120,150,.7); }
   .chat-toolbar label { display:flex; align-items:center; gap:5px; font-size:11px; color:#9a7a86; cursor:pointer; }
   .chat-toolbar input { width:auto; }
+  /* Legacy .confirm class (kept in case any code still emits it) */
   .msg.confirm { align-self:center; background:rgba(40,24,2,.7); border:1px solid rgba(220,170,60,.55);
                  color:#ffe6a8; font-size:12.5px; text-align:center; }
   .msg.err { align-self:flex-start; background:rgba(40,8,8,.6); border:1px solid rgba(200,70,70,.5); color:#ffb0b0; }
   .msg .who { display:block; font-size:10px; letter-spacing:1px; text-transform:uppercase; opacity:.6; margin-bottom:2px; }
+
+  /* ---- Ephemeral "thinking" entry in the chat ledger (#69) ---- */
+  .msg.thinking {
+    align-self:flex-start; background:rgba(30,20,50,.5); border:1px solid rgba(140,110,210,.35);
+    color:#c8b0ff; font-size:12.5px; font-style:italic; letter-spacing:.3px;
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  .msg.thinking .thinking-dots::after {
+    content: ''; animation: think-dots 1.4s steps(3, end) infinite;
+  }
+  @keyframes think-dots { 0%{content:'.';} 33%{content:'..';} 66%{content:'...';} 100%{content:'';} }
+
+  /* ---- Pending / resolved confirm entries in the chat ledger (#68) ---- */
+  /* pending: gold pulsing border — "action awaiting approval" */
+  .msg.confirm-pending {
+    align-self:center; max-width:94%;
+    background:rgba(40,24,2,.75); border:1px solid rgba(220,170,60,.7);
+    color:#ffe6a8; font-size:12.5px; text-align:center;
+    animation: confirm-pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes confirm-pulse { 0%,100%{border-color:rgba(220,170,60,.5);} 50%{border-color:rgba(240,200,90,.95);} }
+  .msg.confirm-pending .confirm-text { display:block; font-weight:bold; margin:2px 0 5px; color:#fff4d6; }
+  .msg.confirm-pending .confirm-hint { display:block; font-size:10.5px; color:#caa86a; letter-spacing:1px; }
+  /* accepted: green — confirmed */
+  .msg.confirm-accepted {
+    align-self:center; max-width:94%;
+    background:rgba(2,28,10,.6); border:1px solid rgba(60,170,90,.5);
+    color:#b0f0c0; font-size:12.5px; text-align:center;
+  }
+  .msg.confirm-accepted .confirm-text { display:block; font-weight:bold; margin:2px 0 5px; color:#c8ffd8; }
+  .msg.confirm-accepted .confirm-hint { display:block; font-size:10.5px; color:#80c890; letter-spacing:1px; }
+  /* cancelled: muted red — rejected */
+  .msg.confirm-cancelled {
+    align-self:center; max-width:94%;
+    background:rgba(30,6,6,.55); border:1px solid rgba(180,60,60,.4);
+    color:#e0a0a0; font-size:12.5px; text-align:center; opacity:.75;
+  }
+  .msg.confirm-cancelled .confirm-text { display:block; font-weight:bold; margin:2px 0 5px; color:#f0b8b8; }
+  .msg.confirm-cancelled .confirm-hint { display:block; font-size:10.5px; color:#c07070; letter-spacing:1px; }
+
   .chat-input { display:flex; gap:6px; padding-top:10px; }
   .chat-input input { flex:1; }
   /* pending-dictation indicator: shows a snippet is being transcribed in flight */
@@ -431,6 +472,30 @@
     color: #5a3800; font-size: 10px;
   }
   #cb-expand:hover { color: #1a0c00; }
+
+  /* ---- Confirm prompt on the brass ring (same S-oval slot as the tactic strip) ----
+     When a write awaits approval the gem pulses gold; these embossed green/red commands sit on
+     the brass ring so "your input is needed" is unmistakable even in ghost mode. Hides the combat
+     band while pending so they don't collide. */
+  #confirm-band {
+    position: absolute;
+    left: 110px; right: 110px; top: 256px;
+    height: 22px;
+    display: none; align-items: center; justify-content: center; gap: 16px;
+    z-index: 6; pointer-events: none;
+    font-size: 11.5px; font-weight: bold; letter-spacing: 0.4px;
+  }
+  body[data-state="confirm"] #confirm-band { display: flex; animation: confirm-flash 0.85s ease-in-out infinite; }
+  /* flash so "your input is needed" is impossible to miss */
+  @keyframes confirm-flash { 0%, 100% { opacity: 1; } 50% { opacity: 0.32; } }
+  body[data-state="confirm"] #combat-band { display: none; }
+  /* Emboss: bright bevel above, dark relief + thin halo below — so the saturated colours read
+     legibly engraved into the gold. */
+  #confirm-band .cb-yes, #confirm-band .cb-no {
+    text-shadow: 0 1px 0 rgba(255,238,170,0.55), 0 -1px 0 rgba(0,0,0,0.65), 0 0 2px rgba(0,0,0,0.55);
+  }
+  #confirm-band .cb-yes { color: #0f7a2c; }  /* deep green — confirm */
+  #confirm-band .cb-no  { color: #9e1414; }  /* deep red — cancel */
 
   /* ---- Tactic detail overlay — anchored below S oval (y=277 → bottom: 43px) ---- */
   #cb-detail {
@@ -598,6 +663,12 @@
       <span id="cb-tactic"></span>
       <span id="cb-expand">▾</span>
     </div>
+    <!-- Confirm prompt on the brass ring — shown via body[data-state="confirm"].
+         Cancel (red) left, confirm (green) right. -->
+    <div id="confirm-band">
+      <span class="cb-no">✗ Esc</span>
+      <span class="cb-yes">✓ Right-Shift</span>
+    </div>
     <div id="drag-handle" title="Drag to move">✥</div>
     <div id="scry-btn" title="Scrying ledger">✦</div>
   </div>
@@ -648,8 +719,15 @@
       </div>
 
       <div class="tab" data-tab="setup">
-        <p class="hint-line">First-run setup — each item is needed before the gem can run your game.</p>
+        <p class="hint-line" id="setup-intro">First-run setup — each item is needed before the gem can run your game.</p>
         <ul id="setup-status" style="list-style:none;padding:0;margin:0 0 14px;font-size:13px;line-height:1.8;"></ul>
+        <!-- Shown once the essentials are done so the tab "goes quiet" instead of nagging. -->
+        <div id="setup-done" class="setup-done" style="display:none;margin:0 0 14px;padding:10px 12px;border-radius:8px;background:rgba(80,200,120,.12);border:1px solid rgba(80,200,120,.35);font-size:13px;">
+          ✓ <strong>You're all set</strong> — DM Whisper is ready to run your game.
+          <a href="#" id="setup-manage" style="margin-left:8px;opacity:.8;">Adjust setup ▾</a>
+        </div>
+        <!-- The essential input steps — collapsed once setup is complete (toggle via "Adjust setup"). -->
+        <div id="setup-essential-steps">
         <div class="setup-step">
           <p class="hint-line">Anthropic API key — the agent's brain. Starts with <code>sk-</code>. Saved to your per-user config.</p>
           <div class="chip-input">
@@ -667,10 +745,36 @@
           <div id="setup-connect-msg" class="msg" style="min-height:18px;margin-top:6px;"></div>
           <p class="hint-line" style="margin-top:8px;">Then just ask the gem: <em>"list my campaigns"</em> / <em>"list my games"</em> to pick one.</p>
         </div>
+        </div>
+        <div class="setup-step" style="margin-top:14px;">
+          <p class="hint-line">Speech model — <code>base.en</code> is built-in for fast live captions. Download a larger model for more accurate <em>final</em> transcription (the committed text the agent acts on); base stays the fast-partial tier. Restart the gem after changing.</p>
+          <div id="setup-stt-models" class="row" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+          <div id="setup-stt-msg" class="msg" style="min-height:18px;margin-top:6px;"></div>
+        </div>
+        <div class="setup-step" style="margin-top:14px;">
+          <p class="hint-line">Speech engine acceleration — uses your GPU for real-time transcription. Without GPU acceleration, <code>medium.en</code> takes ~20s/turn on CPU; with it, transcription is real-time.</p>
+          <div id="setup-gpu-status" style="font-size:12.5px;color:#c9a9b4;margin-bottom:8px;min-height:18px;">detecting hardware…</div>
+          <div id="setup-gpu-actions" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+          <div class="hint-line" id="setup-gpu-warn" style="display:none;margin-top:6px;color:#ffb86c;">
+            CPU-only detected — <code>medium.en</code> will take ~20s/turn. Consider using <code>base.en</code> or <code>small.en</code> above for faster response.
+          </div>
+          <div id="setup-gpu-progress" style="display:none;margin-top:6px;">
+            <div style="height:6px;background:rgba(60,16,32,.7);border-radius:3px;overflow:hidden;">
+              <div id="setup-gpu-progress-bar" style="height:100%;width:0%;background:rgba(220,120,150,.8);transition:width 200ms;border-radius:3px;"></div>
+            </div>
+            <div id="setup-gpu-progress-label" style="font-size:11px;color:#9a6a78;margin-top:3px;">0%</div>
+          </div>
+          <div id="setup-gpu-msg" class="msg" style="min-height:18px;margin-top:6px;"></div>
+        </div>
+        <div class="setup-step" style="margin-top:14px;">
+          <p class="hint-line">Install the assistant's Mod in Roll20 (runs combat). Copy the script, then in Roll20 open <strong>Settings → API Scripts (Mods)</strong>, paste into a <strong>New Script</strong>, and Save. <em>(Or run the automated deploy from Claude Code: <code>npm run release:mod</code>.)</em></p>
+          <button class="act" id="setup-copy-mod">Copy Mod script to clipboard</button>
+          <div id="setup-deploy-msg" class="msg" style="min-height:18px;margin-top:6px;"></div>
+        </div>
       </div>
 
       <div class="tab" data-tab="vocab">
-        <p class="hint-line">Names, places, and terms to bias speech recognition (Strahd, Ireena, Barovia, Spirit Guardians…). Roster names are added automatically.</p>
+        <p class="hint-line">Names, places, and terms to bias speech recognition (Strahd, Ireena, Barovia, Spirit Guardians…). Roster names are added automatically. Set optional pronouns per term so the assistant uses the correct ones (she/her, they/them, he/him…).</p>
         <div class="chip-input">
           <input id="vocab-add" placeholder="Add a proper noun, press Enter" />
           <button class="act" id="vocab-add-btn">Add</button>
@@ -767,6 +871,9 @@
         <div class="config-section">
           <div class="config-section-title">Audio</div>
           <div class="config-row"><label>Whisper clip (ms)</label><input id="cfg-whisper-clip-ms" type="number" min="100" max="5000" /></div>
+          <div class="config-row"><label title="Keep a copy of each final clip under data/ab-clips/ for STT A/B tuning (npm run ab:stt). Off by default.">Save A/B clips</label><input type="checkbox" id="cfg-save-clips" style="width:auto;" /></div>
+          <div class="config-row"><label>A/B budget (MB)</label><input id="cfg-save-clips-mb" type="number" min="0" max="100000" /></div>
+          <div class="config-row"><label>A/B budget (files)</label><input id="cfg-save-clips-files" type="number" min="0" max="100000" /></div>
         </div>
 
         <div class="row" style="margin-top:4px;">

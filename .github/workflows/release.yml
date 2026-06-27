@@ -107,11 +107,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          files="$(find dist -type f)"
-          echo "publishing:"; echo "$files"
+          # Collect into an array so filenames are space-safe; skip the debug yml.
+          mapfile -t files < <(find dist -type f ! -name 'builder-debug.yml')
+          echo "publishing:"; printf '%s\n' "${files[@]}"
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --draft \
             --title "DM Whisper ${GITHUB_REF_NAME#v}" \
             --notes "Automated build — release notes pending." \
-            $files
+            "${files[@]}"

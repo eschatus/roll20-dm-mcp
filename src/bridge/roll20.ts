@@ -6,29 +6,9 @@ import { getPage, closeBrowser } from "./browser.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
 import { rtEnabled, rtRelayCommand, rtGet } from "./roll20-rt.js";
 import { READONLY_ACTIONS, newNonce } from "./actions.js";
-import { getHealth, recordSuccess, recordFailure, recordFallback } from "./transport-health.js";
+import { recordSuccess, recordFailure, circuitOpen } from "./transport-health.js";
 
 const RELAY_TIMEOUT_MS = 30_000;
-
-
-// Pure decision: should an RT transport error allow falling back to the browser path?
-//
-// Truth table:
-//   Read-only,  any error          → true   (retries are always safe; no side effects)
-//   Mutating,   RtPreSendError     → true   (never reached /chat; no idempotency hazard)
-//   Mutating,   post-send timeout  → true   (safe ONLY when the same nonce is re-sent;
-//                                            the Mod's LRU deduplicates the resend so the
-//                                            action will not double-apply)
-//
-// IMPORTANT: callers MUST pass the same nonce when falling back on a post-send timeout.
-// `relayCommand` in this file enforces this by generating the nonce before both transports
-// and threading it through via `assignedNonce`.
-export function shouldFallback(action: string, _err: Error): boolean {
-  // All cases now fall back — the idempotency guarantee comes from the Mod's nonce LRU
-  // (PROCESSED_NONCES in ai-relay.js) and the caller's obligation to reuse the same nonce.
-  void action; // parameter kept for API compatibility and documentation clarity
-  return true;
-}
 
 // ─── Test seam ────────────────────────────────────────────────────────────────
 // When set (only by the test harness), relay/evaluate calls route here instead of
@@ -328,40 +308,44 @@ export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
   // Test harness routes every relay action through the in-memory emulator (bypasses rt/browser).
   if (_testTransport) return _testTransport.relay<T>(cmd);
 
-  // Browserless realtime transport (ROLL20_TRANSPORT=rt): push !ai-relay over Firebase and read
-  // the Mod's AIBRIDGE_RESULT back. The Mod handles every action, so RT can serve all of them.
-  // On ANY failure (auth, timeout, disconnect) fall back to the Playwright relay below — so
-  // enabling RT can only ever be faster/lighter, never less capable.
+  // BROWSERLESS by default (ROLL20_TRANSPORT=rt, the default): push !ai-relay over Firebase RTDB and
+  // read the Mod's AIBRIDGE_RESULT back. The Mod runs every action, so RT serves all of them — no
+  // browser involved. There is deliberately NO silent Playwright fallback here: a packaged install
+  // ships no browser, so an RT failure must SURFACE (and prompt a token re-harvest in the gem),
+  // never quietly reach for a Chromium that isn't there. The legacy browser→chat relay is an
+  // explicit dev opt-out via ROLL20_TRANSPORT=browser.
   if (rtEnabled()) {
     const action = cmd.action as string;
 
-    // Nonce is generated HERE (once, before either transport) so that an rt→browser fallback
-    // re-sends the EXACT same nonce. The Mod's PROCESSED_NONCES LRU (ai-relay.js) then deduplicates
-    // the resend, making any post-send fallback safe for mutating commands too.
-    const nonce = newNonce();
-
-    // Circuit breaker: when RT is known-down, skip it entirely and route straight to the browser
-    // (reads and mutating commands alike). A brand-new command was never sent anywhere, so there
-    // is no idempotency hazard — we just skip the dead transport.
-    if (getHealth("rt") === "down") {
-      console.error(`[roll20] rt circuit open — routing ${action} to browser`);
-      recordFallback("rt");
-      return _relayDefaultWithNonce<T>(cmd, nonce);
+    // Circuit-breaker gate (single source of truth in transport-health.ts, issue #102).
+    // When OPEN we throw immediately WITHOUT calling rtRelayCommand — so no failure is recorded
+    // for a skipped call (we never count a call we didn't make). After the reset window elapses,
+    // circuitOpen() transitions to half-open and returns { open: false } so exactly the next call
+    // probes liveness; a failed probe re-opens instantly (rtRelayCommand → recordFailure → the
+    // half-open re-open path in transport-health). Success/failure recording for "rt" stays owned
+    // by roll20-rt.ts (rtRelayCommand), so we DON'T record here — that's what advances the circuit
+    // counter, and double-recording would corrupt it. (Bug #99.)
+    const gate = circuitOpen("rt");
+    if (gate.open) {
+      throw new Error(
+        `Roll20 RT circuit open after consecutive failures — skipping "${action}". ` +
+        `Will probe again in ${gate.secsLeft}s. Reconnect Roll20 in the gem to re-harvest the token.`,
+      );
     }
 
+    // Nonce must be generated BEFORE the call and reused on retry — the Mod's
+    // PROCESSED_NONCES LRU deduplicates same-nonce resends server-side. A fresh
+    // nonce on retry would re-execute the action (double-apply damage, etc.).
+    const nonce = newNonce();
     return rtRelayCommand<T>(cmd, { assignedNonce: nonce }).catch((err: Error) => {
-      if (shouldFallback(action, err)) {
-        // Post-send timeout: we re-send with the SAME nonce so the Mod's LRU can deduplicate
-        // if the original already ran. Pre-send errors: command never reached /chat, so same-
-        // nonce reuse is trivially safe.
-        console.error(`[roll20] rt transport ${action} → browser fallback (same nonce=${nonce}): ${err.message}`);
-        recordFallback("rt");
-        return _relayDefaultWithNonce<T>(cmd, nonce);
-      }
-      // shouldFallback now returns true for all cases; this branch is unreachable but kept
-      // as a defensive guard in case future logic narrows the condition.
-      console.error(`[roll20] rt transport ${action} — NOT retrying on browser: ${err.message}`);
-      throw err;
+      // No circuit/health recording here — rtRelayCommand already recorded the failure ("rt"),
+      // which is what advances the shared circuit counter. We only reshape the error message.
+      console.error(`[roll20] rt ${action} failed (browserless — no fallback): ${err.message}`);
+      throw new Error(
+        `Roll20 realtime transport failed for "${action}": ${err.message}. ` +
+        `Reconnect Roll20 in the gem to re-harvest the token — combat does not fall back to a browser. ` +
+        `(Dev: set ROLL20_TRANSPORT=browser for the legacy browser relay.)`,
+      );
     });
   }
   return _relayDefault<T>(cmd);
