@@ -20,6 +20,7 @@
 //   _manifest.json  — index of every record emitted this run
 process.env.ROLL20_TRANSPORT ??= "rt";
 
+import "dotenv/config"; // self-sufficient as a `tsx` entry point: load .env before dataDir/campaigns/bridge modules read it
 import { pathToFileURL } from "url";
 import { writeFileSync, mkdirSync } from "fs";
 import path from "path";
