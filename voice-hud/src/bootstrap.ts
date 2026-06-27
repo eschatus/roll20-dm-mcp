@@ -14,6 +14,7 @@
 // DEV (unpackaged): does NOTHING. The env stays unset, every path keeps its
 // repo-relative default — no migration, no behavior change.
 import { app } from "electron";
+import * as dotenv from "dotenv";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -52,3 +53,14 @@ if (app.isPackaged) {
     process.env.ROLL20_DATA_DIR = dir;
   }
 }
+
+// Load the data-dir .env BEFORE ./config evaluates. This is where the config wizard's upsertEnv()
+// persists runtime settings (DMW_WHISPER_SERVER_BIN from Enable-GPU, DMW_WHISPER_FINAL_MODEL from
+// the STT picker, ANTHROPIC_API_KEY, ROLL20_MCP_TOKEN, DDB_COBALT). CONFIG bakes the binary/model
+// path fields from process.env at module-eval time, so they MUST be present now — main.ts's own
+// dotenv.config() calls run after ./config is imported (ESM hoists imports above the body) and are
+// too late for baked fields. Packaged: DMW_DATA_DIR is the per-user dir set above. Dev: it's unset,
+// so resolve the same default upsertEnv() writes to (<repo>/voice-hud/data). dotenv is first-wins,
+// so a real shell env var still takes precedence over the persisted file.
+const dataDir = process.env.DMW_DATA_DIR || path.join(__dirname, "..", "data");
+dotenv.config({ path: path.join(dataDir, ".env") });

@@ -30,11 +30,10 @@ import { setLogSink, persist } from "./logger";
 // Load the repo-root .env so ANTHROPIC_API_KEY is available (shared with the MCP server).
 dotenv.config({ path: path.join(__dirname, "..", "..", ".env") });
 dotenv.config({ path: path.join(__dirname, "..", ".env") }); // optional HUD-local override
-// Packaged: also load a .env from the per-user data dir (DMW_DATA_DIR is set by bootstrap;
-// there's no repo .env inside the bundle). Lets a user/tester drop keys
-// (ANTHROPIC_API_KEY, ROLL20_MCP_TOKEN, DDB_COBALT) in <userData>/.env before the config
-// wizard (#47) automates it. dotenv is first-wins, so a real env var still takes precedence.
-if (process.env.DMW_DATA_DIR) dotenv.config({ path: path.join(process.env.DMW_DATA_DIR, ".env") });
+// The data-dir .env (where the config wizard's upsertEnv() persists runtime settings) is loaded
+// in bootstrap.ts — it MUST run before ./config evaluates, because CONFIG bakes path fields like
+// whisperServerBin from process.env at eval time. Loading it here (after the import of ./config)
+// would be too late for those. Secrets read lazily at call time (ANTHROPIC_API_KEY) are unaffected.
 // Packaged: ensure a stable MCP auth token shared by the gem AND the server it supervises
 // (the child inherits process.env). Generate once + persist to <userData>/.env so they
 // always agree with no manual step; an existing token (loaded above) wins. Without this the
@@ -116,18 +115,36 @@ interface LogEntry { level: string; text: string; ts: number; }
 const logBuffer: LogEntry[] = [];
 const LOG_BUFFER_MAX = 500;
 
-const _origConsoleError = console.error.bind(console);
-console.error = (...args: unknown[]) => {
-  _origConsoleError(...args);
+// Coalesce ALL console channels through one forwarder so third-party logs (dotenvx banners,
+// library console.log/warn) and silent failure paths reach the ledger + hud.log — not just
+// console.error. The level is carried through so the renderer colors by severity. We tag
+// console.log/info as "info" (Electron's console.log → stdout is lost in the detached launch).
+const _origConsole = {
+  error: console.error.bind(console),
+  warn: console.warn.bind(console),
+  log: console.log.bind(console),
+  info: console.info.bind(console),
+};
+function forwardLog(level: "error" | "warn" | "info", orig: (...a: unknown[]) => void, args: unknown[]) {
+  orig(...args);
   const text = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
-  const entry: LogEntry = { level: "info", text, ts: Date.now() };
+  const entry: LogEntry = { level, text, ts: Date.now() };
   logBuffer.push(entry);
   if (logBuffer.length > LOG_BUFFER_MAX) logBuffer.shift();
   send("log", entry);
   // Durable file (survives the detached launch, where stderr is lost). The in-memory logBuffer
-  // only backfills the panel for the current session; hud.log persists across runs.
-  persist({ ts: entry.ts, level: "info", kind: "console", msg: text });
-};
+  // only backfills the panel for the current session; hud.log persists across runs. persist()
+  // swallows its own errors, so overriding console here carries no recursion risk.
+  persist({ ts: entry.ts, level, kind: "console", msg: text });
+}
+// NB: console.error is this app's generic stderr sink (status lines like "[stt] …", "[agent] …"
+// all go through it because stdout is lost in the detached launch), so it is tagged "info" — NOT
+// "error" — to avoid reddening every normal status line. Genuine failures carry "failed"/"error"
+// in their text and the renderer still flags those by keyword. console.warn is the real amber tier.
+console.error = (...args: unknown[]) => forwardLog("info",  _origConsole.error, args);
+console.warn  = (...args: unknown[]) => forwardLog("warn",  _origConsole.warn,  args);
+console.log   = (...args: unknown[]) => forwardLog("info",  _origConsole.log,   args);
+console.info  = (...args: unknown[]) => forwardLog("info",  _origConsole.info,  args);
 
 // Horizontal cushion-cut gem: wider than tall. Window leaves margin for the
 // rim handles (above the gem) and the drop-shadow.
@@ -483,8 +500,30 @@ function humanizeToolCall(name: string, args: unknown): string {
 }
 
 // Write/merge key=value pairs into voice-hud/.env for persistence across restarts.
+// The single canonical writable .env: the data dir. Packaged → the per-user dir (bootstrap sets
+// DMW_DATA_DIR); dev → <repo>/voice-hud/data. bootstrap.ts loads THIS file before ./config
+// evaluates, so anything written here applies on the next launch, including the binary/model path
+// fields CONFIG bakes at module-eval time. (writeHudEnv previously targeted <repo>/voice-hud/.env,
+// which loads after ./config and lives inside the read-only bundle when packaged — so persisted
+// settings silently failed to apply on restart.)
+function hudEnvPath(): string {
+  return path.join(process.env.DMW_DATA_DIR || CONFIG.dataDir, ".env");
+}
+
+// The SHARED data dir — tokens (roll20-rt-token.json, ddb-cobalt.json), the campaign registry,
+// active-campaign, and campaign-context: the SAME files the supervised MCP server reads/writes, and
+// where harvest.ts/campaignData.ts write. Packaged: DMW_DATA_DIR (bootstrap sets it; the server
+// inherits it via ROLL20_DATA_DIR). Dev: <repo>/data — one level ABOVE voice-hud (note the extra
+// ".."), since the server runs from the repo root. This is DISTINCT from CONFIG.dataDir, the gem's
+// PRIVATE dir (voice-hud/data: hud.log, models, .env). Conflating the two is why the Setup checks
+// went stale — they looked in the gem-private dir for files the harvest wrote to the shared dir.
+function sharedDataDir(): string {
+  return process.env.DMW_DATA_DIR || process.env.ROLL20_DATA_DIR || path.join(__dirname, "..", "..", "data");
+}
+
 function writeHudEnv(updates: Record<string, string>) {
-  const envPath = path.join(__dirname, "..", ".env");
+  const envPath = hudEnvPath();
+  fs.mkdirSync(path.dirname(envPath), { recursive: true });
   let content = "";
   try { content = fs.readFileSync(envPath, "utf-8"); } catch { /* file may not exist yet */ }
   for (const [key, val] of Object.entries(updates)) {
@@ -634,6 +673,7 @@ function wireWizard() {
     ollamaUrl: CONFIG.ollamaUrl,
     ollamaModel: CONFIG.ollamaModel,
     whisperClipMs: CONFIG.whisperClipMs,
+    whisperCublasUrl: CONFIG.whisperCublasUrl,
     // A/B clip corpus (data/ab-clips/) — env-driven, read live per clip in the clip handler.
     saveClips: process.env.DMW_SAVE_CLIPS === "1",
     saveClipsMaxMb: Number(process.env.DMW_SAVE_CLIPS_MAX_MB) || 1024,
@@ -643,7 +683,9 @@ function wireWizard() {
   // --- Setup wizard (first-run onboarding) ---
   // What the Setup tab shows: configured vs still-needed. Cheap reads off env + the data dir.
   ipcMain.handle("get-setup-status", () => {
-    const dataDir = process.env.DMW_DATA_DIR || CONFIG.dataDir;
+    // Tokens + campaign registry live in the SHARED dir (where harvest.ts writes), NOT CONFIG.dataDir
+    // (gem-private). Checking the wrong dir here is what left the green checks stale after a connect.
+    const dataDir = sharedDataDir();
     const has = (f: string) => { try { return fs.existsSync(path.join(dataDir, f)); } catch { return false; } };
     let campaigns = 0;
     try { campaigns = Object.keys(JSON.parse(fs.readFileSync(path.join(dataDir, "campaigns.json"), "utf-8"))).length; } catch { /* none yet */ }
@@ -713,16 +755,40 @@ function wireWizard() {
     } catch (e) { return { ok: false, error: (e as Error).message }; }
   });
 
-  // GPU status — detect NVIDIA/Apple/CPU and return the result to the Setup tab.
-  ipcMain.handle("get-gpu-status", async () => detectGpu());
+  // GPU status — detect NVIDIA/Apple/CPU and report whether the cublas engine is already installed
+  // (binary on disk) and active (CONFIG wired to it → THIS process uses GPU). The Setup tab uses
+  // these to show an enabled indicator instead of an always-on Enable button.
+  ipcMain.handle("get-gpu-status", async () => {
+    const gpu = await detectGpu();
+    const { serverBin } = findCublasBins(process.env.DMW_DATA_DIR || CONFIG.dataDir);
+    const installed = !!serverBin;
+    const active = installed && /whisper-cublas/i.test(CONFIG.whisperServerBin) && fs.existsSync(CONFIG.whisperServerBin);
+    return { ...gpu, installed, active };
+  });
 
   // GPU engine download — NVIDIA only. Downloads the matching whisper-cublas zip from the
   // whisper.cpp release page, extracts it, wires up DMW_WHISPER_SERVER_BIN/DMW_WHISPER_BIN,
   // and persists the paths to <dataDir>/.env. Mirrors the downloadModel() pattern.
   ipcMain.handle("enable-gpu", async () => {
     let gpu: GpuStatus;
-    try { gpu = await detectGpu(); } catch (e) { return { ok: false, error: (e as Error).message }; }
-    if (gpu.kind !== "nvidia") return { ok: false, error: "NVIDIA GPU not detected" };
+    try { gpu = await detectGpu(); }
+    catch (e) { console.error(`[gpu] detect failed: ${(e as Error).message}`); return { ok: false, error: (e as Error).message }; }
+    if (gpu.kind !== "nvidia") { console.error("[gpu] enable aborted — NVIDIA GPU not detected"); return { ok: false, error: "NVIDIA GPU not detected" }; }
+
+    const dataDir = process.env.DMW_DATA_DIR || CONFIG.dataDir;
+
+    // Idempotent: if the cublas binaries are already extracted, re-assert the env wiring and skip
+    // the download/extract entirely. Re-extracting over a RUNNING whisper-server.exe fails with a
+    // Windows file lock ("Can't unlink already-existing object: Permission denied"), and there's
+    // nothing to gain. To force a clean reinstall, delete <dataDir>/whisper-cublas first.
+    const existing = findCublasBins(dataDir);
+    if (existing.serverBin || existing.mainBin) {
+      if (existing.serverBin) { process.env.DMW_WHISPER_SERVER_BIN = existing.serverBin; upsertEnv("DMW_WHISPER_SERVER_BIN", existing.serverBin); }
+      if (existing.mainBin)   { process.env.DMW_WHISPER_BIN = existing.mainBin; upsertEnv("DMW_WHISPER_BIN", existing.mainBin); }
+      const active = /whisper-cublas/i.test(CONFIG.whisperServerBin);
+      console.error(`[gpu] already installed — ${existing.serverBin || existing.mainBin}; ${active ? "active this session" : "restart to apply"}, skipping re-download`);
+      return { ok: true, already: true, restart: !active, serverBin: existing.serverBin, mainBin: existing.mainBin };
+    }
 
     // Pick CUDA tier from the driver/runtime version string (e.g. "12.4", "11.8.89", "527.00").
     // nvidia-smi --query-gpu=driver_version on Windows returns the Windows display driver version
@@ -736,10 +802,14 @@ function wireWizard() {
                    : (major >= 11 || major >= 452) ? "11.8.0"
                    : "12.4.0"; // default to 12 if we can't parse
 
-    const tag = "v1.7.5";
+    // Release base URL is configurable (DMW_WHISPER_CUBLAS_URL / CONFIG.whisperCublasUrl) so the
+    // next upstream org/tag move is a settings edit, not a code patch. Default already points at
+    // ggml-org's v1.9.1, the first tag shipping Windows cublas binaries (ggerganov's old org 301s,
+    // and v1.7.5 ships no win cublas zip). The handler appends the cudaTier-specific zip name.
     const zipName = `whisper-cublas-${cudaTier}-bin-x64.zip`;
-    const url = `https://github.com/ggerganov/whisper.cpp/releases/download/${tag}/${zipName}`;
-    const dataDir = process.env.DMW_DATA_DIR || CONFIG.dataDir;
+    const baseUrl = (process.env.DMW_WHISPER_CUBLAS_URL || CONFIG.whisperCublasUrl).replace(/\/+$/, "");
+    const url = `${baseUrl}/${zipName}`;
+    console.error(`[gpu] enabling — tier ${cudaTier}, fetching ${url}`);
     const destDir = path.join(dataDir, "whisper-cublas");
     const zipPath = path.join(dataDir, zipName);
     const zipPart = `${zipPath}.part`;
@@ -767,9 +837,15 @@ function wireWizard() {
       await new Promise<void>((resolve, reject) => out.end((e?: Error | null) => (e ? reject(e) : resolve())));
       fs.renameSync(zipPart, zipPath);
 
-      // Extract zip using Windows 10+ bsdtar (bundled as tar.exe) which handles .zip natively.
+      // Extract zip using Windows 10+ bsdtar (System32\tar.exe), which handles .zip natively.
+      // MUST be the absolute path: a bare "tar" resolves to GNU tar if Git-for-Windows/MSYS is on
+      // PATH, and GNU tar parses "E:\…\x.zip" as a remote host:path spec ("Cannot connect to E")
+      // and can't read zips anyway. Fall back to bare "tar" off-Windows / if System32 tar is gone.
+      const tarBin = process.platform === "win32"
+        ? path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe")
+        : "tar";
       await new Promise<void>((resolve, reject) => {
-        const tar = child_process.spawn("tar", ["-xf", zipPath, "-C", destDir], {
+        const tar = child_process.spawn(tarBin, ["-xf", zipPath, "-C", destDir], {
           windowsHide: true,
         });
         let errOut = "";
@@ -810,12 +886,16 @@ function wireWizard() {
         upsertEnv("DMW_WHISPER_BIN", mainBin);
       }
       if (!serverBin && !mainBin) {
-        return { ok: false, error: `extracted zip but could not find ${binName} or ${mainBinName} inside ${destDir}` };
+        const err = `extracted zip but could not find ${binName} or ${mainBinName} inside ${destDir}`;
+        console.error(`[gpu] ${err}`);
+        return { ok: false, error: err };
       }
+      console.error(`[gpu] enabled — server=${serverBin || "(none)"} main=${mainBin || "(none)"}; restart to apply`);
       return { ok: true, restart: true, serverBin, mainBin, cudaTier };
     } catch (e) {
       // Clean up partial files on failure.
       try { fs.promises.unlink(zipPart).catch(() => {}); } catch { /* ignore */ }
+      console.error(`[gpu] enable failed: ${(e as Error).message}`);
       return { ok: false, error: (e as Error).message };
     }
   });
@@ -840,7 +920,7 @@ function wireWizard() {
       partialMs: "DMW_PARTIAL_MS", mcpUrl: "DMW_MCP_URL", provider: "DMW_PROVIDER",
       model: "DMW_MODEL", autoEscalate: "DMW_AUTO_ESCALATE",
       ollamaUrl: "DMW_OLLAMA_URL", ollamaModel: "DMW_OLLAMA_MODEL",
-      whisperClipMs: "DMW_WHISPER_CLIP_MS",
+      whisperClipMs: "DMW_WHISPER_CLIP_MS", whisperCublasUrl: "DMW_WHISPER_CUBLAS_URL",
       saveClips: "DMW_SAVE_CLIPS", saveClipsMaxMb: "DMW_SAVE_CLIPS_MAX_MB", saveClipsMaxFiles: "DMW_SAVE_CLIPS_MAX_FILES",
     };
     const envUpdates: Record<string, string> = {};
@@ -856,6 +936,7 @@ function wireWizard() {
       if (key === "ollamaUrl"      && typeof val === "string")  CONFIG.ollamaUrl = val;
       if (key === "ollamaModel"    && typeof val === "string")  CONFIG.ollamaModel = val;
       if (key === "whisperClipMs"  && typeof val === "number")  CONFIG.whisperClipMs = val;
+      if (key === "whisperCublasUrl" && typeof val === "string") CONFIG.whisperCublasUrl = val;
       // A/B clip flags are read live from process.env per clip, so set them now (effective with no
       // restart) in addition to persisting via envMap below. Re-arm the "corpus full" warn-once.
       if (key === "saveClips"         && typeof val === "boolean") { process.env.DMW_SAVE_CLIPS = val ? "1" : "0"; abClipBudgetWarned = false; }
@@ -972,7 +1053,7 @@ async function refreshRoster(opts: { silent?: boolean; force?: boolean } = {}) {
 // --- Determine active campaign from the main project's registry ---
 function readActiveSlug(): string {
   try {
-    const p = path.join(process.env.DMW_DATA_DIR || path.join(__dirname, "..", "..", "data"), "active-campaign.json");
+    const p = path.join(sharedDataDir(), "active-campaign.json");
     return (JSON.parse(fs.readFileSync(p, "utf-8")) as { slug: string }).slug || "";
   } catch { return ""; }
 }
@@ -981,7 +1062,7 @@ function readActiveSlug(): string {
 // is shard-specific, so it needs this to open the right editor.
 function readActiveRoll20Id(): string {
   try {
-    const dir = process.env.DMW_DATA_DIR || path.join(__dirname, "..", "..", "data");
+    const dir = sharedDataDir();
     const slug = readActiveSlug();
     if (!slug) return "";
     const campaigns = JSON.parse(fs.readFileSync(path.join(dir, "campaigns.json"), "utf-8")) as Record<string, { roll20CampaignId?: string }>;
@@ -991,14 +1072,32 @@ function readActiveRoll20Id(): string {
 
 // Upsert KEY=value into <dataDir>/.env (replace the line if present, else append) so the
 // setup wizard's secrets persist to the per-user dir loaded on next launch.
+// Persist a single key (save-api-key, Enable-GPU, the STT-model picker, token harvests). Delegates
+// to writeHudEnv so there is ONE writable .env target and one merge implementation.
 function upsertEnv(key: string, value: string): void {
-  const dir = process.env.DMW_DATA_DIR || CONFIG.dataDir;
-  fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, ".env");
-  let txt = ""; try { txt = fs.readFileSync(file, "utf-8"); } catch { /* new file */ }
-  const re = new RegExp(`^${key}=.*$`, "m");
-  txt = re.test(txt) ? txt.replace(re, `${key}=${value}`) : `${txt.replace(/\n?$/, "\n")}${key}=${value}\n`;
-  fs.writeFileSync(file, txt);
+  writeHudEnv({ [key]: value });
+}
+
+// Locate the extracted whisper-cublas binaries under <dataDir>/whisper-cublas (flat layout or one
+// sub-dir). Shared by get-gpu-status (to report an "installed/active" state so the Setup tab can
+// show GPU is on instead of an always-on Enable button) and enable-gpu (to make it idempotent —
+// re-extracting over a RUNNING whisper-server.exe fails on Windows with a file lock:
+// "Can't unlink already-existing object: Permission denied").
+function findCublasBins(dataDir: string): { serverBin: string | null; mainBin: string | null } {
+  const destDir = path.join(dataDir, "whisper-cublas");
+  if (!fs.existsSync(destDir)) return { serverBin: null, mainBin: null };
+  const serverName = process.platform === "win32" ? "whisper-server.exe" : "whisper-server";
+  const mainName = process.platform === "win32" ? "whisper.exe" : "whisper";
+  const find = (dir: string, target: string): string | null => {
+    let entries: import("fs").Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return null; }
+    for (const e of entries) {
+      if (e.isFile() && e.name === target) return path.join(dir, e.name);
+      if (e.isDirectory()) { const f = find(path.join(dir, e.name), target); if (f) return f; }
+    }
+    return null;
+  };
+  return { serverBin: find(destDir, serverName), mainBin: find(destDir, mainName) };
 }
 
 // GPU detection result type.

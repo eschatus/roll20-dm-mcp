@@ -185,6 +185,14 @@ export const CONFIG = {
   // single-tier. e.g. DMW_WHISPER_FINAL_MODEL=…/ggml-medium.en.bin with a base.en primary.
   whisperFinalModel: process.env.DMW_WHISPER_FINAL_MODEL || "",
 
+  // Base release URL the "Enable GPU acceleration" download pulls the whisper-cublas zip from.
+  // The handler appends `/whisper-cublas-<cudaTier>-bin-x64.zip`. whisper.cpp moved org
+  // (ggerganov → ggml-org) and only v1.9.1+ ships the Windows cublas binaries, so this is a
+  // settings field (DMW_WHISPER_CUBLAS_URL) — the next upstream move is a config edit, not a
+  // code patch. The tag is part of the URL; the binary name already encodes the build.
+  whisperCublasUrl: process.env.DMW_WHISPER_CUBLAS_URL ||
+    "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1",
+
   // --- STT engine (faster-whisper sidecar) ---
   stt: {
     // The 3.10 venv python that has faster-whisper + CUDA libs installed.

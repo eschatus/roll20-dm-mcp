@@ -588,12 +588,26 @@ async function loadGpuStatus() {
   if (gpu.kind === "nvidia") {
     const cudaLabel = gpu.cudaVersion ? ` · CUDA ${gpu.cudaVersion}` : "";
     statusEl.textContent = `NVIDIA ${gpu.name || "GPU"}${cudaLabel}`;
-    const btn = document.createElement("button");
-    btn.className = "act";
-    btn.id = "setup-gpu-enable-btn";
-    btn.textContent = "Enable GPU acceleration (downloads ~650 MB)";
-    btn.addEventListener("click", () => enableGpuAcceleration(btn));
-    actionsEl.appendChild(btn);
+    if (gpu.active) {
+      // Engine installed AND wired into this session — GPU transcription is live. No button.
+      const note = document.createElement("span");
+      note.style.cssText = "font-size:12px;color:#9fd49f;";
+      note.textContent = "✓ GPU acceleration active (CUDA)";
+      actionsEl.appendChild(note);
+    } else if (gpu.installed) {
+      // Binaries present but this session isn't using them yet — needs a restart to apply.
+      const note = document.createElement("span");
+      note.style.cssText = "font-size:12px;color:#e0c060;";
+      note.textContent = "GPU engine installed — restart the gem to apply";
+      actionsEl.appendChild(note);
+    } else {
+      const btn = document.createElement("button");
+      btn.className = "act";
+      btn.id = "setup-gpu-enable-btn";
+      btn.textContent = "Enable GPU acceleration (downloads ~650 MB)";
+      btn.addEventListener("click", () => enableGpuAcceleration(btn));
+      actionsEl.appendChild(btn);
+    }
   } else if (gpu.kind === "apple") {
     statusEl.textContent = "Apple Silicon — Metal GPU (built in, no download needed)";
     const note = document.createElement("span");
@@ -623,7 +637,15 @@ async function enableGpuAcceleration(btn) {
 
   if (r && r.ok) {
     if (btn) btn.textContent = "GPU acceleration enabled ✓";
-    if (msgEl) { msgEl.textContent = "GPU engine installed — restart the gem to apply"; msgEl.className = "msg ok"; }
+    if (msgEl) {
+      // already → binaries were already present (idempotent no-op); restart:false → live this session.
+      msgEl.textContent = r.already
+        ? (r.restart ? "GPU engine already installed — restart the gem to apply" : "GPU acceleration already active")
+        : "GPU engine installed — restart the gem to apply";
+      msgEl.className = "msg ok";
+    }
+    // Re-query so the section repaints into its installed/active indicator state.
+    loadGpuStatus();
   } else {
     if (btn) btn.textContent = "Enable GPU acceleration (downloads ~650 MB)";
     if (msgEl) { msgEl.textContent = (r && r.error) || "GPU setup failed"; msgEl.className = "msg err"; }
@@ -684,9 +706,13 @@ function appendLogLine(entry) {
   if (!log) return;
   const line = document.createElement("div");
   const lc = entry.text.toLowerCase();
-  const isErr = lc.includes("error") || lc.includes("failed") || lc.includes("fail:");
-  const isOk  = lc.includes(" ok") || lc.includes("connected") || lc.includes("attuned") || lc.includes("bound to");
-  line.className = "log-line" + (isErr ? " log-err" : isOk ? " log-ok" : "");
+  // Color by level first (warn → amber, error → red); fall back to keyword sniffing because this
+  // app routes genuine failures through console.error, which is tagged "info" (it's the generic
+  // stderr sink — see main.ts forwardLog), so their severity lives only in the text.
+  const isErr  = entry.level === "error" || lc.includes("error") || lc.includes("failed") || lc.includes("fail:");
+  const isWarn = entry.level === "warn";
+  const isOk   = lc.includes(" ok") || lc.includes("connected") || lc.includes("attuned") || lc.includes("bound to");
+  line.className = "log-line" + (isErr ? " log-err" : isWarn ? " log-warn" : isOk ? " log-ok" : "");
   line.innerHTML = `<span class="log-ts">${fmtTs(entry.ts)}</span>${escapeHtml(entry.text)}`;
   log.appendChild(line);
   // trim oldest if over cap
@@ -737,6 +763,7 @@ async function loadConfig() {
     set("cfg-ollama-url", c.ollamaUrl);
     set("cfg-ollama-model", c.ollamaModel);
     set("cfg-whisper-clip-ms", c.whisperClipMs);
+    set("cfg-whisper-cublas-url", c.whisperCublasUrl);
     setChk("cfg-save-clips", c.saveClips);
     set("cfg-save-clips-mb", c.saveClipsMaxMb);
     set("cfg-save-clips-files", c.saveClipsMaxFiles);
@@ -763,6 +790,7 @@ document.getElementById("config-save-btn")?.addEventListener("click", async () =
     ollamaUrl: get("cfg-ollama-url"),
     ollamaModel: get("cfg-ollama-model"),
     whisperClipMs: getNum("cfg-whisper-clip-ms"),
+    whisperCublasUrl: get("cfg-whisper-cublas-url"),
     saveClips: getChk("cfg-save-clips"),
     saveClipsMaxMb: getNum("cfg-save-clips-mb"),
     saveClipsMaxFiles: getNum("cfg-save-clips-files"),
