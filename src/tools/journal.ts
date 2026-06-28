@@ -79,7 +79,7 @@ export function registerJournalTools(server: McpServer): void {
 
   server.tool(
     "get_journal_folder",
-    "Read the Roll20 campaign journal folder tree (_journalfolder) as JSON. Merge new ids in, then set_journal_folder.",
+    "Read the Roll20 campaign journal folder tree as JSON. Merge new ids in, then set_journal_folder.",
     {},
     async () => {
       const tree = await roll20.relayCommand<unknown>({ action: "getJournalFolder" });
@@ -89,7 +89,7 @@ export function registerJournalTools(server: McpServer): void {
 
   server.tool(
     "set_journal_folder",
-    "Replace the Roll20 campaign journal folder tree (_journalfolder). Pass the COMPLETE merged tree (array) as json — this overwrites, so always get_journal_folder + merge first.",
+    "Replace the Roll20 campaign journal folder tree. Pass the COMPLETE merged tree (array) as json — this overwrites, so always get_journal_folder + merge first. (Append a folder without re-sending the whole tree via json:{__append__:[folder]}.)",
     {
       json: z.any(),
     },
