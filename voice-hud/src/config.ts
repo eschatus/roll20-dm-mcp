@@ -31,6 +31,7 @@ const LOCAL_TOOLS = [
   // state changes — clean primitives: HP (single + batch) and conditions
   "update_token_hp",   // hit points, one token
   "update_hp_many",    // hit points, many tokens in ONE call (AoE — no iteration)
+  "resolve_aoe",       // AoE primitive: find targets + roll saves + apply, ONE call (fireball etc.)
   "set_token_marker",  // conditions (sticker + tracked state)
   "kill_token",        // atomic death: dead marker + move to map layer (one call)
   "set_token_props",   // position / aura / visual
