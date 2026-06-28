@@ -45,9 +45,9 @@ export class AnthropicProvider implements LLMProvider {
   pushContinue(note: string): void { this.history.push({ role: "user", content: note }); }
 
   async run(): Promise<LLMTurn> {
-    // The system prompt may carry the live roster; rebuild each call is fine.
-    // Take the raw response too, so we can read rate-limit headers and explain a
-    // slow turn (backoff vs genuine generation).
+    // System prompt is now frozen (roster/phase ride in the user turn), so the
+    // tools+system prefix is prompt-cacheable — see the cache_control breakpoint.
+    // Take the raw response too, so we can read rate-limit headers + cache usage.
     const t0 = Date.now();
     let res: Anthropic.Message;
     let headers: Headers;
@@ -55,7 +55,11 @@ export class AnthropicProvider implements LLMProvider {
       const r = await this.client.messages.create({
         model: this.model,
         max_tokens: 1024, // bound prose latency; a tool call + short reply fits easily
-        system: this.system,
+        // Cache the stable prefix. Render order is tools → system → messages, so a
+        // breakpoint on the system block caches the tool schemas + frozen persona
+        // together; only the volatile user turn (roster/phase/transcript) is uncached.
+        // (Haiku min cacheable prefix is 4K tokens; tools+persona clear it.)
+        system: [{ type: "text", text: this.system, cache_control: { type: "ephemeral" } }],
         tools: this.tools,
         messages: this.history,
       }).withResponse();
@@ -77,6 +81,10 @@ export class AnthropicProvider implements LLMProvider {
       const reset = headers.get("anthropic-ratelimit-tokens-reset") || headers.get("anthropic-ratelimit-requests-reset");
       console.error(`[anthropic] SLOW ${elapsed}ms — likely rate-limit backoff. req_remaining=${reqRemaining} tok_remaining=${tokRemaining}${reset ? ` reset=${reset}` : ""}`);
     }
+
+    // Cache visibility: confirm the tools+system prefix is actually being reused.
+    const cr = res.usage.cache_read_input_tokens ?? 0, cw = res.usage.cache_creation_input_tokens ?? 0;
+    if (cr || cw) console.error(`[anthropic] cache read=${cr} write=${cw} uncached_in=${res.usage.input_tokens}`);
 
     let text = "";
     const toolCalls: LLMTurn["toolCalls"] = [];
