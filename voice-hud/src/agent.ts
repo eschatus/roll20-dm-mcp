@@ -15,6 +15,7 @@ import type { McpTool } from "./mcp";
 import { buildSystemPrompt, buildTurnContext } from "./persona";
 import { createProvider, LLMProvider, ToolSpec, ProviderName } from "./llm";
 import { CONFIG } from "./config";
+import { decideTerminal, isMutatingTool, isSentinel, looksComplex } from "./loop-policy";
 
 // The narrow MCP surface the agent actually uses: list tools + call one. The
 // real McpRoll20 satisfies this structurally; tests inject a recording fake.
@@ -221,21 +222,6 @@ export class DmAgent {
   }
 
   // ---------------------------------------------------------------------------
-  // Escalation heuristic
-  // ---------------------------------------------------------------------------
-
-  // Heuristic: is this transcript a complex narration the local 7B will flub?
-  // (long, or names multiple targets / "all", or several effect verbs). Such turns
-  // auto-escalate to cloud Haiku. Simple single-target commands stay local.
-  private looksComplex(t: string): boolean {
-    const s = t.toLowerCase();
-    if (t.length > 90) return true;
-    if (/\b(all|each|every|both|the (party|skeletons|goblins|group))\b/.test(s)) return true;
-    const verbs = (s.match(/\b(takes?|deals?|damage|heal|save|casts?|hits?|misses?|drops?|falls?|burns?|marks?|poison|prone|stun|frighten)\b/g) || []).length;
-    return verbs >= 3; // multiple distinct effects in one breath
-  }
-
-  // ---------------------------------------------------------------------------
   // Hybrid macros
   // ---------------------------------------------------------------------------
   // Each macro runs a code-driven backbone of must-happen steps, calling the MCP
@@ -403,7 +389,7 @@ export class DmAgent {
     // active provider is already cloud, or auto-escalate is off). The escalated
     // turn runs on a FRESH cloud provider seeded with just this transcript —
     // combat commands are self-contained, so we don't need local's history.
-    const escalate = CONFIG.autoEscalate && this.providerName === "ollama" && this.looksComplex(transcript);
+    const escalate = CONFIG.autoEscalate && this.providerName === "ollama" && looksComplex(transcript);
     let turnLlm = this.llm;
     if (escalate) {
       cb.onToolResult("↑escalate", "complex narration → cloud (haiku)");
@@ -416,12 +402,24 @@ export class DmAgent {
       this.llm.pushUser(buildTurnContext(this.roster, this.phase) + "\n\n" + transcript);
     }
 
+    // Agentic-loop bookkeeping (see loop-policy.ts). Tracks whether the turn has
+    // actually changed the table and whether we've already spent our one-shot
+    // persistence re-prompts — so "done" becomes a structural decision, not silence.
+    const mode = CONFIG.agenticLoop;
+    let mutationsThisTurn = 0;
+    let nudgedAlready = false;
+    let completenessCheckedAlready = false;
+
     const turnStart = Date.now();
-    for (let step = 0; step < 12; step++) {
+    // +2 headroom over the legacy 12 so the bounded one-shot nudges can't starve a
+    // genuinely long tool chain.
+    for (let step = 0; step < 14; step++) {
       const t0 = Date.now();
       const turn = await turnLlm.run();
       console.error(`[agent] step ${step} (${escalate ? "haiku" : this.providerName}) gen ${Date.now() - t0}ms (text:${turn.text.length} tools:${turn.toolCalls.length})`);
-      if (turn.text) cb.onText(turn.text);
+      // Suppress the bare DONE/NOACTION sentinel a nudge can elicit — it's a loop
+      // control token, not a reply for the DM.
+      if (turn.text && !isSentinel(turn.text)) cb.onText(turn.text);
 
       // Truncated mid-thought without a tool call → nudge and continue, so it
       // actually acts instead of ending on prose ("said firing, nothing happened").
@@ -429,11 +427,24 @@ export class DmAgent {
         turnLlm.pushContinue("Continue — keep narration brief and call the tools now to carry out the plan.");
         continue;
       }
-      if (turn.toolCalls.length === 0) { console.error(`[agent] turn DONE ${Date.now() - turnStart}ms, ${step + 1} steps`); return; }
+      if (turn.toolCalls.length === 0) {
+        // Done, or one bounded re-prompt? The policy decides from what actually
+        // happened this turn (mode "off" always returns done → legacy behaviour).
+        const action = decideTerminal({ transcript, mutationsThisTurn, nudgedAlready, completenessCheckedAlready, mode });
+        if (action.kind === "done") { console.error(`[agent] turn DONE ${Date.now() - turnStart}ms, ${step + 1} steps (mut=${mutationsThisTurn})`); return; }
+        if (action.tag === "persist") nudgedAlready = true; else completenessCheckedAlready = true;
+        console.error(`[agent] persist:${action.tag} — model stopped before work complete, re-prompting`);
+        cb.onToolResult(`↻${action.tag}`, action.tag === "persist" ? "no table change — re-prompting" : "verifying all effects applied");
+        turnLlm.pushContinue(action.text);
+        continue;
+      }
 
       const results: { id: string; name: string; content: string }[] = [];
       for (const call of turn.toolCalls) {
         cb.onToolStart(call.name, call.args);
+        // Count any attempted state-changer (even one the DM cancels) as "the model
+        // acted" — a cancelled write still means it didn't flake into pure prose.
+        if (isMutatingTool(call.name)) mutationsThisTurn++;
 
         if (WRITE_TOOLS.has(call.name)) {
           const ok = await cb.onProposeWrite(call.name, call.args);
