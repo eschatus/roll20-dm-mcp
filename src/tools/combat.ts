@@ -683,13 +683,13 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "update_token_hp",
-    "The SINGLE HP primitive — replaces the old apply_damage and heal_character tools. Apply damage (clamps at 0), healing (clamps at max), or set HP to an exact value on ANY Roll20 token. Routes automatically by controlledby: a player-controlled token (PC) has its HP tracked in relay state (a block in the token's gmnotes) and its visible token bar is NEVER touched (Beyond20 owns it) — reported as '(tracked)'; an NPC's HP is its token bar1. Resolve by characterName (fuzzy/registry) or tokenId. Roll20-only — D&D Beyond is read-only and is NOT written. For CONDITIONS (poisoned, prone, dead, etc.) use set_token_marker instead — not this. (The condition args here are legacy/bulk-only.)",
+    "The SINGLE HP primitive — replaces the old apply_damage and heal_character tools. Apply damage (clamps at 0), healing (clamps at max), or set HP to an exact value on ANY Roll20 token. Routes automatically by controlledby: a player-controlled token (PC) has its HP tracked in relay state (a block in the token's gmnotes) and its visible token bar is NEVER touched (Beyond20 owns it) — reported as '(tracked)'; an NPC's HP is its token bar1. Resolve by characterName (fuzzy/registry) or tokenId. Roll20-only — D&D Beyond is read-only and is NOT written. For CONDITIONS (poisoned, prone, dead, etc.) use set_token_marker instead — not this. (The condition args here are legacy/bulk-only.) EXAMPLE — 'the ogre takes 39': {\"characterName\":\"Ogre\",\"damage\":39}. 'heal Thorne 12': {\"characterName\":\"Thorne\",\"heal\":12}. damage/heal/setHp are bare NUMBERS (39), NEVER quoted strings (\"39\").",
     {
       characterName: z.string().optional().describe("USE THIS. The token/character name exactly as it appears on the map, e.g. 'Brie Mossfrond', 'Skeleton the Armored'. Resolved to the token automatically."),
       tokenId: z.string().optional().describe("Internal Roll20 ID only. Do NOT invent or guess this — if you don't have a real ID from a prior tool result, use characterName instead."),
-      damage: z.number().int().min(0).optional().describe("Subtract this much from current HP (clamps at 0)"),
-      heal: z.number().int().min(0).optional().describe("Add this much to current HP (clamps at bar1_max)"),
-      setHp: z.number().int().min(0).optional().describe("Set HP to this exact value regardless of current"),
+      damage: z.number().int().min(0).optional().describe("Subtract this much from current HP (clamps at 0). A bare NUMBER — damage:39, never damage:\"39\"."),
+      heal: z.number().int().min(0).optional().describe("Add this much to current HP (clamps at bar1_max). A bare NUMBER — heal:12, never heal:\"12\"."),
+      setHp: z.number().int().min(0).optional().describe("Set HP to this exact value regardless of current. A bare NUMBER — setHp:30, never setHp:\"30\"."),
       addConditions: z.array(z.string()).optional().describe("Legacy/bulk: add conditions. Prefer set_token_marker."),
       removeConditions: z.array(z.string()).optional().describe("Legacy/bulk: remove conditions. Prefer set_token_marker."),
       replaceConditions: z.array(z.string()).optional().describe("Legacy/bulk: replace ALL conditions. Prefer set_token_marker."),
@@ -770,12 +770,12 @@ export function registerCombatTools(server: McpServer): void {
   // token whose name contains a substring (e.g. "skeleton" → all skeletons).
   server.tool(
     "update_hp_many",
-    "Apply the SAME damage or healing to MANY tokens in one call — use this for area effects ('40 to all the skeletons', 'whole party heals 8'). Either pass names[] (explicit list) OR nameMatch (a substring that selects every token whose name contains it, case-insensitive). Do NOT call update_token_hp repeatedly for an AoE — use this once.",
+    "Apply the SAME damage or healing to MANY tokens in one call — use this for area effects ('40 to all the skeletons', 'whole party heals 8'). Either pass names[] (explicit list) OR nameMatch (a substring that selects every token whose name contains it, case-insensitive). Do NOT call update_token_hp repeatedly for an AoE — use this once. EXAMPLE — '4 to the two ascetics and the wizard': {\"names\":[\"Drowned Ascetic (1)\",\"Drowned Ascetic (2)\",\"Wizard 1\"],\"damage\":4}. The target param is 'names' (NOT 'characterNames'); it is a REAL array [\"a\",\"b\"], never a quoted string \"[\\\"a\\\"]\". damage/heal are bare NUMBERS (4), never \"4\".",
     {
-      names: z.array(z.string()).optional().describe("Explicit token names, e.g. ['Skeleton the Armored','Skeleton the Cursed']"),
+      names: z.array(z.string()).optional().describe("Explicit token names as a REAL array, e.g. [\"Skeleton the Armored\",\"Skeleton the Cursed\"]. The param is 'names' — not 'characterNames'/'targets'. Never a JSON-stringified array."),
       nameMatch: z.string().optional().describe("Substring selecting all matching tokens, e.g. 'skeleton' hits every skeleton on the page"),
-      damage: z.number().int().min(0).optional(),
-      heal: z.number().int().min(0).optional(),
+      damage: z.number().int().min(0).optional().describe("Damage to apply to every target. A bare NUMBER — damage:4, never damage:\"4\"."),
+      heal: z.number().int().min(0).optional().describe("Healing to apply to every target. A bare NUMBER — heal:8, never heal:\"8\"."),
     },
     async ({ names, nameMatch, damage, heal }) => {
       if (damage === undefined && heal === undefined) throw new Error("Provide damage or heal");
@@ -948,9 +948,9 @@ export function registerCombatTools(server: McpServer): void {
   // never touched here.
   server.tool(
     "resolve_aoe",
-    "Resolve an area-of-effect spell in ONE call: finds targets, rolls NPC saving throws publicly via Roll20's dice engine, applies damage (half on save by default), and optionally applies a condition to NPCs that fail. PCs caught in the area are listed in the report but NEVER auto-rolled or damaged — players roll their own saves. For HEALING AoEs (Mass Cure Wounds, Healing Spirit, etc.) set healing:true: the formula is applied as positive HP to every resolved target (PCs included, via adjustPcHp), with no saves or conditions — pair it with targetNames to pick the allies. Target via ONE of: atPing + radiusFeet (centered on the GM's last shift+click map ping — the natural 'fireball lands THERE' gesture; draws a visible zone at the spot), centerTokenName/centerTokenId + radiusFeet (sphere/emanation), zoneName/zoneId (existing create_zone area), or targetNames (explicit list — use for cones/lines you judge by eye). Use dryRun:true to preview who's affected without rolling anything.",
+    "Resolve an area-of-effect spell in ONE call: finds targets, rolls NPC saving throws publicly via Roll20's dice engine, applies damage (half on save by default), and optionally applies a condition to NPCs that fail. PCs caught in the area are listed in the report but NEVER auto-rolled or damaged — players roll their own saves. For HEALING AoEs (Mass Cure Wounds, Healing Spirit, etc.) set healing:true: the formula is applied as positive HP to every resolved target (PCs included, via adjustPcHp), with no saves or conditions — pair it with targetNames to pick the allies. Target via ONE of: atPing + radiusFeet (centered on the GM's last shift+click map ping — the natural 'fireball lands THERE' gesture; draws a visible zone at the spot), centerTokenName/centerTokenId + radiusFeet (sphere/emanation), zoneName/zoneId (existing create_zone area), or targetNames (explicit list — use for cones/lines you judge by eye). Use dryRun:true to preview who's affected without rolling anything. EXAMPLE — 'hunger of hadar on the two ascetics and wizard 1, 3d6, DEX save DC 15': {\"label\":\"Hunger of Hadar\",\"targetNames\":[\"Drowned Ascetic (1)\",\"Drowned Ascetic (2)\",\"Wizard 1\"],\"saveAbility\":\"dexterity\",\"saveDc\":15,\"damageFormula\":\"3d6\"}. The effect-name param is 'label' (NOT 'spellName'); the target-list param is 'targetNames' (NOT 'targets'/'names') and is a REAL array, never a quoted string.",
     {
-      label: z.string().describe("Effect name for chat roll labels, e.g. 'Fireball (Strahd)'"),
+      label: z.string().describe("Effect name for chat roll labels, e.g. 'Fireball (Strahd)'. The param is 'label' — NOT 'spellName'/'name'."),
       atPing: z.boolean().default(false).describe("Center on the most recent shift+click map ping (within the last 3 minutes). Requires radiusFeet. Creates a visible zone named after the label — clear it later with clear_zone."),
       centerTokenName: z.string().optional().describe("Token name at the center (resolved exact-then-substring)"),
       centerTokenId: z.string().optional(),
@@ -958,7 +958,7 @@ export function registerCombatTools(server: McpServer): void {
       includeCenter: z.boolean().default(false).describe("Include the center token itself (false = emanation excludes caster)"),
       zoneName: z.string().optional().describe("Resolve against a named zone from create_zone"),
       zoneId: z.string().optional(),
-      targetNames: z.array(z.string()).optional().describe("Explicit target names — for cones/lines or hand-picked targets"),
+      targetNames: z.array(z.string()).optional().describe("Explicit target names as a REAL array, e.g. [\"Drowned Ascetic (1)\",\"Wizard 1\"] — for cones/lines or hand-picked targets. The param is 'targetNames' — not 'targets'/'names'. Never a JSON-stringified array."),
       excludeNames: z.array(z.string()).optional().describe("Names to exempt, e.g. allies dodging around the Web"),
       saveAbility: z.enum(SAVE_ABILITIES).optional().describe("Saving throw ability. Omit for no-save effects (e.g. Magic Missile volley)"),
       saveDc: z.number().int().optional().describe("Save DC. Required when saveAbility is set"),
