@@ -52,16 +52,25 @@ export class AnthropicProvider implements LLMProvider {
     let res: Anthropic.Message;
     let headers: Headers;
     try {
+      // Two cache breakpoints: (1) system → caches tools + frozen persona (render order is
+      // tools → system → messages). (2) the LAST message → caches the GROWING conversation tail
+      // within an encounter; the history is append-only so the prefix stays byte-stable and each
+      // turn re-reads it instead of cold-prefilling the whole transcript. Marked per-request (not
+      // mutating history) so only the latest turn carries the breakpoint — staying under the cap.
+      const msgs = this.history.map((m, i) => {
+        if (i !== this.history.length - 1) return m;
+        if (typeof m.content === "string") {
+          return { ...m, content: [{ type: "text" as const, text: m.content, cache_control: { type: "ephemeral" as const } }] };
+        }
+        const arr = m.content as unknown[];
+        return { ...m, content: arr.map((b: unknown, j) => (j === arr.length - 1 ? { ...(b as object), cache_control: { type: "ephemeral" } } : b)) };
+      }) as Anthropic.MessageParam[];
       const r = await this.client.messages.create({
         model: this.model,
         max_tokens: 1024, // bound prose latency; a tool call + short reply fits easily
-        // Cache the stable prefix. Render order is tools → system → messages, so a
-        // breakpoint on the system block caches the tool schemas + frozen persona
-        // together; only the volatile user turn (roster/phase/transcript) is uncached.
-        // (Haiku min cacheable prefix is 4K tokens; tools+persona clear it.)
         system: [{ type: "text", text: this.system, cache_control: { type: "ephemeral" } }],
         tools: this.tools,
-        messages: this.history,
+        messages: msgs,
       }).withResponse();
       res = r.data;
       headers = r.response.headers;

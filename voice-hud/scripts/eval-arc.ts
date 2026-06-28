@@ -186,7 +186,12 @@ async function main() {
   const tools = await mcp.connect();
   // Mirror the gem: send only the COMBAT_LOOP phase allowlist, not all served tools. DMW_EVAL_SCOPE=full to compare.
   const SCOPE = process.env.DMW_EVAL_SCOPE || "lean";
-  const allow = SCOPE === "full" ? null : new Set(CONFIG.phaseTools.COMBAT_LOOP);
+  let allow: Set<string> | null = null;
+  if (SCOPE !== "full") {
+    allow = new Set(CONFIG.phaseTools.COMBAT_LOOP);
+    // Mirror the agent: Ollama gets phase ∩ LOCAL_TOOLS so the small model isn't drowned in schemas.
+    if (PROVIDER === "ollama") { const local = new Set(CONFIG.localToolAllowlist); allow = new Set([...allow].filter((t) => local.has(t))); }
+  }
   const toolSpecs: ToolSpec[] = tools.filter((t) => !allow || allow.has(t.name)).map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }));
   console.log(`Connected — ${tools.length} served, ${toolSpecs.length} sent (scope=${SCOPE}). provider=${PROVIDER} model=${MODEL}, ${SCENARIO.length} steps × ${REPS}\n`);
   const system = buildSystemPrompt("anthropic"); // the tuned prompt — identical for every model
