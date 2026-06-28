@@ -2260,20 +2260,21 @@ ACTIONS["createCharacter"] = function (args, msg, nonce, senderPlayerId) {
 ACTIONS["editCharacter"] = function (args, msg, nonce, senderPlayerId) {
         {
         // Edit an existing Roll20 character object's top-level fields.
-        // Supports: name, bio, avatar, controlledby, archived, inplayerjournals.
+        // Supports: name, bio, gmnotes, avatar, controlledby, archived, inplayerjournals.
         // GM-gated (enforced in the outer handler). stripUndef prevents sandbox crash.
         let ch = getObj("character", args.charId);
         if (!ch) throw new Error("Character not found: " + args.charId);
         let props = stripUndef({
           name:             args.name,
           bio:              args.bio,
+          gmnotes:          args.gmnotes,
           avatar:           args.avatar,
           controlledby:     args.controlledby,
           archived:         args.archived,
           inplayerjournals: args.inplayerjournals,
         });
         let keys = Object.keys(props);
-        if (keys.length === 0) throw new Error("editCharacter: no fields to edit — pass at least one of: name, bio, avatar, controlledby, archived, inplayerjournals");
+        if (keys.length === 0) throw new Error("editCharacter: no fields to edit — pass at least one of: name, bio, gmnotes, avatar, controlledby, archived, inplayerjournals");
         setSafe(ch, props);
         writeResult(nonce, { ok: true, updated: keys });
         return;
