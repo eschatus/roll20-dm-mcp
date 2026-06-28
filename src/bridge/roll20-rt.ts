@@ -503,6 +503,15 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
         if (cmd.includeGraphics) return NOT_HANDLED; // graphics-on-layer mix: let the Mod handle it
         return out;
       }
+      case "getJournalFolder": {
+        // Jumpgate stores the journal tree as a JSON string at campaign/journalfolder.
+        // (The Mod's legacy "_journalfolder" attribute does NOT exist on this backend —
+        // it's a dead field, so the Mod read/write path silently no-ops. See the
+        // journal-folder-probe recon.)
+        const campaign = await rtGet<Record<string, unknown>>("campaign");
+        const raw = campaign?.journalfolder;
+        return typeof raw === "string" && raw ? JSON.parse(raw) : Array.isArray(raw) ? raw : [];
+      }
       default:
         return NOT_HANDLED;
     }
@@ -574,6 +583,33 @@ async function tryDirectWrite(cmd: Record<string, unknown>): Promise<unknown | t
           remove(ref(conn.db, `${conn.storagePath}/windows/page/${pageId}`)),
         ]);
         return { removed: "all" };
+      }
+      case "setJournalFolder": {
+        // Jumpgate stores the journal tree as a JSON STRING at campaign/journalfolder
+        // (NOT the Mod's legacy "_journalfolder", a dead field that silently no-ops here —
+        // that masked-as-success write left every object unfiled at the root). Append mode
+        // read-modify-writes under a transaction so a concurrent journal edit can't clobber.
+        const json = cmd.json;
+        const isAppend = !!(json && typeof json === "object" && !Array.isArray(json) &&
+          (json as { __append__?: unknown }).__append__);
+        const conn = await getConn();
+        const jfRef = ref(conn.db, `${conn.storagePath}/campaign/journalfolder`);
+        if (isAppend) {
+          const additions = (json as { __append__: unknown[] }).__append__;
+          if (!Array.isArray(additions)) return NOT_HANDLED; // malformed → let the Mod throw
+          let total = 0;
+          await runTransaction(jfRef, (current: unknown) => {
+            const tree = typeof current === "string" && current ? JSON.parse(current)
+              : Array.isArray(current) ? current : [];
+            for (const f of additions) tree.push(f);
+            total = tree.length;
+            return JSON.stringify(tree);
+          });
+          return { ok: true, appended: additions.length, total };
+        }
+        const tree = Array.isArray(json) ? json : [];
+        await set(jfRef, JSON.stringify(tree));
+        return { ok: true, total: tree.length };
       }
       case "setTokenBar": {
         const v = Number(cmd.value);
