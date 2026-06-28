@@ -12,7 +12,7 @@
 // must-happen steps while leaving judgment gaps to the model.
 
 import type { McpTool } from "./mcp";
-import { buildSystemPrompt } from "./persona";
+import { buildSystemPrompt, buildTurnContext } from "./persona";
 import { createProvider, LLMProvider, ToolSpec, ProviderName } from "./llm";
 import { CONFIG } from "./config";
 
@@ -156,8 +156,8 @@ export class DmAgent {
 
   setRoster(roster: string) {
     this.roster = roster;
-    // Roster lands at start() if not yet begun; otherwise refresh the live prompt.
-    if (this.started) this.llm.setSystem(buildSystemPrompt(this.roster, this.providerName, this.phase));
+    // Roster is injected per-turn via buildTurnContext (kept out of the cached,
+    // frozen system prompt), so there's nothing to refresh on the live provider.
   }
   reset() { this.llm.reset(); this.started = false; this.busy = false; }
   isBusy() { return this.busy; }
@@ -216,7 +216,7 @@ export class DmAgent {
 
   private ensureStarted(): void {
     if (this.started) return;
-    this.llm.start(buildSystemPrompt(this.roster, this.providerName, this.phase), this.toolSpecs(this.providerName));
+    this.llm.start(buildSystemPrompt(this.providerName), this.toolSpecs(this.providerName));
     this.started = true;
   }
 
@@ -408,12 +408,12 @@ export class DmAgent {
     if (escalate) {
       cb.onToolResult("↑escalate", "complex narration → cloud (haiku)");
       turnLlm = this.makeProvider("anthropic");
-      turnLlm.start(buildSystemPrompt(this.roster, "anthropic", this.phase), this.toolSpecs("anthropic"));
-      turnLlm.pushUser(transcript);
+      turnLlm.start(buildSystemPrompt("anthropic"), this.toolSpecs("anthropic"));
+      turnLlm.pushUser(buildTurnContext(this.roster, this.phase) + "\n\n" + transcript);
     } else {
       this.ensureStarted();
       this.llm.repair();
-      this.llm.pushUser(transcript);
+      this.llm.pushUser(buildTurnContext(this.roster, this.phase) + "\n\n" + transcript);
     }
 
     const turnStart = Date.now();

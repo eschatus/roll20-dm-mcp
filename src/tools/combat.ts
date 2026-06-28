@@ -97,11 +97,11 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "set_token_marker",
-    "Apply or clear a state on a token — sets the visible status sticker AND tracks the state. Pass ANY state name; the relay picks the icon and the tracking automatically: (1) true 5e conditions (poisoned, prone, frightened, blinded, charmed, deafened, grappled, incapacitated, invisible, paralyzed, petrified, restrained, stunned, unconscious, exhaustion, dead) get their canonical icon + sync to the character's tracked conditions; (2) common pseudo-conditions (bloodied, concentrating, blessed, bane, hasted, raging, marked, hidden, dodging, enlarged, flying, sleeping, burning, surprised, cursed, …) get a fixed well-known icon, DM-managed; (3) any OTHER name you invent (e.g. 'hunters-mark', 'charging-up') is auto-assigned a consistent icon and tracked in campaign state — list_custom_states shows these. NEVER use 'bloodied' worrying it won't show — it's handled. Use characterName or tokenId. For hit points use update_token_hp.",
+    "Apply or clear a state on a token — sets the visible status sticker AND tracks the state. Pass ANY state name; the relay picks the icon and the tracking automatically: (1) true 5e conditions (poisoned, prone, frightened, blinded, charmed, deafened, grappled, incapacitated, invisible, paralyzed, petrified, restrained, stunned, unconscious, exhaustion, dead) get their canonical icon + sync to the character's tracked conditions; (2) common pseudo-conditions (bloodied, concentrating, blessed, bane, hasted, raging, marked, hidden, dodging, enlarged, flying, sleeping, burning, surprised, cursed, …) get a fixed well-known icon, DM-managed; (3) any OTHER name you invent (e.g. 'hunters-mark', 'charging-up') is auto-assigned a consistent icon and tracked in campaign state — list_custom_states shows these. NEVER use 'bloodied' worrying it won't show — it's handled. Target with characterName (or tokenId) — there is no 'tokenName' or 'marker' parameter. For hit points use update_token_hp. Example — clear Paralyzed: {\"characterName\":\"X01\",\"condition\":\"paralyzed\",\"active\":false}; apply it: same with \"active\":true.",
     {
       condition: z.string().describe("Any state name. True conditions + pseudo-conditions get canonical icons; anything else is auto-assigned a consistent icon and tracked."),
-      active: z.boolean().describe("true to apply, false to clear"),
-      characterName: z.string().optional(),
+      active: z.boolean().describe("JSON boolean — true to apply, false to clear. Not the string \"true\"/\"false\"."),
+      characterName: z.string().optional().describe("USE THIS to target. The token/character name exactly as on the map, e.g. 'X01', 'Strahd'. The parameter is 'characterName' — not 'tokenName'."),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup"),
     },
     async ({ condition, active, characterName, tokenId }) => {
@@ -117,6 +117,29 @@ export function registerCombatTools(server: McpServer): void {
       const res = await roll20.relayCommand<{ tier?: string; marker?: string }>({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition, active });
       const tierNote = res?.tier === "custom" ? " (custom state — icon auto-assigned + tracked)" : res?.tier === "pseudo" ? " (pseudo-condition)" : "";
       return text(`${condition} ${active ? "applied to" : "cleared from"} ${characterName ?? resolvedTokenId}${tierNote}`);
+    }
+  );
+
+  server.tool(
+    "kill_token",
+    "Mark a creature DEAD and move it to the map layer — the complete death procedure, atomically, in ONE call. Use when the DM declares a kill ('the ogre drops', 'the goblin dies'). This is NOT an HP edit (do not set HP to 0) and NOT for a downed PC (that's unconscious + death saves) or an undead pending Undead Fortitude — the DM's declaration of death is the trigger. Replaces the old set_token_marker(dead) + set_token_props(layer:map) pair.",
+    {
+      characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Ogre', 'Goblin A'."),
+      tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
+    },
+    async ({ characterName, tokenId }) => {
+      let resolvedTokenId = tokenId;
+      if (!resolvedTokenId) {
+        if (!characterName) throw new Error("Provide characterName or tokenId");
+        resolvedTokenId = await resolveTokenOrThrow(characterName);
+      }
+      const tok = await roll20.relayCommand<{ represents?: string } | null>({ action: "getTokenById", tokenId: resolvedTokenId });
+      const charId = tok?.represents || undefined;
+      // The canonical death procedure: dead marker (sticker + tracked state) THEN move to the map
+      // layer. Done server-side so the model makes one call, not an orchestration it can split.
+      await roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition: "dead", active: true });
+      await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props: { layer: "map" } });
+      return text(`${characterName ?? resolvedTokenId} marked dead and moved to the map layer.`);
     }
   );
 
@@ -172,7 +195,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "roll_dice",
-    "Roll one or more dice formulas using Roll20's real in-game dice engine. Results appear in Roll20 chat and are returned here. Use for saving throws, ability checks, attack rolls, damage, or any other roll where the result needs to be visible to players.",
+    "Roll one or more dice formulas using Roll20's real in-game dice engine. Results appear in Roll20 chat and are returned here. Use for saving throws, ability checks, attack rolls, damage, or any other roll where the result needs to be visible to players. 'rolls' is a JSON array of {label, formula} objects — pass it as a real array, NOT a stringified array, and NOT {dice, modifier}. Example: {\"rolls\":[{\"label\":\"X01 — CON save\",\"formula\":\"1d20+2\"}]}.",
     {
       rolls: z.array(z.object({
         label: z.string().describe("Who or what is rolling, e.g. 'Goblin — DEX save', 'Strahd — Attack'"),

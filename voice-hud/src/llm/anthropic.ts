@@ -45,19 +45,32 @@ export class AnthropicProvider implements LLMProvider {
   pushContinue(note: string): void { this.history.push({ role: "user", content: note }); }
 
   async run(): Promise<LLMTurn> {
-    // The system prompt may carry the live roster; rebuild each call is fine.
-    // Take the raw response too, so we can read rate-limit headers and explain a
-    // slow turn (backoff vs genuine generation).
+    // System prompt is now frozen (roster/phase ride in the user turn), so the
+    // tools+system prefix is prompt-cacheable — see the cache_control breakpoint.
+    // Take the raw response too, so we can read rate-limit headers + cache usage.
     const t0 = Date.now();
     let res: Anthropic.Message;
     let headers: Headers;
     try {
+      // Two cache breakpoints: (1) system → caches tools + frozen persona (render order is
+      // tools → system → messages). (2) the LAST message → caches the GROWING conversation tail
+      // within an encounter; the history is append-only so the prefix stays byte-stable and each
+      // turn re-reads it instead of cold-prefilling the whole transcript. Marked per-request (not
+      // mutating history) so only the latest turn carries the breakpoint — staying under the cap.
+      const msgs = this.history.map((m, i) => {
+        if (i !== this.history.length - 1) return m;
+        if (typeof m.content === "string") {
+          return { ...m, content: [{ type: "text" as const, text: m.content, cache_control: { type: "ephemeral" as const } }] };
+        }
+        const arr = m.content as unknown[];
+        return { ...m, content: arr.map((b: unknown, j) => (j === arr.length - 1 ? { ...(b as object), cache_control: { type: "ephemeral" } } : b)) };
+      }) as Anthropic.MessageParam[];
       const r = await this.client.messages.create({
         model: this.model,
         max_tokens: 1024, // bound prose latency; a tool call + short reply fits easily
-        system: this.system,
+        system: [{ type: "text", text: this.system, cache_control: { type: "ephemeral" } }],
         tools: this.tools,
-        messages: this.history,
+        messages: msgs,
       }).withResponse();
       res = r.data;
       headers = r.response.headers;
@@ -77,6 +90,10 @@ export class AnthropicProvider implements LLMProvider {
       const reset = headers.get("anthropic-ratelimit-tokens-reset") || headers.get("anthropic-ratelimit-requests-reset");
       console.error(`[anthropic] SLOW ${elapsed}ms — likely rate-limit backoff. req_remaining=${reqRemaining} tok_remaining=${tokRemaining}${reset ? ` reset=${reset}` : ""}`);
     }
+
+    // Cache visibility: confirm the tools+system prefix is actually being reused.
+    const cr = res.usage.cache_read_input_tokens ?? 0, cw = res.usage.cache_creation_input_tokens ?? 0;
+    if (cr || cw) console.error(`[anthropic] cache read=${cr} write=${cw} uncached_in=${res.usage.input_tokens}`);
 
     let text = "";
     const toolCalls: LLMTurn["toolCalls"] = [];
