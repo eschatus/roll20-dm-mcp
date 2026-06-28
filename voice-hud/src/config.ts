@@ -255,12 +255,13 @@ export const CONFIG = {
   // --- Agentic loop persistence (experimental — done-signal restructure) ---
   // The legacy loop ends a turn the instant the model emits no tool call, so a prose
   // reply ("Got it, Thorne's poisoned") can silently end a turn with nothing applied.
-  //   "off"   → legacy behaviour (default; production unchanged until flipped).
-  //   "nudge" → Failure A: if the DM stated an outcome and NOTHING was applied, push
-  //             ONE persistence nudge before ending. Bounded to a single re-prompt.
+  //   "off"   → legacy behaviour (no persistence).
+  //   "nudge" → DEFAULT. Failure A: if the DM stated an outcome and NOTHING was applied,
+  //             push ONE persistence nudge before ending. Bounded to a single re-prompt;
+  //             measured 0 false-nudges, so no latency on the common (acted) path.
   //   "full"  → also Failure B: on a COMPOUND turn that DID act, run ONE completeness
   //             check to catch partials. Policy lives in loop-policy.ts.
-  agenticLoop: (process.env.DMW_AGENTIC_LOOP || "off") as "off" | "nudge" | "full",
+  agenticLoop: (process.env.DMW_AGENTIC_LOOP || "nudge") as "off" | "nudge" | "full",
 
   // Ollama (local) — OpenAI-compatible endpoint + a tool-calling model.
   // qwen2.5:14b-instruct handles tool-calling well; R1-distill does NOT, so it's
