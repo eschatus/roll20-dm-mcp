@@ -94,8 +94,36 @@ export function registerJournalTools(server: McpServer): void {
       json: z.any(),
     },
     async ({ json }) => {
-      await roll20.relayCommand({ action: "setJournalFolder", json });
-      return { content: [{ type: "text", text: "journal folder tree updated" }] };
+      const isAppend = !!(json && !Array.isArray(json) && (json as { __append__?: unknown }).__append__);
+      const setResult = await roll20.relayCommand<{ ok?: boolean; appended?: number; total?: number }>({
+        action: "setJournalFolder",
+        json,
+      });
+      // Verify the write actually PERSISTED by reading the tree back. Campaign().set("_journalfolder", …)
+      // can silently no-op in some campaign sandboxes — it returns ok but the value never lands — so the
+      // relay's ok:true alone is NOT proof (this masked a real failure: 62 objects left unfiled at the root).
+      // Don't deep-compare: Roll20 may normalize/reorder the tree; a top-level length check catches the
+      // real failure (added folders/ids that didn't take) without false negatives from normalization.
+      const after = await roll20.relayCommand<unknown[]>({ action: "getJournalFolder" });
+      const actualLen = Array.isArray(after) ? after.length : 0;
+      const expectedLen = isAppend
+        ? (setResult?.total ?? -1)
+        : (Array.isArray(json) ? json.length : -1);
+      if (expectedLen >= 0 && actualLen !== expectedLen) {
+        return {
+          content: [{ type: "text", text:
+            `set_journal_folder did NOT persist: wrote ${expectedLen} top-level ` +
+            `${isAppend ? `(appended ${setResult?.appended ?? "?"}) ` : ""}entries but read back ${actualLen}. ` +
+            `Campaign._journalfolder silently reverted — likely a sandbox limitation in this campaign ` +
+            `(the set returns ok but never lands). Journal objects remain unfiled at the root.` }],
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: "text", text:
+          `journal folder tree set — ${actualLen} top-level entries` +
+          `${isAppend ? ` (appended ${setResult?.appended ?? "?"})` : ""}, verified by read-back.` }],
+      };
     }
   );
 }
