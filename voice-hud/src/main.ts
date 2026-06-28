@@ -961,7 +961,8 @@ async function refreshRoster(opts: { silent?: boolean; force?: boolean } = {}) {
     if (opts.force) clearRosterCache();
 
     // Detect campaign switch and reset combat state so stale turn/plan data doesn't bleed over.
-    const currentSlug = readActiveSlug();
+    // Source of truth is the connected server (see fetchActiveSlug), not a local file.
+    const currentSlug = await fetchActiveSlug();
     if (currentSlug && currentSlug !== activeSlug) {
       activeSlug = currentSlug;
       campaignData = loadCampaignData(activeSlug);
@@ -973,6 +974,9 @@ async function refreshRoster(opts: { silent?: boolean; force?: boolean } = {}) {
       pushInbox();
       // Clear the combat band in the renderer so stale turn info doesn't persist after a switch.
       send("combat-update", { active: false, currentName: "", round: 0, plan: null, allPlans: {} });
+      // Tell the renderer the active campaign changed so its config panel (roster, vocab,
+      // pronouns — all keyed by activeSlug) re-pulls instead of showing the old campaign.
+      send("campaign-changed", { slug: activeSlug });
       console.error(`[roster] campaign switched to ${activeSlug} — combat state reset`);
     }
 
@@ -1058,6 +1062,22 @@ function readActiveSlug(): string {
     const p = path.join(sharedDataDir(), "active-campaign.json");
     return (JSON.parse(fs.readFileSync(p, "utf-8")) as { slug: string }).slug || "";
   } catch { return ""; }
+}
+
+// The CONNECTED server is the source of truth for the active campaign — it owns
+// active-campaign.json in ITS data dir, which is NOT necessarily the gem's
+// sharedDataDir(). When the gem reuses a server it didn't spawn (e.g. a dev server
+// already on :39200), the two dirs diverge: a switch_campaign the server applied
+// writes the server's file, while readActiveSlug() reads the gem's stale copy, so
+// activeSlug never updates and the campaign/roster/config render the OLD campaign.
+// Ask the server over MCP; fall back to the local file only before MCP is up.
+async function fetchActiveSlug(): Promise<string> {
+  try {
+    const raw = await mcp.call("active_campaign", {});
+    const slug = (JSON.parse(raw) as { slug?: string }).slug;
+    if (slug) return slug;
+  } catch { /* not connected yet, or no active campaign — fall back to the file */ }
+  return readActiveSlug();
 }
 
 // The active campaign's Roll20 numeric id (from the shared registry) — the native Roll20 harvest
