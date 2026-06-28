@@ -19,5 +19,7 @@ export interface SttEngine extends EventEmitter {
   readonly name: string;
   start(): Promise<void>;
   transcribe(wavPath: string, initialPrompt?: string): Promise<TranscriptResult>;
-  stop(): void;
+  // Resolves only once the underlying process is actually gone (not fire-and-forget —
+  // see procUtil.killAndWait). Callers that need a clean port/no orphan MUST await this.
+  stop(): Promise<void>;
 }

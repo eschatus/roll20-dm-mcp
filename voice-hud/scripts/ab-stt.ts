@@ -64,7 +64,7 @@ async function startFaster(): Promise<SttEngine | null> {
   for (const c of cfgs) {
     const e = new FasterWhisperEngine({ python: CONFIG.stt.python, script: CONFIG.stt.script, ...c });
     try { await e.start(); console.error(`[ab] faster-whisper up: ${e.name} (${c.device})`); return e; }
-    catch (err) { console.error(`[ab] faster-whisper ${c.model}/${c.device} failed: ${(err as Error).message}`); e.stop(); }
+    catch (err) { console.error(`[ab] faster-whisper ${c.model}/${c.device} failed: ${(err as Error).message}`); await e.stop(); }
   }
   return null;
 }
@@ -161,7 +161,7 @@ async function main(): Promise<void> {
   console.log(`\nnote: whisper.cpp one-shot RELOADS the model per clip — its latency includes model load;`);
   console.log(`      whisper-server (resident) removes that. faster-whisper is resident (load excluded).`);
 
-  engines.forEach((e) => e.eng.stop());
+  for (const e of engines) await e.eng.stop();
 }
 
 main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });

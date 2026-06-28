@@ -62,7 +62,7 @@ export class WhisperCppEngine extends EventEmitter implements SttEngine {
     });
   }
 
-  stop(): void { /* one-shot CLI — nothing resident to tear down */ }
+  async stop(): Promise<void> { /* one-shot CLI — nothing resident to tear down */ }
 }
 
 // Build the whisper-cli argument vector. Pure/exported for unit tests.
