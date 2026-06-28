@@ -121,6 +121,29 @@ export function registerCombatTools(server: McpServer): void {
   );
 
   server.tool(
+    "kill_token",
+    "Mark a creature DEAD and move it to the map layer — the complete death procedure, atomically, in ONE call. Use when the DM declares a kill ('the ogre drops', 'the goblin dies'). This is NOT an HP edit (do not set HP to 0) and NOT for a downed PC (that's unconscious + death saves) or an undead pending Undead Fortitude — the DM's declaration of death is the trigger. Replaces the old set_token_marker(dead) + set_token_props(layer:map) pair.",
+    {
+      characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Ogre', 'Goblin A'."),
+      tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
+    },
+    async ({ characterName, tokenId }) => {
+      let resolvedTokenId = tokenId;
+      if (!resolvedTokenId) {
+        if (!characterName) throw new Error("Provide characterName or tokenId");
+        resolvedTokenId = await resolveTokenOrThrow(characterName);
+      }
+      const tok = await roll20.relayCommand<{ represents?: string } | null>({ action: "getTokenById", tokenId: resolvedTokenId });
+      const charId = tok?.represents || undefined;
+      // The canonical death procedure: dead marker (sticker + tracked state) THEN move to the map
+      // layer. Done server-side so the model makes one call, not an orchestration it can split.
+      await roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition: "dead", active: true });
+      await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props: { layer: "map" } });
+      return text(`${characterName ?? resolvedTokenId} marked dead and moved to the map layer.`);
+    }
+  );
+
+  server.tool(
     "list_custom_states",
     "List the ad-hoc DM-defined states currently being tracked (tier-2 custom states set via set_token_marker that aren't standard conditions or pseudo-conditions) — each with its auto-assigned icon tag and which tokens currently hold it. Use to answer 'who is <custom state>?' or to see what bespoke states are in play.",
     {},

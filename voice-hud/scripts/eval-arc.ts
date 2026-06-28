@@ -106,6 +106,12 @@ function stubExec(name: string, a: Record<string, unknown>, b: Board): string {
       if (a.active === true) set.add(cond); else set.delete(cond); t.statusmarkers = [...set].join(",");
       return `${t.name}: ${cond} ${a.active ? "applied" : "cleared"}`;
     }
+    case "kill_token": {
+      const t = find(b, a.characterName) || b.tokens.find((x) => x.id === a.tokenId); if (!t) return "token not found";
+      const set = new Set(t.statusmarkers.split(",").filter(Boolean)); set.add("dead"); t.statusmarkers = [...set].join(",");
+      t.layer = "map";
+      return `${t.name} marked dead + moved to map layer`;
+    }
     case "resolve_aoe": {
       const targets = (a.targetNames as string[]) || b.tokens.filter((t) => !isPc(t)).map((t) => t.name);
       const roll = rollFormula(a.damageFormula); const heal = a.healing === true;
@@ -142,7 +148,7 @@ const SCENARIO: Step[] = [
     check: (b) => b.zones.some((z) => /web/i.test(z.name)) ? null : "no Web zone" },
   { utterance: "Fireball on the goblins — 8d6 fire, DEX save DC 15, half on save — and the blast burns the web away.", expect: "resolve_aoe",
     check: (b) => { const burned = !b.zones.some((z) => /web/i.test(z.name)); const hurt = find(b, "Goblin A")!.bar1_value < 7; return burned && hurt ? null : `web ${burned ? "gone" : "STILL UP"}, goblinA hp=${find(b, "Goblin A")!.bar1_value}`; } },
-  { utterance: "The ogre drops.", expect: "set_token_marker",
+  { utterance: "The ogre drops.", expect: "kill_token",
     check: (b) => { const t = find(b, "Ogre")!; return t.statusmarkers.includes("dead") && t.layer === "map" ? null : `dead=${t.statusmarkers.includes("dead")}, layer=${t.layer} (want map)`; } },
   { utterance: "Next turn.", expect: "advance_turn",
     check: (b) => b.turnorder[0].id !== "tok-Thorne" ? null : "turn did not advance" },
@@ -178,8 +184,11 @@ async function main() {
   if (PROVIDER === "anthropic" && !process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set");
   const mcp = new McpRoll20();
   const tools = await mcp.connect();
-  const toolSpecs: ToolSpec[] = tools.map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }));
-  console.log(`Connected — ${tools.length} tools. provider=${PROVIDER} model=${MODEL}, scenario=${SCENARIO.length} steps × ${REPS}\n`);
+  // Mirror the gem: send only the COMBAT_LOOP phase allowlist, not all served tools. DMW_EVAL_SCOPE=full to compare.
+  const SCOPE = process.env.DMW_EVAL_SCOPE || "lean";
+  const allow = SCOPE === "full" ? null : new Set(CONFIG.phaseTools.COMBAT_LOOP);
+  const toolSpecs: ToolSpec[] = tools.filter((t) => !allow || allow.has(t.name)).map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }));
+  console.log(`Connected — ${tools.length} served, ${toolSpecs.length} sent (scope=${SCOPE}). provider=${PROVIDER} model=${MODEL}, ${SCENARIO.length} steps × ${REPS}\n`);
   const system = buildSystemPrompt("anthropic"); // the tuned prompt — identical for every model
 
   const perStep = SCENARIO.map(() => 0);

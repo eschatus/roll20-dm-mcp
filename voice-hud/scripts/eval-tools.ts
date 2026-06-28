@@ -59,7 +59,7 @@ const CASES: Case[] = [
   { utterance: "Web fills a 20-ft cube by the door.", expect: "create_zone" },
   { utterance: "Cloudkill, 20-ft radius circle, centered on the ogre.", expect: "create_zone" },
   { utterance: "The web is gone.", expect: "clear_zone", need: { name: "Web" } },
-  { utterance: "The ogre drops.", expect: "set_token_marker", need: { condition: "dead", active: true }, note: "also expects a layer:map move" },
+  { utterance: "The ogre drops.", expect: "kill_token", note: "atomic dead + map layer" },
   { utterance: "Next turn.", expect: "advance_turn" },
   { utterance: "the ogre takes ten damage", expect: "update_token_hp", need: { characterName: "Ogre", damage: 10 } },
   { utterance: "goblin A takes 3", expect: "update_token_hp", need: { characterName: "Goblin A", damage: 3 } },
@@ -74,7 +74,11 @@ async function main() {
 
   const mcp = new McpRoll20();
   const tools = await mcp.connect();
-  console.log(`Connected — ${tools.length} tools. provider=${PROVIDER} model=${MODEL}, reps=${REPS}\n`);
+  // Mirror the gem: send only the COMBAT_LOOP phase allowlist. DMW_EVAL_SCOPE=full to compare.
+  const SCOPE = process.env.DMW_EVAL_SCOPE || "lean";
+  const allow = SCOPE === "full" ? null : new Set(CONFIG.phaseTools.COMBAT_LOOP);
+  const sent = tools.filter((t) => !allow || allow.has(t.name));
+  console.log(`Connected — ${tools.length} served, ${sent.length} sent (scope=${SCOPE}). provider=${PROVIDER} model=${MODEL}, reps=${REPS}\n`);
 
   const ajv = new Ajv({ strict: false, allErrors: true });
   const validators = new Map<string, ValidateFunction>();
@@ -83,7 +87,7 @@ async function main() {
   }
 
   const system = buildSystemPrompt("anthropic");
-  const toolSpecs: ToolSpec[] = tools.map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }));
+  const toolSpecs: ToolSpec[] = sent.map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }));
 
   let reps = 0, passReps = 0, toolReps = 0, shapeOkCalls = 0, allCalls = 0, noCallReps = 0;
 

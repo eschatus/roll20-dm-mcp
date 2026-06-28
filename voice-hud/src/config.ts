@@ -32,6 +32,7 @@ const LOCAL_TOOLS = [
   "update_token_hp",   // hit points, one token
   "update_hp_many",    // hit points, many tokens in ONE call (AoE — no iteration)
   "set_token_marker",  // conditions (sticker + tracked state)
+  "kill_token",        // atomic death: dead marker + move to map layer (one call)
   "set_token_props",   // position / aura / visual
   // combat flow
   "roll_initiative", "advance_turn", "roll_dice",
@@ -103,8 +104,16 @@ const INIT_PREP_TOOLS = [
   "ddb_get_monster",
 ];
 
-// COMBAT_LOOP — turn by turn. Full live-combat toolset; still no map/vision/prep.
-const COMBAT_LOOP_TOOLS = CLOUD_TOOLS;
+// COMBAT_LOOP — turn by turn. The live-combat toolset, trimmed of lookup/setup tools that are
+// dead weight mid-fight: DDB lookups, STT-vocab editing, campaign register/remove, page verify.
+// Dropping them shrinks the cached prefix, cuts tool-selection distractors, and removes the risk of
+// a wrong-phase call (e.g. register_campaign) during a fight. (Still no map/vision/prep tools.)
+const COMBAT_LOOP_DROP = new Set([
+  "ddb_get_character", "ddb_get_monster", "ddb_list_campaign_characters", "ddb_list_campaigns",
+  "add_vocab", "add_nickname", "remove_vocab", "remove_nickname",
+  "register_campaign", "remove_campaign", "get_current_page",
+]);
+const COMBAT_LOOP_TOOLS = CLOUD_TOOLS.filter((t) => !COMBAT_LOOP_DROP.has(t));
 
 // CLEANUP — explicit close sequence. Destructive but gated: each step is a
 // write that will be proposed for DM confirmation. NO HP writes (combat is over).
