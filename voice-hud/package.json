@@ -11,6 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "ab:stt": "tsx scripts/ab-stt.ts",
+    "eval:tools": "tsx scripts/eval-tools.ts",
+    "eval:arc": "tsx scripts/eval-arc.ts",
     "record": "tsx scripts/record-clips.ts",
     "bundle:server": "npx --yes esbuild ../src/index-http.ts --bundle --platform=node --format=esm --outfile=../dist-server/dist/index-http.mjs --external:playwright --external:sharp --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\"",
     "dist:dir": "npm run build && npm run bundle:server && npx --yes electron-builder --dir",

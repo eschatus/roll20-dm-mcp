@@ -55,7 +55,7 @@ export class OllamaProvider implements LLMProvider {
       // (which makes a small model "forget" the system prompt mid-combat).
       // Passed through as an Ollama option via the extra body.
       // @ts-expect-error non-standard Ollama passthrough
-      options: { num_ctx: 8192 },
+      options: { num_ctx: Number(process.env.DMW_OLLAMA_NUM_CTX) || 8192 },
     });
     const msg = res.choices[0].message;
     this.history.push(msg);
