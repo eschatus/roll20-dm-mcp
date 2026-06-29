@@ -215,3 +215,40 @@ describe("editCharacter relay action", () => {
     expect(emu.getObj("character", charId)!.get("name")).toBe("Protected");
   });
 });
+
+describe("createCharacter relay action", () => {
+  it("auto-derives ability _mod attributes from raw scores", () => {
+    const res = emu.relay<{ id: string }>({
+      action: "createCharacter",
+      name: "Vex",
+      attributes: [
+        { name: "strength", current: 14 },
+        { name: "dexterity", current: 16 },
+        { name: "wisdom", current: 9 },
+      ],
+    });
+    const attrs = emu.relay<Record<string, unknown>>({
+      action: "getCharacterAttributes",
+      charId: res.id,
+    });
+    expect(attrs.strength_mod).toBe(2);
+    expect(attrs.dexterity_mod).toBe(3);
+    expect(attrs.wisdom_mod).toBe(-1);
+  });
+
+  it("does not override an explicitly-provided _mod", () => {
+    const res = emu.relay<{ id: string }>({
+      action: "createCharacter",
+      name: "Custom",
+      attributes: [
+        { name: "strength", current: 14 },
+        { name: "strength_mod", current: 99 },
+      ],
+    });
+    const attrs = emu.relay<Record<string, unknown>>({
+      action: "getCharacterAttributes",
+      charId: res.id,
+    });
+    expect(attrs.strength_mod).toBe(99);
+  });
+});

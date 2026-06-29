@@ -419,6 +419,11 @@ function nextEpithetName(baseName, pool, used) {
   }
 }
 
+// 5e OGL sheet ability score attribute names — used to auto-derive <ability>_mod
+// in createCharacter (see runBatchOp) since the sheet's own worker never fires on
+// attributes created through the API.
+const ABILITY_NAMES = ["strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"];
+
 // TIER 1a — true 5e conditions. These are the ONLY markers swept by
 // syncConditionsToToken (DDB condition mirroring / "clear all conditions"), so
 // keep this list to real conditions that DDB knows about.
@@ -688,7 +693,25 @@ function runBatchOp(action, args) {
       if (args.bio !== undefined) ch.set("bio", args.bio);
       if (args.gmnotes !== undefined) ch.set("gmnotes", args.gmnotes);
       if (args.avatar) ch.set("avatar", args.avatar);
-      (args.attributes || []).forEach(function(a) {
+      let attrs = (args.attributes || []).slice();
+      // The 5e OGL sheet computes <ability>_mod from <ability> via a sheet worker — but sheet
+      // workers only fire on real UI events, never on attributes created through the API. A
+      // character built here would otherwise show blank/wrong ability modifiers until someone
+      // opens the sheet and manually nudges every score. Auto-derive any missing _mod attribute
+      // from its raw score so the stat block is correct the moment it's created.
+      let providedNames = {};
+      attrs.forEach(function(a) { providedNames[a.name] = true; });
+      ABILITY_NAMES.forEach(function(ability) {
+        let scoreAttr = attrs.filter(function(a) { return a.name === ability; })[0];
+        let modName = ability + "_mod";
+        if (scoreAttr && !providedNames[modName]) {
+          let score = Number(scoreAttr.current);
+          if (!isNaN(score)) {
+            attrs.push({ name: modName, current: Math.floor((score - 10) / 2) });
+          }
+        }
+      });
+      attrs.forEach(function(a) {
         createObj("attribute", {
           characterid: ch.id,
           name: a.name,
