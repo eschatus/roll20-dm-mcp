@@ -242,7 +242,15 @@ export class Roll20Emulator {
       }
       if (c === '"') { inStr = true; continue; }
       if (c === "{") depth++;
-      if (c === "}" && --depth === 0) return text.slice(start, i + 1);
+      if (c === "}" && --depth === 0) {
+        // Mirrors the decode in src/bridge/rt-helpers.ts parseAibridge — writeResult() in
+        // ai-relay.js HTML-entity-encodes "@{"/"[[" to keep Roll20's own chat pipeline from
+        // live-evaluating echoed attribute text. Decode here so relay()'s parsed result matches
+        // the original data, the same way the real RT/browser transports do.
+        return text.slice(start, i + 1)
+          .replace(/&#64;\{/g, "@{")
+          .replace(/&#91;&#91;/g, "[[");
+      }
     }
     return null;
   }
