@@ -13,15 +13,19 @@ function writeResult(nonce, data, error) {
   const payload = error
     ? JSON.stringify({ nonce, error: String(error) })
     : JSON.stringify({ nonce, data });
-  // Echoed data (e.g. a character's raw attribute text) can itself contain "@{...}" or "[[...]]" —
-  // Roll20 scans EVERY outgoing chat message for those and tries to live-evaluate them as an
-  // attribute reference / inline roll. A malformed one throws inside Roll20's own chat pipeline and
-  // disables the WHOLE sandbox (not just this message) — hit in practice via a stray "@{pbd_safe}"
-  // sitting in a character attribute, crashing the Mod every time getCharacterAttributes read it
-  // back. HTML-entity-encode just the two trigger sequences (never plain "[" — that's normal JSON
+  // Echoed data (e.g. a character's raw attribute text) can itself contain "@{...}" (attribute
+  // ref), "%{...}" (ability/macro call), or "[[...]]" (inline roll) — Roll20 scans EVERY outgoing
+  // chat message for all three and tries to live-evaluate them. A malformed one throws inside
+  // Roll20's own chat pipeline and disables the WHOLE sandbox (not just this message) — hit in
+  // practice via stray "@{pbd_safe}" / "%{Vampire|kingdom-culture-action}" text sitting in
+  // character attributes, crashing the Mod every time getCharacterAttributes read it back.
+  // HTML-entity-encode just the three trigger sequences (never plain "[" — that's normal JSON
   // array syntax) so they survive as inert text; Playwright's textContent decode on the read side
-  // turns them back into literal "@{"/"[[" with no unescaping needed on our end.
-  const safePayload = payload.replace(/@\{/g, "&#64;{").replace(/\[\[/g, "&#91;&#91;");
+  // turns them back into literal "@{"/"%{"/"[[" with no unescaping needed on our end.
+  const safePayload = payload
+    .replace(/@\{/g, "&#64;{")
+    .replace(/%\{/g, "&#37;{")
+    .replace(/\[\[/g, "&#91;&#91;");
   // noarchive: won't appear in the persistent chat log.
   // display:none: hides any transient flash in the current session.
   // Playwright still reads textContent from hidden DOM elements.

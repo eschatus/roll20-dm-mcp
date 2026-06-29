@@ -19,14 +19,15 @@ export function parseAibridge(text: string): { nonce: number; data?: unknown; er
     if (c === '"') { inStr = true; continue; }
     if (c === "{") depth++;
     if (c === "}" && --depth === 0) {
-      // The Mod (writeResult in ai-relay.js) HTML-entity-encodes "@{" and "[[" before sending —
-      // those two sequences make Roll20's OWN chat pipeline try to live-evaluate the echoed text
-      // as an attribute reference / inline roll, which crashes the whole sandbox on a malformed
-      // one. The browser-relay path gets these decoded for free (DOM textContent auto-decodes
-      // entities); RT reads the raw RTDB string, so decode explicitly here. Safe no-op if the
-      // entities are already decoded (nothing to match).
+      // The Mod (writeResult in ai-relay.js) HTML-entity-encodes "@{", "%{", and "[[" before
+      // sending — those sequences make Roll20's OWN chat pipeline try to live-evaluate the echoed
+      // text as an attribute reference / ability call / inline roll, which crashes the whole
+      // sandbox on a malformed one. The browser-relay path gets these decoded for free (DOM
+      // textContent auto-decodes entities); RT reads the raw RTDB string, so decode explicitly
+      // here. Safe no-op if the entities are already decoded (nothing to match).
       const slice = text.slice(start, i + 1)
         .replace(/&#64;\{/g, "@{")
+        .replace(/&#37;\{/g, "%{")
         .replace(/&#91;&#91;/g, "[[");
       try { return JSON.parse(slice); } catch { return null; }
     }

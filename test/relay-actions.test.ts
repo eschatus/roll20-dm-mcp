@@ -254,16 +254,17 @@ describe("createCharacter relay action", () => {
 });
 
 describe("getCharacterAttributes — sandbox-crash guard (writeResult escaping)", () => {
-  // Regression for a real incident: a character attribute containing literal "@{pbd_safe}" or
-  // "[[1d20]]"-shaped text crashed the WHOLE Mod sandbox when echoed back, because Roll20's own
-  // chat pipeline live-evaluates "@{...}"/"[[...]]" in any outgoing sendChat message — including
-  // ones that are just data being relayed back to the caller, not meant to be interpreted at all.
-  it("never sends a raw '@{' or '[[' to sendChat when an attribute contains that text", () => {
+  // Regression for a real incident: a character attribute containing literal "@{pbd_safe}",
+  // "%{Vampire|kingdom-culture-action}", or "[[1d20]]"-shaped text crashed the WHOLE Mod sandbox
+  // when echoed back, because Roll20's own chat pipeline live-evaluates "@{...}"/"%{...}"/"[[...]]"
+  // in any outgoing sendChat message — including ones that are just data being relayed back to the
+  // caller, not meant to be interpreted at all.
+  it("never sends a raw '@{', '%{', or '[[' to sendChat when an attribute contains that text", () => {
     const charId = emu.createCharacter("Vex", { strength: 14 });
     emu.relay({
       action: "setCharacterAttributes",
       charId,
-      attributes: { npc_skills: "@{pbd_safe} Perception [[1d20]]" },
+      attributes: { npc_skills: "@{pbd_safe} %{Vampire|kingdom-culture-action} Perception [[1d20]]" },
     });
     emu.relay({ action: "getCharacterAttributes", charId });
 
@@ -271,18 +272,20 @@ describe("getCharacterAttributes — sandbox-crash guard (writeResult escaping)"
     expect(resultMessages.length).toBeGreaterThan(0);
     for (const m of resultMessages) {
       expect(m.content).not.toContain("@{");
+      expect(m.content).not.toContain("%{");
       expect(m.content).not.toContain("[[");
     }
   });
 
   it("round-trips the original text exactly despite the escaping", () => {
     const charId = emu.createCharacter("Vex", { strength: 14 });
+    const original = "@{pbd_safe} %{Vampire|kingdom-culture-action} Perception [[1d20]]";
     emu.relay({
       action: "setCharacterAttributes",
       charId,
-      attributes: { npc_skills: "@{pbd_safe} Perception [[1d20]]" },
+      attributes: { npc_skills: original },
     });
     const attrs = emu.relay<Record<string, unknown>>({ action: "getCharacterAttributes", charId });
-    expect(attrs.npc_skills).toBe("@{pbd_safe} Perception [[1d20]]");
+    expect(attrs.npc_skills).toBe(original);
   });
 });
