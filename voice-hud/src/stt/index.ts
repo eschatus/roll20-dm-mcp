@@ -58,6 +58,9 @@ export async function startStt(onLog: (m: string) => void): Promise<SttEngine> {
   // the one-shot whisper-cli is the cpp-only fallback. The Python faster-whisper sidecar below is
   // MOTHBALLED (#46) — reached ONLY when explicitly selected via DMW_STT_ENGINE=faster-whisper, so
   // no Python is ever required by default. A cpp engine never falls back to Python.
+  // Known limitation: config.ts hardcodes the venv python path for win32
+  // ("stt/.venv/Scripts/python.exe"); non-Windows users opting into this engine must set
+  // DMW_STT_PYTHON explicitly or start() will fail to find the interpreter.
   if (CONFIG.sttEngine === "whisperserver" || CONFIG.sttEngine === "whispercpp") {
     // Try the selected cpp engine first, then the other cpp engine — never Python.
     const order: Array<"whisperserver" | "whispercpp"> =
