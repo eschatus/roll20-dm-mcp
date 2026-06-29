@@ -22,7 +22,7 @@ process.env.ROLL20_TRANSPORT ??= "rt";
 
 import "dotenv/config"; // self-sufficient as a `tsx` entry point: load .env before dataDir/campaigns/bridge modules read it
 import { pathToFileURL } from "url";
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync } from "fs";
 import path from "path";
 import sharp from "sharp";
 import { getEditorPage, reconnectRoll20 } from "../bridge/roll20.js";
@@ -43,16 +43,31 @@ interface GraphicInfo { id: string; layer?: string; imgsrc?: string; left?: numb
 // UDL pathv2 = `shape:"pol"` + `points` (array of [dx,dy] relative to the x,y anchor; first point [0,0]).
 interface RtPath { layer?: string; left?: number; top?: number; width?: number; height?: number; rotation?: number; path?: string; shape?: string; points?: [number, number][] | string; x?: number; y?: number }
 
-// pathv2 (UDL) wall → absolute page-pixel polyline: anchor (x,y) + each relative point. No Mod needed.
+// pathv2 (UDL / new-VTT) wall → page-pixel polyline. `x,y` is the object's bbox CENTER (the standard
+// Roll20 convention, same as legacy left/top — validated against the art on cos-test). Two shapes:
+//   • "pol": polyline; `points` are vertices in a local frame whose bbox center maps to (x,y), i.e.
+//     page vertex = (x + dx - bboxCx, y + dy - bboxCy).
+//   • "eli": ellipse centered at (x,y) with radii (w/2, h/2) from the bbox point [w,h]; rasterized
+//     to a closed perimeter polyline so the rest of the pipeline is unchanged.
+// No flip/scale — coords are already in the legacy/image page-px frame.
 function pathv2RtToPage(p: RtPath): [number, number][] {
   let pts: unknown = p.points;
   if (typeof pts === "string") { try { pts = JSON.parse(pts); } catch { return []; } }
   if (!Array.isArray(pts)) return [];
+  const valid = pts.filter((q): q is [number, number] => Array.isArray(q) && typeof q[0] === "number" && typeof q[1] === "number");
+  if (valid.length < 2) return [];
   const x = p.x ?? 0, y = p.y ?? 0;
-  const out = pts
-    .filter((q): q is [number, number] => Array.isArray(q) && typeof q[0] === "number" && typeof q[1] === "number")
-    .map(([dx, dy]) => [x + dx, y + dy] as [number, number]);
-  return out.length >= 2 ? out : [];
+  if (p.shape === "eli") {
+    const bbox = valid[valid.length - 1];
+    const rx = Math.abs(bbox[0]) / 2, ry = Math.abs(bbox[1]) / 2;
+    if (rx < 0.5 && ry < 0.5) return [];
+    const N = 32, out: [number, number][] = [];
+    for (let i = 0; i <= N; i++) { const t = (2 * Math.PI * i) / N; out.push([x + rx * Math.cos(t), y + ry * Math.sin(t)]); }
+    return out; // closed (first == last)
+  }
+  const xs = valid.map(q => q[0]), ys = valid.map(q => q[1]);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  return valid.map(([dx, dy]) => [x + dx - cx, y + dy - cy] as [number, number]);
 }
 // Door/window as stored in RTDB: x normal, y NEGATED; handles under path.{handle0,handle1},
 // relative to (x,y), y also negated.
@@ -113,7 +128,7 @@ interface HarvestRecord {
 }
 
 function parseArgs(argv: string[]) {
-  const out: { campaign?: string; page?: string; pageIds?: string[]; limit?: number; imageUrl?: string; capture?: boolean; source?: string } = {};
+  const out: { campaign?: string; page?: string; pageIds?: string[]; limit?: number; imageUrl?: string; capture?: boolean; reuse?: boolean; source?: string } = {};
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--campaign") out.campaign = argv[++i];
     else if (argv[i] === "--page") out.page = argv[++i];
@@ -121,6 +136,7 @@ function parseArgs(argv: string[]) {
     else if (argv[i] === "--limit") out.limit = parseInt(argv[++i] ?? "", 10);
     else if (argv[i] === "--imageUrl") out.imageUrl = argv[++i]; // override gated Roll20 art with a public URL (e.g. DDB compendium)
     else if (argv[i] === "--capture") out.capture = true; // render-capture the image from Roll20 (handles gated art); navigates the GM page
+    else if (argv[i] === "--reuse-image") out.reuse = true; // re-decode walls onto the already-harvested image (no capture/fetch) — fast re-harvest after a decode fix
     else if (argv[i] === "--source") out.source = argv[++i]; // only harvest pages whose map is "marketplace" or "uploaded" (filters out generated maps)
   }
   return out;
@@ -169,20 +185,25 @@ async function harvestPage(
   imageUrlOverride?: string,
   editorPage?: Page,
   sourceFilter?: string,
+  reuse?: boolean,
 ): Promise<HarvestRecord | { pageId: string; pageName: string; skipped: string }> {
   const flags: string[] = [];
 
-  // 1. Walls — read straight from the RTDB walls layer (NO Mod, no relay). Two DL formats coexist:
-  //    legacy `path` (SVG string) and UDL `pathv2` (shape:"pol" + points). Both are in paths/page.
+  // 1. Walls — classify by representation (NO Mod, no relay; all in paths/page).
+  //    new-VTT pathv2 = has `points` (INCLUDING one-way walls whose `shape` is undefined, not
+  //    "pol", and which carry a garbage back-compat `path`/bbox — so `points` is the reliable
+  //    discriminator, not `shape`). legacy DL = a `path` string and no points. Transform of the
+  //    pathv2 set is deferred until the map graphic is known (it needs the Y-flip height).
   const rtPaths = await rtGet<Record<string, RtPath>>(`paths/page/${page.id}`);
   const wallObjs = Object.values(rtPaths ?? {}).filter(p => p.layer === "walls");
-  const legacyPolys = wallObjs.filter(p => p.path).map(legacyPathToPage).filter(poly => poly.length >= 2);
-  const pathv2Polys = wallObjs.filter(p => p.shape === "pol" && p.points).map(pathv2RtToPage).filter(poly => poly.length >= 2);
-
-  const wallPolysPage = [...legacyPolys, ...pathv2Polys];
-  if (legacyPolys.length) flags.push(`legacy:${legacyPolys.length}`);
-  if (pathv2Polys.length) flags.push(`pathv2:${pathv2Polys.length}`);
-  if (wallPolysPage.length === 0) return { pageId: page.id, pageName: page.name, skipped: "no-walls" };
+  const hasPts = (p: RtPath): boolean => {
+    let v: unknown = p.points;
+    if (typeof v === "string") { try { v = JSON.parse(v); } catch { return false; } }
+    return Array.isArray(v) && v.length >= 2;
+  };
+  const pathv2Objs = wallObjs.filter(hasPts);                 // new-VTT (two-way + one-way)
+  const legacyObjs = wallObjs.filter(p => p.path && !hasPts(p)); // pure legacy `path`
+  if (pathv2Objs.length + legacyObjs.length === 0) return { pageId: page.id, pageName: page.name, skipped: "no-walls" };
 
   // 2. Map graphic — page-pixel geometry of the background image. Read straight from the RTDB
   //    (graphics store left/top un-negated, verified == getTokens) so the harvest needs no Mod.
@@ -209,7 +230,19 @@ async function harvestPage(
   //    (b) imageUrlOverride — a public URL (e.g. DDB compendium) when capture isn't used;
   //    (c) direct fetch of the Roll20 imgsrc variants — only works for ungated assets.
   let fileW = 0, fileH = 0, buf: Buffer | null = null, imgsrc = g.imgsrc, lastStatus = 0;
-  if (editorPage) {
+  let reusedFile: string | undefined;
+  if (reuse) {
+    // Re-decode walls onto the already-harvested image (no capture/fetch). Fast re-harvest after a
+    // decode fix; reuses the exact bytes already on disk so geometry registers identically.
+    for (const e of ["jpg", "png", "jpeg", "webp"]) {
+      const f = `${page.id}.${e}`;
+      if (existsSync(path.join(outDir, f))) { reusedFile = f; break; }
+    }
+    if (!reusedFile) return { pageId: page.id, pageName: page.name, skipped: "reuse-no-image" };
+    const meta = await sharp(path.join(outDir, reusedFile)).metadata().catch(() => null);
+    if (!meta?.width || !meta?.height) return { pageId: page.id, pageName: page.name, skipped: "reuse-bad-image" };
+    fileW = meta.width; fileH = meta.height; flags.push("reused-image");
+  } else if (editorPage) {
     const cap = await captureMapImage(editorPage, page.id, page.name, g.imgsrc, { w: gW, h: gH });
     if (!cap) return { pageId: page.id, pageName: page.name, skipped: "capture-failed" };
     buf = cap.buf; fileW = cap.w; fileH = cap.h; imgsrc = cap.url; flags.push("captured");
@@ -230,7 +263,7 @@ async function harvestPage(
   }
   // Canvas-readback always yields PNG bytes; otherwise derive the extension from the source URL.
   const ext = editorPage ? "jpg" : (imgsrc.match(/\.(png|jpg|jpeg|webp)/i)?.[1] ?? "png").toLowerCase();
-  const imageFile = `${page.id}.${ext}`;
+  const imageFile = reusedFile ?? `${page.id}.${ext}`;
 
   // 4. The alignment transform: page px → image-file px.
   //    Map graphic is center-based; its top-left in page px is (left - w/2, top - h/2).
@@ -240,6 +273,14 @@ async function harvestPage(
     Math.round((px - originX) * scaleX),
     Math.round((py - originY) * scaleY),
   ];
+
+  // Build page-px wall polylines now that the graphic is known.
+  const legacyPolys = legacyObjs.map(legacyPathToPage).filter(poly => poly.length >= 2);
+  const pathv2Polys = pathv2Objs.map(pathv2RtToPage).filter(poly => poly.length >= 2);
+  const wallPolysPage = [...legacyPolys, ...pathv2Polys];
+  if (legacyPolys.length) flags.push(`legacy:${legacyPolys.length}`);
+  if (pathv2Polys.length) flags.push(`pathv2:${pathv2Polys.length}`);
+  if (wallPolysPage.length === 0) return { pageId: page.id, pageName: page.name, skipped: "no-walls" };
 
   const walls = wallPolysPage.map(poly => poly.map(([px, py]) => toImg(px, py)));
 
@@ -260,7 +301,7 @@ async function harvestPage(
 
   // 6. Persist image + record.
   const imgPath = path.join(outDir, imageFile);
-  writeFileSync(imgPath, buf);
+  if (buf) writeFileSync(imgPath, buf); // reuse mode: image already on disk, keep it
   const rec: HarvestRecord = {
     campaignSlug: campaign.slug, campaignName: campaign.name, roll20CampaignId: campaign.roll20CampaignId,
     pageId: page.id, pageName: page.name,
@@ -275,7 +316,7 @@ async function harvestPage(
   return rec;
 }
 
-export async function harvest(opts: { campaign?: string; page?: string; pageIds?: string[]; limit?: number; imageUrl?: string; capture?: boolean; source?: string } = {}): Promise<number> {
+export async function harvest(opts: { campaign?: string; page?: string; pageIds?: string[]; limit?: number; imageUrl?: string; capture?: boolean; reuse?: boolean; source?: string } = {}): Promise<number> {
   if (opts.campaign) {
     setActiveCampaign(opts.campaign);
     // Rebind the editor (and lazily the RT connection) to the newly-active campaign — otherwise a
@@ -292,7 +333,14 @@ export async function harvest(opts: { campaign?: string; page?: string; pageIds?
   // closeBrowser() once per campaign) happens BEFORE we acquire the editor page — otherwise it
   // closes the very browser the capture needs ("Target closed"). Token is cached after this, so the
   // editor page acquired next stays alive for all captures this campaign.
-  const pagesObj = await rtGet<Record<string, { id: string; name: string; width: number; height: number }>>("pages");
+  // First RT read triggers the Firebase connect; retry it — the initial sign-in occasionally hits a
+  // transient network error (auth/network-request-failed) that would otherwise kill the whole run.
+  type PagesObj = Record<string, { id: string; name: string; width: number; height: number }>;
+  let pagesObj: PagesObj | undefined;
+  for (let i = 0; i < 5; i++) {
+    try { pagesObj = await rtGet<PagesObj>("pages"); break; }
+    catch (e) { if (i === 4) throw e; console.error(`[harvest] RT connect retry ${i + 1}: ${String(e).slice(0, 80)}`); await new Promise(r => setTimeout(r, 2500)); }
+  }
   let pages: PageInfo[] = Object.values(pagesObj ?? {}).map(p => ({ id: p.id, name: p.name, width: p.width, height: p.height }));
   if (opts.page) pages = pages.filter(p => p.id === opts.page);
   if (opts.pageIds?.length) pages = pages.filter(p => opts.pageIds!.includes(p.id));
@@ -309,7 +357,7 @@ export async function harvest(opts: { campaign?: string; page?: string; pageIds?
   const skipped: { pageId: string; pageName: string; skipped: string }[] = [];
   for (const page of pages) {
     try {
-      const res = await harvestPage(page, campaign, outDir, opts.imageUrl, editorPage, opts.source);
+      const res = await harvestPage(page, campaign, outDir, opts.imageUrl, editorPage, opts.source, opts.reuse);
       if ("skipped" in res) {
         skipped.push(res);
         console.error(`  · ${page.name} — skip (${res.skipped})`);

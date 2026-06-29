@@ -5,6 +5,7 @@
 // image+mask to 512 with overlap, and SPLIT by MAP (no tile leakage). Skullport/junk Mad Mage pages
 // are skipped (cropped, no clean reference). Writes tiles/{train,val,test}/{images,masks} + meta.jsonl.
 //   tsx src/recon/make-dataset.ts [--dry]
+import "dotenv/config"; // load ROLL20_DATA_DIR before dataDir resolves, so `tsx` runs it standalone
 import { readdirSync, readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "fs";
 import path from "path";
 import sharp from "sharp";
@@ -35,6 +36,19 @@ const KEEP: Set<string> | null = existsSync(verdictsPath)
   : null;
 if (KEEP) console.error(`GT verdicts: keeping ${KEEP.size} good+partial maps`);
 
+// Per-wall drop-list from qc_offscale.py: {pageId: [wallIdx,...]} of corrupt off-scale walls
+// (huge-bbox legacy walls smeared off-canvas). Applies to CAPTURE records (what the scanner saw);
+// recovers a map by dropping the few garbage walls instead of excluding it wholesale.
+const dropsPath = path.join(dataDir(), "wall-dataset", "qc-wall-drops.json");
+const DROPS: Record<string, number[]> = existsSync(dropsPath)
+  ? JSON.parse(readFileSync(dropsPath, "utf-8")) : {};
+const dropWalls = (pageId: string, walls: [number, number][][]): [number, number][][] => {
+  const idx = DROPS[pageId]; if (!idx?.length) return walls;
+  const kill = new Set(idx); return walls.filter((_, i) => !kill.has(i));
+};
+const nDrops = Object.values(DROPS).reduce((s, a) => s + a.length, 0);
+if (nDrops) console.error(`off-scale drops: removing ${nDrops} corrupt walls across ${Object.keys(DROPS).length} maps`);
+
 // ---- 1. Enumerate, choosing the best source per page ----------------------------------------
 const maps: MapRec[] = [];
 for (const camp of readdirSync(raw)) {
@@ -57,7 +71,8 @@ for (const camp of readdirSync(raw)) {
     } else {
       const img = path.join(dir, rec.imageFile || "");
       if (!rec.imageFile || !existsSync(img)) continue;
-      maps.push({ campaign: camp, pageId: rec.pageId, pageName: rec.pageName, source: "capture", imagePath: img, walls: rec.walls, fileW: rec.fileW, fileH: rec.fileH, cols, rows, segs: segsOf(rec.walls) });
+      const walls = dropWalls(rec.pageId, rec.walls);
+      maps.push({ campaign: camp, pageId: rec.pageId, pageName: rec.pageName, source: "capture", imagePath: img, walls, fileW: rec.fileW, fileH: rec.fileH, cols, rows, segs: segsOf(walls) });
     }
   }
 }
