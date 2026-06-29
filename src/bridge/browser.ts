@@ -157,11 +157,10 @@ async function getContext(): Promise<BrowserContext> {
           if (!/install|not found|executable|channel|chrome|edge/i.test(String((e as Error).message))) throw e;
           launched = await pw.launchPersistentContext(userDataDir, launchOpts);
         }
-        // Tuck the window to the taskbar on a fresh launch (it still renders).
-        if (HIDE_BROWSER) {
-          const p0 = launched.pages()[0] ?? await launched.newPage();
-          await setBrowserWindowState(p0, "minimized");
-        }
+        // NB: do NOT minimize here. A fresh launch may need a manual Roll20/DDB login
+        // (incl. a Cloudflare Turnstile that fails if the window is hidden when it fires).
+        // The window stays visible until login is confirmed; getPage() tucks it to the
+        // taskbar (if HIDE_BROWSER) only AFTER auth succeeds.
         return launched;
       } catch {
         // Profile is locked — another server process won the race to launch.
@@ -251,6 +250,10 @@ export async function getPage(site: Site): Promise<Page> {
       if (!(await isLoggedIn(page, site))) {
         await LOGIN_FNS[site](page);
       }
+      // Authenticated — NOW tuck the window to the taskbar (if hidden mode). Deferred to
+      // here (not launch) so any manual login / Cloudflare Turnstile above happens on a
+      // visible, reachable window.
+      if (HIDE_BROWSER) await setBrowserWindowState(page, "minimized").catch(() => {});
       return page;
     })();
     _pagePromises[site]!.catch(() => { delete _pagePromises[site]; });

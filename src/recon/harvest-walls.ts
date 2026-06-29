@@ -43,16 +43,31 @@ interface GraphicInfo { id: string; layer?: string; imgsrc?: string; left?: numb
 // UDL pathv2 = `shape:"pol"` + `points` (array of [dx,dy] relative to the x,y anchor; first point [0,0]).
 interface RtPath { layer?: string; left?: number; top?: number; width?: number; height?: number; rotation?: number; path?: string; shape?: string; points?: [number, number][] | string; x?: number; y?: number }
 
-// pathv2 (UDL) wall → absolute page-pixel polyline: anchor (x,y) + each relative point. No Mod needed.
+// pathv2 (UDL / new-VTT) wall → page-pixel polyline. `x,y` is the object's bbox CENTER (the standard
+// Roll20 convention, same as legacy left/top — validated against the art on cos-test). Two shapes:
+//   • "pol": polyline; `points` are vertices in a local frame whose bbox center maps to (x,y), i.e.
+//     page vertex = (x + dx - bboxCx, y + dy - bboxCy).
+//   • "eli": ellipse centered at (x,y) with radii (w/2, h/2) from the bbox point [w,h]; rasterized
+//     to a closed perimeter polyline so the rest of the pipeline is unchanged.
+// No flip/scale — coords are already in the legacy/image page-px frame.
 function pathv2RtToPage(p: RtPath): [number, number][] {
   let pts: unknown = p.points;
   if (typeof pts === "string") { try { pts = JSON.parse(pts); } catch { return []; } }
   if (!Array.isArray(pts)) return [];
+  const valid = pts.filter((q): q is [number, number] => Array.isArray(q) && typeof q[0] === "number" && typeof q[1] === "number");
+  if (valid.length < 2) return [];
   const x = p.x ?? 0, y = p.y ?? 0;
-  const out = pts
-    .filter((q): q is [number, number] => Array.isArray(q) && typeof q[0] === "number" && typeof q[1] === "number")
-    .map(([dx, dy]) => [x + dx, y + dy] as [number, number]);
-  return out.length >= 2 ? out : [];
+  if (p.shape === "eli") {
+    const bbox = valid[valid.length - 1];
+    const rx = Math.abs(bbox[0]) / 2, ry = Math.abs(bbox[1]) / 2;
+    if (rx < 0.5 && ry < 0.5) return [];
+    const N = 32, out: [number, number][] = [];
+    for (let i = 0; i <= N; i++) { const t = (2 * Math.PI * i) / N; out.push([x + rx * Math.cos(t), y + ry * Math.sin(t)]); }
+    return out; // closed (first == last)
+  }
+  const xs = valid.map(q => q[0]), ys = valid.map(q => q[1]);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  return valid.map(([dx, dy]) => [x + dx - cx, y + dy - cy] as [number, number]);
 }
 // Door/window as stored in RTDB: x normal, y NEGATED; handles under path.{handle0,handle1},
 // relative to (x,y), y also negated.
@@ -172,17 +187,21 @@ async function harvestPage(
 ): Promise<HarvestRecord | { pageId: string; pageName: string; skipped: string }> {
   const flags: string[] = [];
 
-  // 1. Walls — read straight from the RTDB walls layer (NO Mod, no relay). Two DL formats coexist:
-  //    legacy `path` (SVG string) and UDL `pathv2` (shape:"pol" + points). Both are in paths/page.
+  // 1. Walls — classify by representation (NO Mod, no relay; all in paths/page).
+  //    new-VTT pathv2 = has `points` (INCLUDING one-way walls whose `shape` is undefined, not
+  //    "pol", and which carry a garbage back-compat `path`/bbox — so `points` is the reliable
+  //    discriminator, not `shape`). legacy DL = a `path` string and no points. Transform of the
+  //    pathv2 set is deferred until the map graphic is known (it needs the Y-flip height).
   const rtPaths = await rtGet<Record<string, RtPath>>(`paths/page/${page.id}`);
   const wallObjs = Object.values(rtPaths ?? {}).filter(p => p.layer === "walls");
-  const legacyPolys = wallObjs.filter(p => p.path).map(legacyPathToPage).filter(poly => poly.length >= 2);
-  const pathv2Polys = wallObjs.filter(p => p.shape === "pol" && p.points).map(pathv2RtToPage).filter(poly => poly.length >= 2);
-
-  const wallPolysPage = [...legacyPolys, ...pathv2Polys];
-  if (legacyPolys.length) flags.push(`legacy:${legacyPolys.length}`);
-  if (pathv2Polys.length) flags.push(`pathv2:${pathv2Polys.length}`);
-  if (wallPolysPage.length === 0) return { pageId: page.id, pageName: page.name, skipped: "no-walls" };
+  const hasPts = (p: RtPath): boolean => {
+    let v: unknown = p.points;
+    if (typeof v === "string") { try { v = JSON.parse(v); } catch { return false; } }
+    return Array.isArray(v) && v.length >= 2;
+  };
+  const pathv2Objs = wallObjs.filter(hasPts);                 // new-VTT (two-way + one-way)
+  const legacyObjs = wallObjs.filter(p => p.path && !hasPts(p)); // pure legacy `path`
+  if (pathv2Objs.length + legacyObjs.length === 0) return { pageId: page.id, pageName: page.name, skipped: "no-walls" };
 
   // 2. Map graphic — page-pixel geometry of the background image. Read straight from the RTDB
   //    (graphics store left/top un-negated, verified == getTokens) so the harvest needs no Mod.
@@ -240,6 +259,14 @@ async function harvestPage(
     Math.round((px - originX) * scaleX),
     Math.round((py - originY) * scaleY),
   ];
+
+  // Build page-px wall polylines now that the graphic is known.
+  const legacyPolys = legacyObjs.map(legacyPathToPage).filter(poly => poly.length >= 2);
+  const pathv2Polys = pathv2Objs.map(pathv2RtToPage).filter(poly => poly.length >= 2);
+  const wallPolysPage = [...legacyPolys, ...pathv2Polys];
+  if (legacyPolys.length) flags.push(`legacy:${legacyPolys.length}`);
+  if (pathv2Polys.length) flags.push(`pathv2:${pathv2Polys.length}`);
+  if (wallPolysPage.length === 0) return { pageId: page.id, pageName: page.name, skipped: "no-walls" };
 
   const walls = wallPolysPage.map(poly => poly.map(([px, py]) => toImg(px, py)));
 
