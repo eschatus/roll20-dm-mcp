@@ -63,6 +63,12 @@ const CASES: Case[] = [
   { utterance: "Next turn.", expect: "advance_turn" },
   { utterance: "the ogre takes ten damage", expect: "update_token_hp", need: { characterName: "Ogre", damage: 10 } },
   { utterance: "goblin A takes 3", expect: "update_token_hp", need: { characterName: "Goblin A", damage: 3 } },
+  // Messy multi-clause STT phrasings that broke in the live 0.1.5 session — the model
+  // picked the right tool but emitted a STRING number / stringified array / invented
+  // param name (-32602). These reproduce that class; types in `need` must match exactly.
+  { utterance: "and the ogre takes 12 points of psychic damage when it fails its Wisdom save", expect: "update_token_hp", need: { characterName: "Ogre", damage: 12 } },
+  { utterance: "Mastermind casts hunger of hadar on goblin A, goblin B, and goblin C — roll their saves and do 3d6, DEX save DC 15", expect: "resolve_aoe" },
+  { utterance: "4 cold damage to goblin A, goblin B, and goblin C", expect: "update_hp_many", need: { damage: 4 } },
 ];
 
 // Tools that act on a token need a target; the schema marks both optional, so a

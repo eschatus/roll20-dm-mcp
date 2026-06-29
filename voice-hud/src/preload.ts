@@ -50,6 +50,9 @@ contextBridge.exposeInMainWorld("dmw", {
 
   // campaign-data wizard
   getCampaignData: () => ipcRenderer.invoke("get-campaign-data"),
+  // main → renderer: the active campaign switched (server-driven) — re-pull config views
+  onCampaignChanged: (cb: (d: { slug: string }) => void) =>
+    ipcRenderer.on("campaign-changed", (_e, d) => cb(d)),
   saveCampaignData: (data: unknown) => ipcRenderer.invoke("save-campaign-data", data),
   addVocab: (term: string) => ipcRenderer.invoke("add-vocab", term),
   setPronoun: (p: { term: string; pronouns: string }) => ipcRenderer.invoke("set-pronoun", p),

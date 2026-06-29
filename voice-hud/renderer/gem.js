@@ -1248,6 +1248,11 @@ if (window.dmw) {
   if (typeof dmw.onInboxUpdate === "function") {
     dmw.onInboxUpdate((d) => { updateInboxBadge(d.count); if (d.items) renderInbox(d.items); });
   }
+  // Active campaign switched (server-driven): re-pull the config panel so its roster,
+  // vocab, and pronouns reflect the new campaign instead of the previous one.
+  if (typeof dmw.onCampaignChanged === "function") {
+    dmw.onCampaignChanged(() => { loadWizard().catch(() => {}); });
+  }
   // Populate the inbox from the current snapshot (items may predate the HUD/tab being opened).
   if (typeof dmw.getInbox === "function") {
     dmw.getInbox().then((d) => { if (d) { updateInboxBadge(d.count); renderInbox(d.items || []); } }).catch(() => {});

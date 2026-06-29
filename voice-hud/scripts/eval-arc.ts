@@ -13,12 +13,14 @@
 
 import * as path from "path";
 import * as dotenv from "dotenv";
+import Ajv, { ValidateFunction } from "ajv";
 import { McpRoll20 } from "../src/mcp";
 import { buildSystemPrompt, buildTurnContext } from "../src/persona";
 import { AnthropicProvider } from "../src/llm/anthropic";
 import { OllamaProvider } from "../src/llm/ollama";
 import { LLMProvider, ToolSpec } from "../src/llm/provider";
 import { CONFIG } from "../src/config";
+import { decideTerminal, isMutatingTool, LoopMode } from "../src/loop-policy";
 
 dotenv.config({ path: path.join(__dirname, "..", "..", ".env") });
 dotenv.config({ path: path.join(__dirname, "..", ".env") });
@@ -30,7 +32,17 @@ const PROVIDER = process.env.DMW_EVAL_PROVIDER || "anthropic";
 const MODEL = process.env.DMW_EVAL_MODEL || (PROVIDER === "ollama" ? "qwen2.5:14b-instruct" : "claude-haiku-4-5");
 const REPS = Number(process.env.DMW_EVAL_REPS) || 3;
 const MAX_STEPS = 6;
+// Mirror the live agent's terminal policy so the harness measures the SAME loop.
+// DMW_AGENTIC_LOOP=off|nudge|full — compare correctness/latency/nudge-cost across modes.
+const MODE = (process.env.DMW_AGENTIC_LOOP || "off") as LoopMode;
 const makeProvider = (): LLMProvider => PROVIDER === "ollama" ? new OllamaProvider(MODEL, CONFIG.ollamaUrl) : new AnthropicProvider(MODEL);
+
+// Real-schema validators (the -32602 boundary). Populated in main() from the served
+// tool schemas; consulted in playthrough BEFORE the stub so a malformed call (string
+// number, stringified array, wrong param name) fails faithfully instead of being
+// silently coerced by the stub — the blind spot that hid the 0.1.5 live failures.
+const ajv = new Ajv({ strict: false, allErrors: true });
+const validators = new Map<string, ValidateFunction>();
 
 // ── Board model ──────────────────────────────────────────────────────────────
 interface Tok {
@@ -155,7 +167,7 @@ const SCENARIO: Step[] = [
 ];
 
 // ── One threaded playthrough ─────────────────────────────────────────────────
-interface StepResult { ok: boolean; ms: number; calls: number }
+interface StepResult { ok: boolean; ms: number; calls: number; nudges: number }
 async function playthrough(system: string, toolSpecs: ToolSpec[]): Promise<StepResult[]> {
   const board = seedBoard();
   const llm = makeProvider();
@@ -165,17 +177,37 @@ async function playthrough(system: string, toolSpecs: ToolSpec[]): Promise<StepR
   for (const step of SCENARIO) {
     llm.pushUser(buildTurnContext(rosterFromBoard(board), "COMBAT_LOOP") + "\n\n" + step.utterance);
     const calls: string[] = [];
-    const t0 = Date.now(); let apiCalls = 0;
-    for (let s = 0; s < MAX_STEPS; s++) {
+    const t0 = Date.now(); let apiCalls = 0, nudges = 0;
+    // Mirror agent.ts runTurn terminal bookkeeping.
+    let mutationsThisTurn = 0, nudgedAlready = false, completenessCheckedAlready = false;
+    for (let s = 0; s < MAX_STEPS + 2; s++) {
       const turn = await llm.run(); apiCalls++;
-      if (turn.toolCalls.length === 0) break;
-      llm.pushToolResults(turn.toolCalls.map((c) => { calls.push(c.name); return { id: c.id, name: c.name, content: stubExec(c.name, c.args, board) }; }));
+      if (turn.toolCalls.length === 0) {
+        const action = decideTerminal({ transcript: step.utterance, mutationsThisTurn, nudgedAlready, completenessCheckedAlready, mode: MODE });
+        if (action.kind === "done") break;
+        if (action.tag === "persist") nudgedAlready = true; else completenessCheckedAlready = true;
+        nudges++;
+        llm.pushContinue(action.text);
+        continue;
+      }
+      llm.pushToolResults(turn.toolCalls.map((c) => {
+        calls.push(c.name);
+        if (isMutatingTool(c.name)) mutationsThisTurn++;
+        // FAITHFUL boundary: validate against the real tool schema before executing,
+        // exactly like the MCP server (-32602). No coercion — a "39" or stringified
+        // array fails here as it does live, instead of the stub Number()-ing it away.
+        const val = validators.get(c.name);
+        if (val && !val(c.args)) {
+          return { id: c.id, name: c.name, content: `MCP error -32602: Input validation error: ${ajv.errorsText(val.errors, { separator: "; " })}` };
+        }
+        return { id: c.id, name: c.name, content: stubExec(c.name, c.args, board) };
+      }));
     }
     const ms = Date.now() - t0;
     const why = step.check(board);
     const pass = why === null && (!step.expect || calls.includes(step.expect));
-    steps.push({ ok: pass, ms, calls: apiCalls });
-    console.log(`  ${pass ? "✓" : "✗"} ${String(ms).padStart(6)}ms ${apiCalls}c  "${step.utterance.slice(0, 40)}…"  [${calls.join(",") || "none"}]${pass ? "" : "  ⚠ " + (why || `expected ${step.expect}`)}`);
+    steps.push({ ok: pass, ms, calls: apiCalls, nudges });
+    console.log(`  ${pass ? "✓" : "✗"} ${String(ms).padStart(6)}ms ${apiCalls}c${nudges ? `+${nudges}↻` : "  "}  "${step.utterance.slice(0, 40)}…"  [${calls.join(",") || "none"}]${pass ? "" : "  ⚠ " + (why || `expected ${step.expect}`)}`);
   }
   return steps;
 }
@@ -184,6 +216,8 @@ async function main() {
   if (PROVIDER === "anthropic" && !process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set");
   const mcp = new McpRoll20();
   const tools = await mcp.connect();
+  // Compile a validator per served tool from its real JSON schema (the -32602 contract).
+  for (const t of tools) { try { validators.set(t.name, ajv.compile(t.inputSchema)); } catch { /* unschemable — skip */ } }
   // Mirror the gem: send only the COMBAT_LOOP phase allowlist, not all served tools. DMW_EVAL_SCOPE=full to compare.
   const SCOPE = process.env.DMW_EVAL_SCOPE || "lean";
   let allow: Set<string> | null = null;
@@ -193,16 +227,17 @@ async function main() {
     if (PROVIDER === "ollama") { const local = new Set(CONFIG.localToolAllowlist); allow = new Set([...allow].filter((t) => local.has(t))); }
   }
   const toolSpecs: ToolSpec[] = tools.filter((t) => !allow || allow.has(t.name)).map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }));
-  console.log(`Connected — ${tools.length} served, ${toolSpecs.length} sent (scope=${SCOPE}). provider=${PROVIDER} model=${MODEL}, ${SCENARIO.length} steps × ${REPS}\n`);
+  console.log(`Connected — ${tools.length} served, ${toolSpecs.length} sent (scope=${SCOPE}). provider=${PROVIDER} model=${MODEL}, loop=${MODE}, ${SCENARIO.length} steps × ${REPS}\n`);
   const system = buildSystemPrompt("anthropic"); // the tuned prompt — identical for every model
 
   const perStep = SCENARIO.map(() => 0);
   const turnMs: number[] = [];
+  let totalNudges = 0;
   const wall0 = Date.now();
   for (let r = 0; r < REPS; r++) {
     console.log(`── playthrough ${r + 1} ──`);
     const steps = await playthrough(system, toolSpecs);
-    steps.forEach((s, i) => { if (s.ok) perStep[i]++; turnMs.push(s.ms); });
+    steps.forEach((s, i) => { if (s.ok) perStep[i]++; turnMs.push(s.ms); totalNudges += s.nudges; });
   }
   const wallMs = Date.now() - wall0;
   await mcp.close();
@@ -218,6 +253,7 @@ async function main() {
   const totalPass = perStep.reduce((a, b) => a + b, 0), totalSteps = SCENARIO.length * REPS;
   console.log(`\n  ARC CORRECT:      ${totalPass}/${totalSteps} (${((totalPass / totalSteps) * 100).toFixed(0)}%) — board-verified`);
   console.log(`  PER-TURN LATENCY: mean ${mean.toFixed(0)}ms · median ${median}ms · p90 ${p90}ms  (n=${turnMs.length})`);
+  console.log(`  PERSISTENCE:      loop=${MODE}, ${totalNudges} re-prompt${totalNudges === 1 ? "" : "s"} over ${totalSteps} turns (${((totalNudges / totalSteps) * 100).toFixed(0)}% — extra-call cost / false-nudge watch)`);
   console.log(`  total wall: ${(wallMs / 1000).toFixed(1)}s`);
 }
 
