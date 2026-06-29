@@ -22,7 +22,7 @@ process.env.ROLL20_TRANSPORT ??= "rt";
 
 import "dotenv/config"; // self-sufficient as a `tsx` entry point: load .env before dataDir/campaigns/bridge modules read it
 import { pathToFileURL } from "url";
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync } from "fs";
 import path from "path";
 import sharp from "sharp";
 import { getEditorPage, reconnectRoll20 } from "../bridge/roll20.js";
@@ -128,7 +128,7 @@ interface HarvestRecord {
 }
 
 function parseArgs(argv: string[]) {
-  const out: { campaign?: string; page?: string; pageIds?: string[]; limit?: number; imageUrl?: string; capture?: boolean; source?: string } = {};
+  const out: { campaign?: string; page?: string; pageIds?: string[]; limit?: number; imageUrl?: string; capture?: boolean; reuse?: boolean; source?: string } = {};
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--campaign") out.campaign = argv[++i];
     else if (argv[i] === "--page") out.page = argv[++i];
@@ -136,6 +136,7 @@ function parseArgs(argv: string[]) {
     else if (argv[i] === "--limit") out.limit = parseInt(argv[++i] ?? "", 10);
     else if (argv[i] === "--imageUrl") out.imageUrl = argv[++i]; // override gated Roll20 art with a public URL (e.g. DDB compendium)
     else if (argv[i] === "--capture") out.capture = true; // render-capture the image from Roll20 (handles gated art); navigates the GM page
+    else if (argv[i] === "--reuse-image") out.reuse = true; // re-decode walls onto the already-harvested image (no capture/fetch) — fast re-harvest after a decode fix
     else if (argv[i] === "--source") out.source = argv[++i]; // only harvest pages whose map is "marketplace" or "uploaded" (filters out generated maps)
   }
   return out;
@@ -184,6 +185,7 @@ async function harvestPage(
   imageUrlOverride?: string,
   editorPage?: Page,
   sourceFilter?: string,
+  reuse?: boolean,
 ): Promise<HarvestRecord | { pageId: string; pageName: string; skipped: string }> {
   const flags: string[] = [];
 
@@ -228,7 +230,19 @@ async function harvestPage(
   //    (b) imageUrlOverride — a public URL (e.g. DDB compendium) when capture isn't used;
   //    (c) direct fetch of the Roll20 imgsrc variants — only works for ungated assets.
   let fileW = 0, fileH = 0, buf: Buffer | null = null, imgsrc = g.imgsrc, lastStatus = 0;
-  if (editorPage) {
+  let reusedFile: string | undefined;
+  if (reuse) {
+    // Re-decode walls onto the already-harvested image (no capture/fetch). Fast re-harvest after a
+    // decode fix; reuses the exact bytes already on disk so geometry registers identically.
+    for (const e of ["jpg", "png", "jpeg", "webp"]) {
+      const f = `${page.id}.${e}`;
+      if (existsSync(path.join(outDir, f))) { reusedFile = f; break; }
+    }
+    if (!reusedFile) return { pageId: page.id, pageName: page.name, skipped: "reuse-no-image" };
+    const meta = await sharp(path.join(outDir, reusedFile)).metadata().catch(() => null);
+    if (!meta?.width || !meta?.height) return { pageId: page.id, pageName: page.name, skipped: "reuse-bad-image" };
+    fileW = meta.width; fileH = meta.height; flags.push("reused-image");
+  } else if (editorPage) {
     const cap = await captureMapImage(editorPage, page.id, page.name, g.imgsrc, { w: gW, h: gH });
     if (!cap) return { pageId: page.id, pageName: page.name, skipped: "capture-failed" };
     buf = cap.buf; fileW = cap.w; fileH = cap.h; imgsrc = cap.url; flags.push("captured");
@@ -249,7 +263,7 @@ async function harvestPage(
   }
   // Canvas-readback always yields PNG bytes; otherwise derive the extension from the source URL.
   const ext = editorPage ? "jpg" : (imgsrc.match(/\.(png|jpg|jpeg|webp)/i)?.[1] ?? "png").toLowerCase();
-  const imageFile = `${page.id}.${ext}`;
+  const imageFile = reusedFile ?? `${page.id}.${ext}`;
 
   // 4. The alignment transform: page px → image-file px.
   //    Map graphic is center-based; its top-left in page px is (left - w/2, top - h/2).
@@ -287,7 +301,7 @@ async function harvestPage(
 
   // 6. Persist image + record.
   const imgPath = path.join(outDir, imageFile);
-  writeFileSync(imgPath, buf);
+  if (buf) writeFileSync(imgPath, buf); // reuse mode: image already on disk, keep it
   const rec: HarvestRecord = {
     campaignSlug: campaign.slug, campaignName: campaign.name, roll20CampaignId: campaign.roll20CampaignId,
     pageId: page.id, pageName: page.name,
@@ -302,7 +316,7 @@ async function harvestPage(
   return rec;
 }
 
-export async function harvest(opts: { campaign?: string; page?: string; pageIds?: string[]; limit?: number; imageUrl?: string; capture?: boolean; source?: string } = {}): Promise<number> {
+export async function harvest(opts: { campaign?: string; page?: string; pageIds?: string[]; limit?: number; imageUrl?: string; capture?: boolean; reuse?: boolean; source?: string } = {}): Promise<number> {
   if (opts.campaign) {
     setActiveCampaign(opts.campaign);
     // Rebind the editor (and lazily the RT connection) to the newly-active campaign — otherwise a
@@ -319,7 +333,14 @@ export async function harvest(opts: { campaign?: string; page?: string; pageIds?
   // closeBrowser() once per campaign) happens BEFORE we acquire the editor page — otherwise it
   // closes the very browser the capture needs ("Target closed"). Token is cached after this, so the
   // editor page acquired next stays alive for all captures this campaign.
-  const pagesObj = await rtGet<Record<string, { id: string; name: string; width: number; height: number }>>("pages");
+  // First RT read triggers the Firebase connect; retry it — the initial sign-in occasionally hits a
+  // transient network error (auth/network-request-failed) that would otherwise kill the whole run.
+  type PagesObj = Record<string, { id: string; name: string; width: number; height: number }>;
+  let pagesObj: PagesObj | undefined;
+  for (let i = 0; i < 5; i++) {
+    try { pagesObj = await rtGet<PagesObj>("pages"); break; }
+    catch (e) { if (i === 4) throw e; console.error(`[harvest] RT connect retry ${i + 1}: ${String(e).slice(0, 80)}`); await new Promise(r => setTimeout(r, 2500)); }
+  }
   let pages: PageInfo[] = Object.values(pagesObj ?? {}).map(p => ({ id: p.id, name: p.name, width: p.width, height: p.height }));
   if (opts.page) pages = pages.filter(p => p.id === opts.page);
   if (opts.pageIds?.length) pages = pages.filter(p => opts.pageIds!.includes(p.id));
@@ -336,7 +357,7 @@ export async function harvest(opts: { campaign?: string; page?: string; pageIds?
   const skipped: { pageId: string; pageName: string; skipped: string }[] = [];
   for (const page of pages) {
     try {
-      const res = await harvestPage(page, campaign, outDir, opts.imageUrl, editorPage, opts.source);
+      const res = await harvestPage(page, campaign, outDir, opts.imageUrl, editorPage, opts.source, opts.reuse);
       if ("skipped" in res) {
         skipped.push(res);
         console.error(`  · ${page.name} — skip (${res.skipped})`);
