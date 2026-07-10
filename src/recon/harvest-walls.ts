@@ -20,11 +20,12 @@
 //   _manifest.json  — index of every record emitted this run
 process.env.ROLL20_TRANSPORT ??= "rt";
 
+import "dotenv/config"; // self-sufficient as a `tsx` entry point: load .env before dataDir/campaigns/bridge modules read it
 import { pathToFileURL } from "url";
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync } from "fs";
 import path from "path";
 import sharp from "sharp";
-import { relayCommand, getEditorPage, reconnectRoll20 } from "../bridge/roll20.js";
+import { getEditorPage, reconnectRoll20 } from "../bridge/roll20.js";
 import { rtGet } from "../bridge/roll20-rt.js";
 import { dataPath } from "../dataDir.js";
 import { getActiveCampaign, setActiveCampaign, toSlug } from "../registry/campaigns.js";
@@ -38,11 +39,39 @@ interface PageInfo { id: string; name: string; width: number; height: number } /
 interface GraphicInfo { id: string; layer?: string; imgsrc?: string; left?: number; top?: number; width?: number; height?: number }
 // Legacy DL wall as stored in RTDB paths/page/<pageId>. left/top = CENTER (normal,
 // un-negated coords). `path` is a JSON string of SVG-ish commands in canvas-px local space.
-interface RtPath { layer?: string; left?: number; top?: number; width?: number; height?: number; rotation?: number; path?: string }
-// pathv2 (UDL) walls, if a campaign uses them — getWalls includePoints gives absolute page px.
-interface Pathv2Wall { id: string; kind: "pathv2"; points?: [number, number][] }
-interface Opening { id: string; type: string; x: number; y: number; handle0?: { x?: number; y?: number }; handle1?: { x?: number; y?: number }; isSecret?: boolean }
-interface DoorsResult { doors: Opening[]; windows: Opening[] }
+// A walls-layer object in RTDB paths/page/<id>. Legacy DL = `path` (SVG-string, left/top center).
+// UDL pathv2 = `shape:"pol"` + `points` (array of [dx,dy] relative to the x,y anchor; first point [0,0]).
+interface RtPath { layer?: string; left?: number; top?: number; width?: number; height?: number; rotation?: number; path?: string; shape?: string; points?: [number, number][] | string; x?: number; y?: number }
+
+// pathv2 (UDL / new-VTT) wall → page-pixel polyline. `x,y` is the object's bbox CENTER (the standard
+// Roll20 convention, same as legacy left/top — validated against the art on cos-test). Two shapes:
+//   • "pol": polyline; `points` are vertices in a local frame whose bbox center maps to (x,y), i.e.
+//     page vertex = (x + dx - bboxCx, y + dy - bboxCy).
+//   • "eli": ellipse centered at (x,y) with radii (w/2, h/2) from the bbox point [w,h]; rasterized
+//     to a closed perimeter polyline so the rest of the pipeline is unchanged.
+// No flip/scale — coords are already in the legacy/image page-px frame.
+function pathv2RtToPage(p: RtPath): [number, number][] {
+  let pts: unknown = p.points;
+  if (typeof pts === "string") { try { pts = JSON.parse(pts); } catch { return []; } }
+  if (!Array.isArray(pts)) return [];
+  const valid = pts.filter((q): q is [number, number] => Array.isArray(q) && typeof q[0] === "number" && typeof q[1] === "number");
+  if (valid.length < 2) return [];
+  const x = p.x ?? 0, y = p.y ?? 0;
+  if (p.shape === "eli") {
+    const bbox = valid[valid.length - 1];
+    const rx = Math.abs(bbox[0]) / 2, ry = Math.abs(bbox[1]) / 2;
+    if (rx < 0.5 && ry < 0.5) return [];
+    const N = 32, out: [number, number][] = [];
+    for (let i = 0; i <= N; i++) { const t = (2 * Math.PI * i) / N; out.push([x + rx * Math.cos(t), y + ry * Math.sin(t)]); }
+    return out; // closed (first == last)
+  }
+  const xs = valid.map(q => q[0]), ys = valid.map(q => q[1]);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  return valid.map(([dx, dy]) => [x + dx - cx, y + dy - cy] as [number, number]);
+}
+// Door/window as stored in RTDB: x normal, y NEGATED; handles under path.{handle0,handle1},
+// relative to (x,y), y also negated.
+interface RtOpening { x: number; y: number; path?: { handle0?: { x?: number; y?: number }; handle1?: { x?: number; y?: number } }; isSecret?: boolean }
 
 // Parse a legacy `path` object into a page-pixel polyline. Roll20 stores path data in a
 // local canvas-px frame whose bounding box is centered on (left, top); map each axis from
@@ -98,16 +127,16 @@ interface HarvestRecord {
   flags: string[];              // QC hints surfaced at harvest time
 }
 
-const r = <T>(cmd: Record<string, unknown>) => relayCommand<T>(cmd);
-
 function parseArgs(argv: string[]) {
-  const out: { campaign?: string; page?: string; limit?: number; imageUrl?: string; capture?: boolean; source?: string } = {};
+  const out: { campaign?: string; page?: string; pageIds?: string[]; limit?: number; imageUrl?: string; capture?: boolean; reuse?: boolean; source?: string } = {};
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--campaign") out.campaign = argv[++i];
     else if (argv[i] === "--page") out.page = argv[++i];
+    else if (argv[i] === "--pageIds") out.pageIds = (argv[++i] ?? "").split(",").map(s => s.trim()).filter(Boolean); // harvest an explicit set of pages
     else if (argv[i] === "--limit") out.limit = parseInt(argv[++i] ?? "", 10);
     else if (argv[i] === "--imageUrl") out.imageUrl = argv[++i]; // override gated Roll20 art with a public URL (e.g. DDB compendium)
     else if (argv[i] === "--capture") out.capture = true; // render-capture the image from Roll20 (handles gated art); navigates the GM page
+    else if (argv[i] === "--reuse-image") out.reuse = true; // re-decode walls onto the already-harvested image (no capture/fetch) — fast re-harvest after a decode fix
     else if (argv[i] === "--source") out.source = argv[++i]; // only harvest pages whose map is "marketplace" or "uploaded" (filters out generated maps)
   }
   return out;
@@ -156,30 +185,30 @@ async function harvestPage(
   imageUrlOverride?: string,
   editorPage?: Page,
   sourceFilter?: string,
+  reuse?: boolean,
 ): Promise<HarvestRecord | { pageId: string; pageName: string; skipped: string }> {
   const flags: string[] = [];
 
-  // 1. Walls — read straight from the RTDB (the Mod's getWalls misses legacy paths).
-  //    Legacy DL: `path` objects on the walls layer → parse + transform to page px.
-  //    UDL: pathv2 objects (getWalls includePoints) → already absolute page px.
+  // 1. Walls — classify by representation (NO Mod, no relay; all in paths/page).
+  //    new-VTT pathv2 = has `points` (INCLUDING one-way walls whose `shape` is undefined, not
+  //    "pol", and which carry a garbage back-compat `path`/bbox — so `points` is the reliable
+  //    discriminator, not `shape`). legacy DL = a `path` string and no points. Transform of the
+  //    pathv2 set is deferred until the map graphic is known (it needs the Y-flip height).
   const rtPaths = await rtGet<Record<string, RtPath>>(`paths/page/${page.id}`);
-  const legacyPolys = Object.values(rtPaths ?? {})
-    .filter(p => p.layer === "walls" && p.path)
-    .map(legacyPathToPage)
-    .filter(poly => poly.length >= 2);
+  const wallObjs = Object.values(rtPaths ?? {}).filter(p => p.layer === "walls");
+  const hasPts = (p: RtPath): boolean => {
+    let v: unknown = p.points;
+    if (typeof v === "string") { try { v = JSON.parse(v); } catch { return false; } }
+    return Array.isArray(v) && v.length >= 2;
+  };
+  const pathv2Objs = wallObjs.filter(hasPts);                 // new-VTT (two-way + one-way)
+  const legacyObjs = wallObjs.filter(p => p.path && !hasPts(p)); // pure legacy `path`
+  if (pathv2Objs.length + legacyObjs.length === 0) return { pageId: page.id, pageName: page.name, skipped: "no-walls" };
 
-  const pathv2Objs = await r<Pathv2Wall[]>({ action: "getWalls", pageId: page.id, includePoints: true })
-    .then(ws => (ws ?? []).filter(w => w.kind === "pathv2"))
-    .catch(() => [] as Pathv2Wall[]);
-  const pathv2Polys = pathv2Objs.map(w => (w.points ?? []).map(([x, y]) => [x, y] as [number, number])).filter(poly => poly.length >= 2);
-
-  const wallPolysPage = [...legacyPolys, ...pathv2Polys];
-  if (legacyPolys.length) flags.push(`legacy:${legacyPolys.length}`);
-  if (pathv2Polys.length) flags.push(`pathv2:${pathv2Polys.length}`);
-  if (wallPolysPage.length === 0) return { pageId: page.id, pageName: page.name, skipped: "no-walls" };
-
-  // 2. Map graphic — page-pixel geometry of the background image.
-  const graphics = await r<GraphicInfo[]>({ action: "getTokens", pageId: page.id });
+  // 2. Map graphic — page-pixel geometry of the background image. Read straight from the RTDB
+  //    (graphics store left/top un-negated, verified == getTokens) so the harvest needs no Mod.
+  const graphicsObj = await rtGet<Record<string, GraphicInfo>>(`graphics/page/${page.id}`);
+  const graphics = Object.values(graphicsObj ?? {});
   const { g, multiMap } = pickMapGraphic(graphics);
   if (!g || !g.imgsrc) return { pageId: page.id, pageName: page.name, skipped: "no-map-graphic" };
   if (sourceFilter && sourceClass(g.imgsrc) !== sourceFilter) {
@@ -201,7 +230,19 @@ async function harvestPage(
   //    (b) imageUrlOverride — a public URL (e.g. DDB compendium) when capture isn't used;
   //    (c) direct fetch of the Roll20 imgsrc variants — only works for ungated assets.
   let fileW = 0, fileH = 0, buf: Buffer | null = null, imgsrc = g.imgsrc, lastStatus = 0;
-  if (editorPage) {
+  let reusedFile: string | undefined;
+  if (reuse) {
+    // Re-decode walls onto the already-harvested image (no capture/fetch). Fast re-harvest after a
+    // decode fix; reuses the exact bytes already on disk so geometry registers identically.
+    for (const e of ["jpg", "png", "jpeg", "webp"]) {
+      const f = `${page.id}.${e}`;
+      if (existsSync(path.join(outDir, f))) { reusedFile = f; break; }
+    }
+    if (!reusedFile) return { pageId: page.id, pageName: page.name, skipped: "reuse-no-image" };
+    const meta = await sharp(path.join(outDir, reusedFile)).metadata().catch(() => null);
+    if (!meta?.width || !meta?.height) return { pageId: page.id, pageName: page.name, skipped: "reuse-bad-image" };
+    fileW = meta.width; fileH = meta.height; flags.push("reused-image");
+  } else if (editorPage) {
     const cap = await captureMapImage(editorPage, page.id, page.name, g.imgsrc, { w: gW, h: gH });
     if (!cap) return { pageId: page.id, pageName: page.name, skipped: "capture-failed" };
     buf = cap.buf; fileW = cap.w; fileH = cap.h; imgsrc = cap.url; flags.push("captured");
@@ -221,8 +262,8 @@ async function harvestPage(
     if (!buf) return { pageId: page.id, pageName: page.name, skipped: `image-fetch-${lastStatus || "err"}` };
   }
   // Canvas-readback always yields PNG bytes; otherwise derive the extension from the source URL.
-  const ext = editorPage ? "png" : (imgsrc.match(/\.(png|jpg|jpeg|webp)/i)?.[1] ?? "png").toLowerCase();
-  const imageFile = `${page.id}.${ext}`;
+  const ext = editorPage ? "jpg" : (imgsrc.match(/\.(png|jpg|jpeg|webp)/i)?.[1] ?? "png").toLowerCase();
+  const imageFile = reusedFile ?? `${page.id}.${ext}`;
 
   // 4. The alignment transform: page px → image-file px.
   //    Map graphic is center-based; its top-left in page px is (left - w/2, top - h/2).
@@ -233,24 +274,34 @@ async function harvestPage(
     Math.round((py - originY) * scaleY),
   ];
 
+  // Build page-px wall polylines now that the graphic is known.
+  const legacyPolys = legacyObjs.map(legacyPathToPage).filter(poly => poly.length >= 2);
+  const pathv2Polys = pathv2Objs.map(pathv2RtToPage).filter(poly => poly.length >= 2);
+  const wallPolysPage = [...legacyPolys, ...pathv2Polys];
+  if (legacyPolys.length) flags.push(`legacy:${legacyPolys.length}`);
+  if (pathv2Polys.length) flags.push(`pathv2:${pathv2Polys.length}`);
+  if (wallPolysPage.length === 0) return { pageId: page.id, pageName: page.name, skipped: "no-walls" };
+
   const walls = wallPolysPage.map(poly => poly.map(([px, py]) => toImg(px, py)));
 
-  // 5. Doors / windows (best-effort; relay un-negates y; handles are RELATIVE to center).
+  // 5. Doors / windows (best-effort, from RTDB — no Mod). In RTDB the object x is normal but y is
+  //    NEGATED, and handles live under path.{handle0,handle1} RELATIVE to (x,y), y also negated.
+  //    Absolute normal coords: x = o.x + h.x ; y = -(o.y) + -(h.y) = -(o.y + h.y).
   let doors: HarvestRecord["doors"] = [];
   let windows: HarvestRecord["windows"] = [];
   try {
-    const od = await r<DoorsResult>({ action: "getDoors", pageId: page.id });
-    const seg = (o: Opening) => ({
-      from: toImg(o.x + (o.handle0?.x ?? 0), o.y + (o.handle0?.y ?? 0)),
-      to:   toImg(o.x + (o.handle1?.x ?? 0), o.y + (o.handle1?.y ?? 0)),
-    });
-    doors = (od.doors ?? []).map(o => ({ ...seg(o), isSecret: o.isSecret }));
-    windows = (od.windows ?? []).map(o => seg(o));
-  } catch { flags.push("getDoors-failed"); }
+    const seg = (o: RtOpening, h: "handle0" | "handle1") => {
+      const hh = o.path?.[h] ?? {};
+      return toImg(o.x + (hh.x ?? 0), -((o.y ?? 0) + (hh.y ?? 0)));
+    };
+    const read = async (kind: "doors" | "windows") => Object.values(await rtGet<Record<string, RtOpening>>(`${kind}/page/${page.id}`) ?? {});
+    doors = (await read("doors")).map(o => ({ from: seg(o, "handle0"), to: seg(o, "handle1"), isSecret: o.isSecret }));
+    windows = (await read("windows")).map(o => ({ from: seg(o, "handle0"), to: seg(o, "handle1") }));
+  } catch { flags.push("doors-failed"); }
 
   // 6. Persist image + record.
   const imgPath = path.join(outDir, imageFile);
-  writeFileSync(imgPath, buf);
+  if (buf) writeFileSync(imgPath, buf); // reuse mode: image already on disk, keep it
   const rec: HarvestRecord = {
     campaignSlug: campaign.slug, campaignName: campaign.name, roll20CampaignId: campaign.roll20CampaignId,
     pageId: page.id, pageName: page.name,
@@ -265,7 +316,7 @@ async function harvestPage(
   return rec;
 }
 
-export async function harvest(opts: { campaign?: string; page?: string; limit?: number; imageUrl?: string; capture?: boolean; source?: string } = {}): Promise<number> {
+export async function harvest(opts: { campaign?: string; page?: string; pageIds?: string[]; limit?: number; imageUrl?: string; capture?: boolean; reuse?: boolean; source?: string } = {}): Promise<number> {
   if (opts.campaign) {
     setActiveCampaign(opts.campaign);
     // Rebind the editor (and lazily the RT connection) to the newly-active campaign — otherwise a
@@ -275,24 +326,38 @@ export async function harvest(opts: { campaign?: string; page?: string; limit?: 
   const campaign = getActiveCampaign();
   const outDir = dataPath(path.join("wall-dataset", "raw", toSlug(campaign.name)));
   mkdirSync(outDir, { recursive: true });
-  // Acquire the editor page for capture; if the shared Chromium died (closed tab / contention with
-  // another process), hard-relaunch once before giving up.
+  console.error(`\n[harvest] campaign "${campaign.name}" (${campaign.roll20CampaignId})${opts.capture ? " [render-capture]" : ""} → ${outDir}\n`);
+
+  // Pages straight from RTDB (no relay/Mod) — zero relay calls, works on any campaign with/without
+  // the Mod. IMPORTANT: do this RTDB read FIRST so the RT custom-token harvest (which calls
+  // closeBrowser() once per campaign) happens BEFORE we acquire the editor page — otherwise it
+  // closes the very browser the capture needs ("Target closed"). Token is cached after this, so the
+  // editor page acquired next stays alive for all captures this campaign.
+  // First RT read triggers the Firebase connect; retry it — the initial sign-in occasionally hits a
+  // transient network error (auth/network-request-failed) that would otherwise kill the whole run.
+  type PagesObj = Record<string, { id: string; name: string; width: number; height: number }>;
+  let pagesObj: PagesObj | undefined;
+  for (let i = 0; i < 5; i++) {
+    try { pagesObj = await rtGet<PagesObj>("pages"); break; }
+    catch (e) { if (i === 4) throw e; console.error(`[harvest] RT connect retry ${i + 1}: ${String(e).slice(0, 80)}`); await new Promise(r => setTimeout(r, 2500)); }
+  }
+  let pages: PageInfo[] = Object.values(pagesObj ?? {}).map(p => ({ id: p.id, name: p.name, width: p.width, height: p.height }));
+  if (opts.page) pages = pages.filter(p => p.id === opts.page);
+  if (opts.pageIds?.length) pages = pages.filter(p => opts.pageIds!.includes(p.id));
+  console.error(`[harvest] ${pages.length} page(s) to scan\n`);
+
+  // Now acquire the editor page (token cached → no further closeBrowser this campaign).
   let editorPage: Page | undefined;
   if (opts.capture) {
     try { editorPage = await getEditorPage(); }
     catch { await reconnectRoll20({ hard: true }).catch(() => {}); editorPage = await getEditorPage(); }
   }
-  console.error(`\n[harvest] campaign "${campaign.name}" (${campaign.roll20CampaignId})${editorPage ? " [render-capture]" : ""} → ${outDir}\n`);
-
-  let pages = await r<PageInfo[]>({ action: "listPages" });
-  if (opts.page) pages = pages.filter(p => p.id === opts.page);
-  console.error(`[harvest] ${pages.length} page(s) to scan\n`);
 
   const emitted: HarvestRecord[] = [];
   const skipped: { pageId: string; pageName: string; skipped: string }[] = [];
   for (const page of pages) {
     try {
-      const res = await harvestPage(page, campaign, outDir, opts.imageUrl, editorPage, opts.source);
+      const res = await harvestPage(page, campaign, outDir, opts.imageUrl, editorPage, opts.source, opts.reuse);
       if ("skipped" in res) {
         skipped.push(res);
         console.error(`  · ${page.name} — skip (${res.skipped})`);
