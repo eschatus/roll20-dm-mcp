@@ -84,6 +84,28 @@ Deep dives: `docs/decisions.md`, `docs/roll20-api-coverage.md`, `docs/roll20-rea
   player-writable.
 - Registry files (`data/campaigns.json`, `characters.json`, `active-campaign.json`) are written
   atomically (temp-then-rename). `data/` is gitignored and holds live credentials — never commit it.
+- **`repeating_npcaction` rows need `rollbase` to render as a clickable attack.** Writing
+  `repeating_npcaction_<row>_name`/`attack_tohit`/`attack_damage` via `setCharacterAttributes`
+  creates the data but not a working roll button — the sheet's own sheet-worker JS normally
+  generates the companion fields (`attack_tohitrange`, `attack_onhit`, `damage_flag`,
+  `attack_crit`/`attack_crit2`, and critically `rollbase`) on real UI events only, never on
+  API-created attributes (same root cause as the ability-`_mod` gap below). Fix: write all of
+  them yourself. `rollbase` is a **fixed macro template, identical across every attack row on the
+  sheet** — copy it verbatim:
+  `@{wtype}&{template:npcfullatk} {{attack=1}} @{damage_flag} @{npc_name_flag} {{rname=@{name}}} {{r1=[[@{d20}+(@{attack_tohit}+0)]]}} @{rtype}+(@{attack_tohit}+0)]]}} {{dmg1=[[@{attack_damage}+0]]}} {{dmg1type=@{attack_damagetype}}} {{dmg2=[[@{attack_damage2}+0]]}} {{dmg2type=@{attack_damagetype2}}} {{crit1=[[@{attack_crit}+0]]}} {{crit2=[[@{attack_crit2}+0]]}} {{description=@{show_desc}}} @{charname_output}`.
+  Non-attack entries (save effects, passive traits) don't need any of this — just
+  `name`/`description`/`npc_options-flag: 0`. Legendary actions live in a parallel
+  `repeating_npcaction-l_` section with the same schema. **Never read a field containing literal
+  `@{`/`[[` (e.g. `rollbase`) back through `getCharacterAttributes`/`read_character_attributes`**
+  — Roll20's chat pipeline live-evaluates it on echo and errors (the writeResult escape fix keeps
+  this from crashing the whole sandbox, but the read still fails). Verify writes instead by
+  reading `Campaign.characters.get(id).attribs` directly in the browser, which bypasses the
+  chat-echo path entirely — see `scripts/dump-character-attrs.ts` and
+  `scripts/find-character-by-name.ts`.
+- **Ability-score `_mod` attributes don't auto-derive either**, for the same sheet-worker-never-
+  fires-on-the-API reason. `createCharacter`'s relay action now derives `<ability>_mod` from the
+  raw score at creation time (an explicitly-passed `_mod` is left untouched) — see
+  `ACTIONS["createCharacter"]` in `ai-relay.js`.
 
 ## Where things live
 
