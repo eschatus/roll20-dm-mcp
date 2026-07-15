@@ -22,6 +22,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "electron": "^33.4.11",
+    "jsdom": "^29.1.1",
     "tsx": "^4.20.0",
     "typescript": "^6.0.3",
     "vitest": "^3.2.4"
