@@ -7,6 +7,8 @@
 
 /* global dmw */
 
+import { STATE_LABELS, mergeChunks, encodeWav, wrapScroll } from "./gem-core.js";
+
 // Surface any renderer error to the main log so a thrown exception during
 // top-level wiring (which would silently kill later listeners) is diagnosable.
 window.addEventListener("error", (e) => {
@@ -35,7 +37,7 @@ function applyTheme(theme) {
 
 function setState(s) {
   body.dataset.state = s;
-  const labels = { idle: "", listening: "listening", thinking: "scrying" };
+  const labels = STATE_LABELS;
   if (labels[s]) { label.textContent = labels[s]; label.classList.add("show"); }
   else label.classList.remove("show");
   if (s !== "idle") { caption.classList.remove("show"); }
@@ -100,9 +102,7 @@ function showCaption(text, lowConf, source) {
 function nudgeScroll(rotation) {
   if (!scrollState) return;
   scrollState.y -= rotation * 22;
-  const h = scrollState.copyH;
-  while (scrollState.y <= -h) scrollState.y += h;
-  while (scrollState.y > 0) scrollState.y -= h;
+  scrollState.y = wrapScroll(scrollState.y, scrollState.copyH);
   captionText.style.transform = `translateY(${scrollState.y}px)`;
 }
 
@@ -278,35 +278,6 @@ async function stopCapture() {
       else if (res && res.error) showCaption("…", true, "dm");
     }
   }
-}
-
-function mergeChunks(list) {
-  let len = 0; for (const c of list) len += c.length;
-  const out = new Float32Array(len);
-  let off = 0; for (const c of list) { out.set(c, off); off += c.length; }
-  return out;
-}
-
-// Linear-resample float PCM to targetRate, then write a 16-bit PCM WAV.
-function encodeWav(samples, inRate, targetRate) {
-  const ratio = inRate / targetRate;
-  const outLen = Math.floor(samples.length / ratio);
-  const out = new Int16Array(outLen);
-  for (let i = 0; i < outLen; i++) {
-    const s = samples[Math.floor(i * ratio)] || 0;
-    const clamped = Math.max(-1, Math.min(1, s));
-    out[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
-  }
-  const buffer = new ArrayBuffer(44 + out.length * 2);
-  const view = new DataView(buffer);
-  const w = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
-  w(0, "RIFF"); view.setUint32(4, 36 + out.length * 2, true); w(8, "WAVE");
-  w(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true); view.setUint32(24, targetRate, true);
-  view.setUint32(28, targetRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
-  w(36, "data"); view.setUint32(40, out.length * 2, true);
-  let off = 44; for (let i = 0; i < out.length; i++, off += 2) view.setInt16(off, out[i], true);
-  return buffer;
 }
 
 // ---- confirm banner (legacy element — kept so body[data-state="confirm"] ring animation still
