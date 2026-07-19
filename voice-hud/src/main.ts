@@ -25,7 +25,7 @@ import { loadBaseVocab } from "./baseVocab";
 import { correctTranscript, DEFAULT_LITERAL_MAP } from "./correction";
 import { runAar } from "./aar";
 import { loadSettings, saveSettings, AppSettings } from "./settings";
-import { setLogSink, persist } from "./logger";
+import { setLogSink, persist, classifyConsole } from "./logger";
 
 // Load the repo-root .env so ANTHROPIC_API_KEY is available (shared with the MCP server).
 dotenv.config({ path: path.join(__dirname, "..", "..", ".env") });
@@ -128,14 +128,18 @@ const _origConsole = {
 function forwardLog(level: "error" | "warn" | "info", orig: (...a: unknown[]) => void, args: unknown[]) {
   orig(...args);
   const text = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+  // Route by the line's [prefix] into one of three channel files: conversation (hud.log),
+  // whisper (whisper.log), or system (system.log). The panel still sees every line; only the
+  // durable files are split, so post-hoc review of one concern isn't buried under the others.
+  const { channel, kind } = classifyConsole(text);
   const entry: LogEntry = { level, text, ts: Date.now() };
   logBuffer.push(entry);
   if (logBuffer.length > LOG_BUFFER_MAX) logBuffer.shift();
-  send("log", entry);
+  send("log", { ...entry, channel });
   // Durable file (survives the detached launch, where stderr is lost). The in-memory logBuffer
-  // only backfills the panel for the current session; hud.log persists across runs. persist()
-  // swallows its own errors, so overriding console here carries no recursion risk.
-  persist({ ts: entry.ts, level, kind: "console", msg: text });
+  // only backfills the panel for the current session; the channel files persist across runs.
+  // persist() swallows its own errors, so overriding console here carries no recursion risk.
+  persist({ ts: entry.ts, level, kind, channel, msg: text });
 }
 // NB: console.error is this app's generic stderr sink (status lines like "[stt] …", "[agent] …"
 // all go through it because stdout is lost in the detached launch), so it is tagged "info" — NOT
@@ -199,7 +203,17 @@ setLogSink((e) => send("log", {
   level: e.level === "error" ? "error" : "info",
   text: (e.ms != null ? `[${e.kind} ${e.ms}ms] ` : `[${e.kind}] `) + e.msg + (e.detail ? ` :: ${e.detail.slice(0, 120)}` : ""),
   ts: e.ts,
+  channel: e.channel,
 }));
+
+// STT engines emit runtime lines (whisper-server stdout, "[stt] using …"). Tag any line that
+// isn't already prefixed with [whisper] so the console shim routes the whole STT stream into the
+// whisper channel rather than letting raw stdout fall through to system.
+const sttLog = (m: unknown) => {
+  const s = String(m).trimEnd();
+  if (!s) return;
+  console.error(/^\[(stt|whisper|whisper-server|correct|ab-clip)\b/.test(s) ? s : `[whisper] ${s}`);
+};
 
 // --- PTT wiring ---
 function wirePtt() {
@@ -1207,7 +1221,7 @@ app.whenReady().then(async () => {
   settings = loadSettings();
 
   // Start STT (walks the fallback chain) + MCP in parallel; neither blocks the gem.
-  startStt((m) => console.error(String(m).trimEnd()))
+  startStt(sttLog)
     .then((engine) => {
       stt = engine;
       stt.on("exit", (code: number) => send("agent", { kind: "error", text: `STT exited (${code})` }));
@@ -1218,7 +1232,7 @@ app.whenReady().then(async () => {
   // Two-tier (opt-in): a second resident server on a bigger model for FINAL clips only.
   // Off unless DMW_WHISPER_FINAL_MODEL is set + whisperserver; null on failure → finals
   // just use the primary engine. Started in the background; never blocks the gem.
-  startFinalStt((m) => console.error(String(m).trimEnd()))
+  startFinalStt(sttLog)
     .then((engine) => {
       if (!engine) return;
       sttFinal = engine;
