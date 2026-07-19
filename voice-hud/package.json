@@ -2,7 +2,7 @@
   "name": "dm-whisper-hud",
   "productName": "DM Whisper",
   "version": "0.1.5",
-  "description": "DM Whisper — voice PTT + transparent scrying-gem HUD for the Roll20 DM assistant",
+  "description": "DM Whisper \u2014 voice PTT + transparent scrying-gem HUD for the Roll20 DM assistant",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc",
@@ -15,13 +15,14 @@
     "eval:arc": "tsx scripts/eval-arc.ts",
     "record": "tsx scripts/record-clips.ts",
     "bundle:server": "npx --yes esbuild ../src/index-http.ts --bundle --platform=node --format=esm --outfile=../dist-server/dist/index-http.mjs --external:playwright --external:sharp --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\"",
-    "dist:dir": "npm run build && npm run bundle:server && npx --yes electron-builder --dir",
-    "dist": "npm run build && npm run bundle:server && npx --yes electron-builder"
+    "dist:dir": "npm run build && npm run bundle:server && electron-builder --dir",
+    "dist": "npm run build && npm run bundle:server && electron-builder"
   },
   "license": "ISC",
   "devDependencies": {
     "@types/node": "^22.0.0",
     "electron": "^33.4.11",
+    "electron-builder": "26.15.3",
     "tsx": "^4.20.0",
     "typescript": "^6.0.3",
     "vitest": "^3.2.4"
@@ -33,5 +34,8 @@
     "double-metaphone": "^1.0.5",
     "openai": "^4.77.0",
     "uiohook-napi": "^1.5.4"
+  },
+  "overrides": {
+    "@noble/hashes": "^1.8.0"
   }
 }
