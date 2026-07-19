@@ -1,6 +1,28 @@
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
-import { indexBatchResults, coerceStringArray, coerceBoolean, type BatchResult } from "./combatHelpers.js";
+import { indexBatchResults, coerceStringArray, coerceBoolean, num, type BatchResult } from "./combatHelpers.js";
+
+describe("num (de-prime Roll20 stringified numbers in read tools)", () => {
+  it("turns a Roll20 stringified number into a real number", () => {
+    // The retyping smell: turnorder pr / bar1_value come back as strings.
+    expect(num("17")).toBe(17);
+    expect(num("133")).toBe(133);
+    expect(num("0")).toBe(0);
+  });
+  it("passes real numbers through", () => {
+    expect(num(42)).toBe(42);
+    expect(num(0)).toBe(0);
+  });
+  it("returns null for empty/unset (preserving 'no bar set', not 0)", () => {
+    expect(num("")).toBeNull();
+    expect(num(null)).toBeNull();
+    expect(num(undefined)).toBeNull();
+  });
+  it("returns null for non-numeric labels (leaves them for the caller to keep)", () => {
+    expect(num("Round Start")).toBeNull();
+    expect(num("NaN")).toBeNull();
+  });
+});
 
 describe("coerceStringArray (model-tolerant array param)", () => {
   it("passes a real array through unchanged", () => {

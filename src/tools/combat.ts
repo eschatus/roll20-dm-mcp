@@ -12,7 +12,7 @@ import {
 import { getLastPing } from "../bridge/roll20-rt.js";
 import {
   type TurnEntry, type BatchResult,
-  text, json, indexBatchResults, coerceStringArray, coerceBoolean,
+  text, json, num, indexBatchResults, coerceStringArray, coerceBoolean,
   tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId,
 } from "./combatHelpers.js";
 
@@ -166,15 +166,21 @@ export function registerCombatTools(server: McpServer): void {
         action: "getTokens",
         pageId: activePage,
       });
-      return json(tokens.map((t) => ({
-        id: t.id,
-        name: t.name,
-        layer: t.layer,
-        controlledby: t.controlledby,
-        represents: t.represents,
-        hp: t.bar1_max ? `${t.bar1_value}/${t.bar1_max}` : null,
-        statusmarkers: t.statusmarkers || "",
-      })));
+      return json(tokens.map((t) => {
+        const hpMax = num(t.bar1_max);
+        const hasBar = hpMax !== null && hpMax > 0;
+        return {
+          id: t.id,
+          name: t.name,
+          layer: t.layer,
+          controlledby: t.controlledby,
+          represents: t.represents,
+          // Real numbers, not "133/133" — see num() in combatHelpers.
+          hp: hasBar ? num(t.bar1_value) : null,
+          hpMax: hasBar ? hpMax : null,
+          statusmarkers: t.statusmarkers || "",
+        };
+      }));
     }
   );
 
@@ -189,7 +195,12 @@ export function registerCombatTools(server: McpServer): void {
         bar1_value: number; bar1_max: number; statusmarkers: string;
         layer: string; controlledby: string;
       }[]>({ action: "getSelection" });
-      return json(selection);
+      // Normalize Roll20's stringified geometry/bar numbers to real numbers (see num()).
+      return json(selection.map((s) => ({
+        ...s,
+        left: num(s.left), top: num(s.top), width: num(s.width), height: num(s.height),
+        bar1_value: num(s.bar1_value), bar1_max: num(s.bar1_max),
+      })));
     }
   );
 
@@ -466,7 +477,7 @@ export function registerCombatTools(server: McpServer): void {
       return json({
         rolledFor: newEntries.length,
         results: lines,
-        turnOrder: finalOrder.map((e) => ({ id: e.id, pr: e.pr })),
+        turnOrder: finalOrder.map((e) => ({ id: e.id, pr: num(e.pr) ?? e.pr })),
         ...(hpInit.set.length ? { hpInitialized: hpInit.set } : {}),
         ...(hpInit.missed.length ? { hpLookupFailed: hpInit.missed } : {}),
       }, false);
@@ -500,7 +511,8 @@ export function registerCombatTools(server: McpServer): void {
       const resolved = entries.map((e, i) => ({
         position: i + 1,
         name: e.id ? (nameMap.get(e.id) ?? e.custom ?? e.id) : (e.custom || "?"),
-        initiative: e.pr,
+        // Roll20 stores pr as a string; emit a real number (non-numeric labels stay as-is).
+        initiative: num(e.pr) ?? e.pr,
       }));
       return json(resolved);
     }
