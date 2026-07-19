@@ -1,8 +1,25 @@
 // Anthropic provider — cloud Claude. Owns Anthropic-shaped message history.
 // Same LLMProvider contract as Ollama; the agent can't tell them apart.
 
+import * as fs from "fs";
+import * as path from "path";
 import Anthropic from "@anthropic-ai/sdk";
 import { LLMProvider, LLMTurn, ToolSpec } from "./provider";
+
+// Ground-truth capture: dump the EXACT request we forward to Claude — system,
+// tools (with their input_schemas), and the full message history — to a single
+// file that's overwritten every turn. When a turn misbehaves (e.g. the model
+// emits string-typed scalars → -32602), last-request.json IS what the model saw
+// on that turn: no inference, and no debug flag to have forgotten to set. Sits
+// next to hud.log; ~60KB, constant size (overwrite, not append). Best-effort —
+// a dump-write failure must never break a live turn (failure changes nothing).
+function dumpRequest(body: unknown): void {
+  try {
+    const dir = process.env.DMW_DATA_DIR || path.join(__dirname, "..", "..", "data");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "last-request.json"), JSON.stringify(body, null, 2));
+  } catch { /* best-effort observability — never throw into a turn */ }
+}
 
 export class AnthropicProvider implements LLMProvider {
   readonly name = "anthropic";
@@ -45,7 +62,7 @@ export class AnthropicProvider implements LLMProvider {
   pushContinue(note: string): void { this.history.push({ role: "user", content: note }); }
 
   async run(): Promise<LLMTurn> {
-    // System prompt is now frozen (roster/phase ride in the user turn), so the
+    // System prompt is now frozen (the roster rides in the user turn), so the
     // tools+system prefix is prompt-cacheable — see the cache_control breakpoint.
     // Take the raw response too, so we can read rate-limit headers + cache usage.
     const t0 = Date.now();
@@ -65,13 +82,15 @@ export class AnthropicProvider implements LLMProvider {
         const arr = m.content as unknown[];
         return { ...m, content: arr.map((b: unknown, j) => (j === arr.length - 1 ? { ...(b as object), cache_control: { type: "ephemeral" } } : b)) };
       }) as Anthropic.MessageParam[];
-      const r = await this.client.messages.create({
+      const request = {
         model: this.model,
         max_tokens: 1024, // bound prose latency; a tool call + short reply fits easily
-        system: [{ type: "text", text: this.system, cache_control: { type: "ephemeral" } }],
+        system: [{ type: "text" as const, text: this.system, cache_control: { type: "ephemeral" as const } }],
         tools: this.tools,
         messages: msgs,
-      }).withResponse();
+      };
+      dumpRequest({ ts: Date.now(), ...request });
+      const r = await this.client.messages.create(request).withResponse();
       res = r.data;
       headers = r.response.headers;
     } catch (e) {
