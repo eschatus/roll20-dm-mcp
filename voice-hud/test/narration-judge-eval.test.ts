@@ -47,7 +47,7 @@ const RULE_N6 =
 
 function liveAgent() {
   const mcp = new FakeMcp();
-  const agent = new DmAgent(mcp, "anthropic", undefined, "COMBAT_LOOP");
+  const agent = new DmAgent(mcp, "anthropic");
   agent.setRoster(ROSTER);
   return { agent, mcp };
 }

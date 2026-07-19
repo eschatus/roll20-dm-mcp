@@ -62,11 +62,12 @@ export function parseLog(raw: string): LogLine[] {
   return out;
 }
 
-// Slice to the LAST combat window: from the final "phase → COMBAT_LOOP" up to the
-// next "phase → CLEANUP/IDLE" (or end). If no phase markers, analyze everything.
+// Slice to the LAST combat window: from the final "combat: begin" (emitted by the
+// BEGIN-COMBAT backbone) up to the next "combat: end" (emitted by CLEANUP), or the
+// end of the log. If no markers are present, analyze everything.
 export function combatWindow(lines: LogLine[]): LogLine[] {
-  const isEnter = (m: string) => /\[agent\] phase(?: ?[:→]).*COMBAT_LOOP/.test(m);
-  const isExit = (m: string) => /\[agent\] phase(?: ?[:→]).*(CLEANUP|IDLE)/.test(m);
+  const isEnter = (m: string) => /\[agent\] combat: begin/.test(m);
+  const isExit = (m: string) => /\[agent\] combat: end/.test(m);
   let start = -1;
   for (let i = lines.length - 1; i >= 0; i--) { if (isEnter(lines[i].msg)) { start = i; break; } }
   if (start === -1) return lines;

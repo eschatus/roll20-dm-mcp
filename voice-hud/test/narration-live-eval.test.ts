@@ -36,12 +36,12 @@ const ROSTER = [
   "Zeno → Zeno (PC)",
 ].join("\n");
 
-/** Real agent (live Haiku), recording fake MCP, started already in COMBAT_LOOP. */
+/** Real agent (live Haiku), recording fake MCP. */
 function liveAgent() {
   const mcp = new FakeMcp();
-  // Default provider factory → real AnthropicProvider; start in COMBAT_LOOP so the
-  // HP/condition tools are actually offered to the model (IDLE withholds them).
-  const agent = new DmAgent(mcp, "anthropic", undefined, "COMBAT_LOOP");
+  // Default provider factory → real AnthropicProvider. The HP/condition tools
+  // are always offered now, so no phase setup is needed to reach them.
+  const agent = new DmAgent(mcp, "anthropic");
   agent.setRoster(ROSTER);
   return { agent, mcp };
 }

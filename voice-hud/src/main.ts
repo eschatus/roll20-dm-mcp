@@ -404,7 +404,7 @@ async function runAgent(transcript: string, lowConfidence = false) {
   _agentTurnActive = true;
   // A shaky transcript: flag it to the agent (the persona reads this) so it leans
   // toward confirming destructive writes rather than acting on a likely mishear.
-  // Detector-safe — the marker carries no phase keywords.
+  // Detector-safe — the marker carries no command keywords.
   const utterance = lowConfidence
     ? `[LOW-CONFIDENCE voice transcript — a likely mishear; interpret cautiously and confirm any destructive write] ${transcript}`
     : transcript;
@@ -421,18 +421,15 @@ async function runAgent(transcript: string, lowConfidence = false) {
         send("agent", { kind: "confirm", text: humanizeToolCall(name, args) });
         send("state", "confirm");
       }),
-      onPhaseChange: (phase) => {
-        console.error(`[agent] phase → ${phase}`);
-        send("phase", { phase });
-        // Combat closing → run the After-Action Review and surface its report +
-        // proposed corrections to the Training panel (the reinforcement loop).
-        if (phase === "CLEANUP") {
-          try {
-            const report = runAar(activeSlug);
-            send("aar", report);
-            console.error(`[aar] ${report.turns} turns, avg ${report.avgSteps} steps; ${report.proposals.length} proposal(s)`);
-          } catch (e) { console.error("[aar] failed:", (e as Error).message); }
-        }
+      // Combat closing → run the After-Action Review and surface its report +
+      // proposed corrections to the Training panel (the reinforcement loop).
+      // Fired by the CLEANUP backbone (was onPhaseChange("CLEANUP")).
+      onCombatEnd: () => {
+        try {
+          const report = runAar(activeSlug);
+          send("aar", report);
+          console.error(`[aar] ${report.turns} turns, avg ${report.avgSteps} steps; ${report.proposals.length} proposal(s)`);
+        } catch (e) { console.error("[aar] failed:", (e as Error).message); }
       },
     });
     // Record the turn that was current when the DM just spoke, so the next
@@ -555,7 +552,7 @@ function wireWizard() {
     campaignData = setPronoun(activeSlug, p.term, p.pronouns);
     return { ok: true, data: campaignData };
   });
-  // After-Action Review: run on demand (the auto-run is in onPhaseChange at combat end).
+  // After-Action Review: run on demand (the auto-run is in onCombatEnd).
   ipcMain.handle("run-aar", () => runAar(activeSlug));
   // Training panel "accept": persist a learned spoken→canonical correction so the
   // corrector applies it from the next transcript on. The reinforcement loop's write.
@@ -568,9 +565,6 @@ function wireWizard() {
     return { roster: rosterNames };
   });
   ipcMain.on("set-mode", (_e, m: Mode) => setMode(m));
-
-  // Phase indicator: current DmPhase (for the gem UI phase badge).
-  ipcMain.handle("get-phase", () => agent.currentPhase());
 
   // Hot-swap the LLM backend (local Ollama ↔ cloud Claude) when local gives bad
   // results. Returns the active provider so the UI reflects reality.

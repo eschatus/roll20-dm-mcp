@@ -6,12 +6,14 @@
 //    far better with terse rules + few-shot format than with long Claude-tuned prose,
 //    and the gem viewport (~24 chars, ~6 lines) demands brevity anyway.
 //
-// Both variants are phase-aware: each DmPhase injects a focused instruction block
-// so the model knows exactly what it should (and must NOT) do right now.
+// Neither variant is phase-aware any more: capability no longer depends on
+// conversational state, so there is no phase block to inject. (The old
+// PHASE_FOCUS gated tools into 1 of 5 phases and told the model to REFUSE on
+// phase grounds — which surfaced internal plumbing to the DM. See
+// docs/phase-removal.md.)
 
 import * as fs from "fs";
 import * as path from "path";
-import type { DmPhase } from "./agent";
 
 // Packaged: skills/ is bundled under Electron's resourcesPath (DMW_ASSET_ROOT, set by
 // bootstrap.ts). Dev/tests: unset → __dirname/../../skills (repo-root/skills), unchanged.
@@ -27,55 +29,6 @@ function loadRules(): string {
   }
   return _rulesCache;
 }
-
-// ---------------------------------------------------------------------------
-// Phase focus blocks
-// ---------------------------------------------------------------------------
-// Each block is injected near the top of the system prompt so the model sees its
-// current phase constraints before the general rules. Keep them terse — these are
-// live-table prompts.
-
-const PHASE_FOCUS: Record<DmPhase, string> = {
-  IDLE: `# CURRENT PHASE: IDLE (out of combat)
-- Read-only + lookup + journal tools only. HP / conditions / initiative tools are NOT available.
-- You may answer questions, look up monsters/characters, manage journal entries, and do campaign setup.
-- If the DM describes an opening scene with combatants, you will automatically enter SCENE-SET.`,
-
-  SCENE_SET: `# CURRENT PHASE: SCENE-SET (board review — silent to players)
-You are resolving the board before initiative. Do these steps in order, then STOP:
-1. Confirm the active campaign. If it doesn't match the DM's narration, call switch_campaign (gated).
-2. Call get_current_page. Verify the map is right. If it isn't, FLAG it — do NOT navigate.
-3. Call list_tokens. Match the narrated types ("vampires / wolves") to tokens present.
-   Report GM-only: "Found 3 Vampire Spawn, 5 Wolf, 2 Swarm of Bats + 4 PCs." Flag missing types.
-4. Surface any rules keywords ("surprised") as explicit questions to the DM. Do NOT silently apply them.
-5. STOP. No initiative, no turn order, nothing to the public channel.`,
-
-  INIT_PREP: `# CURRENT PHASE: INIT-PREP (staging monsters while players sort their inits)
-The macro backbone has already:
-  • Rolled NPC initiative (npcOnly=true, clearFirst=false — players' entries untouched).
-  • Started plan_all_tactics.
-Your job now is to:
-  • If asked, reveal nameplates: set_token_props showname=true showplayers_name=true via batch_exec.
-  • Answer questions about the order, token names, or upcoming tactics.
-  • Do NOT touch player initiative. Do NOT advance the turn. Do NOT call clear_turn_order.
-Wait for the DM to say "sort it / start" before transitioning to COMBAT_LOOP.`,
-
-  COMBAT_LOOP: `# CURRENT PHASE: COMBAT LOOP (turn by turn)
-A live fight is running. Whatever the DM says this turn is a RESULT TO ENACT NOW — a damage/heal, a condition, a save outcome, a zone created or cleared, an emanation, the turn ending. Apply it immediately with the right tool. Do NOT wait, do NOT just acknowledge it in prose, do NOT ask whose turn it is — emitting no tool call means nothing happened on the table. You don't need to know whose turn it is to apply a stated result.
-- Apply with: update_token_hp / update_hp_many (HP), set_token_marker (conditions), resolve_aoe (AoE damage + saves; it finds targets from center+radius — you don't list them), create_zone / clear_zone (fixed areas), set_token_props aura (emanations that move with a creature), roll_dice (NPC saves/attacks when asked). NPC turns: act on queued tactics (get_mob_plans) or as the DM directs.
-- Output is a RECEIPT, not a story: the mechanical change + at most one line of color. The DM owns narration.
-- Player-facing send_narration: descriptive words / Wounded marker — never exact HP.
-- Round end → terse mechanical summary (who's down, conditions, countdowns).
-- NEVER call advance_turn on your own — but "next turn" / "advance" IS the DM's explicit say-so; when you hear it, call advance_turn.
-- Combat ends ONLY when the DM says an explicit close phrase ("combat's over", "fight's done", etc.).`,
-
-  CLEANUP: `# CURRENT PHASE: CLEANUP (explicit close sequence)
-The macro backbone handles: turn hook off, clear turn order, clear zones.
-Your remaining tasks (confirm each before executing):
-  • Clear auras: set_token_props aura1_radius=0 on each token that has an aura. Use batch_exec if multiple.
-  • sync_character_state for each PC on the board (one call per PC).
-  • Report when done. The agent will return to IDLE automatically.`,
-};
 
 // ---------------------------------------------------------------------------
 // LOCAL (small-model) prompt
@@ -183,18 +136,15 @@ ${loadRules()}
 // ---------------------------------------------------------------------------
 
 // provider: "ollama" → local terse prompt; anything else → full cloud prompt.
-// phase: narrows the active focus block injected at the top.
 export function buildSystemPrompt(provider = "ollama"): string {
   return provider === "ollama" ? localPrompt() : cloudPrompt();
 }
 
-// Volatile per-turn context — phase focus + live roster. Kept OUT of the now-frozen
-// system prompt and prepended to the user transcript each turn, so the tools+system
+// Volatile per-turn context — the live roster. Kept OUT of the now-frozen system
+// prompt and prepended to the user transcript each turn, so the tools+system
 // prefix stays byte-stable and prompt-cacheable across turns and steps.
-export function buildTurnContext(roster: string, phase: DmPhase = "IDLE"): string {
-  return `${PHASE_FOCUS[phase]}
-
-# ROSTER (token → character; already known this turn — do not re-fetch)
+export function buildTurnContext(roster: string): string {
+  return `# ROSTER (token → character; already known this turn — do not re-fetch)
 ${roster || "(empty — call list_tokens once to populate)"}
 
 # THE DM JUST SPOKE — enact this NOW with the right tool(s). It is the live instruction/result to apply, not a topic to note or wait on:`;

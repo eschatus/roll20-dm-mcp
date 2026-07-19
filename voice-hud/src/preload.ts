@@ -23,10 +23,6 @@ contextBridge.exposeInMainWorld("dmw", {
   // shut the whole HUD down (stops PTT hook, whisper sidecar, MCP, then quits)
   quit: () => ipcRenderer.send("quit-app"),
 
-  // phase indicator — fires whenever the DmPhase transitions
-  onPhaseChange: (cb: (d: { phase: string }) => void) =>
-    ipcRenderer.on("phase", (_e, d) => cb(d)),
-  getPhase: () => ipcRenderer.invoke("get-phase"),
 
   // hot-swap the LLM backend (local ↔ cloud)
   getProvider: () => ipcRenderer.invoke("get-provider"),
