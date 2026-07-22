@@ -41,6 +41,25 @@ game-log-rest-live.dndbeyond.com              wss://game-log-api-live.dndbeyond.
 }
 ```
 
+## Beyond20 failover (the default mode)
+
+Beyond20 sets `data.__b20Override__: true` on every roll it bridges to the VTT — i.e.
+rolls that ALREADY reached Roll20. Verified live across three games: players on
+Beyond20 carry it on every roll; players rolling in the native DDB tray never do; a
+flaky bridge yields a mix (e.g. one 8th-St player: 6 bridged, 2 dropped).
+
+So the pump SKIPS `__b20Override__` rolls by default (`skipBeyond20`, exposed on the
+tool as `includeBeyond20:false`). That makes it a **gap-filler**, not a mirror:
+
+- A working Beyond20 → flagged → skipped. Only its *failures* come through.
+- A flapping bridge → its dropped rolls post, its delivered ones don't. No manual
+  start/stop needed.
+- Safe to arm **table-wide** (omit `characterNames`): only the orphaned rolls — the
+  exact ones missing from Roll20 — get posted.
+
+Set `includeBeyond20:true` to mirror every roll regardless (will double-post anything
+Beyond20 also delivered — rarely wanted).
+
 ## Mirror, never re-roll
 
 DDB has already determined the dice. A fresh Roll20 `/roll` would invent **different**

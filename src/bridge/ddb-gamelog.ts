@@ -38,13 +38,26 @@ export interface DdbGameLogMessage {
   entityId: string;          // the rolling character's DDB id — the filter key
   entityType?: string;       // "character"
   eventType: string;         // we want "dice/roll/fulfilled"
-  data?: { action?: string; context?: { name?: string }; rolls?: DdbRoll[] };
+  // __b20Override__ is set by Beyond20 on rolls it bridged to the VTT — i.e. rolls
+  // that ALREADY reached Roll20. Verified live: players on Beyond20 carry it on every
+  // roll; players rolling in the native DDB dice tray never do; a flaky bridge yields a
+  // mix (some flagged, some not). Skipping the flagged ones turns the pump into a pure
+  // GAP-FILLER — it only surfaces rolls Beyond20 dropped, so a working (or flapping)
+  // bridge never double-posts.
+  data?: { action?: string; context?: { name?: string }; rolls?: DdbRoll[]; __b20Override__?: boolean };
 }
 
 export interface PumpOptions {
   gameId: string;
   /** DDB entityIds to relay. Empty/undefined = every character's rolls. */
   entityIds?: string[];
+  /**
+   * Skip rolls Beyond20 already bridged to Roll20 (data.__b20Override__). Default true:
+   * the pump then fills only the gaps a brittle Beyond20 leaves, and is safe to arm
+   * table-wide without double-posting. Set false to mirror EVERY roll (e.g. a player
+   * with no Beyond20 at all — though for them nothing is flagged, so it makes no difference).
+   */
+  skipBeyond20?: boolean;
   onRoll: (msg: DdbGameLogMessage) => void | Promise<void>;
   onStatus?: (s: string) => void;
 }
@@ -61,9 +74,11 @@ export class DdbGameLogPump {
   private failures = 0;
   private readonly seen = new Set<string>();   // message ids already emitted (dedup)
   private readonly entityFilter: Set<string> | null;
+  private readonly skipBeyond20: boolean;
 
   constructor(private opts: PumpOptions) {
     this.entityFilter = opts.entityIds?.length ? new Set(opts.entityIds) : null;
+    this.skipBeyond20 = opts.skipBeyond20 !== false;   // default true
   }
 
   private log(s: string) { this.opts.onStatus?.(s); }
@@ -152,6 +167,7 @@ export class DdbGameLogPump {
     let m: DdbGameLogMessage;
     try { m = JSON.parse(raw); } catch { return; }           // keepalive / non-json
     if (m.eventType !== ROLL_EVENT || !m.id) return;
+    if (this.skipBeyond20 && m.data?.__b20Override__ === true) return;  // already in Roll20 via Beyond20
     if (this.entityFilter && !this.entityFilter.has(m.entityId)) return;
     if (this.seen.has(m.id)) return;                          // dedup (reconnect replays)
     this.seen.add(m.id);
