@@ -20,7 +20,12 @@ export function startWatchdog(): void {
 }
 
 function schedule(intervalMs: number): void {
-  setTimeout(() => { void runCycle(intervalMs); }, intervalMs);
+  // runCycle reschedules itself in its `finally`, but if its body throws, `finally` runs AND
+  // then re-throws — a bare `void`'d rejection would crash the process. Swallow it here (the
+  // reschedule already happened): the watchdog loop must survive any single cycle's failure.
+  setTimeout(() => {
+    runCycle(intervalMs).catch((e) => console.error("[watchdog] cycle error (loop continues):", (e as Error).message));
+  }, intervalMs);
 }
 
 async function runCycle(intervalMs: number): Promise<void> {

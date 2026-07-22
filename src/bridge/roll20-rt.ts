@@ -756,15 +756,27 @@ export async function rtRelayCommand<T>(
   // replayed history and never fires the Mod's on("chat:message") — so the Mod stayed silent.
   const msgRef = push(conn.chatRef);                 // path key
   const messageId = push(conn.chatRef).key as string; // distinct generated id, as the UI does
-  await set(msgRef, {
-    avatar: conn.avatar,
-    content,
-    messageId,
-    playerid: conn.playerid,
-    type: "api",
-    who: "DM (GM)",
-    ".priority": serverTimestamp(),
-  } as Record<string, unknown>);
+  try {
+    await set(msgRef, {
+      avatar: conn.avatar,
+      content,
+      messageId,
+      playerid: conn.playerid,
+      type: "api",
+      who: "DM (GM)",
+      ".priority": serverTimestamp(),
+    } as Record<string, unknown>);
+  } catch (e) {
+    // The send failed, so `result` will never be resolved by an AIBRIDGE_RESULT. Its timeout
+    // timer is still armed, though — left alone it fires ~timeoutMs later and rejects a promise
+    // NOBODY is awaiting (we throw below, before `return result.then(...)`), which surfaces as an
+    // unhandled rejection and crashes the process (observed: "rt relay timeout … action: ping"
+    // after an RTDB write hiccup). Cancel the timer + drop the pending entry so nothing dangles.
+    const p = pending.get(nonce);
+    if (p) { clearTimeout(p.timer); pending.delete(nonce); }
+    if (!opts.probe) recordFailure("rt");
+    throw new RtPreSendError(`rt send (set): ${(e as Error).message}`);
+  }
 
   return result.then((r) => { recordSuccess("rt"); return r; });
 }
