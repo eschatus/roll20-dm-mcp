@@ -215,3 +215,77 @@ describe("editCharacter relay action", () => {
     expect(emu.getObj("character", charId)!.get("name")).toBe("Protected");
   });
 });
+
+describe("createCharacter relay action", () => {
+  it("auto-derives ability _mod attributes from raw scores", () => {
+    const res = emu.relay<{ id: string }>({
+      action: "createCharacter",
+      name: "Vex",
+      attributes: [
+        { name: "strength", current: 14 },
+        { name: "dexterity", current: 16 },
+        { name: "wisdom", current: 9 },
+      ],
+    });
+    const attrs = emu.relay<Record<string, unknown>>({
+      action: "getCharacterAttributes",
+      charId: res.id,
+    });
+    expect(attrs.strength_mod).toBe(2);
+    expect(attrs.dexterity_mod).toBe(3);
+    expect(attrs.wisdom_mod).toBe(-1);
+  });
+
+  it("does not override an explicitly-provided _mod", () => {
+    const res = emu.relay<{ id: string }>({
+      action: "createCharacter",
+      name: "Custom",
+      attributes: [
+        { name: "strength", current: 14 },
+        { name: "strength_mod", current: 99 },
+      ],
+    });
+    const attrs = emu.relay<Record<string, unknown>>({
+      action: "getCharacterAttributes",
+      charId: res.id,
+    });
+    expect(attrs.strength_mod).toBe(99);
+  });
+});
+
+describe("getCharacterAttributes — sandbox-crash guard (writeResult escaping)", () => {
+  // Regression for a real incident: a character attribute containing literal "@{pbd_safe}",
+  // "%{Vampire|kingdom-culture-action}", or "[[1d20]]"-shaped text crashed the WHOLE Mod sandbox
+  // when echoed back, because Roll20's own chat pipeline live-evaluates "@{...}"/"%{...}"/"[[...]]"
+  // in any outgoing sendChat message — including ones that are just data being relayed back to the
+  // caller, not meant to be interpreted at all.
+  it("never sends a raw '@{', '%{', or '[[' to sendChat when an attribute contains that text", () => {
+    const charId = emu.createCharacter("Vex", { strength: 14 });
+    emu.relay({
+      action: "setCharacterAttributes",
+      charId,
+      attributes: { npc_skills: "@{pbd_safe} %{Vampire|kingdom-culture-action} Perception [[1d20]]" },
+    });
+    emu.relay({ action: "getCharacterAttributes", charId });
+
+    const resultMessages = emu.chatLog.filter((m) => m.content.includes("AIBRIDGE_RESULT:"));
+    expect(resultMessages.length).toBeGreaterThan(0);
+    for (const m of resultMessages) {
+      expect(m.content).not.toContain("@{");
+      expect(m.content).not.toContain("%{");
+      expect(m.content).not.toContain("[[");
+    }
+  });
+
+  it("round-trips the original text exactly despite the escaping", () => {
+    const charId = emu.createCharacter("Vex", { strength: 14 });
+    const original = "@{pbd_safe} %{Vampire|kingdom-culture-action} Perception [[1d20]]";
+    emu.relay({
+      action: "setCharacterAttributes",
+      charId,
+      attributes: { npc_skills: original },
+    });
+    const attrs = emu.relay<Record<string, unknown>>({ action: "getCharacterAttributes", charId });
+    expect(attrs.npc_skills).toBe(original);
+  });
+});

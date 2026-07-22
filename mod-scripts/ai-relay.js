@@ -13,11 +13,24 @@ function writeResult(nonce, data, error) {
   const payload = error
     ? JSON.stringify({ nonce, error: String(error) })
     : JSON.stringify({ nonce, data });
+  // Echoed data (e.g. a character's raw attribute text) can itself contain "@{...}" (attribute
+  // ref), "%{...}" (ability/macro call), or "[[...]]" (inline roll) — Roll20 scans EVERY outgoing
+  // chat message for all three and tries to live-evaluate them. A malformed one throws inside
+  // Roll20's own chat pipeline and disables the WHOLE sandbox (not just this message) — hit in
+  // practice via stray "@{pbd_safe}" / "%{Vampire|kingdom-culture-action}" text sitting in
+  // character attributes, crashing the Mod every time getCharacterAttributes read it back.
+  // HTML-entity-encode just the three trigger sequences (never plain "[" — that's normal JSON
+  // array syntax) so they survive as inert text; Playwright's textContent decode on the read side
+  // turns them back into literal "@{"/"%{"/"[[" with no unescaping needed on our end.
+  const safePayload = payload
+    .replace(/@\{/g, "&#64;{")
+    .replace(/%\{/g, "&#37;{")
+    .replace(/\[\[/g, "&#91;&#91;");
   // noarchive: won't appear in the persistent chat log.
   // display:none: hides any transient flash in the current session.
   // Playwright still reads textContent from hidden DOM elements.
   sendChat("GM-AI-Bridge",
-    "/w gm <div style='display:none'>AIBRIDGE_RESULT:" + payload + "</div>",
+    "/w gm <div style='display:none'>AIBRIDGE_RESULT:" + safePayload + "</div>",
     null,
     { noarchive: true }
   );
@@ -419,6 +432,11 @@ function nextEpithetName(baseName, pool, used) {
   }
 }
 
+// 5e OGL sheet ability score attribute names — used to auto-derive <ability>_mod
+// in createCharacter (see runBatchOp) since the sheet's own worker never fires on
+// attributes created through the API.
+const ABILITY_NAMES = ["strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"];
+
 // TIER 1a — true 5e conditions. These are the ONLY markers swept by
 // syncConditionsToToken (DDB condition mirroring / "clear all conditions"), so
 // keep this list to real conditions that DDB knows about.
@@ -688,7 +706,25 @@ function runBatchOp(action, args) {
       if (args.bio !== undefined) ch.set("bio", args.bio);
       if (args.gmnotes !== undefined) ch.set("gmnotes", args.gmnotes);
       if (args.avatar) ch.set("avatar", args.avatar);
-      (args.attributes || []).forEach(function(a) {
+      let attrs = (args.attributes || []).slice();
+      // The 5e OGL sheet computes <ability>_mod from <ability> via a sheet worker — but sheet
+      // workers only fire on real UI events, never on attributes created through the API. A
+      // character built here would otherwise show blank/wrong ability modifiers until someone
+      // opens the sheet and manually nudges every score. Auto-derive any missing _mod attribute
+      // from its raw score so the stat block is correct the moment it's created.
+      let providedNames = {};
+      attrs.forEach(function(a) { providedNames[a.name] = true; });
+      ABILITY_NAMES.forEach(function(ability) {
+        let scoreAttr = attrs.filter(function(a) { return a.name === ability; })[0];
+        let modName = ability + "_mod";
+        if (scoreAttr && !providedNames[modName]) {
+          let score = Number(scoreAttr.current);
+          if (!isNaN(score)) {
+            attrs.push({ name: modName, current: Math.floor((score - 10) / 2) });
+          }
+        }
+      });
+      attrs.forEach(function(a) {
         createObj("attribute", {
           characterid: ch.id,
           name: a.name,
