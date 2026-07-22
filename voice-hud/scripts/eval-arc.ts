@@ -175,7 +175,7 @@ async function playthrough(system: string, toolSpecs: ToolSpec[]): Promise<StepR
   const steps: StepResult[] = [];
 
   for (const step of SCENARIO) {
-    llm.pushUser(buildTurnContext(rosterFromBoard(board), "COMBAT_LOOP") + "\n\n" + step.utterance);
+    llm.pushUser(buildTurnContext(rosterFromBoard(board)) + "\n\n" + step.utterance);
     const calls: string[] = [];
     const t0 = Date.now(); let apiCalls = 0, nudges = 0;
     // Mirror agent.ts runTurn terminal bookkeeping.
@@ -218,12 +218,12 @@ async function main() {
   const tools = await mcp.connect();
   // Compile a validator per served tool from its real JSON schema (the -32602 contract).
   for (const t of tools) { try { validators.set(t.name, ajv.compile(t.inputSchema)); } catch { /* unschemable — skip */ } }
-  // Mirror the gem: send only the COMBAT_LOOP phase allowlist, not all served tools. DMW_EVAL_SCOPE=full to compare.
+  // Mirror the gem: it now sends the FULL cloud allowlist every turn (no phase scoping).
   const SCOPE = process.env.DMW_EVAL_SCOPE || "lean";
   let allow: Set<string> | null = null;
   if (SCOPE !== "full") {
-    allow = new Set(CONFIG.phaseTools.COMBAT_LOOP);
-    // Mirror the agent: Ollama gets phase ∩ LOCAL_TOOLS so the small model isn't drowned in schemas.
+    allow = new Set(CONFIG.cloudToolAllowlist);
+    // Mirror the agent: Ollama gets cloud ∩ LOCAL_TOOLS so the small model isn't drowned in schemas.
     if (PROVIDER === "ollama") { const local = new Set(CONFIG.localToolAllowlist); allow = new Set([...allow].filter((t) => local.has(t))); }
   }
   const toolSpecs: ToolSpec[] = tools.filter((t) => !allow || allow.has(t.name)).map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }));

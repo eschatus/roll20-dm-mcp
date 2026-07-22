@@ -25,7 +25,7 @@ import { loadBaseVocab } from "./baseVocab";
 import { correctTranscript, DEFAULT_LITERAL_MAP } from "./correction";
 import { runAar } from "./aar";
 import { loadSettings, saveSettings, AppSettings } from "./settings";
-import { setLogSink, persist } from "./logger";
+import { setLogSink, persist, classifyConsole } from "./logger";
 
 // Load the repo-root .env so ANTHROPIC_API_KEY is available (shared with the MCP server).
 dotenv.config({ path: path.join(__dirname, "..", "..", ".env") });
@@ -128,14 +128,18 @@ const _origConsole = {
 function forwardLog(level: "error" | "warn" | "info", orig: (...a: unknown[]) => void, args: unknown[]) {
   orig(...args);
   const text = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+  // Route by the line's [prefix] into one of three channel files: conversation (hud.log),
+  // whisper (whisper.log), or system (system.log). The panel still sees every line; only the
+  // durable files are split, so post-hoc review of one concern isn't buried under the others.
+  const { channel, kind } = classifyConsole(text);
   const entry: LogEntry = { level, text, ts: Date.now() };
   logBuffer.push(entry);
   if (logBuffer.length > LOG_BUFFER_MAX) logBuffer.shift();
-  send("log", entry);
+  send("log", { ...entry, channel });
   // Durable file (survives the detached launch, where stderr is lost). The in-memory logBuffer
-  // only backfills the panel for the current session; hud.log persists across runs. persist()
-  // swallows its own errors, so overriding console here carries no recursion risk.
-  persist({ ts: entry.ts, level, kind: "console", msg: text });
+  // only backfills the panel for the current session; the channel files persist across runs.
+  // persist() swallows its own errors, so overriding console here carries no recursion risk.
+  persist({ ts: entry.ts, level, kind, channel, msg: text });
 }
 // NB: console.error is this app's generic stderr sink (status lines like "[stt] …", "[agent] …"
 // all go through it because stdout is lost in the detached launch), so it is tagged "info" — NOT
@@ -199,7 +203,17 @@ setLogSink((e) => send("log", {
   level: e.level === "error" ? "error" : "info",
   text: (e.ms != null ? `[${e.kind} ${e.ms}ms] ` : `[${e.kind}] `) + e.msg + (e.detail ? ` :: ${e.detail.slice(0, 120)}` : ""),
   ts: e.ts,
+  channel: e.channel,
 }));
+
+// STT engines emit runtime lines (whisper-server stdout, "[stt] using …"). Tag any line that
+// isn't already prefixed with [whisper] so the console shim routes the whole STT stream into the
+// whisper channel rather than letting raw stdout fall through to system.
+const sttLog = (m: unknown) => {
+  const s = String(m).trimEnd();
+  if (!s) return;
+  console.error(/^\[(stt|whisper|whisper-server|correct|ab-clip)\b/.test(s) ? s : `[whisper] ${s}`);
+};
 
 // --- PTT wiring ---
 function wirePtt() {
@@ -404,7 +418,7 @@ async function runAgent(transcript: string, lowConfidence = false) {
   _agentTurnActive = true;
   // A shaky transcript: flag it to the agent (the persona reads this) so it leans
   // toward confirming destructive writes rather than acting on a likely mishear.
-  // Detector-safe — the marker carries no phase keywords.
+  // Detector-safe — the marker carries no command keywords.
   const utterance = lowConfidence
     ? `[LOW-CONFIDENCE voice transcript — a likely mishear; interpret cautiously and confirm any destructive write] ${transcript}`
     : transcript;
@@ -421,18 +435,15 @@ async function runAgent(transcript: string, lowConfidence = false) {
         send("agent", { kind: "confirm", text: humanizeToolCall(name, args) });
         send("state", "confirm");
       }),
-      onPhaseChange: (phase) => {
-        console.error(`[agent] phase → ${phase}`);
-        send("phase", { phase });
-        // Combat closing → run the After-Action Review and surface its report +
-        // proposed corrections to the Training panel (the reinforcement loop).
-        if (phase === "CLEANUP") {
-          try {
-            const report = runAar(activeSlug);
-            send("aar", report);
-            console.error(`[aar] ${report.turns} turns, avg ${report.avgSteps} steps; ${report.proposals.length} proposal(s)`);
-          } catch (e) { console.error("[aar] failed:", (e as Error).message); }
-        }
+      // Combat closing → run the After-Action Review and surface its report +
+      // proposed corrections to the Training panel (the reinforcement loop).
+      // Fired by the CLEANUP backbone (was onPhaseChange("CLEANUP")).
+      onCombatEnd: () => {
+        try {
+          const report = runAar(activeSlug);
+          send("aar", report);
+          console.error(`[aar] ${report.turns} turns, avg ${report.avgSteps} steps; ${report.proposals.length} proposal(s)`);
+        } catch (e) { console.error("[aar] failed:", (e as Error).message); }
       },
     });
     // Record the turn that was current when the DM just spoke, so the next
@@ -555,7 +566,7 @@ function wireWizard() {
     campaignData = setPronoun(activeSlug, p.term, p.pronouns);
     return { ok: true, data: campaignData };
   });
-  // After-Action Review: run on demand (the auto-run is in onPhaseChange at combat end).
+  // After-Action Review: run on demand (the auto-run is in onCombatEnd).
   ipcMain.handle("run-aar", () => runAar(activeSlug));
   // Training panel "accept": persist a learned spoken→canonical correction so the
   // corrector applies it from the next transcript on. The reinforcement loop's write.
@@ -568,9 +579,6 @@ function wireWizard() {
     return { roster: rosterNames };
   });
   ipcMain.on("set-mode", (_e, m: Mode) => setMode(m));
-
-  // Phase indicator: current DmPhase (for the gem UI phase badge).
-  ipcMain.handle("get-phase", () => agent.currentPhase());
 
   // Hot-swap the LLM backend (local Ollama ↔ cloud Claude) when local gives bad
   // results. Returns the active provider so the UI reflects reality.
@@ -1213,7 +1221,7 @@ app.whenReady().then(async () => {
   settings = loadSettings();
 
   // Start STT (walks the fallback chain) + MCP in parallel; neither blocks the gem.
-  startStt((m) => console.error(String(m).trimEnd()))
+  startStt(sttLog)
     .then((engine) => {
       stt = engine;
       stt.on("exit", (code: number) => send("agent", { kind: "error", text: `STT exited (${code})` }));
@@ -1224,7 +1232,7 @@ app.whenReady().then(async () => {
   // Two-tier (opt-in): a second resident server on a bigger model for FINAL clips only.
   // Off unless DMW_WHISPER_FINAL_MODEL is set + whisperserver; null on failure → finals
   // just use the primary engine. Started in the background; never blocks the gem.
-  startFinalStt((m) => console.error(String(m).trimEnd()))
+  startFinalStt(sttLog)
     .then((engine) => {
       if (!engine) return;
       sttFinal = engine;

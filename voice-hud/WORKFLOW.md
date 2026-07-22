@@ -1,77 +1,56 @@
 # Voice HUD — Combat Workflow Spec
 
-The blueprint for the phase-aware Voice HUD agent. This describes **how a combat session flows at
-the table** and **what the agent does in each phase**. It is the build spec for the phase
-scaffolding + macros in [`src/agent.ts`](src/agent.ts) and the phase-scoped prompts in
+How a combat session flows at the table, and what the agent does at each step. This is the spec for
+the command detectors + choreography backbones in [`src/agent.ts`](src/agent.ts) and the prompt in
 [`src/persona.ts`](src/persona.ts).
 
 Operating rules (write-safety, real tool names, narration cadence, PC-initiative read-only) live in
 the canonical [`../skills/dm-rules.md`](../skills/dm-rules.md). This file is the *procedure*; that
 file is the *rules*. Where they overlap, dm-rules wins.
 
----
-
-## Why phases exist
-
-The voice agent is a standalone loop ([`agent.ts`](src/agent.ts)), not Claude Code — it has no
-skills or slash commands. Per utterance it builds one system prompt + one tool allowlist and runs a
-tool loop. With a single flat prompt for every moment of play, two things break:
-
-- **Wrong/no tool picked** — the model gets no signal whether combat is starting, mid-round, or
-  ending; it infers everything from one utterance against a flat toolset.
-- **Steps get dropped** — the multi-step setup/cleanup choreographies aren't encoded anywhere the
-  agent reads.
-
-The fix is **session phases**: each phase swaps in a focused prompt + a narrowed toolset (the
-wrong-tool fix), and the entry/exit boundaries run **hybrid macros** — a code-driven backbone of
-must-happen steps with judgment gaps left to the model (the dropped-steps fix).
-
-## Trigger asymmetry (deliberate)
-
-- **Entry is fuzzy.** The DM laces keywords into opening *narration*; the agent infers intent from
-  prose. (See the worked example below — "represented by wolves and swarms of bats" is agent-facing
-  meta, never echoed to players.)
-- **Exit is explicit.** The DM says something deliberate to end the fight. The exit macro is the one
-  destructive sequence (clears turn order, zones, syncs PCs), so it fires only on a high-precision
-  phrase — and every step is a gated write on top of that. Two locks on the irreversible thing.
+> **Phases are gone.** This file previously specified a five-state machine
+> (`IDLE → SCENE_SET → INIT_PREP → COMBAT_LOOP → CLEANUP`) that also decided which tools the model
+> could see. It was removed on 2026-07-19 — it locked the DM out of HP edits mid-fight, swallowed
+> instructions, and wiped conversation history on every transition. See
+> [`../docs/phase-removal.md`](../docs/phase-removal.md) for the harms and the before/after evidence.
 
 ---
 
-## State machine
+## The shape of it now
 
-```
-IDLE
- │  opening narration, keywords laced in flavor        ──► fuzzy detect
- ▼
-SCENE-SET     confirm campaign · verify page (don't navigate) · match + confirm cast ·
-              flag rules keywords ("surprised") · SILENT to players · then stop
- │  DM calls for initiative
- ▼
-INIT-PREP     (runs in parallel while players sort their own initiative)
-              NPCs join the order · nameplates on · tactics started · player init untouched
- │  DM says "sort it / start"
- ▼
-COMBAT LOOP   turn hook on · read settled order · surface first turn + its tactics
-              per turn:  NPC → act + tactics   |   PC → wait, then ingest DM's PTT'd results
-              round end: terse mechanical summary + state snapshot
- │  EXPLICIT phrase ("combat's over")                  ──► high-precision detect
- ▼
-CLEANUP       turn hook off · clear turn order · clear zones · clear auras · sync PCs (gated)
- ▼
-IDLE
-```
+**Capability is constant.** Every turn, the cloud model is handed the full `cloudToolAllowlist` (48
+tools). What the DM can do never depends on what was said earlier, so there is no state to get stuck
+in and no "wrong phase" to be rejected for. (Ollama still gets `cloud ∩ LOCAL_TOOLS` — a small model
+genuinely does pick badly from 48 schemas. That pressure is real only there.)
 
-`IDLE` (out of combat) scope is **combat-only + read-only lookups + journal/handouts**. HP /
-condition / advance tools are not even in the IDLE allowlist, so the agent can't apply damage while
-the DM is describing a scene.
+**Three commands still have backbones**, because they encode ordering-critical steps worth
+guaranteeing rather than trusting to the model:
+
+| DM says | Backbone |
+|---|---|
+| "roll initiative" / "everyone roll" | NPC-only initiative, then queue tactics |
+| "start combat" / "sort it" / "round one" | arm the turn hook, then read the settled order |
+| "combat's over" / "the fight's done" | disarm hook · clear turn order · sweep zones · (then auras + PC sync) |
+
+Everything else is just a turn: the DM speaks, the model picks tools.
+
+**A backbone never consumes the turn.** It runs its tool steps and returns; `handle()` then always
+routes the DM's transcript to the model. "Roll initiative, and the ogre takes 5" does both — under
+the old machine the damage was silently dropped.
+
+**Exit stays deliberate.** The close sequence is the one destructive choreography (clears turn
+order, zones, syncs PCs), so it fires only on a high-precision phrase *and* every step is a gated
+write. Two locks on the irreversible thing.
 
 ---
 
-## Phase detail
+## Board review (no longer a macro)
 
-### SCENE-SET — resolve the board (read-mostly, silent to players)
+The DM's opening narration used to trigger a `SCENE_SET` macro. That macro had no backbone — it set
+a phase and printed a banner — and its trigger matched on word *form*, so "the goblin swings again"
+mid-fight entered a scene while "the vampires close in" did not. Both are gone.
 
-Triggered by the DM's opening narration. Worked example:
+The procedure is still worth doing, and the model has every tool for it. Worked example:
 
 > "...the party finds itself atop **Mount Baratok** in the **Curse of Strahd**, and are
 > **surprised** when suddenly they're beset by several **vampires** and many children of the night
@@ -88,9 +67,13 @@ Triggered by the DM's opening narration. Worked example:
 4. **Rules keywords** → catch words like "surprised" and *surface them as a question* ("Party
    surprised — hold their round-1 turns?"). Don't silently apply mechanics that change player
    options.
-5. **Stop.** No initiative, no turn order, nothing pushed to the public channel.
+5. Nothing pushed to the public channel.
 
-### INIT-PREP — stage the monster side (parallel with players)
+("represented by wolves and swarms of bats" is agent-facing meta — never echoed to players.)
+
+---
+
+## INIT-PREP — stage the monster side (parallel with players)
 
 Fires when the DM **calls for initiative**. Players do the laborious back-and-forth on their own
 inits ("didn't have my token selected", "had advantage, reroll"); the agent burns that dead time:
@@ -99,11 +82,10 @@ inits ("didn't have my token selected", "had advantage, reroll"); the agent burn
   wipes player entries. Overlapping names auto-get epithets ("Wolf the Savage").
 - **Nameplates on** — `set_token_props showname=true showplayers_name=true` across the NPCs in one
   `batch_exec`. **Everyone sees the names** (DM decision).
-- **Tactics** — kick off `plan_all_tactics` so each monster's plan is queued before its turn. (This
-  moves the tactics trigger *earlier* than the current combat-start hook.)
+- **Tactics** — kick off `plan_all_tactics` so each monster's plan is queued before its turn.
 - **Player initiative: untouched.** The agent only watches the entries settle.
 
-### COMBAT LOOP — turn by turn
+## COMBAT — turn by turn
 
 Begins when the DM says they're sorting / starting:
 
@@ -119,12 +101,16 @@ Begins when the DM says they're sorting / starting:
 - **Round end** → terse mechanical summary (who's down, conditions, countdowns) + overwrite the
   combat-state snapshot. Never auto-advance the turn.
 
-### CLEANUP — explicit close
+## CLEANUP — explicit close
 
 Fires only on an explicit DM phrase. All gated writes:
 
 `set_turn_hook enabled=false` · `clear_turn_order` · `list_zones` → `clear_zone` each ·
 clear auras (`set_token_props aura1_radius=0`) · `sync_character_state` per PC.
+
+The last two need a token list, so they ride along with the DM's own turn (appended as
+`CLEANUP_SWEEP`) rather than replacing it. Closing combat also fires `onCombatEnd()`, which triggers
+the After-Action Review and writes the `[agent] combat: end` log marker.
 
 ---
 
@@ -135,15 +121,6 @@ clear auras (`set_token_props aura1_radius=0`) · `sync_character_state` per PC.
   substring match. The DM wants **more epithets, a broader adjective pool, and more mob types** —
   the current banks miss common CoS foes (vampire, wolf, dire wolf, swarm of bats). Add those types,
   lengthen the adjective arrays, and add a **generic fallback bank** for unmatched names.
-
----
-
-## Build order (from this spec)
-
-1. `Phase` state in `DmAgent` + thread it into `buildSystemPrompt(roster, provider, phase)` and
-   `toolSpecs(provider, phase)`; phase allowlists in [`config.ts`](src/config.ts).
-2. Detectors: fuzzy entry (scene-set / call-for-init / begin) + high-precision exit phrase.
-3. Hybrid macros: `sceneSet()`, `initPrep()`, `beginCombat()`, `cleanup()` — code backbone, model
-   fills judgment gaps.
-4. Gem phase indicator in the HUD (makes fuzzy entry-detect visible/correctable).
-5. (Pinned) widen `MONSTER_EPITHETS`.
+- **`detectCombatOver` copula gap.** Matches "combat's over" but not "combat **is** over". Pinned in
+  [`test/command-backbones.test.ts`](test/command-backbones.test.ts). Harmless now that nothing is
+  gated on it; widening the pattern is a separate low-risk change.

@@ -18,3 +18,15 @@ node_modules/
 dist/
 out/
 data/
+
+# Packaged build output (electron-builder). ~1.2GB incl. the installer — must
+# never enter history; `npm run dist` / `dist:dir` regenerate it.
+release/
+release-cb/
+dist-server/
+
+# Stray compiled output at package root (the build target is dist/).
+agent.js
+
+# Scratch repro scripts from live debugging.
+_repro*.mjs

@@ -2026,6 +2026,21 @@ ACTIONS["sendNarration"] = function (args, msg, nonce, senderPlayerId) {
         return;
       }
       };
+
+// Post a RAW chat string as a given speaker — unlike sendNarration (which wraps text
+// in a styled <div>), this passes the message through untouched, so Roll20 parses
+// roll-template syntax ("&{template:default} {{…}}"). Used by the D&D Beyond game-log
+// pump to mirror an orphaned character's real DDB dice into Roll20 as a native-looking
+// roll card. `message` carries pre-computed values only (no [[…]] inline rolls), so
+// Roll20 renders exactly what the player rolled on D&D Beyond rather than re-rolling.
+ACTIONS["postChat"] = function (args, msg, nonce, senderPlayerId) {
+        var speaker = String(args.speakAs || "D&D Beyond");
+        var message = String(args.message || "");
+        if (!message) { writeResult(nonce, { ok: false, error: "postChat: empty message" }); return; }
+        sendChat(speaker, message, null, { noarchive: false });
+        writeResult(nonce, { ok: true });
+        return;
+      };
 ACTIONS["batchExec"] = function (args, msg, nonce, senderPlayerId) {
         {
         // Execute N sync operations in a single relay round-trip.

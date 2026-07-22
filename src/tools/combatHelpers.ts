@@ -19,6 +19,19 @@ export function json(value: unknown, pretty = true): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value, pretty ? null : undefined, pretty ? 2 : undefined) }] };
 }
 
+// Roll20 stores numeric fields as STRINGS (token bar1_value/bar1_max, turnorder pr,
+// selection geometry, …). Passing them through untyped puts QUOTED numbers ("133",
+// "17") into the JSON tool-results the model reads back — a "retyping smell" that
+// primes the model to quote its OWN numeric args on the next write, tripping the
+// server's strict Zod validation (-32602). Read tools normalize to real JSON
+// numbers with num() so the board the model reads is typed the way it must reply.
+// Returns null for empty/non-numeric input (preserving "no bar set" as null, not 0).
+export function num(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 // Tolerate the ways small/cloud models pass array params (Haiku in the HUD does
 // this constantly): a real array passes through; a JSON-stringified array
 // (`'["a","b"]'`) is parsed; a bare string (`"a"`) becomes `["a"]`; empty → `[]`.

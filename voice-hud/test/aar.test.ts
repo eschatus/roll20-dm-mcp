@@ -5,7 +5,7 @@ const line = (msg: string): LogLine => ({ ts: 1, msg });
 
 // A representative combat window (the kind hud.log captures).
 const WINDOW: LogLine[] = [
-  "[agent] phase → COMBAT_LOOP",
+  "[agent] combat: begin",
   '[agent] turn start: "the goblin attacks"',
   "[agent] step 0 (anthropic) gen 1399ms (text:0 tools:1)",
   "[agent] tool → roll_initiative({names:...})",
@@ -15,7 +15,7 @@ const WINDOW: LogLine[] = [
   "[agent] tool ✓ update_token_hp: Ambiguous target \"hargon\". Did you mean: Haregon, Hargrove?",
   "[agent] tool ✓ ↑escalate: complex narration → cloud (haiku)",
   "[agent] turn DONE 8000ms, 6 steps",
-  "[agent] phase → CLEANUP",
+  "[agent] combat: end",
 ].map(line);
 
 describe("parseLog", () => {
@@ -26,15 +26,15 @@ describe("parseLog", () => {
 });
 
 describe("combatWindow", () => {
-  it("slices to the last COMBAT_LOOP → CLEANUP", () => {
+  it("slices to the last combat: begin → combat: end", () => {
     const lines = [line("noise before"), ...WINDOW, line("noise after")];
     const w = combatWindow(lines).map((l) => l.msg);
-    expect(w[0]).toContain("COMBAT_LOOP");
-    expect(w.at(-1)).toContain("CLEANUP");
+    expect(w[0]).toContain("combat: begin");
+    expect(w.at(-1)).toContain("combat: end");
     expect(w).not.toContain("noise before");
     expect(w).not.toContain("noise after");
   });
-  it("returns everything when there are no phase markers", () => {
+  it("returns everything when there are no combat markers", () => {
     const lines = [line("a"), line("b")];
     expect(combatWindow(lines)).toHaveLength(2);
   });

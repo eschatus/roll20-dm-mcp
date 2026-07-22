@@ -1,9 +1,9 @@
 # Voice HUD — Test Plan
 
 Run this when you sit down with the gem. **Scope right now:** the narration rule change
-(assistant reports mechanics + ≤1 line of color; the DM owns the story). The phase workflow in
-[`WORKFLOW.md`](WORKFLOW.md) is **not built yet** — its section at the bottom is here so the plan is
-ready, but **skip it** until the phase scaffolding lands.
+(assistant reports mechanics + ≤1 line of color; the DM owns the story) plus the command
+backbones in [`WORKFLOW.md`](WORKFLOW.md), which are built — walk section 3 at the gem to
+verify the audio/overlay wiring.
 
 Mark each case ☑ pass / ☒ fail and jot what it actually did.
 
@@ -114,117 +114,94 @@ the **Roll20 public chat** (player-facing).
 
 ---
 
-## 3. Phase workflow (scaffolding is now built — run to verify)
+## 3. Command backbones + write gate (run to verify)
 
-> **Most of this section is now automated.** The phase-machine *logic* — fuzzy
-> entry/exit detection, the IDLE→SCENE_SET→INIT_PREP→COMBAT_LOOP→CLEANUP→IDLE
-> transitions, the gated macro backbones (NPC-only initiative, turn-hook arming,
-> cleanup sequence), the idle read-only scoping, and the write-confirm gate — is
-> covered by deterministic offline tests in
-> [`test/phase-machine.test.ts`](test/phase-machine.test.ts). Run them with
-> `npm test` in `voice-hud/` (no gem, no Roll20, no model needed). The tests inject
-> transcripts straight into `DmAgent.handle()` and assert on a recording fake MCP +
-> a scripted provider — i.e. they stand in for the human at the chat line.
+> **Phases are gone** (2026-07-19). The old five-state machine also decided which
+> tools the model could see, which locked the DM out of HP edits mid-fight. See
+> [`../docs/phase-removal.md`](../docs/phase-removal.md). Capability is now
+> constant: the cloud model gets the full 48-tool allowlist every turn.
 >
-> The boxes below remain as the **manual smoke pass**: what the automated suite
-> *cannot* exercise is the path **above** the chat line — mic capture, Whisper
-> transcription accuracy, the Electron overlay/phase badge render, and the global
-> PTT/confirm hotkeys. Walk P1–P6 at the gem once to confirm that wiring; trust the
-> automated suite for the logic on every change after.
+> **Most of this section is automated.** The command detectors, the choreography
+> backbones (NPC-only initiative, turn-hook arming, gated cleanup) and the
+> write-confirm gate are covered offline by
+> [`test/command-backbones.test.ts`](test/command-backbones.test.ts); the guarantee
+> that capability is never gated by state is covered by
+> [`test/no-phase-regression.test.ts`](test/no-phase-regression.test.ts). Run both
+> with `npm test` in `voice-hud/` (no gem, no Roll20, no model needed).
+>
+> The boxes below remain the **manual smoke pass** for what the suite cannot
+> reach: mic capture, Whisper accuracy, the Electron overlay render, and the
+> global PTT/confirm hotkeys.
 
 **NOTE: These cases require the Electron gem to be running** — launch via
 `voice-hud\launch-gem.vbs` (or `launch-gem.cmd`) and complete the section-0
 preconditions first. The gem must be connected to a live Roll20 campaign with
 tokens on the board.
 
-### Setup for phase tests
+### Setup
 - Be in **curse-of-strahd** (or any registered campaign).
 - Have at least 3 NPC tokens + 2 PC tokens on the current page, turn tracker empty.
 - Tick "show tool activity" in the ledger so you can see which tools fire.
-- Confirm the gem shows **IDLE** in the phase badge (top of gem, or check the Debug
-  tab via `getPhase()`).
 
 ---
 
-### P1 — Scene-set: fuzzy entry from opening narration
-- Say: **"The party finds themselves atop Mount Baratok in the Curse of Strahd,
-  and are surprised when suddenly they're beset by several vampires and many
-  children of the night represented by wolves and swarms of bats."**
-- Expect:
-  - Phase transitions IDLE → SCENE_SET (badge updates, log line `phase: IDLE → SCENE_SET`).
-  - Gem calls `active_campaign` / `switch_campaign` (only if wrong campaign).
-  - Gem calls `get_current_page` — **verifies** map, does NOT call any page-navigation tool.
-  - Gem calls `list_tokens` — reports cast GM-only ("Found 3 Vampire Spawn…").
-  - Gem surfaces "Party surprised — hold their round-1 turns?" as a question to DM.
-  - **Nothing** pushed to players (no `send_narration`).
-- [ ] Pass — phase badge shows SCENE_SET; cast report visible; no player output.
+### C1 — Cold HP edit (the regression that motivated the removal)
+- From a **freshly started gem**, with no initiative rolled and no combat declared,
+  say: **"Set the Sahuagin High Priestess's hit points to fifty."**
+- Expect: `update_token_hp` is called and the token's bar changes. No talk of
+  phases, no "HP tools are locked", no ceremony required first.
+- [ ] Pass — the write lands cold, with no preceding command.
 
-### P2 — Init-prep: NPC initiative roll on "roll initiative"
-- While in SCENE_SET, say: **"Roll initiative."**
+### C2 — Init-prep: NPC initiative on "roll initiative"
+- Say: **"Roll initiative."**
 - Expect:
-  - Phase transitions SCENE_SET → INIT_PREP.
   - `roll_initiative` called with `npcOnly=true`, `clearFirst=false` (confirm banner appears).
   - After confirm: NPCs appear in the Roll20 turn order; player entries untouched.
   - `plan_all_tactics` called (confirm banner — tactics queue up).
-  - Gem notes "Call 'sort it / start' when players have settled."
 - [ ] Pass — turn order shows NPCs only added; players did not lose their entries.
 - [ ] `clearFirst=false` confirmed in the tool call args (check ledger).
 
-### P3 — Begin combat: "sort it / start"
-- While in INIT_PREP, say: **"Sort it, let's start."**
+### C3 — Begin combat: "sort it / start"
+- Say: **"Sort it, let's start."**
 - Expect:
-  - Phase transitions INIT_PREP → COMBAT_LOOP.
   - `set_turn_hook` called with `enabled=true` (confirm banner).
   - `get_turn_order` called immediately after — settled order read back.
   - Gem surfaces first turn + its queued tactical plan.
-- [ ] Pass — phase badge shows COMBAT_LOOP; first combatant named.
+- [ ] Pass — first combatant named; hook armed before the order read.
 
-### P4 — Idle scoping: HP tools blocked while IDLE
-- **Reset to IDLE**: restart the gem (or in a fresh session before any narration).
-- While in IDLE, say: **"The goblin takes 7 damage."**
-- Expect: gem says it cannot apply HP changes out of combat (or gently declines), does
-  **not** call `update_token_hp` or `update_hp_many`. Read tools (list_tokens,
-  ddb_get_monster, etc.) still work.
-- [ ] Pass — no HP tool called in IDLE; toolset is read-only.
+### C4 — A command does not swallow the rest of the utterance
+- Say, in one breath: **"Roll initiative, and the ogre takes five."**
+- Expect: the initiative backbone runs **and** `update_token_hp` is called for the
+  ogre. Under the old machine the damage was silently dropped.
+- [ ] Pass — both the backbone and the damage landed.
 
-### P5 — Explicit exit: cleanup fires only on deliberate phrase
-- While in COMBAT_LOOP, say: **"The fight feels like it might be winding down."**
+### C5 — Explicit exit: cleanup fires only on a deliberate phrase
+- Say: **"The fight feels like it might be winding down."**
 - Expect: NO cleanup triggered. Normal agent turn runs.
 - [ ] Pass — "feels like winding down" does NOT trigger cleanup.
 
 - Then say: **"Combat's over."**
 - Expect:
-  - Phase transitions COMBAT_LOOP → CLEANUP → IDLE.
   - `set_turn_hook enabled=false` proposed (confirm each step).
   - `clear_turn_order` proposed.
   - `list_zones` called; `clear_zone` proposed for each zone found.
   - Aura-clear (`set_token_props aura1_radius=0`) proposed for any token with an aura.
   - `sync_character_state` proposed per PC.
-  - Phase returns to IDLE after cleanup finishes.
+  - The After-Action Review runs and its report appears in the Training panel.
 - [ ] Pass — each cleanup step has a confirm banner; stray "winding down" did NOT trigger it.
-
-### P6 — Phase indicator visible in gem
-- At each phase transition (IDLE→SCENE_SET→INIT_PREP→COMBAT_LOOP→CLEANUP→IDLE), the
-  gem must display or log the current phase so a misdetected entry is visible and
-  correctable. Check via:
-  - The Debug log panel (look for `[agent] phase: X → Y` lines).
-  - The `phase` IPC event (add a temporary `console.log` in gem.js `onPhaseChange` callback if needed).
-- [ ] Pass — all five transitions logged; DM can see where the state machine is.
+- [ ] AAR report rendered (this is the `onCombatEnd` hook that replaced the phase event).
 
 ---
 
 **What still needs a human**: only the parts the automated suite can't reach —
-mic capture, Whisper transcription accuracy on real speech, the Electron overlay +
-phase-badge render, and the global PTT/confirm hotkeys. The phase **logic** (entry/
-exit detection, transitions, gated macro backbones, idle scoping, confirm gate) is
-covered offline by [`test/phase-machine.test.ts`](test/phase-machine.test.ts) — run
-`npm test` and trust it on every code change. Do the manual gem walk-through once to
-verify the audio/overlay wiring, then re-run it only when that I/O layer changes.
+mic capture, Whisper transcription accuracy on real speech, the Electron overlay
+render, and the global PTT/confirm hotkeys. The command/backbone **logic** is
+covered offline — run `npm test` and trust it on every code change. Do the manual
+gem walk-through once to verify the audio/overlay wiring, then re-run it only when
+that I/O layer changes.
 
 Per-case automation status:
-- **P1, P2, P3, P5** (transitions + macro backbones) — automated; gem walk-through
-  confirms the badge/audio wiring only.
-- **P4** (idle read-only scoping) — automated as a phase-allowlist assertion
-  (enforcement is schema-level: HP tools are never offered in IDLE).
-- **P6** (phase observability) — automated via `onPhaseChange`; the gem walk-through
-  confirms the badge actually renders.
+- **C1** (capability never gated) — automated in `no-phase-regression.test.ts`.
+- **C2, C3, C5** (backbones + gate) — automated in `command-backbones.test.ts`;
+  the gem walk-through confirms the audio/confirm-banner wiring only.
+- **C4** (no turn swallowing) — automated in both files.

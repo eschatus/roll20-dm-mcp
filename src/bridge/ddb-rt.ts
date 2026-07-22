@@ -121,6 +121,23 @@ async function getJwt(forceFresh = false): Promise<string> {
   throw new Error("ddb-rt: JWT exchange failed after re-harvest");
 }
 
+// The DDB game-log WebSocket takes the JWT as an `stt` query param and the caller's
+// numeric userId (the JWT's nameidentifier claim). Both come from the same cobalt→JWT
+// exchange the REST reads use, so the game-log pump stays browserless. Returns a FRESH
+// token (forceFresh) because the WS holds it for the whole connection — we want the
+// full ~300s ttl, not a cached token about to expire. See docs/ddb-gamelog-pump.md.
+const NAMEID_CLAIM = "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier";
+export async function rtAuthToken(): Promise<{ token: string; userId: string; expiresAt: number }> {
+  const token = await getJwt(true);
+  let userId = "";
+  try {
+    const claims = JSON.parse(Buffer.from(token.split(".")[1], "base64").toString());
+    userId = String(claims[NAMEID_CLAIM] ?? "");
+  } catch { /* malformed JWT — surface empty userId, caller decides */ }
+  if (!userId) throw new Error("ddb-rt: could not derive userId from JWT claims");
+  return { token, userId, expiresAt: _jwt?.expiresAt ?? Date.now() + 250_000 };
+}
+
 // --- plain-fetch core, with jwt-refresh on 401 and a retry on undici connection blips ---
 
 // `cookie:true` attaches the raw CobaltSession alongside whatever `auth` mode is in play. The

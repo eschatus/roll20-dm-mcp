@@ -5,11 +5,15 @@
 // tools run immediately; write tools are gated via onProposeWrite. Turns are
 // serialized so concurrent utterances can't corrupt provider history.
 //
-// Phase-aware: the agent tracks a DmPhase state machine that controls which tools
-// are available and which system-prompt variant is used. Entry is fuzzy (inferred
-// from DM narration); exit is explicit (high-precision phrase). Hybrid macros
-// (sceneSet, initPrep, beginCombat, cleanup) run a code-driven backbone of
-// must-happen steps while leaving judgment gaps to the model.
+// STATELESS with respect to capability: the model always sees the full cloud
+// toolset, so what the DM can do never depends on what was said earlier. Three
+// explicit commands ("roll initiative", "start combat", "combat's over") run a
+// code-driven backbone of must-happen steps — but only the steps; the DM's own
+// words are always routed to the model afterwards, so a command can never
+// swallow the rest of the utterance.
+//
+// This replaced a DmPhase state machine that gated tools into 1 of 5 phases;
+// see docs/phase-removal.md for the harms and the before/after evidence.
 
 import type { McpTool } from "./mcp";
 import { buildSystemPrompt, buildTurnContext } from "./persona";
@@ -31,46 +35,38 @@ export interface Roll20McpLike {
 export type ProviderFactory = (name: ProviderName) => LLMProvider;
 
 // ---------------------------------------------------------------------------
-// Phase state machine
+// Command detectors
 // ---------------------------------------------------------------------------
+//
+// These recognize EXPLICIT DM commands ("roll initiative", "start combat",
+// "combat's over") and run the matching choreography backbone. They are NOT a
+// state machine: there are no phases, no transition table, and no gating of the
+// tool set. The model always sees the full cloud toolset, so a command that
+// isn't recognized costs nothing — the DM's words still route to the model,
+// which can call the same tools directly.
+//
+// Deliberately removed (see docs/phase-removal.md): the IDLE/SCENE_SET/
+// INIT_PREP/COMBAT_LOOP/CLEANUP machine and the fuzzy `detectSceneSet` entry.
+// The machine gated live-combat tools into 1 of 5 phases, so the DM could be
+// locked out of HP/conditions mid-fight with no single utterance to escape;
+// and the fuzzy entry keyed on word FORM, not meaning ("the goblin swings"
+// entered a scene, "the vampires close in" did not).
+/**
+ * Appended to the DM's transcript after the CLEANUP backbone. Steps 4–5 of the
+ * close sequence need a token list (aura targets + PC ids), so the model does
+ * them — but as part of the DM's own turn, not a turn that replaces it.
+ */
+const CLEANUP_SWEEP =
+  "Combat is ending. Clear auras (set aura1_radius=0) on any token that has one, " +
+  "then sync_character_state for each PC on the board.";
 
-/** The four combat phases plus idle. */
-export type DmPhase = "IDLE" | "SCENE_SET" | "INIT_PREP" | "COMBAT_LOOP" | "CLEANUP";
-
-/** Transitions that are legal from a given phase. */
-const PHASE_TRANSITIONS: Record<DmPhase, DmPhase[]> = {
-  IDLE:         ["SCENE_SET"],
-  SCENE_SET:    ["INIT_PREP", "IDLE"],
-  INIT_PREP:    ["COMBAT_LOOP", "IDLE"],
-  COMBAT_LOOP:  ["CLEANUP"],
-  CLEANUP:      ["IDLE"],
-};
-
-// ---------------------------------------------------------------------------
-// Entry / exit detectors
-// ---------------------------------------------------------------------------
-
-// FUZZY ENTRY — opening narration laced with combat cues. Low threshold because
-// the model can always be corrected. Separate patterns for each sub-entry:
-
-/** Detect scene-set (opening narration with combat flavor). */
-export function detectSceneSet(t: string): boolean {
-  const s = t.toLowerCase();
-  // Combat-flavored nouns that appear in opening narration
-  const combatNouns = /\b(ambush|attack|aggress|beset|surround|charge|assault|band of|group of|horde|swarm|pack|vampir|skeleton|goblin|zombie|wolf|wolves|orc|gnoll|ghoul|wraith|specter|demon|devil|undead|dragon|troll|ogre|giant|bandit|cultist|mercenary|guard)\b/;
-  // Surprise / conditions flag
-  const rulesCue   = /\b(surpris|hidden|ambush|stalk|rush|roll.*(perception|initiative)|caught off guard)\b/;
-  const sceneCue   = /\b(find(s)? (themselves|itself|yourself)|suddenly|step(s)? into|enter(s)?|emerge|upon)\b/;
-  return combatNouns.test(s) || (rulesCue.test(s) && sceneCue.test(s));
-}
-
-/** Detect DM calling for initiative (transition SCENE_SET → INIT_PREP). */
+/** Detect the DM calling for initiative → runs the INIT-PREP backbone. */
 export function detectCallForInit(t: string): boolean {
   const s = t.toLowerCase();
   return /\b(roll(ing)?\s+initiative|call(ing)?\s+for\s+initiative|everyone\s+roll|roll\s+for\s+init)\b/.test(s);
 }
 
-/** Detect DM starting combat (transition INIT_PREP → COMBAT_LOOP). */
+/** Detect the DM starting combat → runs the BEGIN-COMBAT backbone. */
 export function detectBeginCombat(t: string): boolean {
   const s = t.toLowerCase();
   return /\b(sort\s+(it|the\s+(order|initiative))|start(ing)?\s+(combat|the\s+(fight|round|battle))|begin(ning)?\s+(combat|the\s+(fight|round|battle))|let('|')?s\s+go|combat\s+starts|round\s+one|first\s+turn)\b/.test(s);
@@ -111,8 +107,12 @@ export interface AgentCallbacks {
   onToolStart: (name: string, args: unknown) => void;
   onToolResult: (name: string, result: string) => void;
   onProposeWrite: (name: string, args: Record<string, unknown>) => Promise<boolean>;
-  /** Optional: called whenever the phase transitions so the UI can display it. */
-  onPhaseChange?: (phase: DmPhase) => void;
+  /**
+   * Optional: fired when the CLEANUP backbone closes a fight. Replaces the old
+   * onPhaseChange("CLEANUP") hook — the After-Action Review hangs off this, so
+   * it survives the removal of the phase machine.
+   */
+  onCombatEnd?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,22 +126,16 @@ export class DmAgent {
   private started = false;
   private busy = false;
 
-  /** Current combat phase. */
-  private phase: DmPhase = "IDLE";
-
   constructor(
     private mcp: Roll20McpLike,
     initial?: ProviderName,
     private makeProvider: ProviderFactory = createProvider,
-    initialPhase: DmPhase = "IDLE",
   ) {
     this.providerName = initial ?? CONFIG.provider;
     this.llm = this.makeProvider(this.providerName);
-    this.phase = initialPhase;
   }
 
   currentProvider(): ProviderName { return this.providerName; }
-  currentPhase(): DmPhase { return this.phase; }
 
   // Hot-swap the active LLM backend. Histories aren't cross-compatible, so this
   // starts a fresh conversation (clean slate) on the new provider — the right
@@ -164,45 +158,26 @@ export class DmAgent {
   isBusy() { return this.busy; }
 
   // ---------------------------------------------------------------------------
-  // Phase management
+  // Tool schema
   // ---------------------------------------------------------------------------
 
   /**
-   * Attempt to transition to a new phase. Returns false if the transition is
-   * not legal (so callers can surface a warning).
-   */
-  private transitionPhase(next: DmPhase, cb?: AgentCallbacks): boolean {
-    const allowed = PHASE_TRANSITIONS[this.phase];
-    if (!allowed.includes(next)) {
-      console.error(`[agent] illegal phase transition ${this.phase} → ${next} (ignored)`);
-      return false;
-    }
-    console.error(`[agent] phase: ${this.phase} → ${next}`);
-    this.phase = next;
-    // Re-seed the provider with the new phase prompt + tool allowlist.
-    this.started = false;
-    if (cb?.onPhaseChange) cb.onPhaseChange(next);
-    return true;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Tool schema — phase-aware
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Return the tool specs for the current phase. Cloud gets the full phase
-   * allowlist; local (Ollama) gets the intersection of the phase allowlist and
-   * LOCAL_TOOLS so the 7B never drowns in a 60-tool schema.
+   * Return the tool specs to expose. Cloud gets the FULL cloud allowlist, always
+   * — capability never depends on conversational state. (This used to be gated
+   * by phase, which put the HP/condition/AoE tools in 1 of 5 phases and could
+   * lock the DM out mid-fight; see docs/phase-removal.md.)
+   *
+   * Local (Ollama) still intersects with LOCAL_TOOLS: small models genuinely do
+   * pick badly from a 48-tool schema, and that pressure is real only there.
    */
   private toolSpecs(provider: ProviderName): ToolSpec[] {
-    const phaseList = CONFIG.phaseTools[this.phase] ?? CONFIG.cloudToolAllowlist;
+    const cloudList = CONFIG.cloudToolAllowlist;
     let allow: Set<string>;
     if (provider === "ollama") {
-      // Intersect with LOCAL_TOOLS so the 7B doesn't see the heavy tools it can't use.
       const local = new Set(CONFIG.localToolAllowlist);
-      allow = new Set(phaseList.filter((t) => local.has(t)));
+      allow = new Set(cloudList.filter((t) => local.has(t)));
     } else {
-      allow = new Set(phaseList);
+      allow = new Set(cloudList);
     }
     return this.mcp.getTools()
       .filter((t) => allow.has(t.name))
@@ -222,31 +197,20 @@ export class DmAgent {
   }
 
   // ---------------------------------------------------------------------------
-  // Hybrid macros
+  // Choreography backbones
   // ---------------------------------------------------------------------------
-  // Each macro runs a code-driven backbone of must-happen steps, calling the MCP
-  // directly. Steps that require model judgment are passed to the agent loop.
-  // All write steps go through the confirmation gate.
-
-  /**
-   * SCENE-SET macro backbone.
-   * 1. Confirm campaign (switch if needed — proposed for confirmation).
-   * 2. Verify current page (read, report — never navigate).
-   * 3. Match narrated cast to tokens (read).
-   * 4. Surface rules keywords as questions.
-   * Steps that require model judgment (step 3 matching, step 4 extraction) are
-   * left to the agent loop via the transcript; the macro just sets the phase and
-   * primes the model with what was already read.
-   */
-  async sceneSet(transcript: string, cb: AgentCallbacks): Promise<void> {
-    if (!this.transitionPhase("SCENE_SET", cb)) {
-      // Already in SCENE_SET or illegal — just route normally.
-      await this.runTurn(transcript, cb);
-      return;
-    }
-    cb.onText("[SCENE-SET] Reviewing the board — confirming campaign, map, and cast.");
-    await this.runTurn(transcript, cb);
-  }
+  // Each runs a code-driven sequence of must-happen steps, calling the MCP
+  // directly, so the ordering-critical bits (npcOnly initiative, turn hook,
+  // cleanup sweep) can't be fumbled by the model. All write steps go through the
+  // confirmation gate.
+  //
+  // They are BACKBONE-ONLY: none of them routes a turn to the model. handle()
+  // always runs the DM's transcript afterwards, so invoking a backbone can never
+  // swallow whatever else the DM said in the same breath.
+  //
+  // The old SCENE-SET macro is gone: it had no backbone at all (it only set the
+  // phase and printed a banner), and its fuzzy trigger was the worst offender —
+  // it hijacked ordinary mid-combat narration. See docs/phase-removal.md.
 
   /**
    * INIT-PREP macro backbone.
@@ -257,10 +221,6 @@ export class DmAgent {
    * Player inits are NEVER touched.
    */
   async initPrep(cb: AgentCallbacks): Promise<void> {
-    if (!this.transitionPhase("INIT_PREP", cb)) {
-      cb.onText("[INIT-PREP] Already in init phase or illegal transition.");
-      return;
-    }
     cb.onText("[INIT-PREP] Rolling NPC initiative, revealing nameplates, queuing tactics.");
 
     // Step 1 — NPC initiative (safe path: never wipes player entries)
@@ -283,10 +243,8 @@ export class DmAgent {
    * 3. Surface first turn + its queued tactical plan via the agent loop.
    */
   async beginCombat(cb: AgentCallbacks): Promise<void> {
-    if (!this.transitionPhase("COMBAT_LOOP", cb)) {
-      cb.onText("[BEGIN] Cannot transition to COMBAT_LOOP from current phase.");
-      return;
-    }
+    // Anchors the After-Action Review's "combat window" in the log (aar.ts).
+    console.error("[agent] combat: begin");
     cb.onText("[COMBAT] Arming turn hook and reading settled initiative order.");
 
     // Step 1 — arm turn hook
@@ -312,10 +270,8 @@ export class DmAgent {
    * 5. sync_character_state per PC
    */
   async cleanup(cb: AgentCallbacks): Promise<void> {
-    if (!this.transitionPhase("CLEANUP", cb)) {
-      cb.onText("[CLEANUP] Cannot start cleanup from current phase.");
-      return;
-    }
+    // Anchors the After-Action Review's "combat window" in the log (aar.ts).
+    console.error("[agent] combat: end");
     cb.onText("[CLEANUP] Closing combat: turn hook off, turn order cleared, zones removed.");
 
     // Step 1 — disarm turn hook
@@ -340,14 +296,11 @@ export class DmAgent {
 
     cb.onText("[CLEANUP] Zones cleared. Auras + PC sync next (model will handle with token list).");
 
-    // Steps 4–5 are left to the agent loop (needs token list for aura targets + PC ids).
-    // We route a synthesized prompt so the model does a focused sweep.
-    const cleanupNudge = "Combat is ending. Clear auras (set aura1_radius=0) on any token that has one, then sync_character_state for each PC on the board.";
-    await this.runTurn(cleanupNudge, cb);
-
-    // Final transition back to IDLE.
-    this.transitionPhase("IDLE", cb);
-    cb.onText("[IDLE] Combat closed. Back to standby.");
+    // Steps 4–5 need a token list (aura targets + PC ids), so they're left to the
+    // model. handle() appends CLEANUP_SWEEP to the DM's transcript rather than
+    // running a turn here — that way the sweep happens AND anything else the DM
+    // said in the same breath still reaches the model.
+    if (cb.onCombatEnd) cb.onCombatEnd();
   }
 
   // ---------------------------------------------------------------------------
@@ -383,7 +336,7 @@ export class DmAgent {
   // Core agent turn loop
   // ---------------------------------------------------------------------------
 
-  /** Run one agent turn with the current phase's tools + prompt. */
+  /** Run one agent turn with the full cloud toolset + prompt. */
   private async runTurn(transcript: string, cb: AgentCallbacks): Promise<void> {
     // Per-turn provider: escalate complex narration to cloud Haiku (unless the
     // active provider is already cloud, or auto-escalate is off). The escalated
@@ -395,11 +348,11 @@ export class DmAgent {
       cb.onToolResult("↑escalate", "complex narration → cloud (haiku)");
       turnLlm = this.makeProvider("anthropic");
       turnLlm.start(buildSystemPrompt("anthropic"), this.toolSpecs("anthropic"));
-      turnLlm.pushUser(buildTurnContext(this.roster, this.phase) + "\n\n" + transcript);
+      turnLlm.pushUser(buildTurnContext(this.roster) + "\n\n" + transcript);
     } else {
       this.ensureStarted();
       this.llm.repair();
-      this.llm.pushUser(buildTurnContext(this.roster, this.phase) + "\n\n" + transcript);
+      this.llm.pushUser(buildTurnContext(this.roster) + "\n\n" + transcript);
     }
 
     // Agentic-loop bookkeeping (see loop-policy.ts). Tracks whether the turn has
@@ -480,36 +433,22 @@ export class DmAgent {
     }
     this.busy = true;
     try {
-      // -- Phase detectors --
-      // Run in priority order. Each transition is only attempted if we're in the
-      // correct source phase (the transitionPhase guard handles illegal moves).
-
-      // Explicit exit: highest priority (two locks — detect + per-step confirmation).
-      if (detectCombatOver(transcript) && this.phase === "COMBAT_LOOP") {
+      // -- Explicit DM commands --
+      // Recognized ANYWHERE: there is no phase, so a command is never rejected
+      // for being "in the wrong state". Each runs a tool backbone only; the DM's
+      // transcript is ALWAYS routed to the model afterwards, so a command can
+      // never swallow whatever else was said in the same breath.
+      let extra = "";
+      if (detectCombatOver(transcript)) {
         await this.cleanup(cb);
-        return;
-      }
-
-      // Begin combat (INIT_PREP → COMBAT_LOOP).
-      if (detectBeginCombat(transcript) && this.phase === "INIT_PREP") {
+        extra = CLEANUP_SWEEP;
+      } else if (detectBeginCombat(transcript)) {
         await this.beginCombat(cb);
-        return;
-      }
-
-      // Call for initiative (SCENE_SET → INIT_PREP).
-      if (detectCallForInit(transcript) && this.phase === "SCENE_SET") {
+      } else if (detectCallForInit(transcript)) {
         await this.initPrep(cb);
-        return;
       }
 
-      // Fuzzy scene-set entry (IDLE → SCENE_SET).
-      if (detectSceneSet(transcript) && this.phase === "IDLE") {
-        await this.sceneSet(transcript, cb);
-        return;
-      }
-
-      // No phase transition detected — run a normal agent turn in the current phase.
-      await this.runTurn(transcript, cb);
+      await this.runTurn(extra ? `${transcript}\n\n${extra}` : transcript, cb);
     } catch (e) {
       cb.onText("agent error: " + (e as Error).message);
     } finally {

@@ -80,9 +80,9 @@ async function main() {
 
   const mcp = new McpRoll20();
   const tools = await mcp.connect();
-  // Mirror the gem: send only the COMBAT_LOOP phase allowlist. DMW_EVAL_SCOPE=full to compare.
+  // Mirror the gem: it sends the full cloud allowlist. DMW_EVAL_SCOPE=full to compare.
   const SCOPE = process.env.DMW_EVAL_SCOPE || "lean";
-  const allow = SCOPE === "full" ? null : new Set(CONFIG.phaseTools.COMBAT_LOOP);
+  const allow = SCOPE === "full" ? null : new Set(CONFIG.cloudToolAllowlist);
   const sent = tools.filter((t) => !allow || allow.has(t.name));
   console.log(`Connected — ${tools.length} served, ${sent.length} sent (scope=${SCOPE}). provider=${PROVIDER} model=${MODEL}, reps=${REPS}\n`);
 
@@ -110,7 +110,7 @@ async function main() {
       reps++;
       const llm = makeProvider();
       llm.start(system, toolSpecs);
-      llm.pushUser(buildTurnContext(ROSTER, "COMBAT_LOOP") + "\n\n" + c.utterance);
+      llm.pushUser(buildTurnContext(ROSTER) + "\n\n" + c.utterance);
       const turn = await llm.run();
       const calls = turn.toolCalls;
       if (calls.length === 0) {

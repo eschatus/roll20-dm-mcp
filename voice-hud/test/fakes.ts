@@ -1,4 +1,4 @@
-// Deterministic test doubles for the phase-machine harness.
+// Deterministic test doubles for the agent harness.
 //
 // These replace the three live seams of the voice HUD so P1-P6 run with no
 // human, no mic, no Whisper, no Electron, and no live Roll20:
@@ -8,7 +8,7 @@
 
 import type { McpTool } from "../src/mcp";
 import type { Roll20McpLike } from "../src/agent";
-import type { AgentCallbacks, DmPhase } from "../src/agent";
+import type { AgentCallbacks } from "../src/agent";
 import type { LLMProvider, LLMTurn, ToolSpec, ProviderName } from "../src/llm";
 
 /** A recorded MCP invocation. */
@@ -28,9 +28,9 @@ export class FakeMcp implements Roll20McpLike {
   private catalog: McpTool[];
 
   constructor(catalog?: McpTool[]) {
-    // A minimal catalog covering every tool the phase macros reference, so
+    // A minimal catalog covering every tool the backbones reference, so
     // toolSpecs() filtering produces a non-empty schema. Descriptions are stubs.
-    this.catalog = catalog ?? PHASE_TOOL_NAMES.map((name) => ({
+    this.catalog = catalog ?? BACKBONE_TOOL_NAMES.map((name) => ({
       name,
       description: `stub:${name}`,
       inputSchema: { type: "object", properties: {} },
@@ -87,7 +87,8 @@ export interface RecordingCallbacks extends AgentCallbacks {
   texts: string[];
   toolStarts: RecordedCall[];
   proposals: RecordedCall[];
-  phases: DmPhase[];
+  /** Records CLEANUP-backbone completions (was: phase transitions). */
+  combatEnds: number;
 }
 
 /**
@@ -101,19 +102,19 @@ export function recordingCallbacks(approve: boolean | ((name: string) => boolean
     texts: [],
     toolStarts: [],
     proposals: [],
-    phases: [],
+    combatEnds: 0,
     onText(t) { cb.texts.push(t); },
     onToolStart(name, args) { cb.toolStarts.push({ name, args: (args ?? {}) as Record<string, unknown> }); },
     onToolResult() {},
     async onProposeWrite(name, args) { cb.proposals.push({ name, args }); return decide(name); },
-    onPhaseChange(phase) { cb.phases.push(phase); },
+    onCombatEnd() { cb.combatEnds++; },
   };
   return cb;
 }
 
-// Tool names referenced by any phase macro or allowlist — enough for the fake
-// catalog. Kept in sync with config.ts phase allowlists + the macro backbones.
-const PHASE_TOOL_NAMES = [
+// Tool names referenced by any choreography backbone or asserted on in tests —
+// enough for the fake catalog. Kept in sync with the backbones in agent.ts.
+const BACKBONE_TOOL_NAMES = [
   "active_campaign", "switch_campaign", "get_current_page", "list_tokens", "get_token",
   "get_turn_order", "roll_initiative", "set_token_props", "batch_exec", "plan_all_tactics",
   "set_turn_hook", "clear_turn_order", "list_zones", "clear_zone", "sync_character_state",
