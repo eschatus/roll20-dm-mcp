@@ -8,6 +8,7 @@ import { registerTacticsTools } from "./tools/tactics.js";
 import { registerJournalTools } from "./tools/journal.js";
 import { registerTransportTools } from "./tools/transport.js";
 import { registerCharacterEditTools } from "./tools/characters-edit.js";
+import { registerDdbPumpTools } from "./tools/ddbPump.js";
 import { registerZoneTools } from "./tools/zones.js";
 import { registerScreenshotTools } from "./tools/screenshot.js";
 
@@ -27,6 +28,7 @@ export function buildCombatServer(): McpServer {
   registerJournalTools(server);
   registerTransportTools(server);
   registerCharacterEditTools(server);
+  registerDdbPumpTools(server);
   // Map/wall/zone tooling lives in the maps suite (roll20-dm-maps). Combat keeps
   // only the dual-use pieces it needs live: zones (fixed-area spells) + screenshot
   // (board vision). The prep-only analysis/wall tools (registerVisionTools) do NOT
