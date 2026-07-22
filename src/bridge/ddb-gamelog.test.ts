@@ -72,3 +72,56 @@ describe("renderRollForRoll20 — mirrors DDB's actual dice", () => {
     expect(message).toContain("Roll 1d20 = 12");
   });
 });
+
+// --- Beyond20 gap-filler filtering (DdbGameLogPump.onFrame) -----------------
+import { DdbGameLogPump } from "./ddb-gamelog.js";
+
+// Build a minimal fulfilled-roll frame. b20=true marks a roll Beyond20 already
+// bridged to Roll20 (data.__b20Override__), as seen live on players using Beyond20.
+function frame(id: string, entityId: string, name: string, b20: boolean): string {
+  return JSON.stringify({
+    id, dateTime: "1", gameId: "1117568", userId: "1", entityId,
+    eventType: "dice/roll/fulfilled",
+    data: { action: "Roll", context: { name }, rolls: [{ rollType: "check", result: { constant: 0, text: "12", total: 12, values: [12] } }], ...(b20 ? { __b20Override__: true } : {}) },
+  });
+}
+// Reach the private frame handler to exercise the real filter without a live WS.
+const feed = (p: DdbGameLogPump, raw: string) => (p as unknown as { onFrame(r: string): void }).onFrame(raw);
+
+describe("Beyond20 failover filtering", () => {
+  it("by default SKIPS rolls Beyond20 already delivered, emits native ones", () => {
+    const got: string[] = [];
+    const p = new DdbGameLogPump({ gameId: "1117568", onRoll: (m) => { got.push(m.id); } });
+    feed(p, frame("a", "111", "Morticia", true));   // bridged → skip
+    feed(p, frame("b", "222", "Broo", false));       // native  → emit
+    expect(got).toEqual(["b"]);
+  });
+
+  it("a FLAPPING bridge: emits only the dropped (native) rolls of the same character", () => {
+    const got: string[] = [];
+    const p = new DdbGameLogPump({ gameId: "1117568", onRoll: (m) => { got.push(m.id); } });
+    // Glint: some rolls bridged, some dropped — only the dropped ones should post.
+    feed(p, frame("g1", "333", "Glint", true));
+    feed(p, frame("g2", "333", "Glint", false));
+    feed(p, frame("g3", "333", "Glint", true));
+    feed(p, frame("g4", "333", "Glint", false));
+    expect(got).toEqual(["g2", "g4"]);
+  });
+
+  it("includeBeyond20 (skipBeyond20:false) mirrors EVERY roll", () => {
+    const got: string[] = [];
+    const p = new DdbGameLogPump({ gameId: "1117568", skipBeyond20: false, onRoll: (m) => { got.push(m.id); } });
+    feed(p, frame("a", "111", "Morticia", true));
+    feed(p, frame("b", "222", "Broo", false));
+    expect(got).toEqual(["a", "b"]);
+  });
+
+  it("still honors the entity filter and dedups by id", () => {
+    const got: string[] = [];
+    const p = new DdbGameLogPump({ gameId: "1117568", entityIds: ["222"], onRoll: (m) => { got.push(m.id); } });
+    feed(p, frame("b", "222", "Broo", false));
+    feed(p, frame("b", "222", "Broo", false));   // same id → dedup
+    feed(p, frame("c", "999", "Someone", false)); // other entity → filtered
+    expect(got).toEqual(["b"]);
+  });
+});

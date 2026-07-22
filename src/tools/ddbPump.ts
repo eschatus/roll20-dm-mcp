@@ -24,12 +24,13 @@ async function resolveEntityIds(gameId: string, names: string[]): Promise<{ ids:
 export function registerDdbPumpTools(server: McpServer): void {
   server.tool(
     "start_ddb_roll_pump",
-    "Pump a D&D Beyond character's live dice rolls into Roll20 chat. For an ORPHANED PC — one whose player rolls on D&D Beyond but has no Beyond20 bridge, so their rolls never reach the table. Subscribes (browserless) to the DDB game log over its WebSocket, filters to the named character(s), and posts each roll into Roll20 chat AS that character, MIRRORING the exact dice they rolled (never a fresh re-roll). Reads from the ACTIVE campaign's D&D Beyond game unless gameId is given; writes to whatever Roll20 game the relay is pointed at — so the active campaign should be the one at the table. Requires the postChat relay action (redeploy the Mod with `npm run release:mod` if rolls don't appear).",
+    "Bridge D&D Beyond dice rolls into Roll20 chat as a Beyond20 FAILOVER. Use when a player's Beyond20 is flaky/down so their DDB rolls aren't reaching the table. Subscribes (browserless) to the DDB game log over its WebSocket and posts each roll into Roll20 chat AS the character, MIRRORING the exact dice (never a fresh re-roll). By default it SKIPS rolls Beyond20 already delivered (data.__b20Override__), so it only fills the gaps — safe to arm table-wide (omit characterNames) or per-player without double-posting, even when a bridge flaps. Reads the ACTIVE campaign's DDB game unless gameId is given; writes to whatever Roll20 game the relay points at — so the active campaign should be the table's. Requires the postChat relay action (redeploy with `npm run release:mod` if rolls don't appear).",
     {
-      characterNames: z.array(z.string()).optional().describe("DDB character names to relay, e.g. [\"Broo Zbaaner\"]. Omit to relay EVERY character's rolls in the game."),
+      characterNames: z.array(z.string()).optional().describe("DDB character names to relay, e.g. [\"Broo Zbaaner\"]. Omit to cover EVERY character (gap-fill the whole table — only their non-Beyond20 rolls post)."),
       gameId: z.string().optional().describe("D&D Beyond game/campaign id to read. Defaults to the active campaign's ddbCampaignId."),
+      includeBeyond20: z.boolean().optional().describe("Default false. Leave false to skip rolls Beyond20 already bridged to Roll20 (the failover behavior). Set true ONLY to mirror EVERY roll regardless — will double-post anything Beyond20 also delivers."),
     },
-    async ({ characterNames, gameId }) => {
+    async ({ characterNames, gameId, includeBeyond20 }) => {
       const active = campaigns.getActiveCampaign();
       const game = gameId || active.ddbCampaignId;
       if (!game || game === "0") return text(`Active campaign "${active.slug}" has no D&D Beyond game id — pass gameId, or switch to a DDB-linked campaign.`);
@@ -49,6 +50,7 @@ export function registerDdbPumpTools(server: McpServer): void {
       pump = new DdbGameLogPump({
         gameId: game,
         entityIds,
+        skipBeyond20: includeBeyond20 !== true,
         onStatus: (s) => console.error(s),
         onRoll: async (m: DdbGameLogMessage) => {
           const { speakAs, message } = renderRollForRoll20(m);
@@ -62,7 +64,8 @@ export function registerDdbPumpTools(server: McpServer): void {
         },
       });
       await pump.start();
-      return text(`D&D Beyond roll pump ARMED — game ${game}, relaying: ${resolvedNote}. Rolls will appear in Roll20 chat as the character. Stop with stop_ddb_roll_pump.`);
+      const mode = includeBeyond20 ? "ALL rolls (incl. Beyond20 — may double-post)" : "gap-fill (skips rolls Beyond20 already delivered)";
+      return text(`D&D Beyond roll pump ARMED — game ${game}, relaying: ${resolvedNote}. Mode: ${mode}. Rolls appear in Roll20 chat as the character. Stop with stop_ddb_roll_pump.`);
     }
   );
 
