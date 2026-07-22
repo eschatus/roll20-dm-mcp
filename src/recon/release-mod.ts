@@ -15,6 +15,7 @@ process.env.ROLL20_TRANSPORT = "rt";
 import { fileURLToPath } from "url";
 import { dirname, resolve } from "path";
 import { execSync } from "child_process";
+import { buildSync } from "esbuild";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 import { statSync } from "fs";
 import * as campaigns from "../registry/campaigns.js";
@@ -27,10 +28,12 @@ import { runSoak } from "./soak-test.js";
 // intact. es2019 target keeps the output within the sandbox engine. node --check fails the release
 // if the minified output isn't valid JS, so a bad minify can never reach the live campaign.
 function minifyForSandbox(srcPath: string): string {
-  const projectRoot = resolve(__dirname, "../.."); // esbuild/.bin resolves relative to cwd, not the script dir
   const outPath = resolve(__dirname, "../../mod-scripts/.ai-relay.deploy.js"); // gitignored build artifact
-  execSync(`node_modules/.bin/esbuild "${srcPath}" --minify --target=es2019 --outfile="${outPath}"`, { cwd: projectRoot, stdio: "inherit" });
-  execSync(`node --check "${outPath}"`, { cwd: projectRoot, stdio: "inherit" });
+  // Use esbuild's JS API, NOT `node_modules/.bin/esbuild`: that shell path is POSIX-only
+  // (cmd.exe on Windows can't run a slash-path with no .cmd extension → "'node_modules' is
+  // not recognized"). The API is cross-platform and needs no shell.
+  buildSync({ entryPoints: [srcPath], outfile: outPath, minify: true, target: ["es2019"], bundle: false, logLevel: "warning" });
+  execSync(`node --check "${outPath}"`, { stdio: "inherit" }); // `node` is on PATH on every OS
   const before = statSync(srcPath).size, after = statSync(outPath).size;
   console.error(`[release] minified ${(before / 1024).toFixed(0)}KB → ${(after / 1024).toFixed(0)}KB (${100 - Math.round((after * 100) / before)}% smaller)`);
   return outPath;
