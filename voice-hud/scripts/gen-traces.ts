@@ -326,10 +326,20 @@ const axisCompoundAoe: AxisFn = (rng, board, state) => {
   };
 };
 
+// Zone identity must be UNIQUE on the board. Two pools can collapse to the same
+// shortName ("Spike Growth" vs "Spike Growth's thorns"), and a seeded difficult zone
+// can already hold that name — then a rounds(n) zone "expires" while its namesake
+// survives, and the rollover check reads that as a failure. Caught by the gold
+// self-test at seeds 2-8 (round-rollover): pick a name not already on the board.
+const shortZoneName = (name: string) => name.split("'")[0].split(" ").slice(0, 2).join(" ");
+
 const axisZoneCreate: AxisFn = (rng, board, state) => {
   const damaging = rng() < 0.5;
-  const name = damaging ? pick(rng, ZONE_DAMAGING) : pick(rng, ZONE_DIFFICULT);
-  const shortName = name.split("'")[0].split(" ").slice(0, 2).join(" ");
+  const pool = (damaging ? ZONE_DAMAGING : ZONE_DIFFICULT)
+    .filter((n) => !board.zones.some((z) => z.name.toLowerCase() === shortZoneName(n).toLowerCase()));
+  if (!pool.length) return null; // every candidate name is already on the board
+  const name = pick(rng, pool);
+  const shortName = shortZoneName(name);
   const utterance = damaging
     ? `${name} fills the room — anyone caught in it takes damage each round.`
     : `${name} spreads across the floor — it's difficult terrain now.`;
@@ -343,8 +353,9 @@ const axisZoneCreate: AxisFn = (rng, board, state) => {
     axis: "zone-create", utterance,
     ideal: [{ text: "", toolCalls: [{ name: "create_zone", args: zoneArgs }] }, { text: "Zone up.", toolCalls: [] }],
     check: (b) => {
-      const re = new RegExp(shortName.split(" ")[0], "i");
-      if (!b.zones.some((z) => re.test(z.name))) return `no zone matching "${shortName}" created`;
+      // Exact-match on the zone's identity — a first-word regex ("Spike") matches a
+      // different zone that merely shares a word, hiding create/expire failures.
+      if (!b.zones.some((z) => z.name.toLowerCase() === shortName.toLowerCase())) return `no zone named "${shortName}" created`;
       state.activeZone = { name: shortName, damaging, createdRound: state.round };
       return null;
     },
@@ -541,6 +552,16 @@ const axisConcentrationQuestion: AxisFn = (rng, board, state) => {
 const axisDeclarativeFollowup: AxisFn = (rng, board, state) => {
   if (!state.concWaiting) return null;
   const name = state.concWaiting;
+  // The thread can be resolved out from under us: if the concentrating token dropped in
+  // a later step, mark_dying's cascade (or death) already cleared the marker and zeroed
+  // the aura, so a "Passed." follow-up would assert a marker that is legitimately gone.
+  // Drop the stale thread instead of emitting an unsatisfiable trajectory. (Caught by
+  // the gold self-test at seeds 8/10, axis declarative-followup.)
+  const holder = find(board, name);
+  if (!holder || !has(holder, "concentrating") || has(holder, "dead") || has(holder, "unconscious")) {
+    state.concWaiting = undefined;
+    return null;
+  }
   const failed = rng() < 0.5;
   const utterance = failed ? "Failed." : "Passed.";
   state.concWaiting = undefined;
