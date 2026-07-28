@@ -115,7 +115,15 @@ function stubExec(name: string, a: Record<string, unknown>, b: Board): string {
       return `${t.name} ${nv}/${h.max} (tracked)`;
     }
     t.bar1_value = Math.max(0, Math.min(t.bar1_max, t.bar1_value + (heal ? amount : -amount)));
-    return `${t.name} ${t.bar1_value}/${t.bar1_max}`;
+    // Server-side threshold automation (#141/#144): symmetric wounded + auto-death at 0
+    // for NPCs/sidekicks — the stub simulates the fixed server, mirroring its report text.
+    const s = markers(t);
+    let suffix = "";
+    if (t.bar1_value === 0) { s.add("dead"); setMarkers(t, s); t.layer = "map"; return `${t.name} 0/${t.bar1_max} — DEAD (map layer)`; }
+    if (t.bar1_value * 2 <= t.bar1_max) { s.add("wounded"); suffix = " — wounded"; }
+    else { for (const m of [...s]) if (m.includes("wounded") || m.includes("bloodied")) s.delete(m); }
+    setMarkers(t, s);
+    return `${t.name} ${t.bar1_value}/${t.bar1_max}${suffix}`;
   };
   const applyConds = (t: Tok, add?: unknown, remove?: unknown) => {
     const s = markers(t);
@@ -183,6 +191,21 @@ function stubExec(name: string, a: Record<string, unknown>, b: Board): string {
         const args = (c.args ?? c.params ?? c.input ?? c) as Record<string, unknown>;
         return tool ? stubExec(tool, args, b) : "(?)";
       }).join(" | ");
+    }
+    case "mark_dying": {
+      const t = byRef(b, a); if (!t) return "token not found";
+      if (t.klass !== "pc") return `${t.name} is not a PC — NPCs/sidekicks just die; use kill_token`;
+      const s = markers(t); s.add("prone"); s.add("unconscious");
+      let casc = "";
+      if (s.has("concentrating")) { s.delete("concentrating"); t.aura1_radius = 0; casc = " (concentration broken)"; }
+      setMarkers(t, s);
+      return `${t.name} is dying — prone + unconscious, on the token layer${casc}`;
+    }
+    case "break_concentration": {
+      const t = byRef(b, a); if (!t) return "token not found";
+      const s = markers(t); for (const m of [...s]) if (m.includes("concentrating")) s.delete(m);
+      setMarkers(t, s); t.aura1_radius = 0;
+      return `${t.name}: concentration broken — marker cleared, aura 0`;
     }
     case "roll_initiative": return "(initiative rolled)";
     case "plan_all_tactics": case "get_mob_plans": return "(tactics ready)";
