@@ -225,7 +225,7 @@ interface PcStats {
 
 async function getPcStats(token: PageToken): Promise<PcStats> {
   const entry = characters.lookup(token.name);
-  if (entry) {
+  if (entry?.ddbCharId !== undefined) {
     try {
       const s = await ddb.getCharacterStats(entry.ddbCharId);
       return {
@@ -516,7 +516,7 @@ async function handleOptions(cmd: PlayerChatCommand): Promise<void> {
     return;
   }
   const entry = characters.lookup(token.name);
-  if (!entry) {
+  if (entry?.ddbCharId === undefined) {
     await whisper(cmd.who, `⚔️ ${token.name} isn't linked to a D&D Beyond sheet — ask the DM to register it.`);
     return;
   }

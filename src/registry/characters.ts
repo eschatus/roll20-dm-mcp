@@ -6,9 +6,16 @@ import { getActiveCampaign } from "./campaigns.js";
 const REGISTRY_PATH = dataPath("characters.json");
 
 export interface CharacterEntry {
-  roll20TokenId: string;
-  ddbCharId: number;
+  roll20TokenId?: string;
+  ddbCharId?: number;
   ddbCharacterUrl?: string;
+  // Per-token override (issue #132): true for a player-controlled token whose
+  // HP nonetheless lives in Roll20 bar1 and who dies like an NPC (Tua, Salros
+  // Eventide, Amri in the Firebirds campaign) — `controlledby` alone can't
+  // tell a sidekick from a true PC. Settable via set_token_class (voice: "Tua
+  // is a sidekick"); read by isPcToken/splitPcNpc wherever HP/death routing
+  // decides (update_token_hp, update_hp_many, resolve_aoe, roll_initiative).
+  sidekick?: boolean;
 }
 
 // Top-level structure: { [campaignSlug]: { [characterName]: CharacterEntry } }
@@ -53,7 +60,12 @@ export function register(
 ): void {
   const full = load();
   const reg = getCampaignRegistry(full);
-  reg[name.toLowerCase()] = { roll20TokenId, ddbCharId, ...(ddbCharacterUrl ? { ddbCharacterUrl } : {}) };
+  const key = name.toLowerCase();
+  // Merge over any existing entry (e.g. a prior set_token_class sidekick
+  // override) rather than overwriting it — re-registering a character (token
+  // recreate, DDB relink) must not silently un-flag a sidekick.
+  const existing = reg[key];
+  reg[key] = { ...existing, roll20TokenId, ddbCharId, ...(ddbCharacterUrl ? { ddbCharacterUrl } : {}) };
   save(full);
 }
 
@@ -93,4 +105,40 @@ export function remove(name: string): boolean {
   delete reg[key];
   save(full);
   return true;
+}
+
+/**
+ * Set (or clear) the sidekick override for a character/token name. Upserts a
+ * minimal registry entry when the name isn't registered yet — a sidekick can
+ * be flagged by voice ("Tua is a sidekick") before any DDB/token registration
+ * exists. Resolves against existing keys fuzzily (resolveCharacterKey) first
+ * so this doesn't create a duplicate entry for an already-registered name.
+ */
+export function setSidekick(name: string, sidekick: boolean): CharacterEntry {
+  const full = load();
+  const reg = getCampaignRegistry(full);
+  const key = resolveCharacterKey(name, reg) ?? name.toLowerCase();
+  const existing = reg[key] ?? {};
+  reg[key] = { ...existing, sidekick };
+  save(full);
+  return reg[key];
+}
+
+/** True iff `name` resolves to a registry entry flagged sidekick:true. */
+export function isSidekick(name: string): boolean {
+  const full = load();
+  const reg = getCampaignRegistry(full);
+  const key = resolveCharacterKey(name, reg);
+  return key ? !!reg[key].sidekick : false;
+}
+
+/**
+ * The active campaign's sidekick names (registry keys, already lowercased) —
+ * the set aoe.ts's classifyToken/isPcToken/splitPcNpc need to route a
+ * player-controlled token as a sidekick instead of a PC.
+ */
+export function listSidekickNames(): Set<string> {
+  const full = load();
+  const reg = getCampaignRegistry(full);
+  return new Set(Object.entries(reg).filter(([, e]) => e.sidekick).map(([key]) => key));
 }

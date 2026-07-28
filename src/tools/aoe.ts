@@ -67,16 +67,63 @@ export interface AoeToken {
   bar1_max?: number | string;
 }
 
-// PC = controlled by an actual player id ("all" is scenery, not a PC).
-export function isPcToken(t: AoeToken): boolean {
+// Token classing is THREE-way (issue #132): PC (Beyond20-owned bar, tracked
+// shadow HP), NPC (bar1), and SIDEKICK — a player-controlled token (Tua,
+// Salros Eventide, Amri in the Firebirds campaign) whose HP nonetheless lives
+// in bar1 and who dies like an NPC (no dying state). `controlledby` alone
+// cannot tell PC from sidekick apart — both are player-controlled — so
+// callers pass a `sidekickNames` set (built from the characters registry's
+// `sidekick: true` entries, see registry/characters.ts `listSidekickNames`)
+// to disambiguate. Matching is case-insensitive and bidirectional-substring,
+// same tolerance as resolveNamesToTokens, so epithets ("Tua the Bold") still
+// match the bare registry name ("tua").
+export type TokenClass = "pc" | "npc" | "sidekick";
+
+function controlledByPlayer(t: AoeToken): boolean {
   const controllers = (t.controlledby ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   return controllers.some((c) => c !== "all");
 }
 
-export function splitPcNpc(tokens: AoeToken[]): { pcs: AoeToken[]; npcs: AoeToken[] } {
+function tokenBaseName(t: AoeToken): string {
+  return (t.name || "").split("\n")[0].trim().toLowerCase();
+}
+
+// True iff the token's (pre-epithet) name matches an entry in the
+// sidekick-name set.
+export function isSidekickToken(t: AoeToken, sidekickNames: Set<string> | undefined): boolean {
+  if (!sidekickNames || sidekickNames.size === 0) return false;
+  const name = tokenBaseName(t);
+  if (!name) return false;
+  for (const s of sidekickNames) {
+    if (!s) continue;
+    if (name === s || name.includes(s) || s.includes(name)) return true;
+  }
+  return false;
+}
+
+// Full three-way classification. sidekickNames omitted → no sidekick override
+// applies (every player-controlled token classes as "pc" — pre-#132 behavior).
+export function classifyToken(t: AoeToken, sidekickNames?: Set<string>): TokenClass {
+  if (!controlledByPlayer(t)) return "npc";
+  return isSidekickToken(t, sidekickNames) ? "sidekick" : "pc";
+}
+
+// PC = controlled by an actual player id ("all" is scenery, not a PC) AND not
+// overridden as a sidekick. Pass the campaign's sidekick-name set so sidekick
+// tokens route as NPCs (bar1 HP, NPC death semantics) instead of PCs.
+export function isPcToken(t: AoeToken, sidekickNames?: Set<string>): boolean {
+  return classifyToken(t, sidekickNames) === "pc";
+}
+
+// Sidekicks bucket with npcs — bar1 HP, bloodied-threshold automation, and
+// NPC save-rolling/death semantics all apply identically to sidekicks and NPCs.
+export function splitPcNpc(
+  tokens: AoeToken[],
+  sidekickNames?: Set<string>,
+): { pcs: AoeToken[]; npcs: AoeToken[] } {
   const pcs: AoeToken[] = [];
   const npcs: AoeToken[] = [];
-  for (const t of tokens) (isPcToken(t) ? pcs : npcs).push(t);
+  for (const t of tokens) (isPcToken(t, sidekickNames) ? pcs : npcs).push(t);
   return { pcs, npcs };
 }
 

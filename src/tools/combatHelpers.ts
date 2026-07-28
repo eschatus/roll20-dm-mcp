@@ -169,7 +169,7 @@ export async function resolveCharSheetId(
   if (charSheetId) return charSheetId;
   if (!characterName) throw new Error("Provide characterName or charSheetId");
   const entry = registry.lookup(characterName);
-  if (!entry) throw new Error(`Character not registered: ${characterName}`);
+  if (!entry?.roll20TokenId) throw new Error(`Character not registered: ${characterName}`);
   const tokenData = await roll20.relayCommand<{ represents: string } | null>({
     action: "getTokenById",
     tokenId: entry.roll20TokenId,
