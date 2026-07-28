@@ -51,3 +51,35 @@ export function resolveMarkerForState(name: string): ResolvedMarker {
   if (PSEUDO_MARKERS[lc]) return { tag: PSEUDO_MARKERS[lc], tier: "pseudo", key: lc };
   return { tag: hashToPool(lc), tier: "custom", key: lc };
 }
+
+// ── Bloodied/wounded + auto-death threshold automation (issue #141) ──────────
+// Pure arithmetic, SYMMETRIC (wounded comes on at/below half, comes off above
+// half — never driven by anything but current/max), applied server-side after
+// any NPC/sidekick bar1 write so this never depends on the model remembering to
+// call set_token_marker. PCs never reach this — their HP is tracked in relay
+// state (gmnotes) via adjustPcHp, which never touches bar1.
+//
+// This is the canonical TS copy. It's imported directly by roll20-rt.ts (the
+// RT-default direct-write path, which bypasses the Mod sandbox entirely for a
+// single setTokenBar call) and by src/tools/combat.ts/aoe.ts (report text). The
+// Mod sandbox (mod-scripts/ai-relay.js) can't import TS, so its ACTIONS["setTokenBar"]
+// and runBatchOp "setTokenBar" case carry a hand-synced copy of this same
+// arithmetic — keep all changes here mirrored there too.
+export const WOUNDED_MARKER = PSEUDO_MARKERS.wounded;
+export const DEAD_MARKER = CONDITION_MARKERS.dead;
+
+export interface HpThresholds {
+  /** Apply (true) or remove (false) the Wounded marker. Always false once dead. */
+  wounded: boolean;
+  /** Auto-death: HP at/below 0 with a real (>0) max. */
+  dead: boolean;
+}
+
+export function computeHpThresholds(newHp: number, maxHp: number): HpThresholds {
+  const max = Number(maxHp) || 0;
+  const hp = Number(newHp) || 0;
+  if (max <= 0) return { wounded: false, dead: false }; // no real bar — never automate
+  const dead = hp <= 0;
+  const wounded = !dead && hp * 2 <= max;
+  return { wounded, dead };
+}

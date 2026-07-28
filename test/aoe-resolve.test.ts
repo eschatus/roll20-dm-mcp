@@ -30,13 +30,19 @@ describe("resolve_aoe batch resolver (integration)", () => {
   // A 15ft burst centered on the Hobgoblin Captain catches the two goblins and
   // the War Mage (NPCs), plus both PCs (report-only). The captain is the center
   // and is excluded by default.
+  // 3d6 (not 8d6): guarantees the War Mage (22 HP) survives the burst — even a
+  // failed save (max roll 18) leaves it above 0. Issue #141 auto-marks an NPC
+  // dead + moves it to the map layer the instant bar1 hits 0, which would
+  // otherwise make the War Mage unreachable (by name) for the healing-mode
+  // tests below — a small enough formula keeps this test about resolve_aoe's
+  // batching, not about racing the threshold automation.
   const burst = {
     label: "Fireball (War Mage)",
     centerTokenName: "Hobgoblin Captain",
     radiusFeet: 15,
     saveAbility: "dexterity",
     saveDc: 15,
-    damageFormula: "8d6",
+    damageFormula: "3d6",
     halfOnSave: true,
   } as const;
 
@@ -112,9 +118,40 @@ describe("resolve_aoe batch resolver (integration)", () => {
     expect(text).toMatch(/\+restrained/);
   });
 
+  // Issue #141: resolve_aoe's damage-apply batch writes NPC HP via the same
+  // setTokenBar chokepoint update_hp_many uses, so it inherits the symmetric
+  // bloodied/wounded threshold and auto-death automation for free. Fresh,
+  // uniquely-named tokens here so this doesn't disturb the shared warband
+  // state the tests below still depend on (War Mage's exact HP, etc).
+  it("flat-damage AoE applies the wounded threshold and auto-death per target, reported in the DM lines", async () => {
+    const grunt = h.emu.createToken({
+      pageid: w.pageId, name: "Threshold Grunt", controlledby: "", bar1_value: 10, bar1_max: 10,
+    });
+    const brute = h.emu.createToken({
+      pageid: w.pageId, name: "Threshold Brute", controlledby: "", bar1_value: 6, bar1_max: 18,
+    });
+
+    // Grunt: 10 -> 4, at-or-below half -> wounded. Brute: 18 -> 0 -> auto-dead + map layer.
+    const { text } = await h.callTool("resolve_aoe", {
+      label: "Precise volley",
+      targetNames: ["Threshold Grunt", "Threshold Brute"],
+      damage: 6,
+    });
+    expect(hp(grunt.id)).toBe(4);
+    expect(markers(grunt.id)).toContain("Wounded::4444333");
+    expect(text).toMatch(/wounded/i);
+
+    expect(hp(brute.id)).toBe(0);
+    expect(h.emu.tokenProps(brute.id).layer).toBe("map");
+    expect(markers(brute.id)).toMatch(/4444317/);
+    expect(text).toMatch(/DEAD/);
+  });
+
   it("healing mode restores NPC bars (clamped at max) and routes PCs through adjustPcHp", async () => {
-    // Wound an NPC so the heal is observable; the resulting value must clamp at its max.
-    await h.callTool("update_token_hp", { characterName: "War Mage", damage: 15 });
+    // Wound (not kill) the War Mage so the heal is observable — a small enough
+    // hit that issue #141's auto-death-at-0 doesn't fire and move it to the map
+    // layer, which would make it unreachable by name for the heal below.
+    await h.callTool("update_token_hp", { characterName: "War Mage", damage: 5 });
     const warmageBefore = hp(w.npcs.warmage.id);
     const fighterBarBefore = hp(w.pcs.fighter.id); // Beyond20-owned bar — must NOT move
 
