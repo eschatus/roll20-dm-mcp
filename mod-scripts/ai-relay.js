@@ -2165,6 +2165,21 @@ ACTIONS["createZone"] = function (args, msg, nonce, senderPlayerId) {
         });
         if (!zoneObj) throw new Error("Failed to create zone path object");
         zoneObj.set("name", zoneName);
+
+        // Terrain/duration metadata (issue #134). duration.type "rounds" gets a
+        // createdRound stamp from the persistent turn-hook round counter so
+        // process_round_end_zones can compute when it expires (created mid-round R
+        // with n=1 lasts the remainder of round R, expiring when round R+1 starts).
+        let zoneDuration = args.duration || { type: "instant" };
+        if (zoneDuration && zoneDuration.type === "rounds") {
+          zoneDuration = {
+            type: "rounds",
+            n: zoneDuration.n || 1,
+            createdRound: B().round,
+          };
+        }
+        let zoneTerrain = args.terrain || null;
+
         zoneObj.set("gmnotes", JSON.stringify({
           zone: true,
           name: args.name || "Zone",
@@ -2173,8 +2188,18 @@ ACTIONS["createZone"] = function (args, msg, nonce, senderPlayerId) {
           centerY: zoneCy,
           radiusFeet: args.radiusFeet || 15,
           color: zoneColor,
+          terrain: zoneTerrain,
+          duration: zoneDuration,
         }));
-        writeResult(nonce, { id: zoneObj.id, name: zoneName, radiusFeet: args.radiusFeet || 15, centerX: zoneCx, centerY: zoneCy });
+        writeResult(nonce, {
+          id: zoneObj.id,
+          name: zoneName,
+          radiusFeet: args.radiusFeet || 15,
+          centerX: zoneCx,
+          centerY: zoneCy,
+          terrain: zoneTerrain,
+          duration: zoneDuration,
+        });
         return;
       }
       };
@@ -2225,6 +2250,40 @@ ACTIONS["listZones"] = function (args, msg, nonce, senderPlayerId) {
           };
         });
         writeResult(nonce, zones);
+        return;
+      }
+      };
+ACTIONS["processRoundEndZones"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Explicit round-boundary expiry step for rounds(n)-duration zones (issue
+        // #134). Not wired to the turn hook automatically — the caller invokes this
+        // when a round rolls over, passing the round that just started (or relying
+        // on the turn hook's own round counter). instant/concentration zones are
+        // left alone here; concentration's break cascade is issue #135.
+        let bs = B();
+        let currentRound = typeof args.currentRound === "number" ? args.currentRound : bs.round;
+        let query = { _type: "path" };
+        if (args.pageId) query._pageid = args.pageId;
+        let candidates = findObjs(query).filter(function(p) {
+          return (p.get("name") || "").toString().indexOf("ZONE: ") === 0;
+        });
+        let expired = [];
+        candidates.forEach(function(p) {
+          let meta = {};
+          try { meta = JSON.parse(p.get("gmnotes") || "{}"); } catch(e) {}
+          if (!meta.duration || meta.duration.type !== "rounds") return;
+          let createdRound = typeof meta.duration.createdRound === "number" ? meta.duration.createdRound : currentRound;
+          let n = meta.duration.n || 1;
+          let expiresAtRound = createdRound + n;
+          if (currentRound >= expiresAtRound) {
+            expired.push({ id: p.id, name: meta.name || p.get("name"), meta: meta });
+          }
+        });
+        expired.forEach(function(e) {
+          let obj = getObj("path", e.id);
+          if (obj) obj.remove();
+        });
+        writeResult(nonce, { expired: expired, round: currentRound });
         return;
       }
       };

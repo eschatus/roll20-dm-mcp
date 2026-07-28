@@ -116,6 +116,22 @@ what you did, mechanically and explicitly.
 - One-shot instantaneous spells (Fireball, Thunder Wave) need no persistent zone; clean up any
   pre-placed template token with `remove_object` after resolving.
 
+### Zone terrain/duration semantics
+
+`create_zone` optionally tags a zone with `terrain` (`difficult` | `damaging`) and `duration`
+(`{type:"instant"}` | `{type:"rounds", n}` | `{type:"concentration", caster}`). Defaults (when the
+caller omits `color`): difficult terrain → green, damaging → red — overrides an explicit `color`
+never fail.
+- `rounds(n)` zones expire at a round boundary, not immediately: created mid-round they last the
+  remainder of that round for n=1. Call `process_round_end_zones` whenever a round rolls over — it
+  deletes anything expired and returns the list, so fold that into the round-end countdown
+  narration (e.g. "the grease fire burns out").
+- `concentration` zones just store the caster linkage here; the break-cascade that tears them down
+  when concentration ends is a separate mechanism.
+- Common material transitions (web/grease + fire, etc.) are a small data table
+  (`ZONE_TRANSITIONS` in `src/tools/zones.ts`) — apply one via `clear_zone` + `create_zone` with the
+  looked-up spec. There is no `modify_zone` tool; transitions are always delete-then-create.
+
 ## Voice-to-text resolution
 
 Transcription is noisy with proper nouns. Fuzzy-match against the live token list and the
