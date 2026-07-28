@@ -15,7 +15,22 @@ export interface Tok {
   layer: string; aura1_radius: number;
 }
 
-export interface Zone { name: string; color?: string }
+// Zone metadata mirrors the real create_zone schema (issue #134): terrain drives the
+// colour convention (difficult = green, damaging = red) and duration drives expiry —
+// rounds(n) zones burn down at a round boundary via process_round_end_zones (NEVER
+// automatically), concentration(caster) zones are torn down by break_concentration.
+export type ZoneDuration =
+  | { type: "instant" }
+  | { type: "rounds"; n: number }
+  | { type: "concentration"; caster?: string };
+
+export interface Zone {
+  name: string;
+  color?: string;
+  terrain?: string;
+  duration?: ZoneDuration;
+  roundsLeft?: number; // countdown for rounds(n) zones, decremented at each round boundary
+}
 
 export interface Board { tokens: Tok[]; turnorder: { id: string; pr: string }[]; zones: Zone[]; chat: string[] }
 
@@ -148,7 +163,14 @@ export function stubExec(name: string, a: Record<string, unknown>, b: Board): st
       const dmgN = Number(a.damage) || 0;
       return `${a.label ?? "AoE"}: ` + targets.map((n) => { const t = find(b, n); return t ? hpDelta(t, dmgN) : `${n}?`; }).join("; ");
     }
-    case "create_zone": b.zones.push({ name: String(a.name), color: a.color ? String(a.color) : undefined }); return `zone "${a.name}" created`;
+    case "create_zone": {
+      const duration = (a.duration && typeof a.duration === "object" ? a.duration : { type: "instant" }) as ZoneDuration;
+      const z: Zone = { name: String(a.name), color: a.color ? String(a.color) : undefined, duration };
+      if (a.terrain != null) z.terrain = String(a.terrain);
+      if (duration.type === "rounds") z.roundsLeft = Number((duration as { n?: number }).n ?? 1);
+      b.zones.push(z);
+      return `zone "${a.name}" created${z.terrain ? ` (${z.terrain})` : ""}${duration.type === "rounds" ? ` — ${z.roundsLeft} round(s)` : ""}`;
+    }
     case "clear_zone": { const before = b.zones.length; b.zones = b.zones.filter((z) => z.name.toLowerCase() !== String(a.name).toLowerCase()); return b.zones.length < before ? `zone "${a.name}" cleared` : `no zone "${a.name}"`; }
     case "advance_turn": { const e = b.turnorder.shift(); if (e) b.turnorder.push(e); const cur = b.tokens.find((t) => t.id === b.turnorder[0]?.id); return `advanced — now ${cur?.name ?? "?"}`; }
     case "set_token_props": {
@@ -182,7 +204,25 @@ export function stubExec(name: string, a: Record<string, unknown>, b: Board): st
       const t = byRef(b, a); if (!t) return "token not found";
       const s = markers(t); for (const m of [...s]) if (m.includes("concentrating")) s.delete(m);
       setMarkers(t, s); t.aura1_radius = 0;
-      return `${t.name}: concentration broken — marker cleared, aura 0`;
+      // Linked-zone teardown (issue #134): any zone whose duration is concentration(caster)
+      // pointing at this token goes with the spell — same as the real tool.
+      const linked = b.zones.filter((z) => z.duration?.type === "concentration" &&
+        [t.name, t.id].some((ref) => ref.toLowerCase() === String((z.duration as { caster?: string }).caster ?? "").toLowerCase()));
+      if (linked.length) b.zones = b.zones.filter((z) => !linked.includes(z));
+      return `${t.name}: concentration broken — marker cleared, aura 0` +
+        (linked.length ? `, zones removed: ${linked.map((z) => z.name).join(", ")}` : "");
+    }
+    case "process_round_end_zones": {
+      // rounds(n) zones tick down at the boundary and are removed when they hit 0.
+      // instant / concentration zones are untouched here — exactly like the real tool.
+      const expired: string[] = [];
+      for (const z of b.zones) {
+        if (z.duration?.type !== "rounds") continue;
+        z.roundsLeft = (z.roundsLeft ?? 1) - 1;
+        if (z.roundsLeft <= 0) expired.push(z.name);
+      }
+      if (expired.length) b.zones = b.zones.filter((z) => !(z.duration?.type === "rounds" && (z.roundsLeft ?? 1) <= 0));
+      return expired.length ? `expired: ${expired.join(", ")}` : "no zones expired";
     }
     case "roll_initiative": return "(initiative rolled)";
     case "plan_all_tactics": case "get_mob_plans": return "(tactics ready)";
