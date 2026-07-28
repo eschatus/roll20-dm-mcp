@@ -1,0 +1,40 @@
+# Ollama Modelfile for the QLoRA-trained voice-HUD specialist.
+#
+# Usage (after downloading the merged q4_k_m GGUF from the RunPod run — see RUNBOOK.md):
+#   cp Modelfile.template Modelfile
+#   # edit the FROM line below to point at your downloaded .gguf file
+#   ollama create dm-whisper-7b -f Modelfile
+#
+# Then point the gem at it:
+#   DMW_EVAL_PROVIDER=ollama DMW_EVAL_MODEL=dm-whisper-7b npm run eval:golden   (voice-hud/)
+
+FROM ./qwen7b-dm-lora.q4_k_m.gguf
+
+# num_ctx: SFT_RUN_STATE.md measured the 22-tool prefix alone at ~12k tokens (the
+# earlier "15% arc-correct" local verdict was actually a context-truncation bug, not
+# a model-quality wall — see SPECIALIST_MODEL_DECISION.md's "quality wall" finding:
+# Ollama's OpenAI-compat /v1 endpoint silently ignores `options.num_ctx`, so this
+# PARAMETER line — baked into the derived model via `ollama create` — is the durable
+# fix, not an env var passed at request time).
+#
+# 16384 is a conservative starting point that covers the full-prompt tool surface with
+# room for a multi-turn conversation. Once the trained model is evaluated, it may need
+# LESS context than the untrained baseline if training shrank the effective tool
+# surface it needs to see (e.g. if the student was trained on a slimmer tool
+# allowlist than the teacher) — tune this DOWN only after re-measuring with
+# `npm run eval:golden` (voice-hud/) at the smaller value and confirming no accuracy
+# regression. Do not tune down blind.
+PARAMETER num_ctx 16384
+
+# Deterministic-leaning defaults for tool-calling correctness over creativity — this
+# model's job is narration->tool-call mapping, not prose generation.
+PARAMETER temperature 0.2
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.1
+
+# Qwen2.5-Instruct's chat template (baked into the GGUF via unsloth's
+# save_pretrained_gguf) already encodes the tool-calling <tool_call> format used at
+# training time — do not override TEMPLATE here unless you changed the training
+# template in train_qlora.py, in which case update both together.
+
+SYSTEM """You are the voice HUD's table-mechanics tool-calling specialist for a live D&D 5e session over Roll20 + D&D Beyond. Given the DM's spoken/typed narration and the current board state, call the correct tool(s) to make the stated outcome true. See skills/dm-rules.md in the roll20-dm-mcp repo for the canonical conventions this model was trained on (declarative-outcome handling, PC vs NPC vs sidekick HP routing, zone/emanation semantics, death/layer conventions)."""

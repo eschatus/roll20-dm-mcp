@@ -32,3 +32,12 @@ mod-scripts/.ai-relay.deploy.js
 src/recon/ddb-ac-diag.ts
 .gitignore
 src/recon/ddb-ac-network-diag.ts
+
+# unsloth writes its JIT compile cache into the CWD (training/RUNBOOK.md: run from a
+# scratch dir, but ignore it here too as a backstop)
+unsloth_compiled_cache/
+training/out/
+training/data/
+training/__pycache__/
+__pycache__/
+
