@@ -125,6 +125,149 @@ describe("conditions & status markers", () => {
     expect(res.tier).toBe("custom");
     expect(emu.getObj("graphic", tok.id)!.get("statusmarkers")).toContain(res.marker);
   });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Regression coverage for issue #133 — the DM sometimes hand-clicks a
+  // marker onto a token before the voice gem processes the same instruction.
+  // "toggleCondition" is a misleading name: the handler must behave as
+  // set-true/set-false, NOT a flip. Applying an already-set condition is a
+  // no-op (stays set); clearing an absent condition is a no-op (stays
+  // clear). Cover all three marker tiers, plus the batchExec path and the
+  // legacy update_token_hp addConditions/removeConditions relay calls,
+  // since all of them ultimately hit the same "toggleCondition" action.
+  // ───────────────────────────────────────────────────────────────────────
+  describe("idempotent set/clear semantics (issue #133)", () => {
+    const markerCountOf = (statusmarkers: string, tag: string): number =>
+      statusmarkers.split(",").filter((m) => m === tag).length;
+
+    it.each([
+      ["condition", "poisoned", "Poisoned::4444329"],
+      ["pseudo", "concentrating", "Concentrating::4444313"],
+      ["custom", "hunters-mark", null], // ad-hoc tag is hashed; resolved at runtime
+    ] as const)("%s tier: applying twice stays set (no flip-off)", (tier, condition) => {
+      const pageId = emu.createPage();
+      const charId = emu.createCharacter("Target", {});
+      const tok = emu.createToken({ pageid: pageId, name: "Target", represents: charId, bar1_value: 10, bar1_max: 10 });
+
+      const first = emu.relay<{ tier: string; marker: string }>({
+        action: "toggleCondition", tokenId: tok.id, charId, condition, active: true,
+      });
+      expect(first.tier).toBe(tier);
+
+      // Simulate the DM having already hand-applied the marker: the gem then
+      // issues the SAME apply again. It must remain set — not flip off.
+      const second = emu.relay<{ tier: string; marker: string }>({
+        action: "toggleCondition", tokenId: tok.id, charId, condition, active: true,
+      });
+      expect(second.marker).toBe(first.marker);
+
+      const sm = String(emu.getObj("graphic", tok.id)!.get("statusmarkers"));
+      expect(markerCountOf(sm, first.marker)).toBe(1); // set, not duplicated
+      expect(sm).toContain(first.marker);
+    });
+
+    it("removing an already-cleared condition is a no-op", () => {
+      const pageId = emu.createPage();
+      const charId = emu.createCharacter("Target", {});
+      const tok = emu.createToken({ pageid: pageId, name: "Target", represents: charId, bar1_value: 10, bar1_max: 10 });
+
+      // Never applied — clear should just do nothing.
+      const res = emu.relay<{ ok: boolean; marker: string }>({
+        action: "toggleCondition", tokenId: tok.id, charId, condition: "prone", active: false,
+      });
+      expect(res.ok).toBe(true);
+      const sm = String(emu.getObj("graphic", tok.id)!.get("statusmarkers"));
+      expect(sm).not.toContain(res.marker);
+    });
+
+    it("explicit removal is the only way a marker comes off — apply, apply again, then clear once", () => {
+      const pageId = emu.createPage();
+      const charId = emu.createCharacter("Target", {});
+      const tok = emu.createToken({ pageid: pageId, name: "Target", represents: charId, bar1_value: 10, bar1_max: 10 });
+
+      emu.relay({ action: "toggleCondition", tokenId: tok.id, charId, condition: "stunned", active: true });
+      emu.relay({ action: "toggleCondition", tokenId: tok.id, charId, condition: "stunned", active: true }); // hand-click + gem race
+      let sm = String(emu.getObj("graphic", tok.id)!.get("statusmarkers"));
+      expect(sm).toContain("Stunned::4444331");
+
+      emu.relay({ action: "toggleCondition", tokenId: tok.id, charId, condition: "stunned", active: false });
+      sm = String(emu.getObj("graphic", tok.id)!.get("statusmarkers"));
+      expect(sm).not.toContain("Stunned::4444331");
+    });
+
+    it("condition tier keeps active_conditions sheet attr idempotent across repeated applies", () => {
+      const pageId = emu.createPage();
+      const charId = emu.createCharacter("Target", {});
+      const tok = emu.createToken({ pageid: pageId, name: "Target", represents: charId, bar1_value: 10, bar1_max: 10 });
+
+      emu.relay({ action: "toggleCondition", tokenId: tok.id, charId, condition: "blinded", active: true });
+      emu.relay({ action: "toggleCondition", tokenId: tok.id, charId, condition: "blinded", active: true });
+      const attrs = emu.relay<Record<string, unknown>>({ action: "getCharacterAttributes", charId });
+      const list = String(attrs.active_conditions || "").split(",").filter(Boolean);
+      expect(list.filter((c) => c === "blinded")).toHaveLength(1);
+    });
+
+    it("custom tier: getCustomStates does not duplicate the token holder on repeated applies", () => {
+      const pageId = emu.createPage();
+      const tok = emu.createToken({ pageid: pageId, name: "Aldric", bar1_value: 30, bar1_max: 30 });
+
+      emu.relay({ action: "toggleCondition", tokenId: tok.id, condition: "hunters-mark", active: true });
+      emu.relay({ action: "toggleCondition", tokenId: tok.id, condition: "hunters-mark", active: true });
+      const states = emu.relay<{ state: string; tokens: { id: string }[] }[]>({ action: "getCustomStates" });
+      const entry = states.find((s) => s.state === "hunters-mark");
+      expect(entry).toBeTruthy();
+      expect(entry!.tokens.filter((t) => t.id === tok.id)).toHaveLength(1);
+
+      // Clear it — it should disappear from the tracked list entirely (no leftover empty entry).
+      emu.relay({ action: "toggleCondition", tokenId: tok.id, condition: "hunters-mark", active: false });
+      const after = emu.relay<{ state: string }[]>({ action: "getCustomStates" });
+      expect(after.find((s) => s.state === "hunters-mark")).toBeUndefined();
+    });
+
+    it("batchExec toggleCondition op is idempotent too (batch path mirrors the top-level action)", () => {
+      const pageId = emu.createPage();
+      const charId = emu.createCharacter("Target", {});
+      const tok = emu.createToken({ pageid: pageId, name: "Target", represents: charId, bar1_value: 10, bar1_max: 10 });
+
+      emu.relay({ action: "batchExec", ops: [
+        { id: "a", action: "toggleCondition", args: { tokenId: tok.id, charId, condition: "grappled", active: true } },
+      ] });
+      emu.relay({ action: "batchExec", ops: [
+        { id: "b", action: "toggleCondition", args: { tokenId: tok.id, charId, condition: "grappled", active: true } },
+      ] });
+      const sm = String(emu.getObj("graphic", tok.id)!.get("statusmarkers"));
+      expect(markerCountOf(sm, "Grappled::4444314")).toBe(1);
+
+      emu.relay({ action: "batchExec", ops: [
+        { id: "c", action: "toggleCondition", args: { tokenId: tok.id, charId, condition: "grappled", active: false } },
+      ] });
+      const smAfter = String(emu.getObj("graphic", tok.id)!.get("statusmarkers"));
+      expect(smAfter).not.toContain("Grappled::4444314");
+
+      // Removing again (already absent) must be a no-op, not throw.
+      expect(() => emu.relay({ action: "batchExec", ops: [
+        { id: "d", action: "toggleCondition", args: { tokenId: tok.id, charId, condition: "grappled", active: false } },
+      ] })).not.toThrow();
+    });
+
+    it("setStatusMarker (used by free/pseudo marker application) is also idempotent", () => {
+      const pageId = emu.createPage();
+      emu.setPlayerPage(pageId);
+      const tok = emu.createToken({ pageid: pageId, name: "Goblin", bar1_value: 7, bar1_max: 7 });
+
+      emu.relay({ action: "setStatusMarker", tokenId: tok.id, marker: "red", active: true });
+      emu.relay({ action: "setStatusMarker", tokenId: tok.id, marker: "red", active: true });
+      const sm = String(emu.getObj("graphic", tok.id)!.get("statusmarkers"));
+      expect(markerCountOf(sm, "red")).toBe(1);
+
+      // Remove an absent marker → no-op, no throw.
+      expect(() => emu.relay({ action: "setStatusMarker", tokenId: tok.id, marker: "blue", active: false })).not.toThrow();
+      expect(String(emu.getObj("graphic", tok.id)!.get("statusmarkers"))).not.toContain("blue");
+
+      emu.relay({ action: "setStatusMarker", tokenId: tok.id, marker: "red", active: false });
+      expect(String(emu.getObj("graphic", tok.id)!.get("statusmarkers"))).not.toContain("red");
+    });
+  });
 });
 
 describe("AoE / emanation geometry (findTokensInRange)", () => {
