@@ -28,7 +28,7 @@ import type { Page } from "playwright";
 import { getActiveCampaign } from "../registry/campaigns.js";
 import { READONLY_ACTIONS, newNonce } from "./actions.js";
 import { recordSuccess, recordFailure } from "./transport-health.js";
-import { resolveMarkerForState } from "./markers.js";
+import { resolveMarkerForState, computeHpThresholds, WOUNDED_MARKER, DEAD_MARKER } from "./markers.js";
 import { trackCustomState, getCustomStates as getCustomStatesStore } from "./relayState.js";
 import {
   AIBRIDGE_MARKER as MARKER, parseAibridge, cleanChat,
@@ -616,10 +616,47 @@ async function tryDirectWrite(cmd: Record<string, unknown>): Promise<unknown | t
         if (!Number.isFinite(v)) return NOT_HANDLED; // let the Mod throw its descriptive error
         const pid = await rtFindTokenPage(cmd.tokenId as string, cmd.pageId as string | undefined);
         if (!pid) return NOT_HANDLED;
+        const tokPath = `graphics/page/${pid}/${cmd.tokenId}`;
+        const conn = await getConn();
+        let max: number | undefined = cmd.max !== undefined && Number.isFinite(Number(cmd.max)) ? Number(cmd.max) : undefined;
+        if (max === undefined) {
+          // Caller didn't pass max (e.g. a plain HP set) — read the token's own bar1_max so the
+          // threshold automation below still has a real max to compare against.
+          const maxSnap = await get(ref(conn.db, `${conn.storagePath}/${tokPath}/bar1_max`));
+          const existingMax = Number(maxSnap.val());
+          if (Number.isFinite(existingMax)) max = existingMax;
+        }
         const props: Record<string, unknown> = { bar1_value: v };
-        if (cmd.max !== undefined && Number.isFinite(Number(cmd.max))) props.bar1_max = Number(cmd.max);
-        await rtUpdate(`graphics/page/${pid}/${cmd.tokenId}`, props);
-        return { ok: true };
+        if (max !== undefined) props.bar1_max = max;
+        // Bloodied/wounded + auto-death threshold automation (issue #141) — SYMMETRIC,
+        // arithmetic-only (computeHpThresholds, unit-tested), applied server-side so the
+        // model's working memory is never the source of truth. This is the RT-default
+        // direct-write path — it bypasses mod-scripts/ai-relay.js entirely for a single
+        // setTokenBar call, so ai-relay.js's ACTIONS["setTokenBar"] + runBatchOp carry a
+        // hand-synced copy of this same arithmetic for the batchExec/browser-transport path.
+        const { wounded, dead } = computeHpThresholds(v, max ?? 0);
+        if (dead) props.layer = "map";
+        await rtUpdate(tokPath, props);
+        if (max) {
+          const smRef = ref(conn.db, `${conn.storagePath}/${tokPath}/statusmarkers`);
+          await runTransaction(smRef, (current: unknown) => {
+            const markers = String(current ?? "").split(",").filter(Boolean);
+            const dropWounded = () => {
+              const i = markers.indexOf(WOUNDED_MARKER);
+              if (i !== -1) markers.splice(i, 1);
+            };
+            if (dead) {
+              dropWounded();
+              if (markers.indexOf(DEAD_MARKER) === -1) markers.push(DEAD_MARKER);
+            } else if (wounded) {
+              if (markers.indexOf(WOUNDED_MARKER) === -1) markers.push(WOUNDED_MARKER);
+            } else {
+              dropWounded();
+            }
+            return markers.join(",");
+          });
+        }
+        return { ok: true, wounded, dead };
       }
       case "setTokenProps": {
         const p = cmd.props as Record<string, unknown> | undefined;

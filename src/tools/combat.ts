@@ -752,6 +752,7 @@ export function registerCombatTools(server: McpServer): void {
       const isPc = isPcToken(token, registry.listSidekickNames());
       let newHp: number;
       let maxHp: number;
+      let thresholdNote = "";
 
       if (isPc) {
         // PC HP is tracked in relay state (a block in the token's gmnotes), routed by
@@ -777,9 +778,18 @@ export function registerCombatTools(server: McpServer): void {
         if (setHp !== undefined) newHp = setHp;
         else if (damage !== undefined) newHp = Math.max(0, currentHp - damage);
         else newHp = maxHp ? Math.min(maxHp, currentHp + heal!) : currentHp + heal!;
-        await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props: { bar1_value: newHp } });
+        // setTokenBar (not setTokenProps) — the relay chokepoint that also applies the
+        // symmetric bloodied/wounded threshold + auto-death (issue #141), so every NPC/
+        // sidekick bar1 write inherits it without the model having to remember it.
+        const res = await roll20.relayCommand<{ wounded?: boolean; dead?: boolean }>({
+          action: "setTokenBar", tokenId: resolvedTokenId, value: newHp, max: maxHp || undefined,
+        });
+        if (res?.dead) thresholdNote = " — DEAD (map layer)";
+        else if (res?.wounded) thresholdNote = " — wounded";
       }
 
+      // Explicit condition overrides run AFTER the threshold automation above, so a DM's
+      // own addConditions/removeConditions for "wounded"/"dead" in the same call wins.
       if (replaceConditions !== undefined) {
         await roll20.relayCommand({ action: "syncConditionsToToken", tokenId: resolvedTokenId, conditions: replaceConditions });
       } else {
@@ -798,7 +808,7 @@ export function registerCombatTools(server: McpServer): void {
         : addConditions?.length || removeConditions?.length
           ? ` | +[${(addConditions ?? []).join(", ")}] -[${(removeConditions ?? []).join(", ")}]`
           : "";
-      return text(`${token.name}: ${delta} HP → ${hpStr}${condNote}`);
+      return text(`${token.name}: ${delta} HP → ${hpStr}${thresholdNote}${condNote}`);
     }
   );
 
@@ -883,7 +893,11 @@ export function registerCombatTools(server: McpServer): void {
             const max = data?.max || op._max || 0;
             okLines.push(`${op._name}: ${data?.current ?? "?"}${max ? "/" + max : ""} (tracked)`);
           } else {
-            okLines.push(`${op._name}: ${op._nv}${op._max ? "/" + op._max : ""}`);
+            // setTokenBar (issue #141) reports whether the symmetric bloodied/wounded
+            // threshold or auto-death fired on this write.
+            const data = r.data as { wounded?: boolean; dead?: boolean } | undefined;
+            const thresholdNote = data?.dead ? " — DEAD (map layer)" : data?.wounded ? " — wounded" : "";
+            okLines.push(`${op._name}: ${op._nv}${op._max ? "/" + op._max : ""}${thresholdNote}`);
           }
         } else {
           failLines.push(`${op._name}: FAILED (${r.error ?? "no result returned by relay"})`);
@@ -1264,7 +1278,11 @@ export function registerCombatTools(server: McpServer): void {
         const condNote = !r.saved && args.onFailCondition ? (condErr ? ` cond FAILED(${condErr})` : ` +${args.onFailCondition}`) : "";
         if (r.noBar) return `${r.token.name}: ${save} → ${r.applied} damage NOT applied (no HP bar — roll initiative to auto-init, or set bar1)${condNote}`;
         if (hpErr) return `${r.token.name}: ${save} → FAILED to apply (${hpErr})`;
-        return `${r.token.name}: ${save} → −${r.applied}${max ? ` (${newHp}/${max})` : ""}${newHp === 0 && max > 0 ? " DOWN" : ""}${condNote}`;
+        // setTokenBar (issue #141) applies the symmetric bloodied/wounded threshold and
+        // auto-death server-side — reflect what it reported rather than re-deriving here.
+        const hpData = opRes.get(`hp:${r.token.id}`)?.data as { wounded?: boolean; dead?: boolean } | undefined;
+        const thresholdNote = hpData?.dead ? " — DEAD (map layer)" : hpData?.wounded ? " — wounded" : "";
+        return `${r.token.name}: ${save} → −${r.applied}${max ? ` (${newHp}/${max})` : ""}${thresholdNote}${condNote}`;
       });
 
       return text([
@@ -1273,8 +1291,6 @@ export function registerCombatTools(server: McpServer): void {
         pcNote,
         drawNote,
         skippedDown.length ? `Skipped (already down): ${skippedDown.join(", ")}` : "",
-        npcResults.some((r) => Number(r.token.bar1_max) > 0 && Math.max(0, (Number(r.token.bar1_value) || 0) - r.applied) === 0)
-          ? "Reminder: mark the fallen dead and move them to the map layer." : "",
       ].filter(Boolean).join("\n"));
     }
   );

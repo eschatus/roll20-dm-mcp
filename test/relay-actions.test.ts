@@ -306,6 +306,94 @@ describe("setTokenBar write", () => {
   });
 });
 
+// Issue #141: bloodied/wounded + auto-death threshold automation lives at this
+// exact relay chokepoint (ACTIONS["setTokenBar"] + the runBatchOp case batchExec
+// uses) so every NPC/sidekick bar1 write — update_token_hp, update_hp_many,
+// resolve_aoe — inherits it without the model having to remember set_token_marker.
+describe("setTokenBar threshold automation (issue #141)", () => {
+  it("crossing at/below half applies Wounded::4444333", () => {
+    const pageId = emu.createPage();
+    const tok = emu.createToken({ pageid: pageId, name: "Priest B", bar1_value: 33, bar1_max: 33 });
+    const res = emu.relay<{ ok: boolean; wounded: boolean; dead: boolean }>({
+      action: "setTokenBar", tokenId: tok.id, value: 5, max: 33,
+    });
+    expect(res.wounded).toBe(true);
+    expect(res.dead).toBe(false);
+    expect(String(emu.getObj("graphic", tok.id)!.get("statusmarkers"))).toContain("Wounded::4444333");
+  });
+
+  it("healing back above half REMOVES the Wounded marker (symmetric)", () => {
+    const pageId = emu.createPage();
+    const tok = emu.createToken({ pageid: pageId, name: "Priest B", bar1_value: 5, bar1_max: 33, statusmarkers: "Wounded::4444333" });
+    const res = emu.relay<{ wounded: boolean; dead: boolean }>({
+      action: "setTokenBar", tokenId: tok.id, value: 20, max: 33,
+    });
+    expect(res.wounded).toBe(false);
+    expect(String(emu.getObj("graphic", tok.id)!.get("statusmarkers"))).not.toContain("Wounded");
+  });
+
+  it("exact half boundary (current*2 <= max) counts as wounded", () => {
+    const pageId = emu.createPage();
+    const tok = emu.createToken({ pageid: pageId, name: "Half", bar1_value: 30, bar1_max: 30 });
+    const res = emu.relay<{ wounded: boolean }>({ action: "setTokenBar", tokenId: tok.id, value: 15, max: 30 });
+    expect(res.wounded).toBe(true);
+  });
+
+  it("dropping to 0 auto-applies the dead marker AND moves the token to the map layer", () => {
+    const pageId = emu.createPage();
+    const tok = emu.createToken({ pageid: pageId, name: "Ogre", bar1_value: 20, bar1_max: 20, layer: "objects" });
+    const res = emu.relay<{ wounded: boolean; dead: boolean }>({
+      action: "setTokenBar", tokenId: tok.id, value: 0, max: 20,
+    });
+    expect(res.dead).toBe(true);
+    expect(res.wounded).toBe(false);
+    const t = emu.getObj("graphic", tok.id)!;
+    expect(String(t.get("statusmarkers"))).toContain("Unconscious::4444317"); // dead marker tag
+    expect(String(t.get("statusmarkers"))).not.toContain("Wounded");
+    expect(t.get("layer")).toBe("map");
+  });
+
+  it("a barless token (no max established) is never automated", () => {
+    const pageId = emu.createPage();
+    const tok = emu.createToken({ pageid: pageId, name: "Scenery", bar1_value: 0, bar1_max: 0 });
+    const res = emu.relay<{ wounded: boolean; dead: boolean }>({ action: "setTokenBar", tokenId: tok.id, value: 0 });
+    expect(res).toEqual({ ok: true, wounded: false, dead: false });
+    expect(emu.getObj("graphic", tok.id)!.get("layer")).not.toBe("map");
+  });
+
+  it("carries max forward from the token when the caller omits it (matches the RT-direct mirror)", () => {
+    const pageId = emu.createPage();
+    const tok = emu.createToken({ pageid: pageId, name: "Priest B", bar1_value: 33, bar1_max: 33 });
+    const res = emu.relay<{ wounded: boolean }>({ action: "setTokenBar", tokenId: tok.id, value: 5 });
+    expect(res.wounded).toBe(true);
+  });
+
+  it("the SAME automation fires through batchExec (update_hp_many / resolve_aoe's path)", () => {
+    const pageId = emu.createPage();
+    const tok = emu.createToken({ pageid: pageId, name: "Skeleton", bar1_value: 12, bar1_max: 12 });
+    const results = emu.relay<Array<{ id: string; ok: boolean; data?: { wounded?: boolean; dead?: boolean } }>>({
+      action: "batchExec",
+      ops: [{ id: tok.id, action: "setTokenBar", args: { tokenId: tok.id, value: 0, max: 12 } }],
+    });
+    expect(results[0].ok).toBe(true);
+    expect(results[0].data?.dead).toBe(true);
+    const t = emu.getObj("graphic", tok.id)!;
+    expect(String(t.get("statusmarkers"))).toContain("Unconscious::4444317");
+    expect(t.get("layer")).toBe("map");
+  });
+
+  it("explicit removeConditions after the automation wins (DM override beats server automation)", () => {
+    // Mirrors update_token_hp's ordering: the HP write (+ automation) happens first,
+    // then any explicit addConditions/removeConditions from the same call run after.
+    const pageId = emu.createPage();
+    const tok = emu.createToken({ pageid: pageId, name: "Priest B", bar1_value: 33, bar1_max: 33 });
+    emu.relay({ action: "setTokenBar", tokenId: tok.id, value: 5, max: 33 }); // auto-applies Wounded
+    expect(String(emu.getObj("graphic", tok.id)!.get("statusmarkers"))).toContain("Wounded::4444333");
+    emu.relay({ action: "toggleCondition", tokenId: tok.id, condition: "wounded", active: false }); // explicit DM override
+    expect(String(emu.getObj("graphic", tok.id)!.get("statusmarkers"))).not.toContain("Wounded");
+  });
+});
+
 describe("editCharacter relay action", () => {
   it("updates name on an existing character", () => {
     const charId = emu.createCharacter("Old Name", {});
