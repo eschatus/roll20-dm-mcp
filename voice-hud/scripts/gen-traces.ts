@@ -38,6 +38,7 @@ import { OllamaProvider } from "../src/llm/ollama";
 import { LLMProvider, LLMTurn, ToolCall, ToolSpec } from "../src/llm/provider";
 import { CONFIG } from "../src/config";
 import { decideTerminal, isMutatingTool, LoopMode } from "../src/loop-policy";
+import { slimToolSpecs } from "../src/llm/slim-tools";
 import {
   Board, Ctx, Klass, Tok, Zone,
   find, has, makeTok, markers, readPcHp, rosterFromBoard, setMarkers, stubExec,
@@ -807,6 +808,8 @@ export interface GenerateOpts {
   provider: string;
   model: string;
   mode?: GenMode; // default "teacher"
+  slim?: boolean;      // strip schema noise + defensive prose from tool specs
+  scopeCore?: boolean; // drop tools no trajectory ever calls
 }
 
 export interface GenerateSummary {
@@ -852,10 +855,20 @@ async function generate(opts: GenerateOpts): Promise<GenerateSummary> {
     mcp = new McpRoll20();
     const tools = await mcp.connect();
     for (const t of tools) { try { validators.set(t.name, ajv.compile(t.inputSchema)); } catch { /* unschemable */ } }
-    // Lean allowlist = cloud ∩ local (kept small deliberately for the 14B teacher; any
-    // further truncation for the eventual 7B student is a TRAINING-TIME decision, not here).
+    // Lean allowlist = cloud ∩ local. MEASURED: at full verbosity the 25-tool catalog is
+    // ~7.7k tokens — 72% of a record — putting EVERY sample over the 8192-token training
+    // window (median 10.6k, max 12.5k). Two levers, both on by default for gold mode:
+    //   --slim   strip schema noise + defensive prose (src/llm/slim-tools.ts)
+    //   --scope  drop tools no trajectory ever calls (session/campaign plumbing, inbox,
+    //            whisper) — training on schemas the student never emits is pure cost.
+    // The student MUST be served the same set it was trained on; keep this in sync with
+    // whatever the local path serves.
     const allow = new Set([...CONFIG.cloudToolAllowlist].filter((t) => new Set(CONFIG.localToolAllowlist).has(t)));
-    toolSpecs = tools.filter((t) => allow.has(t.name)).map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }));
+    const NEVER_CALLED = new Set(["list_campaigns", "active_campaign", "switch_campaign", "get_recent_chat", "get_dm_inbox", "whisper_player"]);
+    toolSpecs = tools
+      .filter((t) => allow.has(t.name) && (!opts.scopeCore || !NEVER_CALLED.has(t.name)))
+      .map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }));
+    if (opts.slim) toolSpecs = slimToolSpecs(toolSpecs);
     makeStepTeacher = () => opts.provider === "ollama" ? new OllamaProvider(opts.model, CONFIG.ollamaUrl) : new AnthropicProvider(opts.model);
   }
 
@@ -961,6 +974,9 @@ async function main() {
   const opts: GenerateOpts = {
     seed: SEED, scenarios: N_SCENARIOS, outPath, rejectsPath: REJECTS_PATH,
     dry: DRY, provider: PROVIDER, model: MODEL, mode: GEN_MODE,
+    // Default ON for gold (training corpora must fit the 8k window); --no-slim/--no-scope to disable.
+    slim: !process.argv.includes("--no-slim") && GEN_MODE === "gold",
+    scopeCore: !process.argv.includes("--no-scope") && GEN_MODE === "gold",
   };
   const summary = await generate(opts);
   printSummary(opts, summary);
