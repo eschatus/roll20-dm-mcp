@@ -166,13 +166,21 @@ the registration; the rest of vision/wall tooling is maps-only.)
 `src/tools/tactics.ts`, `src/tools/aoe.ts`, `src/tools/combatHelpers.ts`, `src/bridge/relayState.ts`.
 **Canonical play rules:** `skills/dm-rules.md`. **Choreography:** `.claude/commands/{combat,round}.md`.
 
-**HP model (important):** routing is by `controlledby` (`isPcToken` in `src/tools/aoe.ts`):
-- **PC** (player-controlled) → HP tracked in relay **state**, a block in the token's `gmnotes`, via
-  the `adjustPcHp` relay action. **Never write a PC's token bar** — Beyond20 owns it. Reported as
-  `(tracked)`.
-- **NPC** → HP is `bar1` on the token.
-- `update_token_hp` (single) and `update_hp_many` (AoE) and `resolve_aoe` all follow this split.
-  `resolve_aoe` is the one-call AoE primitive (find targets, roll/read saves, apply).
+**HP model (important):** routing is THREE-way (`classifyToken`/`isPcToken`/`splitPcNpc` in
+`src/tools/aoe.ts`) — `controlledby` alone only tells player-controlled from not; a per-character
+registry override (`sidekick: true`, `src/registry/characters.ts`) is needed to pick out sidekicks:
+- **PC** (player-controlled, no sidekick override) → HP tracked in relay **state**, a block in the
+  token's `gmnotes`, via the `adjustPcHp` relay action. **Never write a PC's token bar** — Beyond20
+  owns it. Reported as `(tracked)`.
+- **NPC** (not player-controlled) → HP is `bar1` on the token.
+- **Sidekick** (player-controlled, `sidekick: true` in the characters registry — e.g. Tua, Salros
+  Eventide, Amri in the Firebirds campaign) → HP is `bar1`, same as an NPC, and it **dies like an
+  NPC** (`kill_token`: immediate dead marker + map layer, no PC dying/death-saves state). Set/clear
+  the override with `set_token_class` (voice: "Tua is a sidekick").
+- `update_token_hp` (single), `update_hp_many` (batch), `resolve_aoe` (AoE), and `roll_initiative`
+  (npcOnly / DDB HP auto-init) all read the same `sidekickNames` set
+  (`registry.listSidekickNames()`) so a sidekick routes as an NPC everywhere HP/death routing is
+  decided. See issue #132.
 
 **Conditions/markers:** `set_token_marker` → `toggleCondition` → three-tier `resolveMarkerForState`
 (CONDITION → PSEUDO → hashed ad-hoc). Custom campaign marker set, IDs 4444311–4444352; default

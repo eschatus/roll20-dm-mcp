@@ -144,6 +144,22 @@ export function registerCombatTools(server: McpServer): void {
   );
 
   server.tool(
+    "set_token_class",
+    "Mark a player-controlled token as a SIDEKICK (issue #132) — a companion (Tua, Salros Eventide, Amri in the Firebirds campaign) whose HP nonetheless lives in Roll20 bar1 (never tracked/gmnotes state) and who dies like an NPC (kill_token: immediate dead marker + map layer — no PC-style dying/death-saves state). `controlledby` alone can't tell a sidekick from a true PC, so this is a persistent per-character override in the campaign's characters registry. Read wherever PC/NPC/sidekick routing is decided: update_token_hp, update_hp_many, resolve_aoe, roll_initiative. Use when the DM says a companion IS a sidekick, e.g. 'Tua is a sidekick' → {\"characterName\":\"Tua\",\"tokenClass\":\"sidekick\"}. Pass tokenClass:'pc' to clear the override (back to an ordinary Beyond20-tracked PC).",
+    {
+      characterName: z.string().describe("Character/token name, e.g. 'Tua', 'Salros Eventide'. Fuzzy-resolved against the registry (exact, then substring both ways) — same tolerance as other character-name tools."),
+      tokenClass: z.enum(["sidekick", "pc"]).describe("'sidekick' = player-controlled but bar1-managed with NPC death semantics. 'pc' clears the override, reverting to an ordinary Beyond20-tracked PC."),
+    },
+    async ({ characterName, tokenClass }) => {
+      const entry = registry.setSidekick(characterName, tokenClass === "sidekick");
+      const note = tokenClass === "sidekick"
+        ? " — HP now routes to bar1 (bloodied automation + NPC death semantics apply); use kill_token to end it, not a dying state."
+        : " — HP now tracks in relay state again (Beyond20 owns the visible bar).";
+      return text(`${characterName} set to ${tokenClass}${note}\nRegistry entry: ${JSON.stringify(entry)}`);
+    }
+  );
+
+  server.tool(
     "list_custom_states",
     "List the ad-hoc DM-defined states currently being tracked (tier-2 custom states set via set_token_marker that aren't standard conditions or pseudo-conditions) — each with its auto-assigned icon tag and which tokens currently hold it. Use to answer 'who is <custom state>?' or to see what bespoke states are in play.",
     {},
@@ -369,6 +385,10 @@ export function registerCombatTools(server: McpServer): void {
     },
     async ({ pageId, npcOnly, clearFirst, flatInit, names, nameFilter, publicRoll, nearPcsFeet, initHp }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
+      // Sidekicks (issue #132) are player-controlled but route as NPCs for
+      // initiative purposes too — npcOnly should still pick them up, and
+      // they're eligible for the DDB HP auto-init below like any other NPC.
+      const sidekickNames = registry.listSidekickNames();
 
       const tokens = await roll20.relayCommand<{ id: string; name: string; layer: string; controlledby: string; bar1_value?: number | string; bar1_max?: number | string }[]>({
         action: "getTokens",
@@ -379,7 +399,7 @@ export function registerCombatTools(server: McpServer): void {
       // the Mod's page-scale-aware geometry instead of reimplementing it here.
       let nearIds: Set<string> | null = null;
       if (nearPcsFeet !== undefined && nearPcsFeet > 0) {
-        const pcTokens = tokens.filter((t) => isPcToken(t) && (t.layer === "tokens" || t.layer === "objects"));
+        const pcTokens = tokens.filter((t) => isPcToken(t, sidekickNames) && (t.layer === "tokens" || t.layer === "objects"));
         nearIds = new Set(pcTokens.map((t) => t.id)); // PCs always count as "near"
         for (const pc of pcTokens) {
           const nearby = await roll20.relayCommand<{ id: string }[]>({
@@ -405,7 +425,7 @@ export function registerCombatTools(server: McpServer): void {
       };
       const combatants = tokens.filter((t) => {
         if (!TOKEN_LAYERS.has(t.layer)) return false;
-        if (npcOnly && t.controlledby && t.controlledby.trim() !== "") return false;
+        if (npcOnly && isPcToken(t, sidekickNames)) return false;
         if (wanted && wanted.length && !matchesWanted(t.name)) return false;
         if (needle && !t.name.toLowerCase().includes(needle)) return false;
         if (nearIds && !nearIds.has(t.id)) return false;
@@ -424,7 +444,7 @@ export function registerCombatTools(server: McpServer): void {
       // BEFORE rollInitiativeForTokens, which renames duplicates with epithets.
       const hpInit = { set: [] as string[], missed: [] as string[] };
       if (initHp) {
-        const needHp = combatants.filter((t) => !isPcToken(t) && !hasHpBar(t));
+        const needHp = combatants.filter((t) => !isPcToken(t, sidekickNames) && !hasHpBar(t));
         if (needHp.length) {
           const avgByName = new Map<string, number | null>();
           for (const nm of new Set(needHp.map((t) => t.name))) avgByName.set(nm, await resolveMonsterAvgHp(nm));
@@ -617,7 +637,9 @@ export function registerCombatTools(server: McpServer): void {
     },
     async ({ characterName, charSheetId }) => {
       const entry = registry.lookup(characterName);
-      if (!entry) throw new Error(`Character not registered: ${characterName}`);
+      if (!entry?.roll20TokenId || entry.ddbCharId === undefined) {
+        throw new Error(`Character not registered: ${characterName}`);
+      }
 
       const [stats, tokenData] = await Promise.all([
         ddb.getCharacterStats(entry.ddbCharId),
@@ -724,7 +746,10 @@ export function registerCombatTools(server: McpServer): void {
         throw new Error("Provide damage, heal, or setHp");
       }
 
-      const isPc = isPcToken(token);
+      // Sidekicks (player-controlled, bar1-managed, NPC death semantics — issue
+      // #132) route with NPCs here; the registry override is the only thing
+      // that can tell them apart from a true PC.
+      const isPc = isPcToken(token, registry.listSidekickNames());
       let newHp: number;
       let maxHp: number;
 
@@ -810,10 +835,12 @@ export function registerCombatTools(server: McpServer): void {
       }
       if (!targets.length) throw new Error(`No tokens matched ${nameMatch ? `'${nameMatch}'` : (names || []).join(", ")}`);
 
-      // Route by controlledby: PCs track HP in relay state (gmnotes block) via adjustPcHp —
-      // never their token bar (Beyond20 owns it); NPCs write bar1. NPCs need a real bar
-      // (writing to a barless NPC silently no-ops); PCs don't (their HP lives in gmnotes).
-      const { pcs, npcs } = splitPcNpc(targets);
+      // Route by controlledby (+ the sidekick registry override, issue #132):
+      // PCs track HP in relay state (gmnotes block) via adjustPcHp — never their
+      // token bar (Beyond20 owns it); NPCs AND sidekicks write bar1. NPCs/sidekicks
+      // need a real bar (writing to a barless one silently no-ops); PCs don't
+      // (their HP lives in gmnotes).
+      const { pcs, npcs } = splitPcNpc(targets, registry.listSidekickNames());
       const noBar = npcs.filter((t) => !hasHpBar(t));
       const npcTargets = npcs.filter((t) => hasHpBar(t));
       if (!pcs.length && !npcTargets.length) {
@@ -1085,7 +1112,9 @@ export function registerCombatTools(server: McpServer): void {
         if (!args.healing && isDowned(t)) { skippedDown.push(t.name); continue; }
         targets.push(t);
       }
-      const { pcs, npcs } = splitPcNpc(targets);
+      // Sidekicks (issue #132) bucket with npcs: bar1 HP, auto-rolled saves,
+      // fail-conditions, and the "mark dead" reminder all apply to them like NPCs.
+      const { pcs, npcs } = splitPcNpc(targets, registry.listSidekickNames());
 
       // ── Healing: no saves, no conditions — restore HP to every resolved
       // target. Unlike damage, PCs are NOT spectators here: heal them via
@@ -1303,7 +1332,9 @@ export function registerCombatTools(server: McpServer): void {
     { characterName: z.string() },
     async ({ characterName }) => {
       const entry = registry.lookup(characterName);
-      if (!entry) throw new Error(`Character not registered: ${characterName}`);
+      if (!entry?.roll20TokenId || entry.ddbCharId === undefined) {
+        throw new Error(`Character not registered: ${characterName}`);
+      }
 
       const [stats, tokenData] = await Promise.all([
         ddb.getCharacterStats(entry.ddbCharId),

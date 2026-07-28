@@ -8,6 +8,8 @@ import {
   isDowned,
   hasHpBar,
   resolveNamesToTokens,
+  classifyToken,
+  isSidekickToken,
   type AoeToken,
 } from "./aoe.js";
 
@@ -75,6 +77,60 @@ describe("isPcToken / splitPcNpc", () => {
     const { pcs, npcs } = splitPcNpc(list);
     expect(pcs.map((t) => t.name)).toEqual(["Winsome"]);
     expect(npcs.map((t) => t.name)).toEqual(["Zombie", "Door"]);
+  });
+});
+
+// Issue #132: sidekicks are player-controlled tokens (controlledby set) whose
+// HP nonetheless lives in bar1 and who die like NPCs — controlledby alone
+// can't distinguish them from a true PC, so a sidekickNames override set
+// (built from the characters registry) is required to route them correctly.
+describe("classifyToken / isSidekickToken (issue #132 sidekick routing)", () => {
+  const pc = (name: string, controlledby = "-PL1"): AoeToken => ({ id: name, name, controlledby });
+  const npcTok = (name: string): AoeToken => ({ id: name, name, controlledby: "" });
+
+  it("three-way routing table: PC → pc, NPC → npc, sidekick → sidekick", () => {
+    const sidekicks = new Set(["tua", "salros eventide", "amri"]);
+    expect(classifyToken(pc("Winsome"), sidekicks)).toBe("pc");
+    expect(classifyToken(npcTok("Zombie"), sidekicks)).toBe("npc");
+    expect(classifyToken(pc("Tua"), sidekicks)).toBe("sidekick");
+    expect(classifyToken(pc("Salros Eventide"), sidekicks)).toBe("sidekick");
+    expect(classifyToken(pc("Amri"), sidekicks)).toBe("sidekick");
+  });
+
+  it("without a sidekickNames set, every player-controlled token is a PC (pre-#132 behavior preserved)", () => {
+    expect(classifyToken(pc("Tua"))).toBe("pc");
+    expect(isPcToken(pc("Tua"))).toBe(true);
+  });
+
+  it("a not-controlled token is never a sidekick even if its name is in the set (sidekick requires player control)", () => {
+    const sidekicks = new Set(["tua"]);
+    expect(classifyToken(npcTok("Tua"), sidekicks)).toBe("npc");
+  });
+
+  it("tolerates epithets both ways (bidirectional substring, case-insensitive)", () => {
+    const sidekicks = new Set(["tua"]);
+    expect(isSidekickToken(pc("Tua the Bold"), sidekicks)).toBe(true);
+    expect(isSidekickToken(pc("TUA"), sidekicks)).toBe(true);
+    const sidekicksFull = new Set(["tua the storm-touched"]);
+    expect(isSidekickToken(pc("Tua"), sidekicksFull)).toBe(true);
+  });
+
+  it("isPcToken is false for a sidekick — it must NOT route to tracked PC state", () => {
+    const sidekicks = new Set(["tua"]);
+    expect(isPcToken(pc("Tua"), sidekicks)).toBe(false);
+  });
+
+  it("splitPcNpc buckets sidekicks with npcs (bar1 HP, NPC save/death semantics)", () => {
+    const sidekicks = new Set(["tua", "amri"]);
+    const list = [
+      pc("Glint"),           // true PC
+      pc("Tua"),             // sidekick
+      npcTok("Kraken Priest"), // NPC
+      pc("Amri"),             // sidekick
+    ];
+    const { pcs, npcs } = splitPcNpc(list, sidekicks);
+    expect(pcs.map((t) => t.name)).toEqual(["Glint"]);
+    expect(npcs.map((t) => t.name)).toEqual(["Tua", "Kraken Priest", "Amri"]);
   });
 });
 
