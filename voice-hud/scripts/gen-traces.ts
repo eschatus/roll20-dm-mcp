@@ -7,6 +7,22 @@
 //   npx tsx scripts/gen-traces.ts --seed 1 --scenarios 20 --out data/traces/traces-1.jsonl
 //   DMW_GEN_DRY=1 npx tsx scripts/gen-traces.ts               (smoke: scripted fake teacher, no ollama)
 //
+// ── --mode gold ─────────────────────────────────────────────────────────────
+// The teacher (qwen-14b) scores 28-33% on the golden suite and ~0% on the
+// convention-heavy axes (concentration, dying, retcon, zone transitions), so
+// grader-filtering its output STARVES exactly the axes the student most needs. But the
+// generator already knows the right answer for every sampled step — that's what
+// check() grades against. `--mode gold` therefore emits the correct trajectory
+// directly from each step template's own ground truth:
+//
+//   npx tsx scripts/gen-traces.ts --seed 1 --scenarios 20 --mode gold
+//
+// NO teacher model, NO LLM call of any kind, deterministic for a fixed seed. Every gold
+// trajectory is still executed through the SAME ajv (-32602) boundary and stubExec, then
+// SELF-TESTED with the step's own check(). A gold trajectory that fails its own check is
+// a GENERATOR BUG (template rot) — it is reported loudly and exits non-zero, never
+// silently dropped.
+//
 // Conventions this generator targets: docs/table-mechanics-golden-pairs.md. The Board
 // model, PCHP encoding, marker helpers, and stub executor are golden-lib.ts's — kept
 // as the single source of truth so the generator and the golden-pairs eval can't drift.
@@ -39,12 +55,22 @@ const MAX_STEPS = 6;
 const DRY = process.env.DMW_GEN_DRY === "1";
 
 // ── CLI args ───────────────────────────────────────────────────────────────
+// "teacher" = drive a real model and grader-filter it (default, the original behavior).
+// "gold"    = synthesize the correct trajectory from the template's ground truth.
+export type GenMode = "teacher" | "gold";
+
 function argVal(flag: string, dflt: string): string {
   const i = process.argv.indexOf(flag);
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : dflt;
 }
 const SEED = Number(argVal("--seed", "1")) || 1;
 const N_SCENARIOS = Number(argVal("--scenarios", DRY ? "2" : "20")) || 20;
+const MODE_ARG = argVal("--mode", process.env.DMW_GEN_MODE || "teacher");
+if (MODE_ARG !== "teacher" && MODE_ARG !== "gold") {
+  console.error(`unknown --mode "${MODE_ARG}" — expected "teacher" or "gold"`);
+  process.exit(2);
+}
+const GEN_MODE = MODE_ARG as GenMode;
 const OUT_PATH = argVal("--out", path.join(__dirname, "..", "data", "traces", `traces-${SEED}.jsonl`));
 const REJECTS_PATH = OUT_PATH.replace(/\.jsonl$/, "") + ".rejects.jsonl";
 
@@ -116,6 +142,15 @@ const clampHp = (before: number, max: number, amount: number, heal: boolean) =>
 const wouldBeWounded = (v: number, max: number) => v > 0 && v * 2 <= max;
 const aliveOf = (b: Board, klasses: Klass[]) => b.tokens.filter((t) => klasses.includes(t.klass) && t.layer === "objects" && !has(t, "dead"));
 
+// Total-order fingerprint of everything the grader cares about — used by the
+// zero-effect (pure-flavor) axis to assert the board is byte-for-byte untouched.
+const snapshotBoard = (b: Board) => JSON.stringify({
+  tokens: b.tokens.map((t) => [t.name, t.bar1_value, t.statusmarkers, t.layer, t.aura1_radius, t.gmnotes]),
+  turnorder: b.turnorder.map((e) => e.id),
+  zones: b.zones.map((z) => [z.name, z.roundsLeft ?? null]),
+  chat: b.chat.length,
+});
+
 // ── Scenario-thread state — cross-step dependencies (retcon, revival, concentration
 // follow-up, zone transitions) chain optimistically off the IDEAL step outcome, since
 // generation happens before we know whether the real teacher's step will be accepted.
@@ -131,7 +166,7 @@ interface ScenState {
 }
 
 interface Ideal { text: string; toolCalls: { name: string; args: Record<string, unknown> }[] }
-interface GeneratedStep {
+export interface GeneratedStep {
   axis: string;
   utterance: string;
   setup?: (b: Board) => void;
@@ -227,6 +262,35 @@ const axisNegativeSpace: AxisFn = (rng, board, state) => {
   };
 };
 
+// Pure negative space: an utterance with NO bookkeeping half at all. The DM owns the
+// SPATIAL domain (convention 14) and narrates colour freely (convention 8, pair 3's
+// "slow to a crawl") — the correct number of tool calls is ZERO. Without these the
+// student learns "one clause ⇒ one marker" and invents state on every sentence.
+const axisPureFlavor: AxisFn = (rng, board) => {
+  const actors = aliveOf(board, ["npc"]);
+  const others = aliveOf(board, ["pc", "sidekick"]);
+  if (!actors.length || !others.length) return null;
+  const a = pick(rng, actors), o = pick(rng, others);
+  const utterance = pick(rng, [
+    `${a.name} circles around behind ${o.name} — I've already slid the token over.`,
+    `${a.name} shoulders ${o.name} back a couple of squares; I moved him by hand.`,
+    `${a.name} kicks the brazier over and the hall lights up orange.`,
+    `${a.name} snarls something in Aquan at ${o.name}, and the water churns around its feet.`,
+  ]);
+  const snap = snapshotBoard(board);
+  return {
+    axis: "pure-flavor", utterance,
+    ideal: [{ text: "Nothing to book — spatial/colour only.", toolCalls: [] }],
+    check: (b, c) => {
+      const now = snapshotBoard(b);
+      if (now !== snap) return `board changed on a pure-flavor utterance:\n  was ${snap}\n  now ${now}`;
+      const mutated = c.calls.filter(isMutatingTool);
+      if (mutated.length) return `invented state for narrative colour: called ${mutated.join(", ")}`;
+      return null;
+    },
+  };
+};
+
 const axisCompoundAoe: AxisFn = (rng, board, state) => {
   const pool = aliveOf(board, ["npc", "sidekick"]);
   if (pool.length < 2) return null;
@@ -262,19 +326,36 @@ const axisCompoundAoe: AxisFn = (rng, board, state) => {
   };
 };
 
+// Zone identity must be UNIQUE on the board. Two pools can collapse to the same
+// shortName ("Spike Growth" vs "Spike Growth's thorns"), and a seeded difficult zone
+// can already hold that name — then a rounds(n) zone "expires" while its namesake
+// survives, and the rollover check reads that as a failure. Caught by the gold
+// self-test at seeds 2-8 (round-rollover): pick a name not already on the board.
+const shortZoneName = (name: string) => name.split("'")[0].split(" ").slice(0, 2).join(" ");
+
 const axisZoneCreate: AxisFn = (rng, board, state) => {
   const damaging = rng() < 0.5;
-  const name = damaging ? pick(rng, ZONE_DAMAGING) : pick(rng, ZONE_DIFFICULT);
-  const shortName = name.split("'")[0].split(" ").slice(0, 2).join(" ");
+  const pool = (damaging ? ZONE_DAMAGING : ZONE_DIFFICULT)
+    .filter((n) => !board.zones.some((z) => z.name.toLowerCase() === shortZoneName(n).toLowerCase()));
+  if (!pool.length) return null; // every candidate name is already on the board
+  const name = pick(rng, pool);
+  const shortName = shortZoneName(name);
   const utterance = damaging
     ? `${name} fills the room — anyone caught in it takes damage each round.`
     : `${name} spreads across the floor — it's difficult terrain now.`;
+  // Zone semantics (golden-pairs convention 5): terrain drives the colour (difficult =
+  // green, damaging = red) and duration drives expiry — a damaging fire-type zone is
+  // rounds(1), burning out at the next round boundary via process_round_end_zones.
+  const zoneArgs = damaging
+    ? { name: shortName, color: "#cc0000", terrain: "damaging", duration: { type: "rounds", n: 1 } }
+    : { name: shortName, color: "#00aa44", terrain: "difficult", duration: { type: "instant" } };
   return {
     axis: "zone-create", utterance,
-    ideal: [{ text: "", toolCalls: [{ name: "create_zone", args: { name: shortName, color: damaging ? "#ff3300" : "#88aa00" } }] }, { text: "Zone up.", toolCalls: [] }],
+    ideal: [{ text: "", toolCalls: [{ name: "create_zone", args: zoneArgs }] }, { text: "Zone up.", toolCalls: [] }],
     check: (b) => {
-      const re = new RegExp(shortName.split(" ")[0], "i");
-      if (!b.zones.some((z) => re.test(z.name))) return `no zone matching "${shortName}" created`;
+      // Exact-match on the zone's identity — a first-word regex ("Spike") matches a
+      // different zone that merely shares a word, hiding create/expire failures.
+      if (!b.zones.some((z) => z.name.toLowerCase() === shortName.toLowerCase())) return `no zone named "${shortName}" created`;
       state.activeZone = { name: shortName, damaging, createdRound: state.round };
       return null;
     },
@@ -293,7 +374,13 @@ const axisZoneTransition: AxisFn = (rng, board, state) => {
   ]);
   return {
     axis: "zone-transition", utterance,
-    ideal: [{ text: "", toolCalls: [{ name: "clear_zone", args: { name: old.name } }, { name: "create_zone", args: { name: "Fire", color: "#ff3300" } }] }, { text: "Transitioned.", toolCalls: [] }],
+    // Per-material delete + create with a NEW duration (convention 6) — never a modify.
+    ideal: [{
+      text: "", toolCalls: [
+        { name: "clear_zone", args: { name: old.name } },
+        { name: "create_zone", args: { name: "Fire", color: "#cc0000", terrain: "damaging", duration: { type: "rounds", n: 1 } } },
+      ],
+    }, { text: "Transitioned.", toolCalls: [] }],
     check: (b) => {
       const stillOld = b.zones.some((z) => z.name.toLowerCase() === old.name.toLowerCase());
       const hasFire = b.zones.some((z) => /fire|flame|burn/i.test(z.name));
@@ -309,8 +396,13 @@ const axisRoundRollover: AxisFn = (rng, board, state) => {
   if (!before.length) return null;
   const expiring = state.activeZone && state.activeZone.damaging && state.activeZone.createdRound <= state.round ? state.activeZone.name : null;
   const utterance = "That's the round — top of the order.";
-  const calls: { name: string; args: Record<string, unknown> }[] = [{ name: "advance_turn", args: {} }];
-  if (expiring) calls.push({ name: "clear_zone", args: { name: expiring } });
+  // Round-boundary duty (convention 7 / pair 6): advance, then run the rounds(n) zone
+  // countdown. process_round_end_zones is the tool for this — NOT a hand-aimed
+  // clear_zone, which would guess at what expired instead of letting the server say.
+  const calls: { name: string; args: Record<string, unknown> }[] = [
+    { name: "advance_turn", args: {} },
+    { name: "process_round_end_zones", args: { currentRound: state.round + 1 } },
+  ];
   return {
     axis: "round-rollover", utterance,
     ideal: [{ text: "", toolCalls: calls }, { text: "Round over.", toolCalls: [] }],
@@ -460,6 +552,16 @@ const axisConcentrationQuestion: AxisFn = (rng, board, state) => {
 const axisDeclarativeFollowup: AxisFn = (rng, board, state) => {
   if (!state.concWaiting) return null;
   const name = state.concWaiting;
+  // The thread can be resolved out from under us: if the concentrating token dropped in
+  // a later step, mark_dying's cascade (or death) already cleared the marker and zeroed
+  // the aura, so a "Passed." follow-up would assert a marker that is legitimately gone.
+  // Drop the stale thread instead of emitting an unsatisfiable trajectory. (Caught by
+  // the gold self-test at seeds 8/10, axis declarative-followup.)
+  const holder = find(board, name);
+  if (!holder || !has(holder, "concentrating") || has(holder, "dead") || has(holder, "unconscious")) {
+    state.concWaiting = undefined;
+    return null;
+  }
   const failed = rng() < 0.5;
   const utterance = failed ? "Failed." : "Passed.";
   state.concWaiting = undefined;
@@ -486,6 +588,7 @@ const AXES: [string, AxisFn][] = [
   ["delta-damage", axisDeltaDamage],
   ["pc-hit-condition", axisPcHitCondition],
   ["negative-space", axisNegativeSpace],
+  ["pure-flavor", axisPureFlavor],
   ["compound-aoe", axisCompoundAoe],
   ["zone-create", axisZoneCreate],
   ["zone-transition", axisZoneTransition],
@@ -515,6 +618,19 @@ function buildScenario(rng: () => number): { board: Board; stepCount: number } {
 // once per iteration of the execute loop, after the previous step's tool calls have
 // already mutated `board` — never pre-batch calls across un-executed steps.
 function genStep(rng: () => number, board: Board, state: ScenState): GeneratedStep | null {
+  // Follow-up bias. A pending thread (an open concentration micro-question, a downed PC,
+  // a live zone waiting for its trigger) is what the DM's very NEXT breath tends to
+  // resolve. A flat shuffle over 14 axes strands most of them, which starves exactly the
+  // convention-heavy second halves — the teardown cascade, the absolute-set revival, the
+  // delete+create transition — that the student has no other way to learn.
+  const priority: AxisFn[] = [];
+  if (state.concWaiting && rng() < 0.7) priority.push(axisDeclarativeFollowup);
+  if (state.downPc && rng() < 0.45) priority.push(axisRevival);
+  if (state.activeZone && rng() < 0.35) priority.push(axisZoneTransition);
+  for (const fn of priority) {
+    const gen = fn(rng, board, state);
+    if (gen) { state.usedAxes[gen.axis] = (state.usedAxes[gen.axis] || 0) + 1; return gen; }
+  }
   const order = shuffle(rng, AXES);
   for (const [, fn] of order) {
     const gen = fn(rng, board, state);
@@ -551,7 +667,7 @@ class ScriptedGenProvider implements LLMProvider {
 // ── Chat-message trace (OpenAI tool-calling shape) — built alongside the real
 // provider/stub drive so the JSONL record is a faithful, standalone conversation
 // prefix regardless of which backend (Ollama/Anthropic/scripted) produced it. ──
-type ChatMsg =
+export type ChatMsg =
   | { role: "system"; content: string }
   | { role: "user"; content: string }
   | { role: "assistant"; content: string | null; tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[] }
@@ -560,7 +676,7 @@ type ChatMsg =
 interface TraceRecord {
   messages: ChatMsg[];
   tools: ToolSpec[];
-  meta: { scenarioId: number; seed: number; axis: string; stepIdx: number; latencyMs: number };
+  meta: { scenarioId: number; seed: number; axis: string; stepIdx: number; latencyMs: number; mode: GenMode };
 }
 
 interface RejectRecord extends TraceRecord {
@@ -617,6 +733,71 @@ async function runStep(
   return { ok: reason === null, reason, messages, latencyMs };
 }
 
+// ── Gold mode ───────────────────────────────────────────────────────────────
+// The step template's `ideal` IS the expectedCalls producer: sampled against the LIVE
+// board (targets, amounts, class routing, the active zone), it is the exact sequence a
+// perfect agent would emit — atomic tools preferred throughout (mark_dying / kill_token /
+// break_concentration / process_round_end_zones rather than hand-chained primitives).
+export const expectedCalls = (step: GeneratedStep): { name: string; args: Record<string, unknown> }[] =>
+  step.ideal.flatMap((turn) => turn.toolCalls);
+
+// The closing GM-facing report line. Templated, never generated — the gem reports
+// (bookkeeping, numbers allowed), the DM narrates. The template's own closing text is
+// the headline (it carries axis-specific intent, e.g. the concentration micro-question);
+// the tool results below it are the actual bookkeeping the DM wants to see.
+export function goldReport(step: GeneratedStep, results: string[]): string {
+  const last = step.ideal[step.ideal.length - 1];
+  const head = (last && last.toolCalls.length === 0 && last.text) ? last.text : "Applied.";
+  return results.length ? head + "\n" + results.map((r) => `- ${r}`).join("\n") : head;
+}
+
+export interface GoldFailure {
+  seed: number; scenarioId: number; stepIdx: number; axis: string; reason: string;
+}
+
+// Runs one step's gold trajectory: expectedCalls → the SAME ajv (-32602) boundary and
+// stubExec the teacher path uses → the step's own check() as a SELF-TEST. A non-null
+// reason here means the TEMPLATE is broken (rot), not that a model got it wrong.
+export function runStepGold(
+  step: GeneratedStep, board: Board, messages: ChatMsg[], idPrefix: string,
+): { reason: string | null; toolCallCount: number } {
+  step.setup?.(board);
+  const userText = buildTurnContext(rosterFromBoard(board)) + "\n\n" + step.utterance;
+  messages.push({ role: "user", content: userText });
+
+  const ctx: Ctx = { calls: [], texts: [] };
+  const allResults: string[] = [];
+  let n = 0, toolCallCount = 0;
+
+  for (const turn of step.ideal) {
+    if (turn.toolCalls.length === 0) continue; // closing prose — emitted once, below
+    const calls = turn.toolCalls.map((c) => ({ id: `${idPrefix}-${n++}`, name: c.name, args: c.args }));
+    toolCallCount += calls.length;
+    messages.push({
+      role: "assistant", content: turn.text || null,
+      tool_calls: calls.map((c) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: JSON.stringify(c.args) } })),
+    });
+    for (const c of calls) {
+      ctx.calls.push(c.name);
+      const val = validators.get(c.name);
+      if (val && !val(c.args)) {
+        // A gold call that can't pass the real tool schema is a generator bug, full stop —
+        // never emit it as training data pretending the server accepted it.
+        return { reason: `GOLD CALL REJECTED BY SCHEMA: ${c.name}(${JSON.stringify(c.args)}) → ${ajv.errorsText(val.errors, { separator: "; " })}`, toolCallCount };
+      }
+      const content = stubExec(c.name, c.args, board);
+      allResults.push(content);
+      messages.push({ role: "tool", tool_call_id: c.id, name: c.name, content });
+    }
+  }
+
+  const finalText = goldReport(step, allResults);
+  ctx.texts.push(finalText);
+  messages.push({ role: "assistant", content: finalText });
+
+  return { reason: step.check(board, ctx), toolCallCount };
+}
+
 export interface GenerateOpts {
   seed: number;
   scenarios: number;
@@ -625,6 +806,7 @@ export interface GenerateOpts {
   dry: boolean;
   provider: string;
   model: string;
+  mode?: GenMode; // default "teacher"
 }
 
 export interface GenerateSummary {
@@ -633,12 +815,21 @@ export interface GenerateSummary {
   accByAxis: Record<string, number>;
   rejByAxis: Record<string, number>;
   wallMs: number;
+  mode: GenMode;
+  /** Gold mode only: gold trajectories that failed their OWN check() — generator bugs. */
+  goldFailures: GoldFailure[];
+  /** Gold mode only: JSON chars written, for the corpus token estimate (chars / 3.6). */
+  outChars: number;
+  /** Gold mode only: emitted records whose assistant turns contained zero tool calls. */
+  zeroCallRecords: number;
 }
 
 // The generation loop, factored out of main() so tests (DMW_GEN_DRY smoke test) can
 // drive it directly with explicit options instead of relying on module-load-time CLI
 // parsing — same code path CLI runs, just addressable.
 async function generate(opts: GenerateOpts): Promise<GenerateSummary> {
+  const mode: GenMode = opts.mode ?? "teacher";
+  const gold = mode === "gold";
   const rng = mulberry32(opts.seed);
   let toolSpecs: ToolSpec[];
   let makeStepTeacher: () => LLMProvider;
@@ -648,13 +839,16 @@ async function generate(opts: GenerateOpts): Promise<GenerateSummary> {
     // No MCP connection, no ollama — a hand-written lean tool catalog + a scripted
     // teacher that answers each step from its own ideal turns.
     const names = ["update_token_hp", "update_hp_many", "resolve_aoe", "set_token_marker", "kill_token",
-      "mark_dying", "break_concentration", "create_zone", "clear_zone", "advance_turn", "set_token_props",
+      "mark_dying", "break_concentration", "create_zone", "clear_zone", "process_round_end_zones",
+      "advance_turn", "set_token_props",
       "roll_dice", "send_narration", "list_tokens", "get_token", "get_turn_order"];
     toolSpecs = names.map((n) => ({ name: n, description: `stub:${n}`, parameters: { type: "object", properties: {} } }));
     // No real schemas in dry mode → no -32602 boundary to enforce (nothing to validate against).
     makeStepTeacher = () => new ScriptedGenProvider();
   } else {
-    if (opts.provider === "anthropic" && !process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set");
+    // Gold mode never constructs a provider, so it needs no API key — the MCP connection
+    // here is only for the REAL tool schemas (the -32602 self-test boundary).
+    if (!gold && opts.provider === "anthropic" && !process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set");
     mcp = new McpRoll20();
     const tools = await mcp.connect();
     for (const t of tools) { try { validators.set(t.name, ajv.compile(t.inputSchema)); } catch { /* unschemable */ } }
@@ -665,39 +859,60 @@ async function generate(opts: GenerateOpts): Promise<GenerateSummary> {
     makeStepTeacher = () => opts.provider === "ollama" ? new OllamaProvider(opts.model, CONFIG.ollamaUrl) : new AnthropicProvider(opts.model);
   }
 
-  const system = buildSystemPrompt(opts.provider);
+  const system = buildSystemPrompt(gold ? "ollama" : opts.provider);
   fs.mkdirSync(path.dirname(opts.outPath), { recursive: true });
   const outFd = fs.openSync(opts.outPath, "w");
   const rejFd = fs.openSync(opts.rejectsPath, "w");
 
   const accByAxis: Record<string, number> = {};
   const rejByAxis: Record<string, number> = {};
-  let accepted = 0, rejected = 0;
+  let accepted = 0, rejected = 0, outChars = 0, zeroCallRecords = 0;
+  const goldFailures: GoldFailure[] = [];
   const wall0 = Date.now();
 
   for (let scenarioId = 0; scenarioId < opts.scenarios; scenarioId++) {
     const { board, stepCount } = buildScenario(rng);
     const state: ScenState = { round: 1, usedAxes: {} };
-    const teacher = opts.dry ? new ScriptedGenProvider() : makeStepTeacher();
-    teacher.start(system, toolSpecs);
+    // Gold mode drives no model at all — no provider is constructed, nothing is started.
+    const teacher = gold ? null : (opts.dry ? new ScriptedGenProvider() : makeStepTeacher());
+    teacher?.start(system, toolSpecs);
     const messages: ChatMsg[] = [{ role: "system", content: system }];
 
     for (let stepIdx = 0; stepIdx < stepCount; stepIdx++) {
       // Generated AFTER prior steps' tool calls have mutated `board` — see genStep().
       const step = genStep(rng, board, state);
       if (!step) continue;
-      if (opts.dry) (teacher as ScriptedGenProvider).scriptStep(step.ideal);
-      const res = await runStep(teacher, step, board, messages, toolSpecs);
+
+      let ok: boolean, reason: string | null, latencyMs: number, toolCalls = -1;
+      if (gold) {
+        const res = runStepGold(step, board, messages, `gold-${opts.seed}-${scenarioId}-${stepIdx}`);
+        // Deterministic for a fixed seed: no wall-clock leaks into a gold record.
+        reason = res.reason; ok = reason === null; latencyMs = 0; toolCalls = res.toolCallCount;
+      } else {
+        if (opts.dry) (teacher as ScriptedGenProvider).scriptStep(step.ideal);
+        const res = await runStep(teacher!, step, board, messages, toolSpecs);
+        ok = res.ok; reason = res.reason; latencyMs = res.latencyMs;
+      }
+
       const record: TraceRecord = {
         messages: messages.slice(), // full conversation prefix through this step
         tools: toolSpecs,
-        meta: { scenarioId, seed: opts.seed, axis: step.axis, stepIdx, latencyMs: res.latencyMs },
+        meta: { scenarioId, seed: opts.seed, axis: step.axis, stepIdx, latencyMs, mode },
       };
-      if (res.ok) {
-        fs.writeSync(outFd, JSON.stringify(record) + "\n");
+      if (ok) {
+        const line = JSON.stringify(record) + "\n";
+        fs.writeSync(outFd, line);
+        outChars += line.length;
+        if (toolCalls === 0) zeroCallRecords++;
         accepted++; accByAxis[step.axis] = (accByAxis[step.axis] || 0) + 1;
+      } else if (gold) {
+        // A gold trajectory that fails its OWN check is template rot, not a model miss.
+        // Record it loudly (the process exits non-zero) — never silently drop it.
+        goldFailures.push({ seed: opts.seed, scenarioId, stepIdx, axis: step.axis, reason: reason! });
+        fs.writeSync(rejFd, JSON.stringify({ ...record, reason: reason! } satisfies RejectRecord) + "\n");
+        rejected++; rejByAxis[step.axis] = (rejByAxis[step.axis] || 0) + 1;
       } else {
-        const rej: RejectRecord = { ...record, reason: res.reason! };
+        const rej: RejectRecord = { ...record, reason: reason! };
         fs.writeSync(rejFd, JSON.stringify(rej) + "\n");
         rejected++; rejByAxis[step.axis] = (rejByAxis[step.axis] || 0) + 1;
       }
@@ -707,37 +922,55 @@ async function generate(opts: GenerateOpts): Promise<GenerateSummary> {
   fs.closeSync(outFd); fs.closeSync(rejFd);
   await mcp?.close();
 
-  return { accepted, rejected, accByAxis, rejByAxis, wallMs: Date.now() - wall0 };
+  return { accepted, rejected, accByAxis, rejByAxis, wallMs: Date.now() - wall0, mode, goldFailures, outChars, zeroCallRecords };
 }
 
 function printSummary(opts: GenerateOpts, summary: GenerateSummary) {
-  console.log(`\n──────── gen-traces ────────  seed=${opts.seed} scenarios=${opts.scenarios} provider=${opts.provider}/${opts.model}${opts.dry ? " (DRY — scripted fake teacher)" : ""}`);
-  console.log(`  accepted: ${summary.accepted}   rejected: ${summary.rejected}   total steps: ${summary.accepted + summary.rejected}`);
-  console.log("\n  per-axis (accepted/total, reject rate):");
+  const gold = summary.mode === "gold";
+  const engine = gold ? "GOLD — ground truth, no teacher model" : `provider=${opts.provider}/${opts.model}${opts.dry ? " (DRY — scripted fake teacher)" : ""}`;
+  console.log(`\n──────── gen-traces ────────  seed=${opts.seed} scenarios=${opts.scenarios} mode=${summary.mode}  ${engine}`);
+  console.log(`  ${gold ? "emitted" : "accepted"}: ${summary.accepted}   ${gold ? "self-test FAILURES" : "rejected"}: ${summary.rejected}   total steps: ${summary.accepted + summary.rejected}`);
+  console.log(`\n  per-axis (${gold ? "gold trajectories" : "accepted/total, reject rate"}):`);
   for (const [axis] of AXES) {
     const a = summary.accByAxis[axis] || 0, r = summary.rejByAxis[axis] || 0, tot = a + r;
     if (!tot) continue;
+    if (gold) { console.log(`    ${axis.padEnd(24)} ${String(a).padStart(4)}${r ? `   ⚠ ${r} FAILED SELF-TEST` : ""}`); continue; }
     const rate = ((r / tot) * 100).toFixed(0);
     const flag = r > 0 && r / tot >= 0.3 ? "  ⚠ HIGH REJECT RATE" : "";
     console.log(`    ${axis.padEnd(24)} ${String(a).padStart(3)}/${String(tot).padEnd(3)}  reject=${rate}%${flag}`);
   }
+  if (gold) {
+    console.log(`\n  zero-tool-call (negative-space) records: ${summary.zeroCallRecords}`);
+    console.log(`  corpus: ${summary.outChars.toLocaleString()} JSON chars  ≈ ${Math.round(summary.outChars / 3.6).toLocaleString()} tokens (chars/3.6)`);
+  }
   console.log(`\n  out:     ${opts.outPath}`);
   console.log(`  rejects: ${opts.rejectsPath}`);
   console.log(`  wall: ${(summary.wallMs / 1000).toFixed(1)}s`);
+
+  if (summary.goldFailures.length) {
+    console.error(`\n  ✗ ${summary.goldFailures.length} GOLD SELF-TEST FAILURE(S) — the generator's own ground truth does not satisfy its own check().`);
+    console.error("    This is TEMPLATE ROT (a step template drifted from the conventions it grades), not a model error.");
+    for (const f of summary.goldFailures) {
+      console.error(`      seed=${f.seed} scenario=${f.scenarioId} step=${f.stepIdx} axis=${f.axis}\n        ${f.reason}`);
+    }
+  }
 }
 
 async function main() {
   const outPath = OUT_PATH;
   const opts: GenerateOpts = {
     seed: SEED, scenarios: N_SCENARIOS, outPath, rejectsPath: REJECTS_PATH,
-    dry: DRY, provider: PROVIDER, model: MODEL,
+    dry: DRY, provider: PROVIDER, model: MODEL, mode: GEN_MODE,
   };
   const summary = await generate(opts);
   printSummary(opts, summary);
+  // Gold trajectories are correct BY CONSTRUCTION — a failure means the generator is
+  // broken and the corpus is untrustworthy. Fail the process, don't ship a quiet subset.
+  if (summary.goldFailures.length) process.exit(1);
 }
 
 if (require.main === module) {
   main().catch((e) => { console.error(e); process.exit(1); });
 }
 
-export { mulberry32, buildScenario, genStep, sampleRoster, AXES, ScriptedGenProvider, runStep, generate, printSummary, main };
+export { mulberry32, buildScenario, genStep, sampleRoster, AXES, ScriptedGenProvider, runStep, generate, printSummary, main, snapshotBoard };
