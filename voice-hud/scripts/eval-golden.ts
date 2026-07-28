@@ -31,6 +31,7 @@ import { LLMProvider, ToolSpec } from "../src/llm/provider";
 import { CONFIG } from "../src/config";
 import { decideTerminal, isMutatingTool, LoopMode } from "../src/loop-policy";
 import { Board, Ctx, find, has, markers, readPcHp, rosterFromBoard, seedBoard, setMarkers, stubExec } from "./golden-lib";
+import { slimToolSpecs } from "../src/llm/slim-tools";
 
 dotenv.config({ path: path.join(__dirname, "..", "..", ".env") });
 dotenv.config({ path: path.join(__dirname, "..", ".env") });
@@ -229,9 +230,17 @@ async function main() {
     allow = new Set(CONFIG.cloudToolAllowlist);
     if (PROVIDER === "ollama") { const local = new Set(CONFIG.localToolAllowlist); allow = new Set([...allow].filter((t) => local.has(t))); }
   }
-  const toolSpecs: ToolSpec[] = tools.filter((t) => !allow || allow.has(t.name)).map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }));
-  console.log(`Connected — ${tools.length} served, ${toolSpecs.length} sent (scope=${SCOPE}). provider=${PROVIDER} model=${MODEL}, loop=${MODE}, ${SCENARIO.length} steps × ${REPS}\n`);
-  const system = buildSystemPrompt("anthropic");
+  // Compaction knobs (local-path experiments): DMW_SLIM_TOOLS=1 strips schema noise +
+  // defensive prose; DMW_PROMPT=local swaps the 5k-token cloud prompt for the terse
+  // local prompt (now carrying the calibrated-conventions digest).
+  let toolSpecs: ToolSpec[] = tools.filter((t) => !allow || allow.has(t.name)).map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }));
+  const SLIM = process.env.DMW_SLIM_TOOLS === "1";
+  if (SLIM) toolSpecs = slimToolSpecs(toolSpecs);
+  const PROMPT_VARIANT = process.env.DMW_PROMPT === "local" ? "ollama" : "anthropic";
+  const system = buildSystemPrompt(PROMPT_VARIANT);
+  const prefixChars = system.length + JSON.stringify(toolSpecs).length;
+  console.log(`Connected — ${tools.length} served, ${toolSpecs.length} sent (scope=${SCOPE}, slim=${SLIM}, prompt=${PROMPT_VARIANT}). provider=${PROVIDER} model=${MODEL}, loop=${MODE}, ${SCENARIO.length} steps × ${REPS}`);
+  console.log(`prefix: ~${Math.round(prefixChars / 3.7)} tokens (${prefixChars} chars)\n`);
 
   const perStep = SCENARIO.map(() => 0);
   const turnMs: number[] = [];

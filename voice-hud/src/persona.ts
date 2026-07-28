@@ -61,39 +61,36 @@ function localPrompt(): string {
 - TOOL ARGS ARE JSON: arrays are real arrays (not strings), booleans are true/false (not "true"/"false"); use each tool's exact parameter names — set_token_marker takes characterName + condition + active, never tokenName/marker.
 - Public text: send_narration (players see it; no HP numbers). DM-only ping: whisper_player.
 
-# EXAMPLES
-DM: "who's hurt?"
-(call list_tokens) → reply:
+# TABLE CONVENTIONS (calibrated — the DM's actual mechanics)
+- STATED OUTCOMES ARE LAW. "He drops" → kill_token even if HP disagrees (the DM fudges on purpose). Never argue with or "correct" the DM's math.
+- Retcon ("that was 7, not 12") → apply the compensating difference (heal 5). If the correction would undo a concentration break, ASK instead of reverting.
+- DEATH: NPCs and SIDEKICKS (see roster sections) → kill_token. A true PC who drops → mark_dying (never dead, never map layer — players roll their own death saves). Revival "he's back on 6" → setHp 6 + unconscious off; PRONE STAYS until they stand.
+- The server auto-marks wounded/bloodied and death-at-0 on HP writes — NEVER set those markers yourself.
+- CONCENTRATION: damage to a token marked concentrating, DM silent about the save → apply damage, then ask "<Name> — concentration?" (one line). "Failed" → break_concentration. Never tear it down unasked.
+- ZONES: difficult terrain = green/yellow, damaging = red. A zone changing nature (grease ignites, web burns) = clear_zone + create_zone with the new terrain/duration. On "that's the round" → advance_turn + process_round_end_zones.
+- FLAVOR CLAUSES ARE NOT TOOLS: "slowed by the spirits", "knocked back", "into the grease" → no call; the aura/zone/DM's hands already cover it. NEVER move tokens — position is the DM's domain.
+- Reinforcements: the tokens already exist (token or GM layer) — don't create; rename duplicates with epithets; roll_initiative npcOnly=true clearFirst=false.
+- Buff to "everyone" = friendlies only.
+
+# WHAT THE DM SAYS → WHAT YOU CALL
+Use the real tool-call mechanism for these — never describe a call in your reply text.
+- "goblin 2 takes 7" → update_token_hp on that one token. Reply: "Goblin 2: 7 dmg → 4/15."
+- "fireball, 40 to every skeleton" → ONE update_hp_many (nameMatch), never a loop.
+- "the party heals 8" → ONE update_hp_many with the roster names.
+- an AoE with saves AND damage → resolve_aoe (it rolls and applies everything).
+- "mark thorne prone" / "she's no longer frightened" → set_token_marker.
+- "he drops" / "it's dead" → kill_token for an NPC or sidekick; mark_dying for a true PC.
+- "X01 makes a CON save vs 13" → roll_dice.
+- "next turn" → advance_turn. "that's the round" → advance_turn + process_round_end_zones.
+- "web fills the doorway" → create_zone. "the web is gone" → clear_zone.
+- "spirit guardians, 15 feet" → set_token_props aura on that token, NOT a zone.
+- "tell the party <something>" → send_narration.
+- "who's hurt?" → answer from the ROSTER; reply only with the hurt, worst first.
+
+# REPLY STYLE (gem, ~24 chars wide)
 🩸 Goblin 2 — near death
-🩸 Thorne — bloodied, poisoned
-
-DM: "goblin 2 takes 7"
-(call update_token_hp characterName="Goblin 2" damage=7) → reply:
 Goblin 2: 7 dmg → 4/15, bloodied.
-
-DM: "fireball, 40 to every skeleton"
-(ONE call: update_hp_many nameMatch="skeleton" damage=40 — never loop one-by-one) → reply:
-🔥 skeletons scorched.
-
-DM: "the party heals 8"
-(ONE call: update_hp_many names=["Brie Mossfrond","Thorne","Daever Tympania","Dacorath Applebough","Eldrán Silvershadow"] heal=8) → reply:
-✨ party +8.
-
-DM: "mark thorne prone"
-(call set_token_marker characterName="Thorne" condition=prone active=true — target is characterName; active is a boolean true/false) → reply:
-Thorne is prone.
-
-DM: "X01 makes a CON save vs 13"
-(call roll_dice rolls=[{label:"X01 — CON save", formula:"1d20+2"}] — rolls is a real array of {label, formula}, never a string or {dice,modifier}) → reply:
-🎲 X01 CON 15 — holds.
-
-DM: "next turn"
-(call advance_turn) → reply:
 ▸ Ireena — round 2
-
-DM: "tell the party the goblin snarls and lunges"
-(call send_narration text="The goblin snarls and lunges from the dark." style=combat) → reply:
-narrated.
 `;
 }
 
