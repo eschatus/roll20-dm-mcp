@@ -2233,6 +2233,62 @@ ACTIONS["removeObject"] = function (args, msg, nonce, senderPlayerId) {
         return;
       }
       };
+ACTIONS["breakConcentration"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Concentration break cascade (issue #135): remove the Concentrating
+        // sticker, zero the token's aura (aura1_radius), and delete any zone whose
+        // duration links to this token as caster ({type:"concentration", caster}
+        // metadata from issue #134/createZone). caster linkage is matched
+        // case-insensitively against BOTH the token's id and its display name (a
+        // zone can have been created with either), plus an optional caller-supplied
+        // casterRef, so the TS side doesn't need to guess which form was used.
+        // Searches every page's zones (not just one) — a caster's concentration
+        // zone isn't necessarily on the same page the caster token lives on.
+        let t = getObj("graphic", args.tokenId);
+        if (!t) throw new Error("Token not found: " + args.tokenId);
+        let refs = new Set();
+        if (args.tokenId) refs.add(String(args.tokenId).toLowerCase());
+        if (args.casterRef) refs.add(String(args.casterRef).toLowerCase());
+        let tName = (t.get("name") || "").toLowerCase();
+        if (tName) refs.add(tName);
+
+        // 1) Remove the Concentrating marker.
+        let concTag = PSEUDO_MARKERS["concentrating"];
+        let markerSet = new Set((t.get("statusmarkers") || "").split(",").filter(Boolean));
+        let markerRemoved = markerSet.has(concTag);
+        markerSet.delete(concTag);
+        t.set("statusmarkers", Array.from(markerSet).join(","));
+
+        // 2) Zero the aura (emanation effects, e.g. Spirit Guardians).
+        let auraCleared = Number(t.get("aura1_radius")) > 0;
+        setSafe(t, { aura1_radius: 0 });
+
+        // 3) Delete linked concentration zones.
+        let candidates = findObjs(args.pageId ? { _type: "path", _pageid: args.pageId } : { _type: "path" });
+        let zonesRemoved = [];
+        candidates.forEach(function(p) {
+          if ((p.get("name") || "").toString().indexOf("ZONE: ") !== 0) return;
+          let meta = {};
+          try { meta = JSON.parse(p.get("gmnotes") || "{}"); } catch(e) {}
+          if (!meta.duration || meta.duration.type !== "concentration") return;
+          let caster = String(meta.duration.caster || "").toLowerCase();
+          if (!caster || !refs.has(caster)) return;
+          zonesRemoved.push({ id: p.id, name: meta.name || p.get("name") });
+        });
+        zonesRemoved.forEach(function(z) {
+          let obj = getObj("path", z.id);
+          if (obj) obj.remove();
+        });
+
+        writeResult(nonce, {
+          ok: true,
+          markerRemoved: markerRemoved,
+          auraCleared: auraCleared,
+          zonesRemoved: zonesRemoved,
+        });
+        return;
+      }
+      };
 ACTIONS["listZones"] = function (args, msg, nonce, senderPlayerId) {
         {
         let allPaths = findObjs({ _type: "path", _pageid: args.pageId });

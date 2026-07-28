@@ -144,6 +144,84 @@ export function registerCombatTools(server: McpServer): void {
   );
 
   server.tool(
+    "mark_dying",
+    "Mark a TRUE PC as DYING when they drop to 0 HP (issue #135) — applies prone + unconscious and the token STAYS on the token layer (never map layer, never dead). Death saves are player-owned (3 fails); only call kill_token when the DM explicitly declares the PC dead. If the PC was concentrating, the concentration teardown (marker + aura + linked zones) fires automatically — going down breaks it implicitly. NOT for NPCs or sidekicks (Tua, Salros Eventide, Amri, etc.) — those die immediately via kill_token, no dying state. Revival: clear 'unconscious' with set_token_marker (active:false) — prone STAYS until the DM says the PC stands up.",
+    {
+      characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Thorne'."),
+      tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
+    },
+    async ({ characterName, tokenId }) => {
+      let resolvedTokenId = tokenId;
+      if (!resolvedTokenId) {
+        if (!characterName) throw new Error("Provide characterName or tokenId");
+        resolvedTokenId = await resolveTokenOrThrow(characterName);
+      }
+      type TokenData = { represents?: string; name?: string; statusmarkers?: string } & AoeToken;
+      const tok = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId: resolvedTokenId });
+      if (!tok) throw new Error(`Token not found: ${characterName ?? tokenId}`);
+      const charId = tok.represents || undefined;
+
+      const isPc = isPcToken(tok, registry.listSidekickNames());
+      if (!isPc) {
+        throw new Error(
+          `${characterName ?? resolvedTokenId} is not a true PC (NPC or sidekick) — use kill_token instead. NPCs and sidekicks die immediately; there is no dying state for them.`
+        );
+      }
+
+      await roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition: "prone", active: true });
+      await roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition: "unconscious", active: true });
+
+      // Auto-cascade: going down breaks concentration implicitly (issue #135).
+      let teardown: { markerRemoved: boolean; auraCleared: boolean; zonesRemoved: { id: string; name: string }[] } | null = null;
+      const markers = String(tok.statusmarkers || "").split(",");
+      const wasConcentrating = markers.some((m) => m.startsWith("Concentrating::"));
+      if (wasConcentrating) {
+        teardown = await roll20.relayCommand({
+          action: "breakConcentration",
+          tokenId: resolvedTokenId,
+          casterRef: characterName ?? tok.name ?? resolvedTokenId,
+        });
+      }
+
+      const cascadeNote = teardown
+        ? ` Concentration broken (was concentrating): aura cleared=${teardown.auraCleared}, zones removed=${teardown.zonesRemoved.map((z) => z.name).join(", ") || "none"}.`
+        : "";
+      return text(
+        `${characterName ?? resolvedTokenId} marked dying — prone + unconscious, stays on the token layer.${cascadeNote} Death saves are player-owned; call kill_token only on 3 failed saves.`
+      );
+    }
+  );
+
+  server.tool(
+    "break_concentration",
+    "Tear down a concentration effect on a token (issue #135): removes the Concentrating marker, zeroes its aura (aura1_radius=0), and deletes any zone whose duration is {type:'concentration', caster} linked to this token (zone metadata from issue #134). Returns what was torn down. Use when the DM declares the break directly ('she loses the spell', 'the guardians fade'), when a concentration save fails after damage (ask the DM a one-word question first per skills/dm-rules.md — don't call this unasked), or via the automatic cascade in mark_dying. Never call this on a 'Passed' concentration save.",
+    {
+      characterName: z.string().optional().describe("The concentrating token/character's name exactly as on the map, e.g. 'Glint'."),
+      tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
+    },
+    async ({ characterName, tokenId }) => {
+      let resolvedTokenId = tokenId;
+      if (!resolvedTokenId) {
+        if (!characterName) throw new Error("Provide characterName or tokenId");
+        resolvedTokenId = await resolveTokenOrThrow(characterName);
+      }
+      const tok = await roll20.relayCommand<{ name?: string } | null>({ action: "getTokenById", tokenId: resolvedTokenId });
+      const casterRef = characterName ?? tok?.name ?? resolvedTokenId;
+      const result = await roll20.relayCommand<{ ok: boolean; markerRemoved: boolean; auraCleared: boolean; zonesRemoved: { id: string; name: string }[] }>({
+        action: "breakConcentration",
+        tokenId: resolvedTokenId,
+        casterRef,
+      });
+      return json({
+        target: characterName ?? resolvedTokenId,
+        markerRemoved: result.markerRemoved,
+        auraCleared: result.auraCleared,
+        zonesRemoved: result.zonesRemoved,
+      });
+    }
+  );
+
+  server.tool(
     "set_token_class",
     "Mark a player-controlled token as a SIDEKICK (issue #132) — a companion (Tua, Salros Eventide, Amri in the Firebirds campaign) whose HP nonetheless lives in Roll20 bar1 (never tracked/gmnotes state) and who dies like an NPC (kill_token: immediate dead marker + map layer — no PC-style dying/death-saves state). `controlledby` alone can't tell a sidekick from a true PC, so this is a persistent per-character override in the campaign's characters registry. Read wherever PC/NPC/sidekick routing is decided: update_token_hp, update_hp_many, resolve_aoe, roll_initiative. Use when the DM says a companion IS a sidekick, e.g. 'Tua is a sidekick' → {\"characterName\":\"Tua\",\"tokenClass\":\"sidekick\"}. Pass tokenClass:'pc' to clear the override (back to an ordinary Beyond20-tracked PC).",
     {
