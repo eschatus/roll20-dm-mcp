@@ -34,11 +34,13 @@ const LOCAL_TOOLS = [
   "resolve_aoe",       // AoE primitive: find targets + roll saves + apply, ONE call (fireball etc.)
   "set_token_marker",  // conditions (sticker + tracked state)
   "kill_token",        // atomic death: dead marker + move to map layer (one call)
+  "mark_dying",        // true PCs only: prone+unconscious, stays on the token layer
+  "break_concentration", // marker + aura 0 + linked concentration zones, one call
   "set_token_props",   // position / aura / visual
   // combat flow
   "roll_initiative", "advance_turn", "roll_dice",
   // areas
-  "create_zone", "clear_zone",
+  "create_zone", "clear_zone", "process_round_end_zones",
   // comms
   "send_narration", "whisper_player",
 ];
@@ -56,6 +58,7 @@ const CLOUD_TOOLS = [
   "clear_turn_order", "update_turn_order", "inject_round_marker", // turn-order
   "set_turn_hook", "check_turn_hook", "plan_all_tactics", "plan_tactics", // combat start/round hooks
   "sync_character_state", "remove_object",
+  "set_token_class",   // setup-time: flag a token as a sidekick (bar1 HP, NPC death)
   "get_mob_plans",  // read persisted tactical plans for HUD display
   "ddb_get_character", "ddb_get_monster", "ddb_list_campaign_characters", "ddb_list_campaigns", // DDB reads
   "add_vocab", "add_nickname", "remove_vocab", "remove_nickname", // STT vocab + alias editing
