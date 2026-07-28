@@ -72,6 +72,8 @@ convenience would conflict with a rule below, the rule wins.
 - **D&D Beyond is read-only.** Only players change their own DDB HP/conditions. There is no
   `ddb_update_hp`/`apply_damage`/`heal_character` — don't try to push HP to DDB or PC tokens.
 - Single status marker: `set_token_marker`. There is **no** `apply_condition`/`remove_condition`.
+- Downed PC: `mark_dying` (prone + unconscious, stays on token layer). Concentration break:
+  `break_concentration` (marker + aura + linked zones, in one call).
 - Token visuals/position/aura/layer: `set_token_props`.
 - Areas: `create_zone` / `clear_zone` / `list_zones`; `find_tokens_in_range` for AoE targeting.
 
@@ -80,8 +82,34 @@ convenience would conflict with a rule below, the rule wins.
 - When a token dies: mark it dead **and** move it to the **map** layer (`set_token_props
   layer="map"`) immediately. Sidekick tokens (Tua, Salros Eventide, Amri) die and get marked the
   same way despite being player-controlled — see the sidekick note under "Real tool names".
+- **A true PC dropping to 0 HP is DYING, not dead** (issue #135). Call `mark_dying` — it applies
+  `prone` + `unconscious` and the token **stays on the token layer** (never map layer, never
+  auto-dead). Death saves are player-owned (3 fails = dead). Only call `kill_token` when the DM
+  **explicitly declares the PC dead** ("she fails her third save", "he's gone"). NPCs and
+  sidekicks skip this entirely — they die immediately via `kill_token`, same as always.
+  - **Revival keeps prone.** Clear `unconscious` with `set_token_marker` (`active:false`) —
+    `prone` stays on until the DM separately says the PC stands up.
 - Apply the `Wounded::4444333` marker when a token drops below 50% max HP; remove it when healed
   back above half.
+
+### Concentration
+
+- `concentrating` is a pseudo-condition marker (`Concentrating::4444313`) — DM-managed, applied/
+  cleared via `set_token_marker`.
+- **Break cascade = `break_concentration`.** One call: removes the Concentrating marker, zeroes
+  the token's aura (`aura1_radius`), and deletes any zone whose `duration` is
+  `{type:"concentration", caster}` linked to that token (see "Zone terrain/duration semantics").
+  Reports what it tore down.
+- Breaks arrive two ways:
+  - **Declaratively** — the DM says the spell ends ("she loses Bless", "the guardians fade") or
+    the save already happened at the table. Call `break_concentration` directly, no question asked.
+  - **Implicitly** — going down auto-fires the cascade. `mark_dying` checks for the Concentrating
+    marker and calls `break_concentration` itself; you never need to do this by hand.
+- **Damage hits a concentrating token and the DM says nothing about it:** apply the damage first,
+  then ask ONE short question the DM can answer in a word — *"\<Name\> — concentration?"* On
+  "Failed" (or equivalent), call `break_concentration`. On "Passed", do nothing further. **Never
+  tear down concentration unasked** unless the DM already declared the break or the token just
+  went down (mark_dying's own cascade).
 - Undead Fortitude: when a zombie/undead drops to 0 from non-radiant, non-crit damage, auto-roll
   it (DC = 5 + damage taken) via `roll_dice`.
 - **Retcon = compensating delta, not rollback.** "That was 7 not 12" → apply +5, don't reset and
@@ -156,8 +184,8 @@ never fail.
   remainder of that round for n=1. Call `process_round_end_zones` whenever a round rolls over — it
   deletes anything expired and returns the list, so fold that into the round-end countdown
   narration (e.g. "the grease fire burns out").
-- `concentration` zones just store the caster linkage here; the break-cascade that tears them down
-  when concentration ends is a separate mechanism.
+- `concentration` zones just store the caster linkage here; `break_concentration` (see
+  "Concentration" above) is the break-cascade that tears them down when concentration ends.
 - Common material transitions (web/grease + fire, etc.) are a small data table
   (`ZONE_TRANSITIONS` in `src/tools/zones.ts`) — apply one via `clear_zone` + `create_zone` with the
   looked-up spec. There is no `modify_zone` tool; transitions are always delete-then-create.

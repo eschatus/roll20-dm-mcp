@@ -537,6 +537,50 @@ function resolveMarkerForState(name) {
   return { tag: hashToPool(lc), tier: "custom", key: lc };
 }
 
+// ── Bloodied/wounded + auto-death threshold automation (issue #141) ─────────
+// Pure arithmetic, SYMMETRIC (wounded on at/below half, off above half — never
+// driven by anything but current/max), applied after any NPC/sidekick bar1
+// write so this never depends on the model remembering set_token_marker. PCs
+// never reach this — their HP is tracked in relay state (gmnotes) via
+// adjustPcHp, which never calls setTokenBar.
+//
+// HAND-SYNCED COPY: the canonical version is computeHpThresholds in
+// src/bridge/markers.ts (imported directly by src/bridge/roll20-rt.ts's
+// RT-default direct-write path, which bypasses this file entirely for a
+// single setTokenBar call). This sandbox can't import TS, so keep this
+// arithmetic identical to the TS copy on any change.
+function computeHpThresholds(newHp, maxHp) {
+  let max = Number(maxHp) || 0;
+  let hp = Number(newHp) || 0;
+  if (max <= 0) return { wounded: false, dead: false }; // no real bar — never automate
+  let dead = hp <= 0;
+  let wounded = !dead && hp * 2 <= max;
+  return { wounded: wounded, dead: dead };
+}
+
+// Apply the wounded/dead marker automation to a token that just had bar1
+// written (statusmarkers + layer on death). Returns { wounded, dead } so the
+// caller can report what happened.
+function applyHpThresholdMarkers(t, newHp, maxHp) {
+  let res = computeHpThresholds(newHp, maxHp);
+  if (Number(maxHp) > 0) {
+    let ms = new Set((t.get("statusmarkers") || "").split(",").filter(Boolean));
+    let woundedTag = PSEUDO_MARKERS.wounded;
+    let deadTag = CONDITION_MARKERS.dead;
+    if (res.dead) {
+      ms.delete(woundedTag);
+      ms.add(deadTag);
+      setSafe(t, { layer: "map" });
+    } else if (res.wounded) {
+      ms.add(woundedTag);
+    } else {
+      ms.delete(woundedTag);
+    }
+    t.set("statusmarkers", Array.from(ms).join(","));
+  }
+  return res;
+}
+
 // Track a tier-2 custom state in persisted campaign state: which tokens currently hold it.
 function trackCustomState(key, tag, tokenId, active) {
   let cs = B().customStates = B().customStates || {};
@@ -607,9 +651,12 @@ function runBatchOp(action, args) {
       let v = Number(args.value);
       if (!isFinite(v)) throw new Error("setTokenBar: value must be a finite number, got " + JSON.stringify(args.value));
       let p = { bar1_value: v };
-      if (args.max !== undefined && isFinite(Number(args.max))) p.bar1_max = Number(args.max);
+      let max = args.max !== undefined && isFinite(Number(args.max)) ? Number(args.max) : Number(t.get("bar1_max")) || 0;
+      if (args.max !== undefined && isFinite(Number(args.max))) p.bar1_max = max;
       setSafe(t, p);
-      return { ok: true };
+      // Threshold automation (issue #141) — see computeHpThresholds/applyHpThresholdMarkers above.
+      let thresholds = applyHpThresholdMarkers(t, v, max);
+      return { ok: true, wounded: thresholds.wounded, dead: thresholds.dead };
     }
     case "adjustPcHp": {
       let t = getObj("graphic", args.tokenId);
@@ -788,11 +835,14 @@ ACTIONS["setTokenBar"] = function (args, msg, nonce, senderPlayerId) {
         if (!token) throw new Error(`Token not found: ${args.tokenId}`);
         const v = Number(args.value);
         if (!isFinite(v)) throw new Error(`setTokenBar: value must be a finite number, got ${JSON.stringify(args.value)}`);
+        const max = args.max !== undefined && isFinite(Number(args.max)) ? Number(args.max) : Number(token.get("bar1_max")) || 0;
         setSafe(token, {
           bar1_value: v,
-          ...(args.max !== undefined && isFinite(Number(args.max)) ? { bar1_max: Number(args.max) } : {}),
+          ...(args.max !== undefined && isFinite(Number(args.max)) ? { bar1_max: max } : {}),
         });
-        writeResult(nonce, { ok: true });
+        // Threshold automation (issue #141) — see computeHpThresholds/applyHpThresholdMarkers above.
+        const thresholds = applyHpThresholdMarkers(token, v, max);
+        writeResult(nonce, { ok: true, wounded: thresholds.wounded, dead: thresholds.dead });
         return;
       }
       };
@@ -2230,6 +2280,62 @@ ACTIONS["removeObject"] = function (args, msg, nonce, senderPlayerId) {
         if (!roObj) throw new Error("Object not found: " + args.objectId);
         roObj.remove();
         writeResult(nonce, { ok: true, id: args.objectId });
+        return;
+      }
+      };
+ACTIONS["breakConcentration"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // Concentration break cascade (issue #135): remove the Concentrating
+        // sticker, zero the token's aura (aura1_radius), and delete any zone whose
+        // duration links to this token as caster ({type:"concentration", caster}
+        // metadata from issue #134/createZone). caster linkage is matched
+        // case-insensitively against BOTH the token's id and its display name (a
+        // zone can have been created with either), plus an optional caller-supplied
+        // casterRef, so the TS side doesn't need to guess which form was used.
+        // Searches every page's zones (not just one) — a caster's concentration
+        // zone isn't necessarily on the same page the caster token lives on.
+        let t = getObj("graphic", args.tokenId);
+        if (!t) throw new Error("Token not found: " + args.tokenId);
+        let refs = new Set();
+        if (args.tokenId) refs.add(String(args.tokenId).toLowerCase());
+        if (args.casterRef) refs.add(String(args.casterRef).toLowerCase());
+        let tName = (t.get("name") || "").toLowerCase();
+        if (tName) refs.add(tName);
+
+        // 1) Remove the Concentrating marker.
+        let concTag = PSEUDO_MARKERS["concentrating"];
+        let markerSet = new Set((t.get("statusmarkers") || "").split(",").filter(Boolean));
+        let markerRemoved = markerSet.has(concTag);
+        markerSet.delete(concTag);
+        t.set("statusmarkers", Array.from(markerSet).join(","));
+
+        // 2) Zero the aura (emanation effects, e.g. Spirit Guardians).
+        let auraCleared = Number(t.get("aura1_radius")) > 0;
+        setSafe(t, { aura1_radius: 0 });
+
+        // 3) Delete linked concentration zones.
+        let candidates = findObjs(args.pageId ? { _type: "path", _pageid: args.pageId } : { _type: "path" });
+        let zonesRemoved = [];
+        candidates.forEach(function(p) {
+          if ((p.get("name") || "").toString().indexOf("ZONE: ") !== 0) return;
+          let meta = {};
+          try { meta = JSON.parse(p.get("gmnotes") || "{}"); } catch(e) {}
+          if (!meta.duration || meta.duration.type !== "concentration") return;
+          let caster = String(meta.duration.caster || "").toLowerCase();
+          if (!caster || !refs.has(caster)) return;
+          zonesRemoved.push({ id: p.id, name: meta.name || p.get("name") });
+        });
+        zonesRemoved.forEach(function(z) {
+          let obj = getObj("path", z.id);
+          if (obj) obj.remove();
+        });
+
+        writeResult(nonce, {
+          ok: true,
+          markerRemoved: markerRemoved,
+          auraCleared: auraCleared,
+          zonesRemoved: zonesRemoved,
+        });
         return;
       }
       };
