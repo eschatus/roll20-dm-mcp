@@ -42,6 +42,7 @@ import {
   Board, Ctx, Klass, Tok, Zone,
   find, has, makeTok, markers, readPcHp, rosterFromBoard, setMarkers, stubExec,
 } from "./golden-lib";
+import { Intent, RenderStyle, pickStyle, renderUtterance } from "./utterance-render";
 
 dotenv.config({ path: path.join(__dirname, "..", "..", ".env") });
 dotenv.config({ path: path.join(__dirname, "..", ".env") });
@@ -169,9 +170,23 @@ interface Ideal { text: string; toolCalls: { name: string; args: Record<string, 
 export interface GeneratedStep {
   axis: string;
   utterance: string;
+  /** The structured, style-free intent the utterance was rendered from (utterance-render.ts).
+   *  expectedCalls/check() are keyed off values already captured in the closure below, NOT
+   *  off this field — it's carried only so the generator can report style diversity. */
+  intent: Intent;
+  style: RenderStyle;
   setup?: (b: Board) => void;
   ideal: Ideal[]; // scripted teacher turns, consumed only in DRY mode
   check: (b: Board, c: Ctx) => string | null;
+}
+
+// Single choke point: build the intent, pick a style off the SAME seeded rng the axis
+// is already threading through, and render. Every axis calls this exactly once so
+// utterance generation can never desync from the rng sequence gen-traces.test.ts's
+// reproducibility test depends on.
+function renderStep(rng: () => number, board: Board, intent: Intent): { utterance: string; style: RenderStyle } {
+  const style = pickStyle(rng, intent.kind);
+  return { utterance: renderUtterance(intent, style, rng, board), style };
 }
 type AxisFn = (rng: () => number, board: Board, state: ScenState) => GeneratedStep | null;
 
@@ -183,14 +198,11 @@ const axisDeltaDamage: AxisFn = (rng, board, state) => {
   const amount = int(rng, 4, Math.max(5, t.bar1_value));
   const dtype = pick(rng, DMG_TYPES);
   const before = t.bar1_value, max = t.bar1_max;
-  const utterance = pick(rng, [
-    `${t.name} takes ${amount} ${dtype}.`,
-    `${amount} ${dtype} lands square on ${t.name}.`,
-    `${t.name} eats ${amount} points of ${dtype} damage.`,
-  ]);
+  const intent: Intent = { kind: "damage", target: t.name, amount, dtype, klass: t.klass };
+  const { utterance, style } = renderStep(rng, board, intent);
   state.lastDamage = { target: t.name, amount, before, max, klass: t.klass };
   return {
-    axis: "delta-damage", utterance,
+    axis: "delta-damage", utterance, intent, style,
     ideal: [{ text: "", toolCalls: [{ name: "update_token_hp", args: { characterName: t.name, damage: amount } }] }, { text: "Applied.", toolCalls: [] }],
     check: (b) => {
       const t2 = find(b, t.name)!;
@@ -213,13 +225,10 @@ const axisPcHitCondition: AxisFn = (rng, board, state) => {
   const dtype = pick(rng, DMG_TYPES);
   const bar1Before = t.bar1_value; // PC bar1 must never move — Beyond20 owns it
   const tracked = readPcHp(t.gmnotes)!;
-  const utterance = pick(rng, [
-    `${t.name} takes ${amount} ${dtype} and goes ${cond}.`,
-    `${t.name} is hit for ${amount} ${dtype} — he's ${cond} now.`,
-    `${amount} ${dtype} on ${t.name}, and he's knocked ${cond}.`,
-  ]);
+  const intent: Intent = { kind: "damage-condition", target: t.name, amount, dtype, cond };
+  const { utterance, style } = renderStep(rng, board, intent);
   return {
-    axis: "pc-hit-condition", utterance,
+    axis: "pc-hit-condition", utterance, intent, style,
     ideal: [{ text: "", toolCalls: [{ name: "update_token_hp", args: { characterName: t.name, damage: amount, addConditions: [cond] } }] }, { text: "Applied.", toolCalls: [] }],
     check: (b) => {
       const t2 = find(b, t.name)!;
@@ -242,11 +251,12 @@ const axisNegativeSpace: AxisFn = (rng, board, state) => {
   const before = t.bar1_value, max = t.bar1_max;
   const beforeMarkers = new Set(markers(t));
   // Positional/flavor clause deliberately avoids loop-policy's OUTCOME_RE trigger words
-  // (no "prone"/"stunned"/etc — those are real conditions, not flavor).
-  const flavor = pick(rng, ["staggers back off balance", "reels but keeps its footing", "grunts and plants its feet", "wobbles but holds its ground"]);
-  const utterance = `${t.name} takes ${amount} ${dtype} and ${flavor}.`;
+  // (no "prone"/"stunned"/etc — those are real conditions, not flavor) — see
+  // utterance-render.ts's PURE_FLAVOR_CLOSERS / renderDamageFlavor.
+  const intent: Intent = { kind: "damage-flavor", target: t.name, amount, dtype, klass: t.klass };
+  const { utterance, style } = renderStep(rng, board, intent);
   return {
-    axis: "negative-space", utterance,
+    axis: "negative-space", utterance, intent, style,
     ideal: [{ text: "", toolCalls: [{ name: "update_token_hp", args: { characterName: t.name, damage: amount } }] }, { text: "Applied.", toolCalls: [] }],
     check: (b) => {
       const t2 = find(b, t.name)!;
@@ -271,15 +281,11 @@ const axisPureFlavor: AxisFn = (rng, board) => {
   const others = aliveOf(board, ["pc", "sidekick"]);
   if (!actors.length || !others.length) return null;
   const a = pick(rng, actors), o = pick(rng, others);
-  const utterance = pick(rng, [
-    `${a.name} circles around behind ${o.name} — I've already slid the token over.`,
-    `${a.name} shoulders ${o.name} back a couple of squares; I moved him by hand.`,
-    `${a.name} kicks the brazier over and the hall lights up orange.`,
-    `${a.name} snarls something in Aquan at ${o.name}, and the water churns around its feet.`,
-  ]);
+  const intent: Intent = { kind: "pure-flavor", actor: a.name, other: o.name };
+  const { utterance, style } = renderStep(rng, board, intent);
   const snap = snapshotBoard(board);
   return {
-    axis: "pure-flavor", utterance,
+    axis: "pure-flavor", utterance, intent, style,
     ideal: [{ text: "Nothing to book — spatial/colour only.", toolCalls: [] }],
     check: (b, c) => {
       const now = snapshotBoard(b);
@@ -304,9 +310,13 @@ const axisCompoundAoe: AxisFn = (rng, board, state) => {
   const before = new Map(targets.map((t) => [t.name, { v: t.bar1_value, max: t.bar1_max }]));
   const failNames = [targets[0].name];
   const saveNames = targets.slice(1).map((t) => t.name);
-  const utterance = `Fireball catches ${targets.map((t) => t.name).join(", ")} — ${full} ${dtype}. ${failNames.join(", ")} fail${failNames.length === 1 ? "s" : ""} the save; ${saveNames.length ? saveNames.join(", ") + " make" + (saveNames.length === 1 ? "s" : "") + " it for half." : ""}`;
+  const intent: Intent = {
+    kind: "aoe", targets: targets.map((t) => t.name), amounts: targets.map((t) => dmgFor.get(t.name)!),
+    dtype, failNames, saveNames, label: "Fireball",
+  };
+  const { utterance, style } = renderStep(rng, board, intent);
   return {
-    axis: "compound-aoe", utterance,
+    axis: "compound-aoe", utterance, intent, style,
     ideal: [
       { text: "", toolCalls: targets.map((t) => ({ name: "update_token_hp", args: { characterName: t.name, damage: dmgFor.get(t.name) } })) },
       { text: "Applied.", toolCalls: [] },
@@ -340,9 +350,8 @@ const axisZoneCreate: AxisFn = (rng, board, state) => {
   if (!pool.length) return null; // every candidate name is already on the board
   const name = pick(rng, pool);
   const shortName = shortZoneName(name);
-  const utterance = damaging
-    ? `${name} fills the room — anyone caught in it takes damage each round.`
-    : `${name} spreads across the floor — it's difficult terrain now.`;
+  const intent: Intent = { kind: "zone-create", name, damaging };
+  const { utterance, style } = renderStep(rng, board, intent);
   // Zone semantics (golden-pairs convention 5): terrain drives the colour (difficult =
   // green, damaging = red) and duration drives expiry — a damaging fire-type zone is
   // rounds(1), burning out at the next round boundary via process_round_end_zones.
@@ -350,7 +359,7 @@ const axisZoneCreate: AxisFn = (rng, board, state) => {
     ? { name: shortName, color: "#cc0000", terrain: "damaging", duration: { type: "rounds", n: 1 } }
     : { name: shortName, color: "#00aa44", terrain: "difficult", duration: { type: "instant" } };
   return {
-    axis: "zone-create", utterance,
+    axis: "zone-create", utterance, intent, style,
     ideal: [{ text: "", toolCalls: [{ name: "create_zone", args: zoneArgs }] }, { text: "Zone up.", toolCalls: [] }],
     check: (b) => {
       // Exact-match on the zone's identity — a first-word regex ("Spike") matches a
@@ -368,12 +377,10 @@ const axisZoneTransition: AxisFn = (rng, board, state) => {
   // from a no-op in the grader.
   if (!state.activeZone || state.activeZone.name.toLowerCase() === "fire") return null;
   const old = state.activeZone;
-  const utterance = pick(rng, [
-    `The ${old.name} catches — it's fully alight now.`,
-    `Someone's torch hits the ${old.name} — it goes up in flame.`,
-  ]);
+  const intent: Intent = { kind: "zone-transition", oldName: old.name };
+  const { utterance, style } = renderStep(rng, board, intent);
   return {
-    axis: "zone-transition", utterance,
+    axis: "zone-transition", utterance, intent, style,
     // Per-material delete + create with a NEW duration (convention 6) — never a modify.
     ideal: [{
       text: "", toolCalls: [
@@ -395,7 +402,8 @@ const axisRoundRollover: AxisFn = (rng, board, state) => {
   const before = board.turnorder.map((e) => e.id);
   if (!before.length) return null;
   const expiring = state.activeZone && state.activeZone.damaging && state.activeZone.createdRound <= state.round ? state.activeZone.name : null;
-  const utterance = "That's the round — top of the order.";
+  const intent: Intent = { kind: "round-rollover" };
+  const { utterance, style } = renderStep(rng, board, intent);
   // Round-boundary duty (convention 7 / pair 6): advance, then run the rounds(n) zone
   // countdown. process_round_end_zones is the tool for this — NOT a hand-aimed
   // clear_zone, which would guess at what expired instead of letting the server say.
@@ -404,7 +412,7 @@ const axisRoundRollover: AxisFn = (rng, board, state) => {
     { name: "process_round_end_zones", args: { currentRound: state.round + 1 } },
   ];
   return {
-    axis: "round-rollover", utterance,
+    axis: "round-rollover", utterance, intent, style,
     ideal: [{ text: "", toolCalls: calls }, { text: "Round over.", toolCalls: [] }],
     check: (b) => {
       const expectedTop = before[1] ?? before[0];
@@ -427,13 +435,14 @@ const axisRetconDelta: AxisFn = (rng, board, state) => {
   const compDelta = newAmount - d.amount; // positive = more damage, negative = heal back
   const t = find(board, d.target)!;
   const before = t.bar1_value; // current value AFTER the original hit
-  const utterance = `Back up — that hit on ${d.target} was ${newAmount}, not ${d.amount}.`;
+  const intent: Intent = { kind: "retcon", target: d.target, oldAmount: d.amount, newAmount, klass: d.klass };
+  const { utterance, style } = renderStep(rng, board, intent);
   const toolCalls = compDelta > 0
     ? [{ name: "update_token_hp", args: { characterName: d.target, damage: compDelta } }]
     : [{ name: "update_token_hp", args: { characterName: d.target, heal: -compDelta } }];
   state.lastDamage = undefined; // one retcon per source hit
   return {
-    axis: "retcon-delta", utterance,
+    axis: "retcon-delta", utterance, intent, style,
     ideal: [{ text: "", toolCalls }, { text: "Corrected.", toolCalls: [] }],
     check: (b) => {
       const t2 = find(b, d.target)!;
@@ -448,9 +457,10 @@ const axisFudgeDrop: AxisFn = (rng, board, state) => {
   const targets = aliveOf(board, ["npc", "sidekick"]);
   if (!targets.length) return null;
   const t = pick(rng, targets);
-  const utterance = pick(rng, [`${t.name} has had it — he drops.`, `${t.name} goes down for good.`]);
+  const intent: Intent = { kind: "fudge-drop", target: t.name };
+  const { utterance, style } = renderStep(rng, board, intent);
   return {
-    axis: "fudge-drop", utterance,
+    axis: "fudge-drop", utterance, intent, style,
     ideal: [{ text: "", toolCalls: [{ name: "kill_token", args: { characterName: t.name } }] }, { text: "Down.", toolCalls: [] }],
     check: (b) => {
       const t2 = find(b, t.name)!;
@@ -464,14 +474,15 @@ const axisDropRouting: AxisFn = (rng, board, state) => {
   const pool = aliveOf(board, ["pc", "sidekick"]);
   if (!pool.length) return null;
   const t = pick(rng, pool);
-  const utterance = pick(rng, [`${t.name} is smashed to the floor — he's down.`, `${t.name} goes down!`]);
   const klass = t.klass;
+  const intent: Intent = { kind: "drop", target: t.name, klass };
+  const { utterance, style } = renderStep(rng, board, intent);
   const ideal: Ideal[] = klass === "pc"
     ? [{ text: "", toolCalls: [{ name: "mark_dying", args: { characterName: t.name } }] }, { text: "Down but not out.", toolCalls: [] }]
     : [{ text: "", toolCalls: [{ name: "kill_token", args: { characterName: t.name } }] }, { text: "Fallen.", toolCalls: [] }];
   if (klass === "pc") state.downPc = t.name;
   return {
-    axis: "drop-routing", utterance, ideal,
+    axis: "drop-routing", utterance, intent, style, ideal,
     check: (b) => {
       const t2 = find(b, t.name)!;
       if (klass === "pc") {
@@ -491,10 +502,11 @@ const axisRevival: AxisFn = (rng, board, state) => {
   if (!state.downPc) return null;
   const name = state.downPc;
   const setHp = int(rng, 1, 10);
-  const utterance = `Someone gets a potion into ${name} — he's back on ${setHp}, conscious, still flat on his back.`;
+  const intent: Intent = { kind: "revival", target: name, setHp };
+  const { utterance, style } = renderStep(rng, board, intent);
   state.downPc = undefined;
   return {
-    axis: "revival", utterance,
+    axis: "revival", utterance, intent, style,
     ideal: [{ text: "", toolCalls: [{ name: "update_token_hp", args: { characterName: name, setHp, removeConditions: ["unconscious"] } }] }, { text: "Revived.", toolCalls: [] }],
     check: (b) => {
       const t2 = find(b, name)!;
@@ -524,10 +536,11 @@ const axisConcentrationQuestion: AxisFn = (rng, board, state) => {
   const before = target.bar1_value;
   const max = target.bar1_max;
   const trackedBefore = target.klass === "pc" ? readPcHp(target.gmnotes) : null;
-  const utterance = `${target.name} takes ${amount} ${dtype}.`;
+  const intent: Intent = { kind: "concentration-hit", target: target.name, amount, dtype, klass: target.klass };
+  const { utterance, style } = renderStep(rng, board, intent);
   state.concWaiting = target.name;
   return {
-    axis: "concentration-question", utterance, setup,
+    axis: "concentration-question", utterance, intent, style, setup,
     ideal: [{ text: "", toolCalls: [{ name: "update_token_hp", args: { characterName: target.name, damage: amount } }] }, { text: `${target.name} — concentration?`, toolCalls: [] }],
     check: (b, c) => {
       const t2 = find(b, target.name)!;
@@ -563,10 +576,11 @@ const axisDeclarativeFollowup: AxisFn = (rng, board, state) => {
     return null;
   }
   const failed = rng() < 0.5;
-  const utterance = failed ? "Failed." : "Passed.";
+  const intent: Intent = { kind: "followup", failed };
+  const { utterance, style } = renderStep(rng, board, intent);
   state.concWaiting = undefined;
   return {
-    axis: "declarative-followup", utterance,
+    axis: "declarative-followup", utterance, intent, style,
     ideal: failed
       ? [{ text: "", toolCalls: [{ name: "break_concentration", args: { characterName: name } }] }, { text: "Concentration broken.", toolCalls: [] }]
       : [{ text: "Held.", toolCalls: [] }],
