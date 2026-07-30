@@ -26,6 +26,7 @@ import { correctTranscript, DEFAULT_LITERAL_MAP } from "./correction";
 import { runAar } from "./aar";
 import { loadSettings, saveSettings, AppSettings } from "./settings";
 import { setLogSink, persist, classifyConsole } from "./logger";
+import * as campaignMgr from "./campaignManager";
 
 // Load the repo-root .env so ANTHROPIC_API_KEY is available (shared with the MCP server).
 dotenv.config({ path: path.join(__dirname, "..", "..", ".env") });
@@ -610,6 +611,23 @@ function wireWizard() {
       return { ok: false, error: msg };
     }
   });
+
+  // --- Campaign picker/maker (Setup tab) — direct MCP calls, NEVER routed through the agent/LLM.
+  // See campaignManager.ts for the result-shaping (unit-tested there without Electron).
+  ipcMain.handle("campaigns-list", async () => campaignMgr.listCampaigns(mcp));
+  ipcMain.handle("campaigns-switch", async (_e, slugOrName: string) => {
+    const r = await campaignMgr.switchCampaign(mcp, slugOrName);
+    // Force a roster/activeSlug refresh (and the campaign-changed push it fires) immediately —
+    // don't wait for the next voice turn, since there may not be one.
+    if (r.ok) await refreshRoster({ force: true });
+    return r;
+  });
+  ipcMain.handle("campaigns-register", async (_e, input: campaignMgr.RegisterCampaignInput) => {
+    const r = await campaignMgr.registerCampaign(mcp, input);
+    if (r.ok) await refreshRoster({ force: true });
+    return r;
+  });
+  ipcMain.handle("ddb-campaigns-list", async () => campaignMgr.listDdbCampaigns(mcp));
 
   // DM inbox: renderer asks for the current snapshot (on tab open / HUD start).
   ipcMain.handle("get-inbox", () => ({ count: inboxCount(), items: inboxItems.slice(-INBOX_MAX) }));
