@@ -167,3 +167,77 @@ export function readLogTail(maxBytes = 200_000, channel: LogChannel = "conversat
     return buf.length > maxBytes ? buf.subarray(buf.length - maxBytes).toString("utf-8") : buf.toString("utf-8");
   } catch { return ""; }
 }
+
+// ---------------------------------------------------------------------------
+// Gate-2 session instrumentation: events.jsonl — structured, full-fidelity
+// records (tool calls, loop-control tags, pre-turn board snapshots), kept in a
+// FOURTH file deliberately separate from the three channels above so mining
+// replayable (utterance -> tool_calls -> board effect) training data never
+// disturbs hud.log/whisper.log/system.log or their existing parsers (aar.ts,
+// gate0.ts). See src/toolEvents.ts / src/snapshot.ts for the shaping logic;
+// this module only owns the file + rotation.
+//
+// Rotation differs deliberately from the three channels above: those keep only
+// ONE previous generation (`.1`, overwritten every rotation) because they're
+// read live for the current/last session. events.jsonl accumulates the corpus
+// this whole project exists to grow, so overwriting `.1` would be silent data
+// loss — instead we keep NUMBERED generations (.1 newest .. .5 oldest, default
+// EVENTS_KEEP) and only drop the oldest once that many have piled up.
+const EVENTS_FILE = "events.jsonl";
+const EVENTS_MAX_BYTES = 5 * 1024 * 1024;
+const EVENTS_KEEP = 5;
+
+function eventsPath(): string { return path.join(DATA_DIR, EVENTS_FILE); }
+
+function rotateNumbered(p: string, keep: number): void {
+  try { fs.unlinkSync(`${p}.${keep}`); } catch { /* nothing that old yet */ }
+  for (let i = keep - 1; i >= 1; i--) {
+    try { fs.renameSync(`${p}.${i}`, `${p}.${i + 1}`); } catch { /* gap in the sequence — fine */ }
+  }
+  try { fs.renameSync(p, `${p}.1`); } catch { /* first rotation ever */ }
+}
+
+// Synchronous append (unlike the streamed hud.log/whisper.log/system.log
+// channels above): each write is one bounded record per tool call/loop-tag/
+// snapshot — not a hot path — and a mining/replay corpus needs every write to
+// have actually landed before the process can be assumed to hold it, with no
+// buffered-stream race to reason about (a crash mid-session must not lose the
+// last few records any more than it already risks losing the last write).
+function appendEvent(rec: Record<string, unknown>): void {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    const p = eventsPath();
+    try {
+      const st = fs.statSync(p);
+      if (st.size > EVENTS_MAX_BYTES) rotateNumbered(p, EVENTS_KEEP);
+    } catch { /* no existing file — fine */ }
+    fs.appendFileSync(p, JSON.stringify(rec) + "\n");
+  } catch { /* ignore — logEvent() must never throw into a live turn */ }
+}
+
+/** A Gate-2 structured record: an open shape (kind discriminates "tool" | "loop" |
+ *  "snapshot") since each carries different fields — see toolEvents.ts for the
+ *  concrete builders. `ts` is filled in here if the caller omits it. */
+export interface StructuredEvent {
+  ts?: number;
+  kind: string;
+  turnId: string;
+  [k: string]: unknown;
+}
+
+/**
+ * Append one Gate-2 structured record to events.jsonl. This is the "real call
+ * site" logger.ts's log()/persist() were missing for session instrumentation —
+ * kept as its own function (rather than overloading log()'s fixed LogEvent
+ * shape) because these records are inherently open-ended (full tool args, a
+ * board snapshot) and must NEVER be truncated the way the console/hud.log path
+ * truncates `detail`. Fails soft: a write error here must never break a live turn.
+ */
+export function logEvent(e: StructuredEvent): void {
+  const rec = { ts: e.ts ?? Date.now(), ...e };
+  appendEvent(rec);
+  // Short breadcrumb on the ORIGINAL console (bypasses main.ts's shim — same
+  // reasoning as log()'s _consoleError use above) so a live terminal still shows
+  // that instrumentation is flowing, without duplicating the full record.
+  try { _consoleError(`[events] ${rec.kind} turn=${String(rec.turnId).slice(0, 8)}`); } catch { /* ignore */ }
+}
