@@ -6,6 +6,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CONFIG } from "./config";
 
+export interface McpCallResult {
+  text: string;
+  isError: boolean;
+}
+
 export interface McpTool {
   name: string;
   description: string;
@@ -59,12 +64,20 @@ export class McpRoll20 {
     }));
   }
 
-  async call(name: string, args: Record<string, unknown>): Promise<string> {
+  // A tool handler that throws does NOT reject callTool — the SDK turns it into a normal
+  // response carrying isError:true, so any caller that needs to distinguish failure from a
+  // successful reply must read isError rather than relying on an exception.
+  async callResult(name: string, args: Record<string, unknown>): Promise<McpCallResult> {
     if (!this.client) throw new Error("MCP client not connected");
     const res = await this.client.callTool({ name, arguments: args });
     // Flatten text content blocks into a single string for the model.
     const content = (res.content ?? []) as Array<{ type: string; text?: string }>;
-    return content.filter((c) => c.type === "text").map((c) => c.text).join("\n") || "(no output)";
+    const text = content.filter((c) => c.type === "text").map((c) => c.text).join("\n") || "(no output)";
+    return { text, isError: res.isError === true };
+  }
+
+  async call(name: string, args: Record<string, unknown>): Promise<string> {
+    return (await this.callResult(name, args)).text;
   }
 
   async close() {

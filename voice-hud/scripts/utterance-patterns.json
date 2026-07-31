@@ -1,0 +1,66 @@
+{
+  "hedges": [
+    "alright,",
+    "well,",
+    "right, so",
+    "alright so",
+    "so,"
+  ],
+  "fillers": [
+    "um,",
+    "uh,",
+    "like,",
+    "you know,"
+  ],
+  "mishearPairs": [
+    [
+      "Phandelver",
+      "Fandelver"
+    ],
+    [
+      "Phandelver",
+      "Fan Dover"
+    ],
+    [
+      "Phandelver",
+      "Van Delver"
+    ],
+    [
+      "Beyond Phandelver",
+      "Beyond Fentelner"
+    ],
+    [
+      "DDB",
+      "d4 Beyond"
+    ],
+    [
+      "send",
+      "Zeond"
+    ],
+    [
+      "for",
+      "four"
+    ],
+    [
+      "to",
+      "too"
+    ],
+    [
+      "won",
+      "one"
+    ],
+    [
+      "ate",
+      "eight"
+    ],
+    [
+      "hit points",
+      "aitch pee"
+    ]
+  ],
+  "meta": {
+    "sourceLog": "hud.log",
+    "transcriptsScanned": 330,
+    "generatedAt": "2026-07-29"
+  }
+}

@@ -747,6 +747,37 @@
           <p class="hint-line" style="margin-top:8px;">Then just ask the gem: <em>"list my campaigns"</em> / <em>"list my games"</em> to pick one.</p>
         </div>
         </div>
+        <!-- Campaign lives OUTSIDE #setup-essential-steps: switching campaigns is an every-session
+             action, so it must stay visible after first-run setup collapses the steps above. -->
+        <div class="setup-step" style="margin-top:14px;">
+          <p class="hint-line">Campaign — pick the active campaign or register a new one. This never depends on the voice agent, so it still works with a tool-restricted local model.</p>
+          <div class="chip-input">
+            <select id="setup-campaign-select" style="flex:1;"><option value="">(loading…)</option></select>
+            <button class="act" id="setup-campaign-refresh" title="Refresh campaign list">⟳</button>
+          </div>
+          <div id="setup-campaign-msg" class="msg" style="min-height:18px;margin-top:6px;"></div>
+
+          <p class="hint-line" style="margin-top:10px;">Register a new campaign:</p>
+          <div class="row">
+            <input id="setup-camp-name" placeholder="Campaign name" style="flex:1" />
+          </div>
+          <div class="row">
+            <input id="setup-camp-roll20" placeholder="Roll20 campaign ID or URL (app.roll20.net/campaigns/details/…)" style="flex:1" />
+          </div>
+          <div class="row">
+            <input id="setup-camp-ddb" placeholder="D&amp;D Beyond campaign ID or URL (dndbeyond.com/campaigns/…)" style="flex:1" />
+          </div>
+          <div class="row">
+            <select id="setup-camp-ddb-select" style="flex:1;" disabled><option value="">(D&amp;D Beyond not connected — paste ID/URL above)</option></select>
+          </div>
+          <div class="row">
+            <input id="setup-camp-notes" placeholder="Notes (optional)" style="flex:1" />
+          </div>
+          <div class="row">
+            <button class="act" id="setup-camp-register">Register &amp; switch</button>
+          </div>
+          <div id="setup-camp-msg" class="msg" style="min-height:18px;margin-top:6px;"></div>
+        </div>
         <div class="setup-step" style="margin-top:14px;">
           <p class="hint-line">Speech model — <code>base.en</code> is built-in for fast live captions. Download a larger model for more accurate <em>final</em> transcription (the committed text the agent acts on); base stays the fast-partial tier. Restart the gem after changing.</p>
           <div id="setup-stt-models" class="row" style="display:flex;gap:8px;flex-wrap:wrap;"></div>

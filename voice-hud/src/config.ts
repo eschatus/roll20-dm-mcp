@@ -226,6 +226,14 @@ export const CONFIG = {
   // qwen2.5:14b-instruct handles tool-calling well; R1-distill does NOT, so it's
   // for tactics reasoning, not the HUD agent loop.
   ollamaUrl: process.env.DMW_OLLAMA_URL || "http://127.0.0.1:11434/v1",
+  // Native /api/chat root (no /v1 suffix) — used by the OllamaNativeProvider
+  // (DMW_OLLAMA_NATIVE=1). A GETTER (not a snapshot) so it tracks live edits to
+  // ollamaUrl: the settings IPC handler mutates CONFIG.ollamaUrl at runtime, and
+  // deriving lazily keeps the native path pointed at the same host/port as the
+  // /v1 path instead of drifting to the startup value until restart.
+  get ollamaNativeUrl(): string {
+    return this.ollamaUrl.replace(/\/v1\/?$/, "");
+  },
   // 7B (~5GB) fits fully on the 3080 Ti alongside Whisper (int8 ~1.5GB) with real
   // headroom — no CPU spill. The 14B (even Q3 ~8.8GB) overflowed once Whisper +
   // desktop were resident, running 36-48% on CPU = laggy. 14B/R1 reserved for
