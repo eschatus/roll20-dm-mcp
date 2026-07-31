@@ -872,7 +872,9 @@ async function generate(opts: GenerateOpts): Promise<GenerateSummary> {
     makeStepTeacher = () => opts.provider === "ollama" ? new OllamaProvider(opts.model, CONFIG.ollamaUrl) : new AnthropicProvider(opts.model);
   }
 
-  const system = buildSystemPrompt(gold ? "ollama" : opts.provider);
+  // The prompt has to advertise the same catalog the record was built with, or the student
+  // learns to call tools its own system prompt lists but the schema never contains.
+  const system = buildSystemPrompt(gold ? "ollama" : opts.provider, { scoped: !!opts.scopeCore });
   fs.mkdirSync(path.dirname(opts.outPath), { recursive: true });
   const outFd = fs.openSync(opts.outPath, "w");
   const rejFd = fs.openSync(opts.rejectsPath, "w");

@@ -34,7 +34,16 @@ function loadRules(): string {
 // LOCAL (small-model) prompt
 // ---------------------------------------------------------------------------
 
-function localPrompt(): string {
+// `scoped` mirrors the served tool catalog for the fine-tuned specialist (the
+// gen-traces --scope set): no chat reads, no whisper. Advertising a tool that is not
+// in the served schema makes the model emit a call that can only come back as an error.
+function localPrompt(scoped: boolean): string {
+  const reads = scoped
+    ? "- Reads: list_tokens, get_token, get_turn_order, find_tokens_in_range."
+    : "- Reads: list_tokens, get_token, get_turn_order, find_tokens_in_range, get_recent_chat.";
+  const publicText = scoped
+    ? "- Public text: send_narration (players see it; no HP numbers)."
+    : "- Public text: send_narration (players see it; no HP numbers). DM-only ping: whisper_player.";
   return `You are the DM's scrying gem for a live D&D 5e game on Roll20. The DM speaks; you act via tools and reply in a TINY overlay (~24 chars wide, a few lines). Gothic Curse-of-Strahd tone, but be terse.
 
 # HARD RULES
@@ -55,11 +64,11 @@ function localPrompt(): string {
 - AREA EFFECT (multiple targets) → update_hp_many in ONE call (nameMatch or names[]). NEVER call update_token_hp in a loop, and NEVER claim something happened without calling the tool.
 - TARGETS: match the DM's words to the exact token names in the roster below (PCs and OTHER TOKENS). If a target is ambiguous or you can't find it, ASK the DM "did you mean X or Y?" — do NOT invent a name or guess a token id.
 - CONDITIONS → set_token_marker (condition name + active true/false). Sets sticker AND state. e.g. poisoned, prone, dead, frightened, stunned.
-- Reads: list_tokens, get_token, get_turn_order, find_tokens_in_range, get_recent_chat.
+${reads}
 - Flow: roll_initiative, advance_turn. Areas: create_zone/clear_zone.
 - **DICE: ALWAYS use roll_dice for every d20/damage/save/check.** NEVER compute or guess a number. Players see every roll in Roll20 chat. Batch multiple rolls into one call.
 - TOOL ARGS ARE JSON: arrays are real arrays (not strings), booleans are true/false (not "true"/"false"); use each tool's exact parameter names — set_token_marker takes characterName + condition + active, never tokenName/marker.
-- Public text: send_narration (players see it; no HP numbers). DM-only ping: whisper_player.
+${publicText}
 
 # TABLE CONVENTIONS (calibrated — the DM's actual mechanics)
 - STATED OUTCOMES ARE LAW. "He drops" → kill_token even if HP disagrees (the DM fudges on purpose). Never argue with or "correct" the DM's math.
@@ -133,8 +142,10 @@ ${loadRules()}
 // ---------------------------------------------------------------------------
 
 // provider: "ollama" → local terse prompt; anything else → full cloud prompt.
-export function buildSystemPrompt(provider = "ollama"): string {
-  return provider === "ollama" ? localPrompt() : cloudPrompt();
+// opts.scoped: local prompt for the trimmed (gen-traces --scope) tool catalog — drops the
+// mentions of the tools that catalog removes. Must match what the caller actually serves.
+export function buildSystemPrompt(provider = "ollama", opts: { scoped?: boolean } = {}): string {
+  return provider === "ollama" ? localPrompt(opts.scoped ?? false) : cloudPrompt();
 }
 
 // Volatile per-turn context — the live roster. Kept OUT of the now-frozen system

@@ -24,11 +24,19 @@ import { slimToolSpecs } from "./llm/slim-tools";
 
 // Tools the trained specialist never saw: session/campaign plumbing and comms that no
 // gold trajectory ever calls (see NEVER_CALLED in scripts/gen-traces.ts). Dropping them
-// locally both matches training and buys back ~2.9k prompt tokens.
+// matches training and buys back ~2.9k prompt tokens.
 const LOCAL_NEVER_CALLED = [
   "list_campaigns", "active_campaign", "switch_campaign",
   "get_recent_chat", "get_dm_inbox", "whisper_player",
 ];
+
+/** True for the in-house fine-tunes (dmw-*), the only local models trained on the
+ *  scoped+slimmed catalog. A stock local model (the default qwen2.5:7b-instruct) never
+ *  saw that corpus, so it keeps the full local allowlist and the verbose anti- -32602
+ *  descriptions — nothing constrains its decoding either. */
+export function isTrainedSpecialist(model = CONFIG.ollamaModel): boolean {
+  return /^dmw-/i.test(model.trim());
+}
 
 // The narrow MCP surface the agent actually uses: list tools + call one. The
 // real McpRoll20 satisfies this structurally; tests inject a recording fake.
@@ -181,6 +189,7 @@ export class DmAgent {
    */
   private toolSpecs(provider: ProviderName): ToolSpec[] {
     const cloudList = CONFIG.cloudToolAllowlist;
+    const trained = provider === "ollama" && isTrainedSpecialist();
     let allow: Set<string>;
     if (provider === "ollama") {
       const local = new Set(CONFIG.localToolAllowlist);
@@ -190,7 +199,9 @@ export class DmAgent {
       // 25-tool verbose catalog is a different prompt than it ever saw, and it fit the
       // training format hard (loss ~4e-4), so the mismatch costs real accuracy. Keep
       // this list and slim-tools in lockstep with gen-traces' --scope/--slim defaults.
-      for (const t of LOCAL_NEVER_CALLED) allow.delete(t);
+      // Scoped ONLY for the specialist: a stock local model gains nothing from a scope
+      // it wasn't trained on and loses two tools it is otherwise happy to use.
+      if (trained) for (const t of LOCAL_NEVER_CALLED) allow.delete(t);
     } else {
       allow = new Set(cloudList);
     }
@@ -203,14 +214,21 @@ export class DmAgent {
           ? t.inputSchema
           : { type: "object", properties: {} }) as Record<string, unknown>,
       }));
-    // Cloud keeps the verbose anti--32602 descriptions (nothing enforces shape there);
-    // local gets the slimmed schemas it was trained against.
-    return provider === "ollama" ? slimToolSpecs(specs) : specs;
+    // Only the specialist gets the slimmed schemas it was trained against. Cloud AND the
+    // stock local model keep the verbose anti- -32602 descriptions: nothing enforces arg
+    // shape on either path (ollama.ts just JSON.parses what the model emits), and those
+    // descriptions are what got shape-validity to 100%.
+    return trained ? slimToolSpecs(specs) : specs;
   }
 
   private ensureStarted(): void {
     if (this.started) return;
-    this.llm.start(buildSystemPrompt(this.providerName), this.toolSpecs(this.providerName));
+    // The prompt must advertise exactly the served catalog — a scoped specialist is told
+    // about neither get_recent_chat nor whisper_player.
+    const system = buildSystemPrompt(this.providerName, {
+      scoped: this.providerName === "ollama" && isTrainedSpecialist(),
+    });
+    this.llm.start(system, this.toolSpecs(this.providerName));
     this.started = true;
   }
 
