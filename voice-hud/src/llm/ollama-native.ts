@@ -21,10 +21,12 @@
 // So the two stages are:
 //   1) Ask normally (native tool-calling, tools param) → get {name, draft args}.
 //      This is where "which tool" gets decided; leave it alone.
-//   2) If a tool was called, throw the draft args away and re-ask, this time with
-//      NO tools param and `format` set to exactly that tool's inputSchema — the
-//      server can now only emit JSON shaped like the schema. Splice the result
-//      back in as the call's args.
+//   2) If a tool was called, re-ask with NO tools param and `format` set to
+//      exactly that tool's inputSchema — the server can now only emit JSON shaped
+//      like the schema. The stage-1 draft args are handed back in the re-ask
+//      prompt (as the thing to correct) so parallel calls to the SAME tool in one
+//      turn stay distinct — e.g. two `update_token_hp` for two different targets.
+//      Splice the result back in as the call's args.
 //
 // Degrade safely: some models/ollama builds reject `format` with a schema object
 // (older servers, some templates). If stage 2 errors for ANY reason (network,
@@ -150,14 +152,14 @@ export class OllamaNativeProvider implements LLMProvider {
           ...this.history.slice(0, -1),
           {
             role: "user",
-            content: `Generate ONLY the JSON arguments object for calling the tool "${call.name}" to satisfy the request above. Output JSON matching the schema exactly — no prose, no markdown fences.`,
+            content: `Generate ONLY the JSON arguments object for calling the tool "${call.name}" to satisfy the request above. The draft arguments to correct (fix types/param names, keep the intended target and values) are: ${JSON.stringify(call.args)}. Output JSON matching the schema exactly — no prose, no markdown fences.`,
           },
         ],
         format: spec.parameters,
         options: { num_ctx: numCtx() },
       });
       const parsed = JSON.parse(res.message.content);
-      if (parsed && typeof parsed === "object") return { ...call, args: parsed as Record<string, unknown> };
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return { ...call, args: parsed as Record<string, unknown> };
       throw new Error("constrained completion was not a JSON object");
     } catch (e) {
       warnFallbackOnce(e instanceof Error ? e.message : String(e));

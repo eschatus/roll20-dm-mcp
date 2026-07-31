@@ -116,6 +116,62 @@ describe("OllamaNativeProvider", () => {
       expect(stage2Body.tools).toBeUndefined(); // stage 2 is a plain completion, not another tool decision
     });
 
+    it("disambiguates parallel calls to the same tool by carrying each draft's args into its re-ask", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ // stage 1: two calls to the SAME tool, different targets
+          message: {
+            role: "assistant", content: "",
+            tool_calls: [
+              { id: "call_1", function: { name: "update_token_hp", arguments: { characterName: "Goblin", damage: "3" } } },
+              { id: "call_2", function: { name: "update_token_hp", arguments: { characterName: "Ogre", damage: "5" } } },
+            ],
+          },
+          done_reason: "stop",
+        }))
+        .mockResolvedValueOnce(jsonResponse({ message: { role: "assistant", content: '{"characterName":"Goblin","damage":3}' }, done_reason: "stop" }))
+        .mockResolvedValueOnce(jsonResponse({ message: { role: "assistant", content: '{"characterName":"Ogre","damage":5}' }, done_reason: "stop" }));
+
+      const p = new OllamaNativeProvider("qwen2.5-7b-16k", "http://127.0.0.1:11434");
+      p.start("sys", TOOLS);
+      p.pushUser("Goblin takes 3 and the Ogre takes 5");
+      const turn = await p.run();
+
+      // Each call keeps its own target rather than both collapsing to one.
+      expect(turn.toolCalls).toEqual([
+        { id: "call_1", name: "update_token_hp", args: { characterName: "Goblin", damage: 3 } },
+        { id: "call_2", name: "update_token_hp", args: { characterName: "Ogre", damage: 5 } },
+      ]);
+      // Each stage-2 re-ask carried its own draft args, so the two requests differ.
+      const stage2a = (fetchMock.mock.calls[1][1] as RequestInit).body as string;
+      const stage2b = (fetchMock.mock.calls[2][1] as RequestInit).body as string;
+      expect(stage2a).toContain("Goblin");
+      expect(stage2b).toContain("Ogre");
+      expect(stage2a).not.toEqual(stage2b);
+    });
+
+    it("degrades to the stage-1 draft args when the constrained re-ask returns a JSON array", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({
+          message: {
+            role: "assistant", content: "",
+            tool_calls: [{ id: "call_1", function: { name: "update_token_hp", arguments: { characterName: "Ogre", damage: 10 } } }],
+          },
+          done_reason: "stop",
+        }))
+        .mockResolvedValueOnce(jsonResponse({ message: { role: "assistant", content: '[{"characterName":"Ogre","damage":10}]' }, done_reason: "stop" }));
+
+      const p = new OllamaNativeProvider("qwen2.5-7b-16k", "http://127.0.0.1:11434");
+      p.start("sys", TOOLS);
+      p.pushUser("the ogre takes 10 damage");
+      const turn = await p.run();
+
+      // An array is not a valid args map — keep the draft rather than passing an array to the MCP boundary.
+      expect(turn.toolCalls).toEqual([{ id: "call_1", name: "update_token_hp", args: { characterName: "Ogre", damage: 10 } }]);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
+    });
+
     it("degrades to the stage-1 draft args and logs once if the constrained re-ask errors", async () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       fetchMock
