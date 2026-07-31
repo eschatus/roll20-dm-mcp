@@ -476,7 +476,7 @@ async function loadSetup() {
   const ul = document.getElementById("setup-status");
   if (ul) ul.innerHTML =
     item(s.apiKey, "Anthropic API key", "enter it below") +
-    item(s.campaigns > 0, "Campaign registered", "register one (Claude Code / Config) — " + s.campaigns + " found") +
+    item(s.campaigns > 0, "Campaign registered", "register one in the Campaign section below — " + s.campaigns + " found") +
     item(s.rtToken, "Roll20 connected", "Connect Roll20 (next wizard step)") +
     item(s.cobalt, "D&D Beyond linked (optional)", "set DDB_COBALT");
   // Badge "!" until the three essentials are present.
@@ -493,6 +493,8 @@ async function loadSetup() {
   if (steps && !setupStepsForced) steps.style.display = done ? "none" : "";
   loadSttModels();
   loadGpuStatus();
+  loadCampaignPicker();
+  loadDdbCampaignChoices();
 }
 // "Adjust setup" reveals the collapsed steps (e.g. to re-connect a dropped token) without un-doing
 // the quiet state on the next status refresh.
@@ -502,6 +504,101 @@ document.getElementById("setup-manage")?.addEventListener("click", (e) => {
   setupStepsForced = true;
   const steps = document.getElementById("setup-essential-steps");
   if (steps) steps.style.display = "";
+});
+
+// ---- campaign picker / maker (Setup tab) — direct MCP calls, never through the agent ----
+async function loadCampaignPicker() {
+  const sel = document.getElementById("setup-campaign-select");
+  const msg = document.getElementById("setup-campaign-msg");
+  if (!sel || !window.dmw || !dmw.listCampaigns) return;
+  sel.innerHTML = `<option value="">(loading…)</option>`;
+  const r = await dmw.listCampaigns();
+  if (!r || !r.ok) {
+    sel.innerHTML = `<option value="">(unavailable)</option>`;
+    if (msg) { msg.textContent = (r && r.error) || "couldn't load campaigns"; msg.className = "msg err"; }
+    return;
+  }
+  if (msg) { msg.textContent = ""; msg.className = "msg"; }
+  const list = r.data || [];
+  if (!list.length) {
+    sel.innerHTML = `<option value="">(none registered yet — add one below)</option>`;
+    return;
+  }
+  sel.innerHTML = list.map((c) =>
+    `<option value="${escapeHtml(c.slug)}"${c.active ? " selected" : ""}>${escapeHtml(c.name)}${c.active ? " ✓ active" : ""}</option>`
+  ).join("");
+}
+
+document.getElementById("setup-campaign-select")?.addEventListener("change", async (e) => {
+  const slug = e.target.value;
+  const msg = document.getElementById("setup-campaign-msg");
+  if (!slug || !window.dmw) return;
+  if (msg) { msg.textContent = "switching…"; msg.className = "msg"; }
+  const r = await dmw.switchCampaign(slug);
+  if (r && r.ok) {
+    if (msg) { msg.textContent = "switched ✓"; msg.className = "msg ok"; }
+    loadCampaignPicker();
+  } else {
+    if (msg) { msg.textContent = (r && r.error) || "switch failed"; msg.className = "msg err"; }
+  }
+});
+document.getElementById("setup-campaign-refresh")?.addEventListener("click", () => {
+  loadCampaignPicker();
+  loadDdbCampaignChoices();
+});
+
+// Best-effort DD Beyond campaign dropdown — falls back to the plain text field when DDB isn't
+// connected (needs a harvested CobaltSession) or the tool errors for any other reason.
+async function loadDdbCampaignChoices() {
+  const sel = document.getElementById("setup-camp-ddb-select");
+  if (!sel || !window.dmw || !dmw.listDdbCampaigns) return;
+  const r = await dmw.listDdbCampaigns();
+  if (!r || !r.ok || !Array.isArray(r.data) || !r.data.length) {
+    sel.innerHTML = `<option value="">(D&amp;D Beyond not connected — paste ID/URL above)</option>`;
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  sel.innerHTML = `<option value="">— or pick from D&amp;D Beyond —</option>` +
+    r.data.map((c) => `<option value="${escapeHtml(String(c.id))}">${escapeHtml(c.name)} (${c.id})</option>`).join("");
+}
+document.getElementById("setup-camp-ddb-select")?.addEventListener("change", (e) => {
+  const id = e.target.value;
+  if (!id) return;
+  const txt = document.getElementById("setup-camp-ddb");
+  if (txt) txt.value = id;
+});
+
+document.getElementById("setup-camp-register")?.addEventListener("click", async () => {
+  const msg = document.getElementById("setup-camp-msg");
+  if (!window.dmw || !msg) return;
+  const nameEl = document.getElementById("setup-camp-name");
+  const roll20El = document.getElementById("setup-camp-roll20");
+  const ddbEl = document.getElementById("setup-camp-ddb");
+  const notesEl = document.getElementById("setup-camp-notes");
+  const name = (nameEl?.value || "").trim();
+  const roll20 = (roll20El?.value || "").trim();
+  const ddb = (ddbEl?.value || "").trim();
+  const notes = (notesEl?.value || "").trim();
+
+  if (!name) { msg.textContent = "campaign name is required"; msg.className = "msg err"; return; }
+  if (!roll20) { msg.textContent = "Roll20 campaign ID or URL is required"; msg.className = "msg err"; return; }
+  if (!/(^\d+$)|(campaigns\/details\/\d+)/.test(roll20)) { msg.textContent = "couldn't find a numeric Roll20 campaign id in that"; msg.className = "msg err"; return; }
+  if (!ddb) { msg.textContent = "D&D Beyond campaign ID or URL is required"; msg.className = "msg err"; return; }
+  if (!/(^\d+$)|(campaigns\/\d+)/.test(ddb)) { msg.textContent = "couldn't find a numeric D&D Beyond campaign id in that"; msg.className = "msg err"; return; }
+
+  msg.textContent = "registering…"; msg.className = "msg";
+  const r = await dmw.registerCampaign({ name, roll20, ddb, notes });
+  if (r && r.ok) {
+    msg.textContent = `registered & switched to "${name}" ✓`; msg.className = "msg ok";
+    if (nameEl) nameEl.value = "";
+    if (roll20El) roll20El.value = "";
+    if (ddbEl) ddbEl.value = "";
+    if (notesEl) notesEl.value = "";
+    loadCampaignPicker();
+  } else {
+    msg.textContent = (r && r.error) || "registration failed"; msg.className = "msg err";
+  }
 });
 
 async function loadSttModels() {
@@ -1222,7 +1319,12 @@ if (window.dmw) {
   // Active campaign switched (server-driven): re-pull the config panel so its roster,
   // vocab, and pronouns reflect the new campaign instead of the previous one.
   if (typeof dmw.onCampaignChanged === "function") {
-    dmw.onCampaignChanged(() => { loadWizard().catch(() => {}); });
+    dmw.onCampaignChanged(() => {
+      loadWizard().catch(() => {});
+      // Keep the Setup-tab campaign picker in sync even when the switch originated elsewhere
+      // (e.g. voice, or another client) rather than this dropdown.
+      loadCampaignPicker().catch(() => {});
+    });
   }
   // Populate the inbox from the current snapshot (items may predate the HUD/tab being opened).
   if (typeof dmw.getInbox === "function") {

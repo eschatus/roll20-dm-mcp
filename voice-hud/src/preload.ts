@@ -104,4 +104,12 @@ contextBridge.exposeInMainWorld("dmw", {
 
   // Reconnect MCP (in case server wasn't up at HUD start)
   reconnectMcp: () => ipcRenderer.invoke("reconnect-mcp"),
+
+  // Campaign picker/maker — calls the MCP client directly (list_campaigns/switch_campaign/
+  // register_campaign/ddb_list_campaigns), never through the agent/LLM. See campaignManager.ts.
+  listCampaigns: () => ipcRenderer.invoke("campaigns-list"),
+  switchCampaign: (slugOrName: string) => ipcRenderer.invoke("campaigns-switch", slugOrName),
+  registerCampaign: (input: { name: string; roll20: string; ddb: string; notes?: string }) =>
+    ipcRenderer.invoke("campaigns-register", input),
+  listDdbCampaigns: () => ipcRenderer.invoke("ddb-campaigns-list"),
 });
