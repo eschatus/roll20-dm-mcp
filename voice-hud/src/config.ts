@@ -203,6 +203,25 @@ export const CONFIG = {
   //             check to catch partials. Policy lives in loop-policy.ts.
   agenticLoop: (process.env.DMW_AGENTIC_LOOP || "nudge") as "off" | "nudge" | "full",
 
+  // --- Gate-2 session instrumentation ---
+  // Structured, replayable turn events (events.jsonl): full tool args/results,
+  // true ok/error, loop-tag events kept separate from tool calls, a pre-turn
+  // board snapshot, and repairOf linkage across failed->repair turn pairs. ON by
+  // default — this IS how a live session becomes training data. Disable with
+  // DMW_SESSION_CAPTURE=0 (e.g. a privacy-sensitive table, or measuring the
+  // ~50ms/turn snapshot cost in isolation). The snapshot read fails soft either
+  // way (see snapshot.ts) — a slow/broken read never blocks a live turn.
+  sessionCapture: process.env.DMW_SESSION_CAPTURE !== "0",
+  // How long after a FAILED turn (MCP error, or a stated outcome that mutated
+  // nothing) a following turn still counts as a repair of it. Override via
+  // DMW_REPAIR_WINDOW_SEC.
+  repairWindowSec: Number(process.env.DMW_REPAIR_WINDOW_SEC) || 45,
+  // Hard ceiling on the pre-turn snapshot read, so a stalled board read can
+  // never delay the DM's turn by more than this (the MCP SDK's own default
+  // request timeout is tens of seconds). Override via DMW_SNAPSHOT_TIMEOUT_MS;
+  // 0 disables the bound.
+  snapshotTimeoutMs: Number(process.env.DMW_SNAPSHOT_TIMEOUT_MS ?? 1500),
+
   // Ollama (local) — OpenAI-compatible endpoint + a tool-calling model.
   // qwen2.5:14b-instruct handles tool-calling well; R1-distill does NOT, so it's
   // for tactics reasoning, not the HUD agent loop.

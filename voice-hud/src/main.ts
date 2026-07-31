@@ -11,6 +11,7 @@ import "./bootstrap"; // MUST precede ./config — sets DMW_DATA_DIR/ROLL20_DATA
 import * as path from "path";
 import * as fs from "fs";
 import * as child_process from "child_process";
+import { randomUUID } from "crypto";
 import * as dotenv from "dotenv";
 import { CONFIG } from "./config";
 import { PttHook } from "./ptt";
@@ -26,6 +27,12 @@ import { correctTranscript, DEFAULT_LITERAL_MAP } from "./correction";
 import { runAar } from "./aar";
 import { loadSettings, saveSettings, AppSettings } from "./settings";
 import { setLogSink, persist, classifyConsole } from "./logger";
+import {
+  isToolError, resultGlyph, emitToolEvent, emitLoopEvent, emitSnapshotEvent, parseLoopTag,
+  isRepairOf, TurnOutcome,
+} from "./toolEvents";
+import { captureBoardSnapshot } from "./snapshot";
+import { statesOutcome, isMutatingTool } from "./loop-policy";
 import * as campaignMgr from "./campaignManager";
 
 // Load the repo-root .env so ANTHROPIC_API_KEY is available (shared with the MCP server).
@@ -106,6 +113,12 @@ let _pendingRosterBlock: string | null = null;
 let rosterTokenById: Record<string, string> = {};
 // Warn-once when the DMW_SAVE_CLIPS A/B corpus hits its size/count budget.
 let abClipBudgetWarned = false;
+
+// Gate-2 session instrumentation: the previous turn's outcome, used to decide
+// whether the NEXT turn counts as a repair of it (see toolEvents.ts's
+// isRepairOf). Reset naturally per process — a fresh HUD launch starts with no
+// "previous turn" to repair, which is correct.
+let lastTurnOutcome: TurnOutcome | null = null;
 
 // Manual-drag state for the ✥ handle.
 let dragTimer: NodeJS.Timeout | null = null;
@@ -417,6 +430,48 @@ async function runAgent(transcript: string, lowConfidence = false) {
   send("state", "thinking");
   console.error(`[agent] turn start: "${transcript.slice(0, 80)}"${lowConfidence ? " (LOW CONF)" : ""}`);
   _agentTurnActive = true;
+
+  // --- Gate-2 session instrumentation: per-turn identity + repair linkage ---
+  // turnId scopes every structured event this turn emits (tool/loop/snapshot),
+  // covering both the choreography backbones (initPrep/beginCombat/cleanup) and
+  // the main runTurn loop inside agent.handle() — they're all one "turn" from
+  // the DM's perspective. repairOf is decided ONCE, up front: does this turn
+  // start within the configured window of a PREVIOUS turn that FAILED (an MCP
+  // error, or a stated outcome that mutated nothing)? If so every event this
+  // turn emits carries repairOf so a repair chain's FINAL turn — DM-accepted
+  // ground truth — can be traced back through its failed predecessor(s).
+  const turnId = randomUUID();
+  const turnStartTs = Date.now();
+  const repairOf = (lastTurnOutcome && isRepairOf(lastTurnOutcome, turnStartTs, CONFIG.repairWindowSec))
+    ? lastTurnOutcome.turnId
+    : undefined;
+  let toolSeq = 0;
+  let pendingTool: { tool: string; args: unknown; t0: number; seq: number } | null = null;
+  let turnMutations = 0;
+  let turnMcpErrors = 0;
+  // agent.handle() declines outright while a turn is already in flight (its
+  // busy guard), emitting prose and running nothing. Such a phantom turn must
+  // not become the repair anchor for the next one — nor burn three board reads.
+  const declined = agent.isBusy();
+
+  // Pre-turn board snapshot (Gate-2 #5) — a compact read taken BEFORE the
+  // agentic loop runs, so a mined turn is replayable/gradeable against the
+  // state it actually started from. Config-gated (DMW_SESSION_CAPTURE=0 to
+  // disable) and fails SOFT: any error here is logged and swallowed. The read
+  // is also time-bounded (CONFIG.snapshotTimeoutMs), so a stalled board read
+  // delays the DM's turn by at most that ceiling instead of the MCP SDK's
+  // tens-of-seconds request timeout.
+  if (CONFIG.sessionCapture && !declined) {
+    const tSnap = Date.now();
+    try {
+      const board = await captureBoardSnapshot(mcp, CONFIG.snapshotTimeoutMs);
+      emitSnapshotEvent(turnId, board, Date.now() - tSnap, { repairOf });
+    } catch (e) {
+      emitSnapshotEvent(turnId, null, Date.now() - tSnap, { error: (e as Error).message, repairOf });
+      console.error(`[events] snapshot failed (non-fatal): ${(e as Error).message}`);
+    }
+  }
+
   // A shaky transcript: flag it to the agent (the persona reads this) so it leans
   // toward confirming destructive writes rather than acting on a likely mishear.
   // Detector-safe — the marker carries no command keywords.
@@ -429,8 +484,44 @@ async function runAgent(transcript: string, lowConfidence = false) {
     refreshRoster({ silent: true }).catch((e) => console.error("[roster] pre-turn refresh failed:", (e as Error).message));
     await agent.handle(utterance, {
       onText: (text) => { console.error(`[agent] say: ${text.slice(0, 80)}`); send("agent", { kind: "say", text }); },
-      onToolStart: (name, args) => { console.error(`[agent] tool → ${name}(${shortArgs(args)})`); send("agent", { kind: "tool", text: `${name}(${shortArgs(args)})` }); },
-      onToolResult: (name, resultText) => { console.error(`[agent] tool ✓ ${name}: ${resultText.slice(0, 60)}`); send("agent", { kind: "result", text: `${name} ✓`, detail: resultText }); },
+      onToolStart: (name, args) => {
+        console.error(`[agent] tool → ${name}(${shortArgs(args)})`);
+        send("agent", { kind: "tool", text: `${name}(${shortArgs(args)})` });
+        // ↻persist/↑escalate never reach onToolStart (agent.ts calls onToolResult
+        // for them directly, with no matching start) — so every onToolStart here
+        // is a genuine tool call. One pending slot suffices: every call site
+        // (gatedCall, runTurn's loop) awaits the result before the next start.
+        toolSeq++;
+        pendingTool = { tool: name, args, t0: Date.now(), seq: toolSeq };
+      },
+      onToolResult: (name, resultText) => {
+        const ok = !isToolError(resultText);
+        // Gate-2 #2: the "always ✓" lie, fixed — aar.ts's regex already accepts
+        // both glyphs (see its test fixture, which already carries a ✓-labeled
+        // error line from before this fix).
+        const glyph = resultGlyph(resultText);
+        console.error(`[agent] tool ${glyph} ${name}: ${resultText.slice(0, 60)}`);
+        send("agent", { kind: "result", text: `${name} ${glyph}`, detail: resultText });
+
+        // Gate-2 #3: loop-control tags get their OWN event kind, never "tool".
+        const loopTag = parseLoopTag(name);
+        if (loopTag) {
+          emitLoopEvent(turnId, loopTag, repairOf);
+          return;
+        }
+
+        // A stray onToolResult with no matching onToolStart happens in two
+        // backbone spots (beginCombat's get_turn_order, cleanup's list_zones) —
+        // both take no args, so falling back to {} is correct, and a fresh seq
+        // keeps ordering monotonic.
+        const seq = pendingTool?.seq ?? ++toolSeq;
+        const durMs = pendingTool ? Date.now() - pendingTool.t0 : 0;
+        const args = pendingTool?.args ?? {};
+        if (isMutatingTool(name)) turnMutations++; // cancelled writes still count — see agent.ts's own comment
+        if (!ok) turnMcpErrors++;
+        emitToolEvent({ turnId, seq, tool: name, args, ok, durMs, resultText, repairOf });
+        pendingTool = null;
+      },
       onProposeWrite: (name, args) => new Promise<boolean>((resolve) => {
         pendingConfirm = resolve;
         send("agent", { kind: "confirm", text: humanizeToolCall(name, args) });
@@ -463,6 +554,14 @@ async function runAgent(transcript: string, lowConfidence = false) {
       _pendingRosterBlock = null;
     }
     if (!pendingConfirm) send("state", "idle");
+    // This turn's own outcome becomes the "previous turn" the NEXT one is
+    // checked against for repairOf.
+    if (!declined) {
+      lastTurnOutcome = {
+        turnId, endTs: Date.now(),
+        mcpErrorCount: turnMcpErrors, statesOutcome: statesOutcome(transcript), mutations: turnMutations,
+      };
+    }
   }
 }
 
