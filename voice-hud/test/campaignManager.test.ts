@@ -6,7 +6,17 @@ import { describe, it, expect, vi } from "vitest";
 import { listCampaigns, switchCampaign, registerCampaign, listDdbCampaigns, McpLike } from "../src/campaignManager";
 
 function mockMcp(impl: (name: string, args: Record<string, unknown>) => Promise<string>): McpLike {
-  return { call: vi.fn(impl) };
+  return { callResult: vi.fn(async (name, args) => ({ text: await impl(name, args), isError: false })) };
+}
+
+// A tool handler that throws server-side comes back as a normal response with isError:true.
+function mockFailingMcp(text: string, failFor?: string): McpLike {
+  return {
+    callResult: vi.fn(async (name: string) => ({
+      text: failFor && name !== failFor ? `Registered campaign "X" as slug "x".` : text,
+      isError: !failFor || name === failFor,
+    })),
+  };
 }
 
 const NOT_CONNECTED = new Error("MCP client not connected");
@@ -46,6 +56,13 @@ describe("listCampaigns", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toBe("relay timeout");
   });
+
+  it("reports an isError reply as a failure, not as an empty campaign list", async () => {
+    const mcp = mockFailingMcp("Error: registry file is corrupt");
+    const r = await listCampaigns(mcp);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe("Error: registry file is corrupt");
+  });
 });
 
 describe("switchCampaign", () => {
@@ -61,10 +78,17 @@ describe("switchCampaign", () => {
   });
 
   it("rejects an empty selection without calling MCP", async () => {
-    const call = vi.fn();
-    const r = await switchCampaign({ call }, "");
+    const callResult = vi.fn();
+    const r = await switchCampaign({ callResult }, "");
     expect(r.ok).toBe(false);
-    expect(call).not.toHaveBeenCalled();
+    expect(callResult).not.toHaveBeenCalled();
+  });
+
+  it("reports an isError reply as a failed switch, not as success", async () => {
+    const mcp = mockFailingMcp(`No campaign matching "gos"`);
+    const r = await switchCampaign(mcp, "gos");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/No campaign matching/);
   });
 
   it("surfaces disconnected state readably", async () => {
@@ -118,27 +142,41 @@ describe("registerCampaign", () => {
   });
 
   it("rejects an empty name before calling MCP", async () => {
-    const call = vi.fn();
-    const r = await registerCampaign({ call }, { name: "  ", roll20: "111", ddb: "222" });
+    const callResult = vi.fn();
+    const r = await registerCampaign({ callResult }, { name: "  ", roll20: "111", ddb: "222" });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/name/i);
-    expect(call).not.toHaveBeenCalled();
+    expect(callResult).not.toHaveBeenCalled();
   });
 
   it("rejects an unparsable Roll20 id before calling MCP", async () => {
-    const call = vi.fn();
-    const r = await registerCampaign({ call }, { name: "X", roll20: "not a url", ddb: "222" });
+    const callResult = vi.fn();
+    const r = await registerCampaign({ callResult }, { name: "X", roll20: "not a url", ddb: "222" });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/roll20/i);
-    expect(call).not.toHaveBeenCalled();
+    expect(callResult).not.toHaveBeenCalled();
   });
 
   it("rejects an unparsable D&D Beyond id before calling MCP", async () => {
-    const call = vi.fn();
-    const r = await registerCampaign({ call }, { name: "X", roll20: "111", ddb: "garbage" });
+    const callResult = vi.fn();
+    const r = await registerCampaign({ callResult }, { name: "X", roll20: "111", ddb: "garbage" });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/d&d beyond/i);
-    expect(call).not.toHaveBeenCalled();
+    expect(callResult).not.toHaveBeenCalled();
+  });
+
+  it("reports an isError register reply as a failure", async () => {
+    const mcp = mockFailingMcp("campaign id already registered");
+    const r = await registerCampaign(mcp, { name: "X", roll20: "111", ddb: "222" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe("campaign id already registered");
+  });
+
+  it("reports a registered-but-not-switched campaign instead of claiming success", async () => {
+    const mcp = mockFailingMcp("registry write failed", "switch_campaign");
+    const r = await registerCampaign(mcp, { name: "X", roll20: "111", ddb: "222" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/registered "x", but switching to it failed: registry write failed/i);
   });
 
   it("fails soft if the slug can't be parsed out of the tool's reply", async () => {
@@ -176,5 +214,12 @@ describe("listDdbCampaigns", () => {
     const r = await listDdbCampaigns(mcp);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/not connected/i);
+  });
+
+  it("reports an isError reply as a failure, not as an empty DDB list", async () => {
+    const mcp = mockFailingMcp("DDB session expired");
+    const r = await listDdbCampaigns(mcp);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe("DDB session expired");
   });
 });

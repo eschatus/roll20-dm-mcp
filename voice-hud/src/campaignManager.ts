@@ -10,7 +10,7 @@
 import { extractRoll20Id, extractDdbId } from "./campaignIds";
 
 export interface McpLike {
-  call(name: string, args: Record<string, unknown>): Promise<string>;
+  callResult(name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }>;
 }
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
@@ -21,6 +21,15 @@ export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 function mcpErrorMessage(err: unknown): string {
   const msg = (err instanceof Error ? err.message : String(err)) || "unknown error";
   return /not connected/i.test(msg) ? "not connected — connect to the MCP server first" : msg;
+}
+
+// A tool handler that throws comes back as an ordinary response with isError:true (the MCP SDK
+// never rejects for it), so a rejected switch would otherwise read as "switched ✓". Turn it back
+// into a throw so every caller below funnels it into { ok: false }.
+async function callTool(mcp: McpLike, name: string, args: Record<string, unknown>): Promise<string> {
+  const res = await mcp.callResult(name, args);
+  if (res.isError) throw new Error(res.text || `${name} failed`);
+  return res.text;
 }
 
 export interface CampaignSummary {
@@ -34,7 +43,7 @@ export interface CampaignSummary {
 
 export async function listCampaigns(mcp: McpLike): Promise<Result<CampaignSummary[]>> {
   try {
-    const raw = await mcp.call("list_campaigns", {});
+    const raw = await callTool(mcp, "list_campaigns", {});
     // list_campaigns returns a JSON array normally, but a friendly sentence
     // ("No campaigns registered yet. Use register_campaign to add one.") when empty.
     let list: CampaignSummary[] = [];
@@ -49,7 +58,7 @@ export async function switchCampaign(mcp: McpLike, slugOrName: string): Promise<
   const s = (slugOrName || "").trim();
   if (!s) return { ok: false, error: "no campaign selected" };
   try {
-    await mcp.call("switch_campaign", { slugOrName: s });
+    await callTool(mcp, "switch_campaign", { slugOrName: s });
     return { ok: true, data: { slug: s } };
   } catch (err) {
     return { ok: false, error: mcpErrorMessage(err) };
@@ -71,7 +80,7 @@ export async function registerCampaign(mcp: McpLike, input: RegisterCampaignInpu
   const ddbId = extractDdbId(input?.ddb || "");
   if (!ddbId) return { ok: false, error: "couldn't find a D&D Beyond campaign id — paste the numeric id or the campaign URL" };
   try {
-    const raw = await mcp.call("register_campaign", {
+    const raw = await callTool(mcp, "register_campaign", {
       name,
       roll20CampaignId: roll20Id,
       ddbCampaignId: ddbId,
@@ -81,7 +90,11 @@ export async function registerCampaign(mcp: McpLike, input: RegisterCampaignInpu
     const m = raw.match(/slug "([^"]+)"/);
     if (!m) return { ok: false, error: `registered, but couldn't parse the slug from the server's reply: ${raw.slice(0, 160)}` };
     const slug = m[1];
-    await mcp.call("switch_campaign", { slugOrName: slug });
+    try {
+      await callTool(mcp, "switch_campaign", { slugOrName: slug });
+    } catch (err) {
+      return { ok: false, error: `registered "${slug}", but switching to it failed: ${mcpErrorMessage(err)}` };
+    }
     return { ok: true, data: { slug } };
   } catch (err) {
     return { ok: false, error: mcpErrorMessage(err) };
@@ -94,7 +107,7 @@ export interface DdbCampaignSummary { id: string; name: string; }
 // connected: needs a harvested CobaltSession) or the DDB campaigns page shape ever changes.
 export async function listDdbCampaigns(mcp: McpLike): Promise<Result<DdbCampaignSummary[]>> {
   try {
-    const raw = await mcp.call("ddb_list_campaigns", {});
+    const raw = await callTool(mcp, "ddb_list_campaigns", {});
     let list: DdbCampaignSummary[] = [];
     try { list = JSON.parse(raw); } catch { list = []; }
     return { ok: true, data: Array.isArray(list) ? list : [] };

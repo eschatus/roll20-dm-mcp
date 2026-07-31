@@ -476,7 +476,7 @@ async function loadSetup() {
   const ul = document.getElementById("setup-status");
   if (ul) ul.innerHTML =
     item(s.apiKey, "Anthropic API key", "enter it below") +
-    item(s.campaigns > 0, "Campaign registered", "register one (Claude Code / Config) — " + s.campaigns + " found") +
+    item(s.campaigns > 0, "Campaign registered", "register one in the Campaign section below — " + s.campaigns + " found") +
     item(s.rtToken, "Roll20 connected", "Connect Roll20 (next wizard step)") +
     item(s.cobalt, "D&D Beyond linked (optional)", "set DDB_COBALT");
   // Badge "!" until the three essentials are present.
