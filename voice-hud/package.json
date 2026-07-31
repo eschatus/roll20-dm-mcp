@@ -1,8 +1,8 @@
 {
   "name": "dm-whisper-hud",
   "productName": "DM Whisper",
-  "version": "0.1.5",
-  "description": "DM Whisper \u2014 voice PTT + transparent scrying-gem HUD for the Roll20 DM assistant",
+  "version": "0.1.6",
+  "description": "DM Whisper — voice PTT + transparent scrying-gem HUD for the Roll20 DM assistant",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc",
