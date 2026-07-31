@@ -37,6 +37,11 @@ const LOCAL_NEVER_CALLED = [
 export interface Roll20McpLike {
   getTools(): McpTool[];
   call(name: string, args: Record<string, unknown>): Promise<string>;
+  /** Optional richer form carrying the MCP CallToolResult.isError flag (#158).
+   *  OPTIONAL so the many test fakes that implement only call() keep working —
+   *  callTool() below falls back to call() and reports isError:false, which is
+   *  exactly the old behaviour. */
+  callResult?(name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }>;
 }
 
 /** Factory that builds an LLMProvider for a given backend name. Injectable so
@@ -114,7 +119,11 @@ const WRITE_TOOLS = new Set<string>([
 export interface AgentCallbacks {
   onText: (text: string) => void;
   onToolStart: (name: string, args: unknown) => void;
-  onToolResult: (name: string, result: string) => void;
+  // isError is the MCP CallToolResult.isError flag, threaded through so the
+  // instrumentation can log the TRUTH instead of sniffing the result text for
+  // words like "failed" — which appears in SUCCESS messages (e.g. mark_dying's
+  // "…only on 3 failed saves", any save resolution). See issue #158.
+  onToolResult: (name: string, result: string, isError?: boolean) => void;
   onProposeWrite: (name: string, args: Record<string, unknown>) => Promise<boolean>;
   /**
    * Optional: fired when the CLEANUP backbone closes a fight. Replaces the old
@@ -179,6 +188,12 @@ export class DmAgent {
    * Local (Ollama) still intersects with LOCAL_TOOLS: small models genuinely do
    * pick badly from a 48-tool schema, and that pressure is real only there.
    */
+  /** Call a tool, preferring the isError-carrying form when the client offers it. */
+  private async callTool(name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
+    if (this.mcp.callResult) return this.mcp.callResult(name, args);
+    return { text: await this.mcp.call(name, args), isError: false };
+  }
+
   private toolSpecs(provider: ProviderName): ToolSpec[] {
     const cloudList = CONFIG.cloudToolAllowlist;
     let allow: Set<string>;
@@ -340,12 +355,12 @@ export class DmAgent {
       }
     }
     try {
-      const out = await this.mcp.call(name, args);
-      cb.onToolResult(name, out);
-      return out;
+      const r = await this.callTool(name, args);
+      cb.onToolResult(name, r.text, r.isError);
+      return r.text;
     } catch (e) {
       const m = "ERROR: " + (e as Error).message;
-      cb.onToolResult(name, m);
+      cb.onToolResult(name, m, true);
       return m;
     }
   }
@@ -426,13 +441,13 @@ export class DmAgent {
           }
         }
         try {
-          const out = await this.mcp.call(call.name, call.args);
-          results.push({ id: call.id, name: call.name, content: out });
-          cb.onToolResult(call.name, out);
+          const r = await this.callTool(call.name, call.args);
+          results.push({ id: call.id, name: call.name, content: r.text });
+          cb.onToolResult(call.name, r.text, r.isError);
         } catch (e) {
           const m = "ERROR: " + (e as Error).message;
           results.push({ id: call.id, name: call.name, content: m });
-          cb.onToolResult(call.name, m);
+          cb.onToolResult(call.name, m, true);
         }
       }
       turnLlm.pushToolResults(results);

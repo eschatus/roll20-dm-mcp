@@ -143,7 +143,7 @@ describe("resolve_aoe batch resolver (integration)", () => {
 
     expect(hp(brute.id)).toBe(0);
     expect(h.emu.tokenProps(brute.id).layer).toBe("map");
-    expect(markers(brute.id)).toMatch(/4444317/);
+    expect(markers(brute.id)).toMatch(/dead/); // built-in red X, not the custom Unconscious tag
     expect(text).toMatch(/DEAD/);
   });
 

@@ -7,7 +7,12 @@ import {
 describe("resolveMarkerForState", () => {
   it("maps true 5e conditions to the condition tier", () => {
     expect(resolveMarkerForState("poisoned")).toEqual({ tag: "Poisoned::4444329", tier: "condition", key: "poisoned" });
-    expect(resolveMarkerForState("dead")).toEqual({ tag: "Unconscious::4444317", tier: "condition", key: "dead" });
+    // "dead" is Roll20's BUILT-IN red-X overlay, present in every campaign. It used
+    // to alias the custom Unconscious marker, which renders as nothing wherever the
+    // custom marker set isn't installed (observed live: dead tokens at 0 HP on the
+    // map layer carrying an invisible marker). Unconscious stays for unconscious.
+    expect(resolveMarkerForState("dead")).toEqual({ tag: "dead", tier: "condition", key: "dead" });
+    expect(resolveMarkerForState("unconscious")).toEqual({ tag: "Unconscious::4444317", tier: "condition", key: "unconscious" });
   });
 
   it("maps pseudo-conditions to the pseudo tier", () => {

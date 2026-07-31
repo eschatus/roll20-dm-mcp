@@ -74,7 +74,7 @@ describe("update_token_hp — threshold automation", () => {
 
     expect(bar(id)).toBe(0);
     expect(layer(id)).toBe("map");
-    expect(markers(id)).toMatch(/4444317/); // dead shares the Unconscious tag
+    expect(markers(id)).toMatch(/dead/); // built-in dead marker (renders in every campaign)
     expect(text).toMatch(/0\/20/);
     expect(text).toMatch(/DEAD/);
   });
@@ -84,7 +84,7 @@ describe("update_token_hp — threshold automation", () => {
     const { text } = await h.callTool("update_token_hp", { characterName: "Fighter", damage: 29 }); // 30 -> 1, tracked
 
     expect(bar(id)).toBe(30); // bar1 untouched — Beyond20 owns it
-    expect(markers(id)).not.toMatch(/Wounded|4444317/);
+    expect(markers(id)).not.toMatch(/Wounded|dead/);
     expect(text).toMatch(/\(tracked\)/);
     expect(text).not.toMatch(/wounded|DEAD/i);
   });
@@ -121,7 +121,7 @@ describe("update_hp_many — threshold automation across a batch", () => {
     });
     expect(bar(skelB)).toBe(0);
     expect(layer(skelB)).toBe("map");
-    expect(markers(skelB)).toMatch(/4444317/);
+    expect(markers(skelB)).toMatch(/dead/);
     expect(text2).toMatch(/DEAD/);
   });
 });

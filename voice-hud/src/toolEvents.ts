@@ -32,10 +32,17 @@ const MCP_ERROR_RE = /\bMCP error -?\d+/i;
 // down to plain text like "Error: …". None of those carry a numbered MCP code,
 // so match the prefix too.
 const ERROR_PREFIX_RE = /^\s*(?:ERROR|Error)\b\s*[:\-]/;
-// gate0.ts's ERROR_HINT heuristic, applied to the FIRST line only: a tool that
-// genuinely failed says so up front, whereas a successful read's payload (a
-// token list, a narration echo) may well contain the word "failed" deeper in.
-const ERROR_HINT_RE = /\b(?:not connected|not found|ambiguous|invalid|timeout|timed out|failed|no result)\b/i;
+// Last-resort hint, applied to the FIRST line only and deliberately NARROW.
+// Issue #158: the old version matched a bare "failed" anywhere in line 1, which
+// fires on SUCCESS text — mark_dying's own success message ends "…call
+// kill_token only on 3 failed saves" (src/tools/combat.ts), and every save
+// resolution says "X failed its save". That mislabelled successes as errors,
+// which then flowed into turnFailed() → a bogus repairOf link on the NEXT turn,
+// corrupting the corpus's highest-value label on exactly the dying/AoE turns we
+// care about. Now: only phrases that can't plausibly appear in a success —
+// anchored at line start where possible. The real signal is the MCP isError
+// flag threaded from callResult(); this only covers callers that lack it.
+const ERROR_HINT_RE = /^(?:\s*)(?:not connected|no result|request timed out|tool not found)\b/i;
 
 /** Did this tool result represent a failure? `isErrorFlag` lets a caller with
  *  access to the raw MCP CallToolResult.isError pass it straight through;
@@ -58,7 +65,9 @@ export function resultGlyph(resultText: string, isErrorFlag?: boolean): "✓" | 
 // Structured tool events (Gate-2 #1)
 // ---------------------------------------------------------------------------
 
-const MAX_ARGS_BYTES = 8 * 1024;
+// Cap on the JSON-serialized arg payload. Measured in CHARS (what .length gives)
+// — the old name said BYTES, which is only equal for ASCII.
+const MAX_ARGS_CHARS = 8 * 1024;
 const RESULT_PREVIEW_CHARS = 500;
 const ERROR_PREVIEW_CHARS = 300;
 
@@ -97,14 +106,18 @@ export interface ToolEventRecord {
 export function buildToolEvent(e: ToolEventInput): ToolEventRecord {
   let args: unknown = e.args ?? {};
   let argsTruncated: true | undefined;
+  // Keep `args` a STABLE SHAPE (#158): overflow/unserializable used to swap the
+  // field from an object to a bare string, so every downstream consumer had to
+  // handle two types. Oversized payloads now go in a wrapper object instead, so
+  // `args` is always an object and `argsTruncated` says whether it's the real one.
   try {
     const s = JSON.stringify(args);
-    if (s.length > MAX_ARGS_BYTES) {
-      args = s.slice(0, MAX_ARGS_BYTES);
+    if (s.length > MAX_ARGS_CHARS) {
+      args = { __truncated: s.slice(0, MAX_ARGS_CHARS) };
       argsTruncated = true;
     }
   } catch {
-    args = String(e.args);
+    args = { __unserializable: String(e.args).slice(0, MAX_ARGS_CHARS) };
     argsTruncated = true;
   }
   const rec: ToolEventRecord = {
@@ -208,5 +221,9 @@ const DEFAULT_REPAIR_WINDOW_SEC = 45;
  *  when prev FAILED and the gap between prev's end and this turn's start is
  *  within the window (default 45s, configurable — see CONFIG.repairWindowSec). */
 export function isRepairOf(prev: TurnOutcome, startTs: number, windowSec = DEFAULT_REPAIR_WINDOW_SEC): boolean {
-  return turnFailed(prev) && (startTs - prev.endTs) <= windowSec * 1000;
+  // Lower bound matters (#158): without it a NEGATIVE gap — clock skew, or a
+  // turn whose start predates the previous turn's recorded end — still satisfies
+  // "<= window" and links a repair to a turn that hadn't finished yet.
+  const gap = startTs - prev.endTs;
+  return turnFailed(prev) && gap >= 0 && gap <= windowSec * 1000;
 }

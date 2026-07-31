@@ -348,7 +348,7 @@ describe("setTokenBar threshold automation (issue #141)", () => {
     expect(res.dead).toBe(true);
     expect(res.wounded).toBe(false);
     const t = emu.getObj("graphic", tok.id)!;
-    expect(String(t.get("statusmarkers"))).toContain("Unconscious::4444317"); // dead marker tag
+    expect(String(t.get("statusmarkers"))).toContain("dead"); // built-in dead marker
     expect(String(t.get("statusmarkers"))).not.toContain("Wounded");
     expect(t.get("layer")).toBe("map");
   });
@@ -378,7 +378,7 @@ describe("setTokenBar threshold automation (issue #141)", () => {
     expect(results[0].ok).toBe(true);
     expect(results[0].data?.dead).toBe(true);
     const t = emu.getObj("graphic", tok.id)!;
-    expect(String(t.get("statusmarkers"))).toContain("Unconscious::4444317");
+    expect(String(t.get("statusmarkers"))).toContain("dead");
     expect(t.get("layer")).toBe("map");
   });
 

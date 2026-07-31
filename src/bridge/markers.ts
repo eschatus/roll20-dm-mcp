@@ -4,7 +4,12 @@
 // Tiers: condition = true 5e condition · pseudo = well-known fixed icon · custom = hashed ad-hoc.
 
 export const CONDITION_MARKERS: Record<string, string> = {
-  dead: "Unconscious::4444317", unconscious: "Unconscious::4444317", poisoned: "Poisoned::4444329",
+  // "dead" is Roll20's BUILT-IN red-X overlay — always present in every campaign.
+  // It used to alias the campaign's custom Unconscious marker, which renders as
+  // NOTHING in any campaign that hasn't installed the custom set (observed live:
+  // dead tokens correctly at 0 HP on the map layer carrying an invisible marker).
+  // Keep Unconscious for actually-unconscious.
+  dead: "dead", unconscious: "Unconscious::4444317", poisoned: "Poisoned::4444329",
   blinded: "Blinded::4444318", charmed: "Charmed::4444320", deafened: "Deafened::4444321",
   frightened: "Feared::4444323", grappled: "Grappled::4444314", incapacitated: "Incapacitated::4444325",
   invisible: "Invisible::4444344", paralyzed: "Paralyzed::4444327", petrified: "Petrified::4444328",

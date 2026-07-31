@@ -146,7 +146,7 @@ describe("kill_token — sidekick death path (NPC semantics, not PC dying state)
 
     expect(layer(id)).toBe("map");
     // "dead" shares the Unconscious marker tag (see CONDITION_MARKERS in combat.ts).
-    expect(markers(id)).toMatch(/4444317/);
+    expect(markers(id)).toMatch(/dead/);
   });
 
   it("kill_token is available for the sidekick without any PC-style dying/death-save state", async () => {
@@ -155,6 +155,6 @@ describe("kill_token — sidekick death path (NPC semantics, not PC dying state)
     const id = tokenId(pageId, "Tua");
     await h.callTool("kill_token", { characterName: "Tua" });
     expect(layer(id)).toBe("map");
-    expect(markers(id)).toMatch(/4444317/);
+    expect(markers(id)).toMatch(/dead/);
   });
 });
