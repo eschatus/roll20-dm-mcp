@@ -176,7 +176,8 @@ function applyMishearing(text: string, rng: () => number): string {
   // One literal known-pattern swap, if a canonical phrase is present in this utterance.
   const shuffled = [...mishearPairs].sort(() => rng() - 0.5);
   for (const [canon, heard] of shuffled) {
-    if (out.includes(canon) && rng() < 0.6) { out = out.replace(canon, heard); break; }
+    const re = new RegExp(`\\b${canon.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+    if (re.test(out) && rng() < 0.6) { out = out.replace(re, heard); break; }
   }
   // One generic name-split, applied to the first long capitalized word (a proper noun
   // in every intent this renders — token names, epithets).
