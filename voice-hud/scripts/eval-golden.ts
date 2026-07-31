@@ -27,6 +27,7 @@ import { McpRoll20 } from "../src/mcp";
 import { buildSystemPrompt, buildTurnContext } from "../src/persona";
 import { AnthropicProvider } from "../src/llm/anthropic";
 import { OllamaProvider } from "../src/llm/ollama";
+import { OllamaNativeProvider } from "../src/llm/ollama-native";
 import { LLMProvider, ToolSpec } from "../src/llm/provider";
 import { CONFIG } from "../src/config";
 import { decideTerminal, isMutatingTool, LoopMode } from "../src/loop-policy";
@@ -42,7 +43,11 @@ const MODEL = process.env.DMW_EVAL_MODEL || (PROVIDER === "ollama" ? "qwen2.5:14
 const REPS = Number(process.env.DMW_EVAL_REPS) || 3;
 const MAX_STEPS = 6;
 const MODE = (process.env.DMW_AGENTIC_LOOP || "nudge") as LoopMode; // production default
-const makeProvider = (): LLMProvider => PROVIDER === "ollama" ? new OllamaProvider(MODEL, CONFIG.ollamaUrl) : new AnthropicProvider(MODEL);
+// DMW_OLLAMA_NATIVE=1 routes through /api/chat instead of the /v1 shim — required
+// for DMW_CONSTRAIN_TOOLS (schema-constrained arg decoding) to have any effect.
+const makeProvider = (): LLMProvider => PROVIDER === "ollama"
+  ? (process.env.DMW_OLLAMA_NATIVE === "1" ? new OllamaNativeProvider(MODEL, CONFIG.ollamaNativeUrl) : new OllamaProvider(MODEL, CONFIG.ollamaUrl))
+  : new AnthropicProvider(MODEL);
 
 const ajv = new Ajv({ strict: false, allErrors: true });
 const validators = new Map<string, ValidateFunction>();
