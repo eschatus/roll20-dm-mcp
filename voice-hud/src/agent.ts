@@ -20,6 +20,15 @@ import { buildSystemPrompt, buildTurnContext } from "./persona";
 import { createProvider, LLMProvider, ToolSpec, ProviderName } from "./llm";
 import { CONFIG } from "./config";
 import { decideTerminal, isMutatingTool, isSentinel, looksComplex } from "./loop-policy";
+import { slimToolSpecs } from "./llm/slim-tools";
+
+// Tools the trained specialist never saw: session/campaign plumbing and comms that no
+// gold trajectory ever calls (see NEVER_CALLED in scripts/gen-traces.ts). Dropping them
+// locally both matches training and buys back ~2.9k prompt tokens.
+const LOCAL_NEVER_CALLED = [
+  "list_campaigns", "active_campaign", "switch_campaign",
+  "get_recent_chat", "get_dm_inbox", "whisper_player",
+];
 
 // The narrow MCP surface the agent actually uses: list tools + call one. The
 // real McpRoll20 satisfies this structurally; tests inject a recording fake.
@@ -176,10 +185,16 @@ export class DmAgent {
     if (provider === "ollama") {
       const local = new Set(CONFIG.localToolAllowlist);
       allow = new Set(cloudList.filter((t) => local.has(t)));
+      // TRAIN/SERVE PARITY: the fine-tuned specialist (dmw-7b-v2) was trained on the
+      // corpus scope from scripts/gen-traces.ts — 19 tools, slimmed. Serving it the
+      // 25-tool verbose catalog is a different prompt than it ever saw, and it fit the
+      // training format hard (loss ~4e-4), so the mismatch costs real accuracy. Keep
+      // this list and slim-tools in lockstep with gen-traces' --scope/--slim defaults.
+      for (const t of LOCAL_NEVER_CALLED) allow.delete(t);
     } else {
       allow = new Set(cloudList);
     }
-    return this.mcp.getTools()
+    const specs = this.mcp.getTools()
       .filter((t) => allow.has(t.name))
       .map((t) => ({
         name: t.name,
@@ -188,6 +203,9 @@ export class DmAgent {
           ? t.inputSchema
           : { type: "object", properties: {} }) as Record<string, unknown>,
       }));
+    // Cloud keeps the verbose anti--32602 descriptions (nothing enforces shape there);
+    // local gets the slimmed schemas it was trained against.
+    return provider === "ollama" ? slimToolSpecs(specs) : specs;
   }
 
   private ensureStarted(): void {
