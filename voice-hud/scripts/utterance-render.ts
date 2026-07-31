@@ -194,8 +194,10 @@ function poolFor(board: Board, klass: Klass): Tok[] {
 }
 function baseWord(name: string): string {
   const core = name.split(/ the /i)[0].trim();
-  const words = core.split(/\s+/);
-  return words[words.length - 1].toLowerCase();
+  // Trailing disambiguators ("Kraken Priest A", "Skeleton 2") are not describable nouns —
+  // drop them so we never emit "the a" / "the 2".
+  const words = core.split(/\s+/).filter((w) => !/^(?:\d+|[A-Za-z])$/.test(w));
+  return (words.length ? words[words.length - 1] : core).toLowerCase();
 }
 export function indirectDescriptor(board: Board, name: string, klass: Klass, rng: () => number): string | null {
   const pool = poolFor(board, klass);
