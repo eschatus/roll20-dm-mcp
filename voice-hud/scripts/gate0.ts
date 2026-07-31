@@ -6,8 +6,9 @@
 // shift mid-corpus makes `kind` unreliable); all temporal logic is on `ts`.
 //
 // Known blind spots it compensates for (see SPECIALIST_MODEL_DECISION.md):
-//   - onToolResult logs "tool ✓" unconditionally → errors are detected by
-//     result TEXT ("MCP error", error hints), never the glyph;
+//   - onToolResult logged "tool ✓" unconditionally in historical logs (fixed
+//     live since Gate-2) → errors are detected by result TEXT ("MCP error",
+//     error hints), never the glyph, and both glyphs are accepted;
 //   - ↻persist/↑escalate masquerade as tool names → excluded from tool stats;
 //   - 14-step-cap turns exit without a "turn DONE" line → counted as capped.
 //
@@ -22,7 +23,10 @@ const RE_SESSION = /\[ptt\] PTT armed/;
 const RE_TURN_START = /\[agent\] turn start: "([\s\S]*?)"?( \(LOW CONF\))?$/;
 const RE_TURN_DONE = /\[agent\] turn DONE (\d+)ms, (\d+) steps(?: \(mut=(\d+)\))?/;
 const RE_TOOL_CALL = /\[agent\] tool → ([^(]+)\(/;
-const RE_TOOL_RESULT = /\[agent\] tool ✓ ([^:]+): ([\s\S]*)$/;
+// Both glyphs: historical logs are ✓-only (the unconditional-✓ bug), sessions
+// recorded after the Gate-2 fix mark failures ✗ — skipping those would drop
+// exactly the error lines this miner counts.
+const RE_TOOL_RESULT = /\[agent\] tool [✓✗⚠] ([^:]+): ([\s\S]*)$/;
 const RE_NUDGE = /\[agent\] persist:(persist|complete) —/;
 const RE_MCP_ERROR = /MCP error (-?\d+)/;
 const ERROR_HINT = /\b(error|not found|ambiguous|invalid|timeout|failed|no result)\b/i;

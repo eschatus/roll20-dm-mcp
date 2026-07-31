@@ -26,14 +26,25 @@ import { logEvent } from "./logger";
 // result TEXT, never the "tool ✓" glyph) — this is that detector, promoted from
 // a one-off mining regex into the thing the LIVE agent uses to log truthfully.
 const MCP_ERROR_RE = /\bMCP error -?\d+/i;
+// agent.ts builds its own failure strings (`"ERROR: " + e.message`) for every
+// throw that isn't an SDK McpError — transport hiccups, "MCP client not
+// connected", timeouts — and McpRoll20.call() flattens an isError:true result
+// down to plain text like "Error: …". None of those carry a numbered MCP code,
+// so match the prefix too.
+const ERROR_PREFIX_RE = /^\s*(?:ERROR|Error)\b\s*[:\-]/;
+// gate0.ts's ERROR_HINT heuristic, applied to the FIRST line only: a tool that
+// genuinely failed says so up front, whereas a successful read's payload (a
+// token list, a narration echo) may well contain the word "failed" deeper in.
+const ERROR_HINT_RE = /\b(?:not connected|not found|ambiguous|invalid|timeout|timed out|failed|no result)\b/i;
 
 /** Did this tool result represent a failure? `isErrorFlag` lets a caller with
  *  access to the raw MCP CallToolResult.isError pass it straight through;
  *  otherwise (the common case — McpRoll20.call() already flattens to text)
- *  fall back to the text heuristic every MCP-error response carries. */
+ *  fall back to the text heuristics failure responses carry. */
 export function isToolError(resultText: string, isErrorFlag?: boolean): boolean {
   if (isErrorFlag) return true;
-  return MCP_ERROR_RE.test(resultText);
+  if (MCP_ERROR_RE.test(resultText) || ERROR_PREFIX_RE.test(resultText)) return true;
+  return ERROR_HINT_RE.test(resultText.split("\n", 1)[0]);
 }
 
 /** The prose glyph for a tool result — ✓ on success, ✗ on failure (replacing

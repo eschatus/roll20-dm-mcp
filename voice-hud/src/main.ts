@@ -448,16 +448,22 @@ async function runAgent(transcript: string, lowConfidence = false) {
   let pendingTool: { tool: string; args: unknown; t0: number; seq: number } | null = null;
   let turnMutations = 0;
   let turnMcpErrors = 0;
+  // agent.handle() declines outright while a turn is already in flight (its
+  // busy guard), emitting prose and running nothing. Such a phantom turn must
+  // not become the repair anchor for the next one — nor burn three board reads.
+  const declined = agent.isBusy();
 
   // Pre-turn board snapshot (Gate-2 #5) — a compact read taken BEFORE the
   // agentic loop runs, so a mined turn is replayable/gradeable against the
   // state it actually started from. Config-gated (DMW_SESSION_CAPTURE=0 to
-  // disable) and fails SOFT: any error here is logged and swallowed, never
-  // allowed to block or delay the live turn beyond its own measured cost.
-  if (CONFIG.sessionCapture) {
+  // disable) and fails SOFT: any error here is logged and swallowed. The read
+  // is also time-bounded (CONFIG.snapshotTimeoutMs), so a stalled board read
+  // delays the DM's turn by at most that ceiling instead of the MCP SDK's
+  // tens-of-seconds request timeout.
+  if (CONFIG.sessionCapture && !declined) {
     const tSnap = Date.now();
     try {
-      const board = await captureBoardSnapshot(mcp);
+      const board = await captureBoardSnapshot(mcp, CONFIG.snapshotTimeoutMs);
       emitSnapshotEvent(turnId, board, Date.now() - tSnap, { repairOf });
     } catch (e) {
       emitSnapshotEvent(turnId, null, Date.now() - tSnap, { error: (e as Error).message, repairOf });
@@ -549,10 +555,12 @@ async function runAgent(transcript: string, lowConfidence = false) {
     if (!pendingConfirm) send("state", "idle");
     // This turn's own outcome becomes the "previous turn" the NEXT one is
     // checked against for repairOf.
-    lastTurnOutcome = {
-      turnId, endTs: Date.now(),
-      mcpErrorCount: turnMcpErrors, statesOutcome: statesOutcome(transcript), mutations: turnMutations,
-    };
+    if (!declined) {
+      lastTurnOutcome = {
+        turnId, endTs: Date.now(),
+        mcpErrorCount: turnMcpErrors, statesOutcome: statesOutcome(transcript), mutations: turnMutations,
+      };
+    }
   }
 }
 

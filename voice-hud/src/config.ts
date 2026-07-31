@@ -216,6 +216,11 @@ export const CONFIG = {
   // nothing) a following turn still counts as a repair of it. Override via
   // DMW_REPAIR_WINDOW_SEC.
   repairWindowSec: Number(process.env.DMW_REPAIR_WINDOW_SEC) || 45,
+  // Hard ceiling on the pre-turn snapshot read, so a stalled board read can
+  // never delay the DM's turn by more than this (the MCP SDK's own default
+  // request timeout is tens of seconds). Override via DMW_SNAPSHOT_TIMEOUT_MS;
+  // 0 disables the bound.
+  snapshotTimeoutMs: Number(process.env.DMW_SNAPSHOT_TIMEOUT_MS ?? 1500),
 
   // Ollama (local) — OpenAI-compatible endpoint + a tool-calling model.
   // qwen2.5:14b-instruct handles tool-calling well; R1-distill does NOT, so it's

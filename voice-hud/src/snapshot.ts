@@ -48,8 +48,27 @@ function compactToken(t: Record<string, unknown>): SnapshotToken {
  * own try/catch (see main.ts's runAgent) — it makes no attempt to swallow its
  * own errors, so a transport hiccup surfaces to the caller rather than
  * silently returning an empty/misleading board.
+ *
+ * `timeoutMs` bounds the whole read: a snapshot is a nice-to-have, the DM's
+ * turn is not, so a stalled read rejects fast instead of inheriting the MCP
+ * SDK's tens-of-seconds default and holding the turn hostage.
  */
-export async function captureBoardSnapshot(mcp: Roll20McpLike): Promise<Board> {
+export async function captureBoardSnapshot(mcp: Roll20McpLike, timeoutMs?: number): Promise<Board> {
+  if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return readBoard(mcp);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      readBoard(mcp),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`snapshot timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function readBoard(mcp: Roll20McpLike): Promise<Board> {
   const [tokensRaw, turnOrderRaw, zonesRaw] = await Promise.all([
     mcp.call("list_tokens", {}),
     mcp.call("get_turn_order", {}),

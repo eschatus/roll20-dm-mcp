@@ -89,6 +89,17 @@ describe("Gate-2 session instrumentation", () => {
       expect(toolEvents.isToolError("HP set to 18")).toBe(false);
     });
 
+    it("isToolError also catches failures with no numbered MCP code", () => {
+      // agent.ts's own throw path, and McpRoll20.call()'s flattened isError text.
+      expect(toolEvents.isToolError("ERROR: MCP client not connected")).toBe(true);
+      expect(toolEvents.isToolError("Error: request timed out")).toBe(true);
+      expect(toolEvents.isToolError("Token 'Strahd' not found")).toBe(true);
+      expect(toolEvents.isToolError("anything", true)).toBe(true);
+      // A success whose payload merely mentions the word deeper in stays ok.
+      expect(toolEvents.isToolError("Narration sent\nThe ritual failed, said the DM")).toBe(false);
+      expect(toolEvents.isToolError("(cancelled)")).toBe(false);
+    });
+
     it("resultGlyph picks ✗ for a failure, ✓ for success — this is what the live prose line now uses", () => {
       expect(toolEvents.resultGlyph("MCP error -32601: Method not found")).toBe("✗");
       expect(toolEvents.resultGlyph("HP set to 18")).toBe("✓");
@@ -203,6 +214,16 @@ describe("Gate-2 session instrumentation", () => {
       expect(board.tokens).toEqual([{ id: "-tok1", name: "Strahd", controlledby: "", hp: 144, statusmarkers: "", layer: "objects" }]);
       expect(board.turnOrder).toEqual([{ id: "-tok1", pr: 20 }]);
       expect(board.zones).toEqual([]);
+    });
+
+    it("a stalled read rejects at the timeout instead of holding the turn", async () => {
+      const hangingMcp: Roll20McpLike = {
+        getTools: () => [],
+        call: () => new Promise<string>(() => { /* never settles */ }),
+      };
+      const t0 = Date.now();
+      await expect(snapshot.captureBoardSnapshot(hangingMcp, 30)).rejects.toThrow(/timed out after 30ms/);
+      expect(Date.now() - t0).toBeLessThan(2000);
     });
 
     it("a throwing client rejects captureBoardSnapshot — the CALLER's catch is what makes the turn continue (soft fail)", async () => {
