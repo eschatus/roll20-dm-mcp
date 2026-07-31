@@ -22,8 +22,11 @@ import {
 // derived from this. Keep in sync with ai-relay.js CONDITION_MARKERS (the Roll20
 // sandbox keeps its own separate copy — do not assume they share this module).
 export const CONDITION_MARKERS: { name: string; marker: string; label?: string }[] = [
-  { name: "dead",          marker: "Unconscious::4444317", label: "unconscious / dead" },
-  { name: "unconscious",   marker: "Unconscious::4444317", label: "unconscious / dead" },
+  // dead = Roll20's built-in red X (renders everywhere); unconscious = the custom
+  // marker. They used to share one ID, so death was invisible in any campaign
+  // without the custom marker set installed.
+  { name: "dead",          marker: "dead",                 label: "dead (built-in red X)" },
+  { name: "unconscious",   marker: "Unconscious::4444317", label: "unconscious" },
   { name: "wounded",       marker: "Wounded::4444333",     label: "wounded / bloodied" },
   { name: "poisoned",      marker: "Poisoned::4444329" },
   { name: "blinded",       marker: "Blinded::4444318" },

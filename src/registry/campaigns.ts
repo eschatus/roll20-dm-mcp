@@ -64,30 +64,71 @@ export function registerCampaign(
 }
 
 /**
- * Resolve a user-supplied slug-or-name to a registered campaign slug.
- * Pure function: exact slug match first, then fuzzy match on slug overlap or
- * name substring. Returns the resolved slug, or null if nothing matches.
- * Exported for unit testing.
+ * All campaigns a user-supplied slug-or-name could mean, in precedence tiers.
+ * Returns as soon as a tier is non-empty, so a query that names one campaign
+ * EXACTLY never drags in its siblings via the fuzzy tier:
+ *
+ *   1. exact slug            "psk-plus"
+ *   2. exact display name    "Dreams of the Red Wizards"  (case-insensitive)
+ *   3. fuzzy: slug overlap either direction, or name substring
+ *
+ * Tier 3 is the dangerous one and is the reason this returns an ARRAY. It used
+ * to be an `Object.keys(store).find(...)` — first-match-wins over insertion
+ * order — so "dreams of the red wizards" matched three campaigns and silently
+ * resolved to whichever was registered first. That put a whole session on the
+ * wrong board while reporting success. Callers must treat >1 as an error, not
+ * pick one. Exported for unit testing.
+ */
+export function matchCampaignSlugs(
+  slugOrName: string,
+  store: CampaignStore
+): string[] {
+  if (store[slugOrName]) return [slugOrName];
+
+  const lower = slugOrName.toLowerCase();
+  const keys = Object.keys(store);
+
+  const exactName = keys.filter((k) => store[k].name.toLowerCase() === lower);
+  if (exactName.length) return exactName;
+
+  return keys.filter(
+    (k) =>
+      k.includes(toSlug(lower)) ||
+      toSlug(lower).includes(k) ||
+      store[k].name.toLowerCase().includes(lower)
+  );
+}
+
+/**
+ * Resolve a user-supplied slug-or-name to a single registered campaign slug.
+ * Returns null when nothing matches AND when the query is ambiguous — an
+ * ambiguous query has no correct answer, so guessing one is the bug we are
+ * fixing. Use `matchCampaignSlugs` when you need to tell the two cases apart.
  */
 export function resolveCampaignSlug(
   slugOrName: string,
   store: CampaignStore
 ): string | null {
-  if (store[slugOrName]) return slugOrName;
-
-  const lower = slugOrName.toLowerCase();
-  return (
-    Object.keys(store).find(
-      (k) => k.includes(toSlug(lower)) || toSlug(lower).includes(k) || store[k].name.toLowerCase().includes(lower)
-    ) ?? null
-  );
+  const matches = matchCampaignSlugs(slugOrName, store);
+  return matches.length === 1 ? matches[0] : null;
 }
 
 export function setActiveCampaign(slugOrName: string): CampaignEntry {
   const store = load();
 
-  // Try exact slug match first, then fuzzy on name
-  const resolved = resolveCampaignSlug(slugOrName, store);
+  const matches = matchCampaignSlugs(slugOrName, store);
+
+  // Ambiguity is a HARD error. Silently picking one is how a session ends up on
+  // the wrong campaign with the tool reporting "Active campaign set to …".
+  if (matches.length > 1) {
+    const options = matches.map((k) => `${k} ("${store[k].name}")`).join(", ");
+    throw new Error(
+      `Ambiguous campaign: "${slugOrName}" matches ${matches.length} campaigns: ${options}. ` +
+        `Use the exact slug.`
+    );
+  }
+
+  const resolved = matches[0] ?? null;
 
   if (!resolved) {
     const available = Object.keys(store).join(", ") || "(none registered)";

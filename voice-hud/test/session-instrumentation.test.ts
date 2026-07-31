@@ -70,8 +70,12 @@ describe("Gate-2 session instrumentation", () => {
 
       const [rec] = readEvents();
       expect(rec.argsTruncated).toBe(true);
-      expect(typeof rec.args).toBe("string");
-      expect((rec.args as string).length).toBeLessThanOrEqual(8 * 1024);
+      // #158: args keeps a STABLE SHAPE (always an object) so downstream corpus
+      // consumers never handle two types — the payload moves into a wrapper.
+      expect(typeof rec.args).toBe("object");
+      const wrapped = (rec.args as { __truncated: string }).__truncated;
+      expect(typeof wrapped).toBe("string");
+      expect(wrapped.length).toBeLessThanOrEqual(8 * 1024);
     });
 
     it("small args are NOT flagged truncated", () => {
@@ -93,11 +97,25 @@ describe("Gate-2 session instrumentation", () => {
       // agent.ts's own throw path, and McpRoll20.call()'s flattened isError text.
       expect(toolEvents.isToolError("ERROR: MCP client not connected")).toBe(true);
       expect(toolEvents.isToolError("Error: request timed out")).toBe(true);
-      expect(toolEvents.isToolError("Token 'Strahd' not found")).toBe(true);
+      expect(toolEvents.isToolError("not connected to the relay")).toBe(true);
       expect(toolEvents.isToolError("anything", true)).toBe(true);
       // A success whose payload merely mentions the word deeper in stays ok.
       expect(toolEvents.isToolError("Narration sent\nThe ritual failed, said the DM")).toBe(false);
       expect(toolEvents.isToolError("(cancelled)")).toBe(false);
+    });
+
+    it("does NOT flag successes that contain failure vocabulary (#158 regression)", () => {
+      // All real SUCCESS strings. The old bare-keyword heuristic matched "failed"
+      // anywhere on line 1, so each logged ok:false -> turnFailed() -> a bogus
+      // repairOf link on the NEXT turn, corrupting the corpus's highest-value
+      // label on exactly the dying/AoE turns we most want to learn from.
+      expect(toolEvents.isToolError(
+        "Thorne marked dying — prone + unconscious. Death saves are player-owned; call kill_token only on 3 failed saves.",
+      )).toBe(false);
+      expect(toolEvents.isToolError("Goblin the Savage failed its DEX save (8 vs DC 15)")).toBe(false);
+      expect(toolEvents.isToolError("Fireball: Priest A failed; Priest B saved")).toBe(false);
+      // …but the real MCP isError flag still wins, whatever the text says.
+      expect(toolEvents.isToolError("Goblin failed its save", true)).toBe(true);
     });
 
     it("resultGlyph picks ✗ for a failure, ✓ for success — this is what the live prose line now uses", () => {

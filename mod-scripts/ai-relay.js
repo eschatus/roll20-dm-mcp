@@ -441,7 +441,11 @@ const ABILITY_NAMES = ["strength", "dexterity", "constitution", "intelligence", 
 // syncConditionsToToken (DDB condition mirroring / "clear all conditions"), so
 // keep this list to real conditions that DDB knows about.
 const CONDITION_MARKERS = {
-  dead:          "Unconscious::4444317",
+  // dead = Roll20 built-in red X (renders in EVERY campaign); unconscious = the
+  // custom set's marker. Previously aliased, which made death invisible wherever
+  // the custom marker set isn't installed. Hand-synced with src/bridge/markers.ts
+  // and src/tools/combat.ts — edit all three together.
+  dead:          "dead",
   unconscious:   "Unconscious::4444317",
   poisoned:      "Poisoned::4444329",
   blinded:       "Blinded::4444318",
