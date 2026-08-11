@@ -1,14 +1,16 @@
 # DM Assistant — Operating Rules (canonical)
 
 Single source of truth for how the Roll20 DM assistant behaves during play. Consumed by:
-the `/combat` and `/round` slash commands, and the Voice HUD agent persona
-(`voice-hud/src/persona.ts` loads this file at runtime). Edit here; do not fork.
+the `/combat` and `/round` slash commands, and the DM Whisper gem's agent persona (its
+`src/persona.ts` loads this file at runtime, from this repo — the gem consumes roll20-dm-mcp as
+a dependency and bundles this file into its installer). This repo is the canonical home:
+edit here; do not fork.
 
 These are the *rules*. The combat *procedure* — the step-by-step choreography (board review →
 init-prep → combat → cleanup), its triggers, and the tool calls each step makes — lives in the
 [`/combat`](../.claude/commands/combat.md) and [`/round`](../.claude/commands/round.md) slash
-commands, and (for the voice gem) in [`voice-hud/WORKFLOW.md`](../voice-hud/WORKFLOW.md). Where
-they overlap, these rules win.
+commands, and (for the voice gem) in `WORKFLOW.md` in the dm-whisper repository. Where they
+overlap, these rules win.
 
 These rules reconcile the saved feedback in
 `C:\Users\escha\.claude\projects\e--personalProjects-roll20-dm-mcp\memory\`. Where a

@@ -15,8 +15,11 @@ AI-assisted D&D 5e session management for **Roll20 + D&D Beyond**. Three compone
   **map/wall/zone domain**: battlemap upload, Claude-Vision wall detection, DL walls/doors, token
   creation, zones, screenshots. The prep-only analysis/wall tools (`registerVisionTools`) live here only;
   zones (`zones.ts`) + screenshot (`screenshot.ts`) are **shared modules** registered in both servers.
-- **Voice HUD** (`voice-hud/`) — Electron overlay (PTT → Whisper STT → Claude agent). Reads the
-  root `.env` and the canonical rules in `skills/dm-rules.md` at runtime.
+- **DM Whisper** — the Electron voice gem (PTT → Whisper STT → Claude agent). **No longer in this
+  repo.** Split out to https://github.com/eschatus/dm-whisper on 2026-08-11 and closed source; it
+  consumes this repository as a pinned dependency and bundles `skills/dm-rules.md`,
+  `mod-scripts/ai-relay.js` and the server itself into its installer. Changes to those files reach
+  the gem only when it re-pins. This repository stays open under MIT — see LICENSE and NOTICE.
 
 There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` → `dist/index-combat.js`).
 

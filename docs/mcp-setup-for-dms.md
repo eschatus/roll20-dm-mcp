@@ -78,8 +78,7 @@ That lands the project at `~/roll20-dm-mcp` (macOS) or `C:\Users\you\roll20-dm-m
 
 ### Step 3 — Install dependencies
 
-This pulls the packages and a dedicated Chromium browser the server uses. **Ignore the `voice-hud/` folder
-entirely** — that's a separate voice-control app ("the gem") you don't need.
+This pulls the packages and a dedicated Chromium browser the server uses. **There is no `voice-hud/` folder any more** — the voice-control app ("the gem") moved to its own repository on 2026-08-11. This checkout is the MCP server, which is all you need here.
 
 ```bash
 npm install

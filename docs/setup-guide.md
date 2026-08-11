@@ -135,21 +135,34 @@ Use Claude Code for map prep, deploying tokens before a session, and anything th
 
 The Gem is an Electron overlay that floats on your screen. It shows a glowing faceted gem that you hold PTT (push-to-talk) to talk to. An expanded "Scrying Ledger" panel gives you chat, player inbox, and configuration tabs.
 
+> **The Gem lives in its own repository now.** It was split out to
+> [`eschatus/dm-whisper`](https://github.com/eschatus/dm-whisper) on 2026-08-11 and is closed
+> source; this repository is the MCP server it talks to, and stays open under MIT. Everything in
+> Track B happens in that checkout, not this one. If you do not have access to it, Track A above
+> is complete on its own.
+
 ### Install the Gem
 
 ```bash
-cd voice-hud
+git clone https://github.com/eschatus/dm-whisper
+cd dm-whisper
 npm install
 ```
 
+`npm install` pulls this server in as a pinned dependency and builds it, so you do not need a
+separate checkout of roll20-dm-mcp for the Gem to run.
+
 ### Anthropic API key
 
-The Gem calls the Anthropic API directly. Make sure `ANTHROPIC_API_KEY` is set in the root `.env` (the Gem reads the root `.env` automatically).
+The Gem calls the Anthropic API directly. Set `ANTHROPIC_API_KEY` in the Gem repo's own `.env` —
+copy `.env.example` to start. That file also carries the one setting the split made mandatory:
+`DMW_DATA_DIR` and `ROLL20_DATA_DIR` must point at the SAME directory, or the Gem and the server
+keep separate campaign registries and silently disagree about which campaign is active.
 
 ### Start the Gem
 
 ```bash
-cd voice-hud
+cd dm-whisper
 npm start
 ```
 
@@ -163,7 +176,7 @@ Voice (push-to-talk) works with **no extra setup**. The Gem ships a bundled whis
 
 **GPU (NVIDIA CUDA / Vulkan):** drop in a cuBLAS or Vulkan build of `whisper-server` and point the Gem at it with `DMW_WHISPER_BIN` (or `DMW_WHISPER_SERVER_BIN`) in `.env`. No code change needed — it's a drop-in binary swap. For higher accuracy on a capable GPU you can also point `DMW_WHISPER_MODEL` at a larger ggml model (e.g. `ggml-medium.en.bin` or `ggml-large-v3.bin`).
 
-**Deprecated alternative — Python faster-whisper:** the old Python faster-whisper sidecar is mothballed (#46) and not required by anything. If you specifically want it, opt in with `DMW_STT_ENGINE=faster-whisper` and install its venv (`voice-hud/stt/requirements.txt`). The bundled whisper.cpp server is the supported path; reach for faster-whisper only if you have a specific reason.
+**Deprecated alternative — Python faster-whisper:** the old Python faster-whisper sidecar is mothballed (#46) and not required by anything. If you specifically want it, opt in with `DMW_STT_ENGINE=faster-whisper` and install its venv (`stt/requirements.txt`, in the Gem repo). The bundled whisper.cpp server is the supported path; reach for faster-whisper only if you have a specific reason.
 
 **PTT key:** The default is `Right Ctrl` (hold to speak, release to send). Change it in the Gem's Config tab if needed. The confirm key (for write proposals) defaults to `Right Shift`.
 
