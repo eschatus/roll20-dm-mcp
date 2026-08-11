@@ -62,7 +62,12 @@ Third-party and interoperation
 Not covered by this licence
 ---------------------------
 
-`data/tactics/monster-tactics-index.json` is a local, gitignored artifact derived from Keith
-Ammann's "The Monsters Know What They're Doing", a commercial book. It has never been
-committed to this repository and is not redistributable. The tactics feature degrades to its
-Int/Wis tier system when the index is absent.
+`data/tactics/monster-tactics-index.json` is a local, gitignored artifact containing roughly
+190,000 words of verbatim prose from Keith Ammann's "The Monsters Know What They're Doing",
+a commercial book — 149 unique passages published under 280 alias keys. It is the author's
+text, not a summary of it. It has never been committed to this repository, is not covered by
+the MIT licence above, and is not redistributable.
+
+The 16 MB source PDF and the `build_index.py` that extracted it sit beside it under `data/`,
+which is gitignored in its entirety. Anyone cloning this repository gets neither. The tactics
+feature degrades to its Int/Wis tier system when the index is absent.
