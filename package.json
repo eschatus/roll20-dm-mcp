@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node dist/index-combat.js",
     "build": "tsc",
+    "prepare": "tsc",
     "dev": "tsx watch src/index-combat.ts",
     "serve": "tsx src/index-http.ts",
     "serve:watch": "tsx watch src/index-http.ts",
@@ -18,6 +19,23 @@
   "keywords": [],
   "author": "",
   "license": "MIT",
+  "//files": [
+    "Consumers install this from git, so `prepare` above builds dist/ in the clone.",
+    "That build is only USEFUL if dist/ also gets packed — and with no `files` field npm",
+    "falls back to .gitignore, which lists dist/. The prepare script would have run, the",
+    "output would have been discarded, and the consumer would get no server entry at all.",
+    "Everything listed here is consumed by the gem: dist/ (supervised spawn), src/ (its",
+    "esbuild bundle:server step), skills/ + mod-scripts/ + LICENSE (electron-builder",
+    "extraResources). Nothing else is."
+  ],
+  "files": [
+    "dist",
+    "src",
+    "skills",
+    "mod-scripts",
+    "LICENSE",
+    "NOTICE"
+  ],
   "type": "module",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",

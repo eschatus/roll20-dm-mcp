@@ -4,7 +4,7 @@ AI-assisted D&D 5e session management for Roll20 + D&D Beyond. Three components:
 
 - **`roll20-dm` MCP server** — live combat assistant over HTTP: HP tracking, conditions, initiative, dice, narration, turn hooks, AoE targeting, zones, tactical AI advisor, DDB character/monster reads.
 - **`roll20-dm-maps` MCP server** — map prep pipeline (stdio): upload battlemaps, auto-place dynamic lighting walls via Claude Vision, token creation.
-- **Voice HUD** (`voice-hud/`) — transparent Electron overlay: push-to-talk → Whisper STT → Claude agent → live tabletop. The DM speaks; the gem acts.
+- **Voice HUD** (*separate repository since 2026-08-11, closed source*) — transparent Electron overlay: push-to-talk → Whisper STT → Claude agent → live tabletop. The DM speaks; the gem acts. It consumes this server as a dependency; nothing here depends on it.
 
 ![The scrying gem over a live Roll20 encounter](assets/gem-in-play.png)
 
@@ -136,11 +136,12 @@ The scrying gem — a transparent cushion-cut crystal overlay that floats above 
 |---|---|---|
 | ![Tactic tray](assets/gem-tactics-tray.png) | ![Proper Nouns tab](assets/ledger-proper-nouns.png) | ![Nicknames tab](assets/ledger-nicknames.png) |
 
-```bash
-cd voice-hud
-npm install
-npm run start          # builds + launches Electron
-```
+> **The HUD moved out of this repository on 2026-08-11** and its source was closed — see
+> `NOTICE`. What follows describes how it behaves and how it talks to this server, which is
+> still worth documenting here because this server is the half it talks to. It is no longer
+> buildable from this checkout, and the `voice-hud/` paths named below now refer to files in
+> the DM Whisper repository. **This server remains open source under MIT and is entirely
+> usable without the HUD** — any MCP client can drive it.
 
 **Controls:**
 - Hold **Right Ctrl** → speak → release to send (configurable via `DMW_PTT_KEY`)
