@@ -26,22 +26,7 @@ jobs:
       - name: Mod syntax gate (ai-relay.js is plain sandbox JS — no typecheck otherwise)
         run: node --check mod-scripts/ai-relay.js
 
-  voice-hud-tests:
-    # voice-hud has its own build (CommonJS, separate deps). These are the hermetic
-    # tests only — phase machine + narration structural checkers. The live-model
-    # narration eval is skipped here (no ROLL20_LLM_EVAL); run it via the manual
-    # llm-eval workflow.
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: voice-hud
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - run: npm ci
-      - name: Typecheck
-        run: npx tsc --noEmit
-      - name: Unit tests (offline — live eval auto-skips)
-        run: npm test
+# The voice-hud-tests job moved to the dm-whisper repository on 2026-08-11, with the gem
+# itself. So did release.yml (the installer build) and llm-eval.yml (narration eval) —
+# all three were the gem's, and only lived here because .github/ sat at the repo root
+# and the subtree split moved just voice-hud/.
