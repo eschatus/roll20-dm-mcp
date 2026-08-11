@@ -1,0 +1,68 @@
+NOTICE — roll20-dm-mcp
+======================
+
+This project is and remains **open source under the MIT License**. It is the MCP server,
+Roll20 Mod relay and D&D Beyond read bridge for AI-assisted D&D 5e session management.
+
+The gem moved out; the server did not
+------------------------------------
+
+Until 2026-08-11 this repository also contained `voice-hud/` — the Electron voice HUD known
+as **DM Whisper**. On that date it was extracted into its own repository
+(https://github.com/eschatus/dm-whisper) with `git subtree split`, preserving all commits,
+authors and dates, and its source was closed.
+
+**Only the gem closed. This repository stays open**, and DM Whisper consumes it as an
+ordinary dependency. Nothing here became proprietary, and nothing here is encumbered by the
+gem's terms.
+
+If you are looking for code that used to be under `voice-hud/`, its history is intact in the
+other repository. Copies of it obtained from this repository before 2026-08-11 were obtained
+under the licence declared at the time and remain governed by it — see that project's NOTICE.
+
+Licence history
+---------------
+
+From the first commit (2026-05-25) until 2026-08-11 this repository declared
+`"license": "ISC"` in package.json and carried no LICENSE file. That was a real, public,
+permissive grant, and copies obtained under it remain licensed under ISC.
+
+The LICENSE file added on 2026-08-11 states MIT. ISC and MIT are equivalent in substance —
+both permit use, modification and redistribution with the notice retained — so this records
+what was already true rather than changing what anyone may do. It was done because a
+permissive intention that exists only as a package.json field is not a licence anybody should
+have to rely on.
+
+Contributors
+------------
+
+Bill (GitHub `ChiRomo1121`, bill@webromanos.com) contributed to this repository under the ISC
+declaration, and was made a committer on 2026-06-22. His commits here — the `writeResult`
+escaping fixes that stopped Mod sandbox crashes, the `createCharacter` ability-modifier
+derivation, gmnotes support in `editCharacter`, and the DM-oriented setup guide — remain in
+this repository under MIT, and he retains copyright in them.
+
+He separately agreed, on 2026-08-11, to relicense his three `voice-hud/` commits for the
+closed gem project. That agreement was scoped to those three commits and has no effect on his
+contributions here.
+
+No contributor licence agreement is in place for this repository. Contributions are accepted
+under MIT, inbound as outbound.
+
+Third-party and interoperation
+------------------------------
+
+  * Beyond20 (GPL-3.0) is interoperated with through its documented interface and is never
+    vendored.
+  * Roll20 and D&D Beyond are third-party services accessed as a logged-in user. No D&D
+    Beyond content is redistributed.
+  * `data/` is gitignored and holds live credentials and derived local data. It is not part
+    of the distribution.
+
+Not covered by this licence
+---------------------------
+
+`data/tactics/monster-tactics-index.json` is a local, gitignored artifact derived from Keith
+Ammann's "The Monsters Know What They're Doing", a commercial book. It has never been
+committed to this repository and is not redistributable. The tactics feature degrades to its
+Int/Wis tier system when the index is absent.
