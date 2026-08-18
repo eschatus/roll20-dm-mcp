@@ -215,7 +215,48 @@ function B() {
   // PC token's bar1 and overwrites anything we write. Keyed by lowercased token name →
   // { current, max, name, updated }. NPC HP stays on the token bar as before.
   if (!s.pcHp || typeof s.pcHp !== "object") s.pcHp = {};
+  // Zone metadata registry (issue #164). Roll20 `path` objects have neither a
+  // `name` nor a `gmnotes` property — createObj/set silently drop both writes
+  // (verified live: a freshly-created zone path's actual stored keys are _id,
+  // _type, fill, height, id, layer, left, page_id, path, stroke, top, width —
+  // no name, no gmnotes. Same failure mode as the fill_opacity bug fixed in
+  // #162, on the same object type). Zone name/terrain/duration/etc. instead
+  // live here, keyed by the zone path's Roll20 id → { name, shape, pageId,
+  // centerX, centerY, radiusFeet, color, terrain, duration }.
+  if (!s.zones || typeof s.zones !== "object") s.zones = {};
   return s;
+}
+
+// The zone metadata registry itself (see B() above).
+function zoneRegistry() {
+  return B().zones;
+}
+
+// Registry entries for a page (or every page if pageId is omitted), RECONCILED
+// against reality: a path can be deleted straight from the Roll20 UI (DM
+// erases it, or an unrelated map cleanup), leaving an orphan registry entry
+// behind. Drop those here on read rather than let them accumulate or hand a
+// caller a "zone" that no longer exists on the board.
+function liveZones(pageId) {
+  let reg = zoneRegistry();
+  let out = [];
+  Object.keys(reg).forEach(function (id) {
+    let p = getObj("path", id);
+    if (!p) { delete reg[id]; return; }
+    if (pageId && p.get("_pageid") !== pageId) return;
+    out.push({ id: id, path: p, meta: reg[id] });
+  });
+  return out;
+}
+
+// clear_zone historically prepended "ZONE: " to the name written on the zone
+// path's `name` property (issue #164: that write was always a silent no-op —
+// Roll20 paths have no `name`). Callers/models may still pass that prefix out
+// of habit; strip it so it matches the bare name actually stored in the
+// registry.
+function stripZonePrefix(name) {
+  let s = String(name || "");
+  return s.indexOf("ZONE: ") === 0 ? s.slice(6) : s;
 }
 
 // True when a token is a player character (a real player controls it) — as opposed to
@@ -2210,7 +2251,9 @@ ACTIONS["toBack"] = function (args, msg, nonce, senderPlayerId) {
 ACTIONS["createZone"] = function (args, msg, nonce, senderPlayerId) {
         {
         // Draw a named zone (circle or rect) on the "map" layer.
-        // Metadata stored in gmnotes so it survives relay restarts.
+        // Metadata lives in state.GM_AI_Bridge.zones (see zoneRegistry above),
+        // NOT on the path object — Roll20 paths have no name/gmnotes property
+        // to persist it in (issue #164).
         // centerX/centerY in page pixels; radiusFeet converted via page scale.
         let zonePage = getObj("page", args.pageId);
         if (!zonePage) throw new Error("Page not found: " + args.pageId);
@@ -2259,7 +2302,10 @@ ACTIONS["createZone"] = function (args, msg, nonce, senderPlayerId) {
           controlledby: "",
         });
         if (!zoneObj) throw new Error("Failed to create zone path object");
-        zoneObj.set("name", zoneName);
+        // NOTE (issue #164): deliberately NOT writing name/gmnotes on zoneObj —
+        // Roll20 paths have neither property, so both writes were always silent
+        // no-ops. Leaving a write that does nothing is exactly what caused this
+        // bug in the first place; metadata is registered below instead.
 
         // Terrain/duration metadata (issue #134). duration.type "rounds" gets a
         // createdRound stamp from the persistent turn-hook round counter so
@@ -2275,17 +2321,18 @@ ACTIONS["createZone"] = function (args, msg, nonce, senderPlayerId) {
         }
         let zoneTerrain = args.terrain || null;
 
-        zoneObj.set("gmnotes", JSON.stringify({
+        zoneRegistry()[zoneObj.id] = {
           zone: true,
           name: args.name || "Zone",
           shape: args.shape || "circle",
+          pageId: args.pageId,
           centerX: zoneCx,
           centerY: zoneCy,
           radiusFeet: args.radiusFeet || 15,
           color: zoneColor,
           terrain: zoneTerrain,
           duration: zoneDuration,
-        }));
+        };
         writeResult(nonce, {
           id: zoneObj.id,
           name: zoneName,
@@ -2303,13 +2350,19 @@ ACTIONS["clearZone"] = function (args, msg, nonce, senderPlayerId) {
         if (args.zoneId) {
           let zo = getObj("path", args.zoneId);
           if (zo) zo.remove();
+          delete zoneRegistry()[args.zoneId];
           writeResult(nonce, { removed: zo ? 1 : 0 });
         } else if (args.name) {
-          let prefix = "ZONE: " + args.name;
-          let found = findObjs({ _type: "path", _pageid: args.pageId }).filter(function(p) {
-            return p.get("name") === prefix;
+          // Accept the bare name (as stored) OR the historical "ZONE: " prefix
+          // the tool used to write to the path's (nonexistent) `name` property.
+          let wantName = stripZonePrefix(args.name);
+          let found = liveZones(args.pageId).filter(function(z) {
+            return z.meta.name === wantName;
           });
-          found.forEach(function(p) { p.remove(); });
+          found.forEach(function(z) {
+            z.path.remove();
+            delete zoneRegistry()[z.id];
+          });
           writeResult(nonce, { removed: found.length });
         } else {
           throw new Error("clearZone requires zoneId or name");
@@ -2359,20 +2412,18 @@ ACTIONS["breakConcentration"] = function (args, msg, nonce, senderPlayerId) {
         setSafe(t, { aura1_radius: 0 });
 
         // 3) Delete linked concentration zones.
-        let candidates = findObjs(args.pageId ? { _type: "path", _pageid: args.pageId } : { _type: "path" });
         let zonesRemoved = [];
-        candidates.forEach(function(p) {
-          if ((p.get("name") || "").toString().indexOf("ZONE: ") !== 0) return;
-          let meta = {};
-          try { meta = JSON.parse(p.get("gmnotes") || "{}"); } catch(e) {}
+        liveZones(args.pageId).forEach(function(z) {
+          let meta = z.meta;
           if (!meta.duration || meta.duration.type !== "concentration") return;
           let caster = String(meta.duration.caster || "").toLowerCase();
           if (!caster || !refs.has(caster)) return;
-          zonesRemoved.push({ id: p.id, name: meta.name || p.get("name") });
+          zonesRemoved.push({ id: z.id, name: meta.name });
         });
         zonesRemoved.forEach(function(z) {
           let obj = getObj("path", z.id);
           if (obj) obj.remove();
+          delete zoneRegistry()[z.id];
         });
 
         writeResult(nonce, {
@@ -2386,18 +2437,16 @@ ACTIONS["breakConcentration"] = function (args, msg, nonce, senderPlayerId) {
       };
 ACTIONS["listZones"] = function (args, msg, nonce, senderPlayerId) {
         {
-        let allPaths = findObjs({ _type: "path", _pageid: args.pageId });
-        let zones = allPaths.filter(function(p) {
-          return (p.get("name") || "").startsWith("ZONE: ");
-        }).map(function(p) {
-          let meta = {};
-          try { meta = JSON.parse(p.get("gmnotes") || "{}"); } catch(e) {}
+        // "ZONE: " is a display convention preserved here for callers that match
+        // on it (e.g. resolve_aoe's zoneName lookup) — it's synthesized from the
+        // registry now, not read off the path (issue #164).
+        let zones = liveZones(args.pageId).map(function(z) {
           return {
-            id: p.id,
-            name: p.get("name"),
-            left: p.get("left"),
-            top: p.get("top"),
-            meta: meta,
+            id: z.id,
+            name: "ZONE: " + z.meta.name,
+            left: z.path.get("left"),
+            top: z.path.get("top"),
+            meta: z.meta,
           };
         });
         writeResult(nonce, zones);
@@ -2413,26 +2462,21 @@ ACTIONS["processRoundEndZones"] = function (args, msg, nonce, senderPlayerId) {
         // left alone here; concentration's break cascade is issue #135.
         let bs = B();
         let currentRound = typeof args.currentRound === "number" ? args.currentRound : bs.round;
-        let query = { _type: "path" };
-        if (args.pageId) query._pageid = args.pageId;
-        let candidates = findObjs(query).filter(function(p) {
-          return (p.get("name") || "").toString().indexOf("ZONE: ") === 0;
-        });
         let expired = [];
-        candidates.forEach(function(p) {
-          let meta = {};
-          try { meta = JSON.parse(p.get("gmnotes") || "{}"); } catch(e) {}
+        liveZones(args.pageId).forEach(function(z) {
+          let meta = z.meta;
           if (!meta.duration || meta.duration.type !== "rounds") return;
           let createdRound = typeof meta.duration.createdRound === "number" ? meta.duration.createdRound : currentRound;
           let n = meta.duration.n || 1;
           let expiresAtRound = createdRound + n;
           if (currentRound >= expiresAtRound) {
-            expired.push({ id: p.id, name: meta.name || p.get("name"), meta: meta });
+            expired.push({ id: z.id, name: meta.name, meta: meta });
           }
         });
         expired.forEach(function(e) {
           let obj = getObj("path", e.id);
           if (obj) obj.remove();
+          delete zoneRegistry()[e.id];
         });
         writeResult(nonce, { expired: expired, round: currentRound });
         return;
@@ -2440,11 +2484,13 @@ ACTIONS["processRoundEndZones"] = function (args, msg, nonce, senderPlayerId) {
       };
 ACTIONS["findTokensInZone"] = function (args, msg, nonce, senderPlayerId) {
         {
-        // Load zone metadata from gmnotes, then check all tokens for containment.
+        // Load zone metadata from the registry (issue #164 — gmnotes never
+        // actually persisted on the path object), then check all tokens for
+        // containment. Tolerate a missing registry entry (orphan/pre-fix zone)
+        // by falling back to the path's own left/top and a default radius.
         let zoneGraphic = getObj("path", args.zoneId);
         if (!zoneGraphic) throw new Error("Zone not found: " + args.zoneId);
-        let zoneMeta = {};
-        try { zoneMeta = JSON.parse(zoneGraphic.get("gmnotes") || "{}"); } catch(e) {}
+        let zoneMeta = zoneRegistry()[args.zoneId] || {};
         let zCx = zoneMeta.centerX != null ? zoneMeta.centerX : zoneGraphic.get("left");
         let zCy = zoneMeta.centerY != null ? zoneMeta.centerY : zoneGraphic.get("top");
         let zRadFeet = zoneMeta.radiusFeet || 15;

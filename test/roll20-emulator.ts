@@ -23,6 +23,26 @@ const AI_RELAY_PATH = path.resolve(__dirname, "../mod-scripts/ai-relay.js");
 // (createObj("graphic",{pageid}) is later read as get("_pageid")). We store both.
 const MIRROR_KEYS = new Set(["type", "id", "pageid", "characterid", "subtype", "cardid"]);
 
+// Per-object-type property whitelist, sourced from the saved Roll20 docs
+// (data/Mod_Objects - Roll20 Wiki.html — "Path" section) plus the properties
+// this codebase's own path-writing actions already round-trip successfully
+// (`path`, `pageid`/`_pageid`). A type with no entry here is unrestricted —
+// this is intentionally scoped to `path` only (issue #164): without it,
+// createObj("path",{...}).set("name"/"gmnotes", ...) silently "succeeds" in
+// tests while Roll20 drops both writes for real, which is exactly the bug
+// that shipped (mirrors the fill_opacity lesson from #162, same object type).
+// Extend to other object types deliberately, not reflexively — see the note
+// in the emulator's setProp below and CLAUDE.md's directive not to weaken
+// tests to force a pass.
+const PROP_WHITELIST: Record<string, Set<string>> = {
+  path: new Set([
+    "id", "_id", "type", "_type", "pageid", "_pageid",
+    "path", "fill", "stroke", "rotation", "layer", "stroke_width",
+    "width", "height", "top", "left", "scaleX", "scaleY",
+    "barrierType", "oneWayReversed", "controlledby",
+  ]),
+};
+
 // Deterministic PRNG (mulberry32).
 function makeRng(seed: number): () => number {
   let a = seed >>> 0;
@@ -85,7 +105,18 @@ export class Roll20Emulator {
     const id = forceId ?? this.genId();
     const bag: Record<string, unknown> = {};
     const self = this;
+    const allowed = PROP_WHITELIST[type];
     const setProp = (k: string, v: unknown) => {
+      if (allowed) {
+        const base = k.replace(/^_/, "");
+        if (!allowed.has(k) && !allowed.has(base)) {
+          throw new Error(
+            `Roll20 emulator: "${k}" is not a real Roll20 "${type}" property — a real sandbox ` +
+              `silently drops this write (see data/Mod_Objects - Roll20 Wiki.html). ` +
+              `Whitelisted for "${type}": ${[...allowed].join(", ")}`
+          );
+        }
+      }
       bag[k] = v;
       const base = k.replace(/^_/, "");
       if (MIRROR_KEYS.has(base)) {
