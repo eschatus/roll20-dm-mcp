@@ -24,11 +24,34 @@ import { json } from "./combatHelpers.js";
 export const ZONE_TERRAINS = ["difficult", "damaging"] as const;
 export type ZoneTerrain = (typeof ZONE_TERRAINS)[number];
 
-export const zoneDurationSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("instant") }),
-  z.object({ type: z.literal("rounds"), n: z.number().int().positive() }),
-  z.object({ type: z.literal("concentration"), caster: z.string() }),
-]);
+// Issue #163: the default zod union error ("no matching discriminator") gives a
+// model nothing to repair from — it doesn't say what "type" values are legal or
+// what was actually sent. Name both explicitly so a rejected call is fixable on
+// the next try. This only replaces the MESSAGE on the union's own no-match
+// issue (thrown when `type` isn't one of the three literals below); per-field
+// errors inside a matched variant (e.g. `n` sent as a string) keep zod's normal
+// message. Acceptance is unchanged — still exactly these three literal shapes.
+export const zoneDurationSchema = z.discriminatedUnion(
+  "type",
+  [
+    z.object({ type: z.literal("instant") }),
+    z.object({ type: z.literal("rounds"), n: z.number().int().positive() }),
+    z.object({ type: z.literal("concentration"), caster: z.string() }),
+  ],
+  {
+    error: (issue) => {
+      if (issue.code !== "invalid_union" || !issue.discriminator) return undefined;
+      const got =
+        issue.input && typeof issue.input === "object"
+          ? (issue.input as Record<string, unknown>)[issue.discriminator]
+          : undefined;
+      return (
+        `duration.${issue.discriminator} must be one of "instant", "rounds", "concentration" (got ${JSON.stringify(got)}). ` +
+        `Full shapes: {"type":"instant"} | {"type":"rounds","n":<int>} | {"type":"concentration","caster":"<id>"}.`
+      );
+    },
+  }
+);
 export type ZoneDuration = z.infer<typeof zoneDurationSchema>;
 
 export interface ZoneMeta {
@@ -117,7 +140,7 @@ export function registerZoneTools(server: McpServer): void {
       duration: zoneDurationSchema
         .optional()
         .describe(
-          "{type:'instant'} | {type:'rounds', n} | {type:'concentration', caster}. caster is a token id/name — just the linkage; the break cascade is a separate concern. Defaults to instant."
+          'One of three complete objects — copy one whole, do not mix fields across them: {"type":"instant"} | {"type":"rounds","n":<number of rounds>} | {"type":"concentration","caster":"<token id or name>"}. caster is just the linkage; the break cascade is a separate concern. Defaults to instant.'
         ),
       pageId: z.string().optional(),
     },
