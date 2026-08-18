@@ -9,7 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { setupHarness, type Harness } from "./harness.js";
-import { defaultZoneColor, lookupZoneTransition, ZONE_TRANSITIONS } from "../src/tools/zones.js";
+import { defaultZoneColor, lookupZoneTransition, ZONE_TRANSITIONS, zoneDurationSchema } from "../src/tools/zones.js";
 
 let h: Harness;
 let pageId: string;
@@ -247,6 +247,40 @@ describe("rounds(n) expiry at the round boundary", () => {
     const names = (listed.json as Array<{ name: string }>).map((z) => z.name);
     expect(names.some((n) => n.includes("Instant Blast"))).toBe(true);
     expect(names.some((n) => n.includes("Ongoing Guardians"))).toBe(true);
+  });
+});
+
+describe("zoneDurationSchema (issue #163: mis-copied discriminant)", () => {
+  it("accepts all three valid duration shapes", () => {
+    expect(zoneDurationSchema.safeParse({ type: "instant" }).success).toBe(true);
+    expect(zoneDurationSchema.safeParse({ type: "rounds", n: 1 }).success).toBe(true);
+    expect(zoneDurationSchema.safeParse({ type: "concentration", caster: "Zeno" }).success).toBe(true);
+  });
+
+  it("rejects the exact live-failure shape — {\"n\":1,\"type\":\"n\"} — the discriminant must stay 'rounds', never 'n'", () => {
+    const result = zoneDurationSchema.safeParse({ n: 1, type: "n" });
+    expect(result.success).toBe(false);
+  });
+
+  it("still rejects other malformed/unknown discriminants (schema is not loosened)", () => {
+    expect(zoneDurationSchema.safeParse({ type: "n" }).success).toBe(false);
+    expect(zoneDurationSchema.safeParse({ type: "round" }).success).toBe(false); // no trailing "s"
+    expect(zoneDurationSchema.safeParse({}).success).toBe(false);
+  });
+
+  it("rejects a valid discriminant missing its required companion field", () => {
+    expect(zoneDurationSchema.safeParse({ type: "rounds" }).success).toBe(false); // missing n
+    expect(zoneDurationSchema.safeParse({ type: "concentration" }).success).toBe(false); // missing caster
+  });
+
+  it("the rejection error names the legal discriminant values and what was actually sent, so a model has something to repair from", () => {
+    const result = zoneDurationSchema.safeParse({ n: 1, type: "n" });
+    expect(result.success).toBe(false);
+    const message = result.error!.issues.map((i) => i.message).join(" ");
+    expect(message).toContain("instant");
+    expect(message).toContain("rounds");
+    expect(message).toContain("concentration");
+    expect(message).toContain('"n"'); // echoes back the bad value it received
   });
 });
 
