@@ -97,15 +97,18 @@ describe("color defaults by terrain", () => {
 });
 
 describe("zone path rendering (issue #162)", () => {
-  // fill_opacity is not a Roll20 path property — createObj silently drops it, so an
-  // opaque `fill: zoneColor` with no working opacity paints a solid block over the
-  // map art instead of a tint. This asserts the ai-relay.js createZone action hands
-  // createObj the same "transparent fill, visible stroke" shape every other
-  // path-creating action in the relay uses, which is the property contract that
-  // would have caught #162. It does NOT prove Roll20's renderer draws a visible,
-  // non-obscuring outline in a live game — only that the properties we hand to
-  // createObj are the ones we intend.
-  it("creates the path with a transparent fill and no fill_opacity, not an opaque fill", async () => {
+  // fill_opacity is not a Roll20 path property — createObj silently drops it, so
+  // `fill: zoneColor` alone (the original code) was a fully opaque block over the map
+  // art, not a tint. The fix (withZoneAlpha in ai-relay.js) instead carries the alpha
+  // inside the fill colour itself: an 8-digit #RRGGBBAA hex. These assert the property
+  // CONTRACT the createZone action hands createObj — that the fill really is the
+  // alpha-bearing form of the requested colour, that stroke stays fully opaque, and
+  // that a battery of malformed/edge-case colour inputs can never produce a corrupted
+  // (or undefined/null/NaN) value. They do NOT prove Roll20's renderer actually honours
+  // an 8-digit hex fill as a 25%-opaque tint in a live game — the Roll20 wiki saved in
+  // this repo (data/Mod_Objects - Roll20 Wiki.html) only ever shows 6-digit fill
+  // examples, so that remains unverified outside this relay/emulator.
+  it("creates the path with the alpha-bearing form of the requested colour as fill, and an opaque stroke", async () => {
     const created = await h.callTool("create_zone", {
       name: "Web",
       color: "#123456",
@@ -117,14 +120,15 @@ describe("zone path rendering (issue #162)", () => {
     const data = created.json as { id: string };
     const pathObj = h.emu.getObj("path", data.id);
     expect(pathObj).toBeTruthy();
-    expect(pathObj!.get("fill")).toBe("transparent");
+    expect(pathObj!.get("fill")).toBe("#12345640");
+    expect(pathObj!.get("stroke")).toBe("#123456");
     // Never set at all — a re-introduced fill_opacity would be silently dropped by
     // Roll20's real createObj exactly as #162 showed, so we guard the emulator's
     // property bag directly rather than trusting createObj to reject it for us.
     expect(pathObj!.get("fill_opacity")).toBe("");
   });
 
-  it("keeps a visible stroke in the zone colour so the outline can't be silently dropped", async () => {
+  it("keeps a visible, opaque stroke in the zone colour so the outline can't be silently dropped", async () => {
     const created = await h.callTool("create_zone", {
       name: "Grease",
       color: "#00aa44",
@@ -137,6 +141,47 @@ describe("zone path rendering (issue #162)", () => {
     const pathObj = h.emu.getObj("path", data.id)!;
     expect(pathObj.get("stroke")).toBe("#00aa44");
     expect(pathObj.get("stroke_width")).toBe(5);
+  });
+
+  // withZoneAlpha isn't independently exported (it's a plain function inside the vm-
+  // sandboxed relay script, not a Node module) — createZone is its only caller, so its
+  // edge cases are exercised the same way as the rest of this file: through the real
+  // create_zone tool -> relay -> createObj path, reading the resulting fill back off
+  // the emulator's object store. `color` is an unvalidated free-form z.string() in
+  // src/tools/zones.ts, so every one of these reaches the relay exactly as given.
+  describe("withZoneAlpha edge cases (via create_zone's color argument)", () => {
+    it("appends the alpha to a 6-digit #RRGGBB input", async () => {
+      const created = await h.callTool("create_zone", { name: "Six", color: "#aa00ff", centerX: 0, centerY: 0, pageId });
+      const pathObj = h.emu.getObj("path", (created.json as { id: string }).id)!;
+      expect(pathObj.get("fill")).toBe("#aa00ff40");
+    });
+
+    it("replaces (does not double-append) the alpha on an already-8-digit input", async () => {
+      const created = await h.callTool("create_zone", { name: "Eight", color: "#aa00ffcc", centerX: 0, centerY: 0, pageId });
+      const pathObj = h.emu.getObj("path", (created.json as { id: string }).id)!;
+      expect(pathObj.get("fill")).toBe("#aa00ff40");
+    });
+
+    it('leaves "transparent" unchanged', async () => {
+      const created = await h.callTool("create_zone", { name: "Transparent", color: "transparent", centerX: 0, centerY: 0, pageId });
+      const pathObj = h.emu.getObj("path", (created.json as { id: string }).id)!;
+      expect(pathObj.get("fill")).toBe("transparent");
+    });
+
+    it("leaves a malformed colour string unchanged rather than corrupting it", async () => {
+      const created = await h.callTool("create_zone", { name: "Malformed", color: "not-a-color", centerX: 0, centerY: 0, pageId });
+      const pathObj = h.emu.getObj("path", (created.json as { id: string }).id)!;
+      expect(pathObj.get("fill")).toBe("not-a-color");
+    });
+
+    it("never produces an undefined/null/NaN fill even for a malformed colour", async () => {
+      const created = await h.callTool("create_zone", { name: "Weird", color: "#12", centerX: 0, centerY: 0, pageId });
+      const pathObj = h.emu.getObj("path", (created.json as { id: string }).id)!;
+      const fill = pathObj.get("fill");
+      expect(fill).not.toBeUndefined();
+      expect(fill).not.toBeNull();
+      expect(Number.isNaN(fill)).toBe(false);
+    });
   });
 });
 

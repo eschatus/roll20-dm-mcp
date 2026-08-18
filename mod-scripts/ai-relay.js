@@ -389,6 +389,27 @@ function makeCirclePath(radiusPx) {
   return JSON.stringify(pts);
 }
 
+// Zone fill alpha (issue #162). Roll20 documents `fill` for path/pathv2 objects as
+// either the string "transparent" or a hex colour string (data/Mod_Objects - Roll20
+// Wiki.html) — there is no separate fill_opacity property, so a 25%-opaque tint has
+// to be encoded as an 8-digit #RRGGBBAA fill value instead. One named constant so
+// the opacity is a one-line tune. UNVERIFIED against the live Roll20 renderer — the
+// wiki only ever shows 6-digit examples, so whether Roll20's canvas actually honours
+// the alpha channel on an 8-digit hex fill is untested outside this relay.
+const ZONE_FILL_ALPHA_HEX = "40"; // 0x40/255 ≈ 0.25 opaque = 75% transparent
+
+// Returns `color` with the zone alpha applied: a 6-digit #RRGGBB gets ZONE_FILL_ALPHA_HEX
+// appended, an already-8-digit #RRGGBBAA gets its alpha replaced (not double-appended).
+// Anything else — "transparent", a malformed string, or a non-string input — is returned
+// unchanged (or coerced to "transparent" if it isn't even a string) rather than corrupted;
+// this never returns undefined/null/NaN, since writing one of those into a Roll20 object
+// async-crashes the whole Mod sandbox (see CLAUDE.md's setSafe/stripUndef guidance).
+function withZoneAlpha(color) {
+  let hex = typeof color === "string" ? /^#([0-9a-fA-F]{6})(?:[0-9a-fA-F]{2})?$/.exec(color) : null;
+  if (!hex) return typeof color === "string" ? color : "transparent";
+  return "#" + hex[1] + ZONE_FILL_ALPHA_HEX;
+}
+
 function getMonsterEpithets(tokenName) {
   let lower = tokenName.toLowerCase();
   let keys = Object.keys(MONSTER_EPITHETS);
@@ -2209,13 +2230,16 @@ ACTIONS["createZone"] = function (args, msg, nonce, senderPlayerId) {
           width: zoneWidth,
           height: zoneHeight,
           rotation: 0,
+          // stroke stays fully opaque (no alpha) so the zone's edge reads crisply
+          // against the tinted fill.
           stroke: zoneColor,
           stroke_width: 5,
           // NOTE: fill_opacity is not a Roll20 path property — createObj silently drops it,
-          // so an opaque `fill: zoneColor` would paint a solid block over the map (issue #162).
-          // Match the convention used everywhere else in this file (createPath, createWalls'
-          // legacy fallback, placePolylineWalls): transparent fill, visible stroke only.
-          fill: "transparent",
+          // so `fill: zoneColor` alone would paint a solid, fully opaque block over the map
+          // (issue #162). Alpha instead lives inside the fill colour itself — withZoneAlpha
+          // turns "#aa00ff" into "#aa00ff40" (~25% opaque / 75% transparent), giving a real
+          // tint instead of an outline. See withZoneAlpha's own comment for the caveats.
+          fill: withZoneAlpha(zoneColor),
           scaleX: 1,
           scaleY: 1,
           controlledby: "",
