@@ -400,10 +400,18 @@ const ZONE_FILL_ALPHA_HEX = "40"; // 0x40/255 ≈ 0.25 opaque = 75% transparent
 
 // Returns `color` with the zone alpha applied: a 6-digit #RRGGBB gets ZONE_FILL_ALPHA_HEX
 // appended, an already-8-digit #RRGGBBAA gets its alpha replaced (not double-appended).
-// Anything else — "transparent", a malformed string, or a non-string input — is returned
-// unchanged (or coerced to "transparent" if it isn't even a string) rather than corrupted;
-// this never returns undefined/null/NaN, since writing one of those into a Roll20 object
-// async-crashes the whole Mod sandbox (see CLAUDE.md's setSafe/stripUndef guidance).
+//
+// Roll20 has NO `fill_opacity` property on a path — createObj silently drops it, which is
+// why zones used to paint solid over the map (issue #162). The alpha must ride inside the
+// fill colour instead. An 8-digit #RRGGBBAA fill IS honoured by the renderer: VERIFIED live
+// on 2026-08-18 against a hand-drawn path storing fill "#0000ff75", which rendered as a
+// translucent tint with the map art clearly visible through it. Note this is API/renderer
+// behaviour only — Roll20's own drawing UI exposes no alpha slider, so the wiki documents
+// just "transparent" or a plain hex colour. Don't "correct" this to a 6-digit hex.
+//
+// Anything that isn't a clean hex ("transparent", a malformed string) is returned unchanged;
+// a non-string falls back to "transparent". Never returns undefined/null/NaN — writing one
+// of those into a Roll20 object async-crashes the whole Mod sandbox (see CLAUDE.md).
 function withZoneAlpha(color) {
   let hex = typeof color === "string" ? /^#([0-9a-fA-F]{6})(?:[0-9a-fA-F]{2})?$/.exec(color) : null;
   if (!hex) return typeof color === "string" ? color : "transparent";
