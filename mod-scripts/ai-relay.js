@@ -2878,4 +2878,4 @@ on("add:graphic", function(obj) {
   }, 800);
 });
 
-log("[GM_AI_Bridge] Relay script loaded. Ready for !ai-relay commands.");
+log("[GM_AI_Bridge] Relay script loaded (v" + AI_RELAY_VERSION + "). Ready for !ai-relay commands.");
