@@ -70,6 +70,108 @@ describe("zone metadata round-trip", () => {
   });
 });
 
+describe("zone metadata persistence (issue #164)", () => {
+  // Roll20 `path` objects have no `name` and no `gmnotes` property — createObj/
+  // set silently drop both (same failure mode as the fill_opacity bug fixed in
+  // #162, on the same object type). Metadata now lives in the relay's durable
+  // state.GM_AI_Bridge.zones bag instead (the same persistence style already
+  // used for PC HP), keyed by the zone's path id.
+  it("does not rely on the path object's name/gmnotes — both stay unset on the underlying path", async () => {
+    const created = await h.callTool("create_zone", {
+      name: "Web", terrain: "difficult", centerX: 5, centerY: 5, pageId,
+    });
+    const data = created.json as { id: string };
+    const pathObj = h.emu.getObj("path", data.id)!;
+    // The emulator's default get() for an unset property is "" (see makeObj) —
+    // proving createZone never wrote either property at all, not just that a
+    // later read happens to be empty.
+    expect(pathObj.get("name")).toBe("");
+    expect(pathObj.get("gmnotes")).toBe("");
+  });
+
+  it("attempting to write name/gmnotes on a path object is rejected by the emulator's whitelist (would be a silent no-op for real)", () => {
+    const pathObj = h.emu.getObj("path", (h.emu.relay<{ id: string }>({
+      action: "createZone", pageId, name: "Probe", centerX: 0, centerY: 0, radiusFeet: 15,
+    })).id)!;
+    expect(() => pathObj.set("name", "ZONE: Probe")).toThrow(/not a real Roll20 "path" property/);
+    expect(() => pathObj.set("gmnotes", "{}")).toThrow(/not a real Roll20 "path" property/);
+  });
+
+  it("survives being read back a second time — the registry, not a one-shot echo", async () => {
+    await h.callTool("create_zone", { name: "Web", terrain: "difficult", centerX: 0, centerY: 0, pageId });
+    const first = await h.callTool("list_zones", { pageId });
+    const second = await h.callTool("list_zones", { pageId });
+    const firstMeta = (first.json as Array<{ name: string; meta: { terrain: string } }>).find((z) => z.name.includes("Web"));
+    const secondMeta = (second.json as Array<{ name: string; meta: { terrain: string } }>).find((z) => z.name.includes("Web"));
+    expect(firstMeta!.meta.terrain).toBe("difficult");
+    expect(secondMeta!.meta.terrain).toBe("difficult");
+  });
+
+  it("clear_zone by bare name removes the zone (both the path and the registry entry)", async () => {
+    const created = await h.callTool("create_zone", { name: "Grease", centerX: 0, centerY: 0, pageId });
+    const id = (created.json as { id: string }).id;
+
+    const result = await h.callTool("clear_zone", { name: "Grease", pageId });
+    expect((result.json as { removed: number }).removed).toBe(1);
+    expect(h.emu.getObj("path", id)).toBeFalsy();
+
+    const listed = await h.callTool("list_zones", { pageId });
+    expect((listed.json as Array<{ name: string }>).some((z) => z.name.includes("Grease"))).toBe(false);
+  });
+
+  it("clear_zone tolerates the historical 'ZONE: ' prefix a caller might still pass", async () => {
+    await h.callTool("create_zone", { name: "Fog Cloud", centerX: 0, centerY: 0, pageId });
+    const result = await h.callTool("clear_zone", { name: "ZONE: Fog Cloud", pageId });
+    expect((result.json as { removed: number }).removed).toBe(1);
+  });
+
+  it("clear_zone by id also drops the registry entry, not just the path", async () => {
+    const created = await h.callTool("create_zone", { name: "Spike Growth", centerX: 0, centerY: 0, pageId });
+    const id = (created.json as { id: string }).id;
+    await h.callTool("clear_zone", { zoneId: id, pageId });
+
+    // Recreate a path with the SAME forced id is not possible here, but we can
+    // assert indirectly: findTokensInZone on a stale id throws "Zone not found"
+    // (the path is gone) rather than resurrecting old metadata some other way.
+    expect(() =>
+      h.emu.relay({ action: "findTokensInZone", zoneId: id, pageId })
+    ).toThrow();
+  });
+
+  it("list_zones reconciles an orphaned registry entry when the path was deleted outside clear_zone", async () => {
+    const created = await h.callTool("create_zone", { name: "Orphan", centerX: 0, centerY: 0, pageId });
+    const id = (created.json as { id: string }).id;
+
+    // Simulate a DM deleting the path directly in the Roll20 UI — the registry
+    // entry is left dangling.
+    h.emu.getObj("path", id)!.remove();
+
+    const listed = await h.callTool("list_zones", { pageId });
+    expect((listed.json as Array<{ name: string }>).some((z) => z.name.includes("Orphan"))).toBe(false);
+
+    // Doesn't crash on a re-list, and a subsequent clear_zone by the same stale
+    // id is a graceful 0, not a throw.
+    const cleared = await h.callTool("clear_zone", { zoneId: id, pageId });
+    expect((cleared.json as { removed: number }).removed).toBe(0);
+  });
+
+  it("list_zones returns an existing zone with its full metadata intact", async () => {
+    await h.callTool("create_zone", {
+      name: "Cloudkill", terrain: "damaging", duration: { type: "rounds", n: 3 },
+      centerX: 42, centerY: 84, radiusFeet: 20, pageId,
+    });
+    const listed = await h.callTool("list_zones", { pageId });
+    const zone = (listed.json as Array<{ name: string; id: string; meta: { name: string; terrain: string; radiusFeet: number; duration: { type: string; n: number } } }>)
+      .find((z) => z.name.includes("Cloudkill"));
+    expect(zone).toBeTruthy();
+    expect(zone!.meta.name).toBe("Cloudkill");
+    expect(zone!.meta.terrain).toBe("damaging");
+    expect(zone!.meta.radiusFeet).toBe(20);
+    expect(zone!.meta.duration.type).toBe("rounds");
+    expect(zone!.meta.duration.n).toBe(3);
+  });
+});
+
 describe("color defaults by terrain", () => {
   it("does not hard-fail on an explicit color even when terrain is set", async () => {
     const created = await h.callTool("create_zone", {
