@@ -96,6 +96,50 @@ describe("color defaults by terrain", () => {
   });
 });
 
+describe("zone path rendering (issue #162)", () => {
+  // fill_opacity is not a Roll20 path property — createObj silently drops it, so an
+  // opaque `fill: zoneColor` with no working opacity paints a solid block over the
+  // map art instead of a tint. This asserts the ai-relay.js createZone action hands
+  // createObj the same "transparent fill, visible stroke" shape every other
+  // path-creating action in the relay uses, which is the property contract that
+  // would have caught #162. It does NOT prove Roll20's renderer draws a visible,
+  // non-obscuring outline in a live game — only that the properties we hand to
+  // createObj are the ones we intend.
+  it("creates the path with a transparent fill and no fill_opacity, not an opaque fill", async () => {
+    const created = await h.callTool("create_zone", {
+      name: "Web",
+      color: "#123456",
+      centerX: 10,
+      centerY: 20,
+      radiusFeet: 15,
+      pageId,
+    });
+    const data = created.json as { id: string };
+    const pathObj = h.emu.getObj("path", data.id);
+    expect(pathObj).toBeTruthy();
+    expect(pathObj!.get("fill")).toBe("transparent");
+    // Never set at all — a re-introduced fill_opacity would be silently dropped by
+    // Roll20's real createObj exactly as #162 showed, so we guard the emulator's
+    // property bag directly rather than trusting createObj to reject it for us.
+    expect(pathObj!.get("fill_opacity")).toBe("");
+  });
+
+  it("keeps a visible stroke in the zone colour so the outline can't be silently dropped", async () => {
+    const created = await h.callTool("create_zone", {
+      name: "Grease",
+      color: "#00aa44",
+      centerX: 0,
+      centerY: 0,
+      radiusFeet: 15,
+      pageId,
+    });
+    const data = created.json as { id: string };
+    const pathObj = h.emu.getObj("path", data.id)!;
+    expect(pathObj.get("stroke")).toBe("#00aa44");
+    expect(pathObj.get("stroke_width")).toBe(5);
+  });
+});
+
 describe("rounds(n) expiry at the round boundary", () => {
   it("a rounds(1) zone created in round 1 survives round 1 and expires entering round 2", async () => {
     // The relay's own turn hook (which stamps the round counter) fires off a
