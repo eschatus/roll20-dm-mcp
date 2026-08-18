@@ -2174,7 +2174,7 @@ ACTIONS["toBack"] = function (args, msg, nonce, senderPlayerId) {
       };
 ACTIONS["createZone"] = function (args, msg, nonce, senderPlayerId) {
         {
-        // Draw a named zone (circle or rect) on the "objects" layer.
+        // Draw a named zone (circle or rect) on the "map" layer.
         // Metadata stored in gmnotes so it survives relay restarts.
         // centerX/centerY in page pixels; radiusFeet converted via page scale.
         let zonePage = getObj("page", args.pageId);
@@ -2210,9 +2210,12 @@ ACTIONS["createZone"] = function (args, msg, nonce, senderPlayerId) {
           height: zoneHeight,
           rotation: 0,
           stroke: zoneColor,
-          stroke_width: 3,
-          fill: zoneColor,
-          fill_opacity: 0.25,
+          stroke_width: 5,
+          // NOTE: fill_opacity is not a Roll20 path property — createObj silently drops it,
+          // so an opaque `fill: zoneColor` would paint a solid block over the map (issue #162).
+          // Match the convention used everywhere else in this file (createPath, createWalls'
+          // legacy fallback, placePolylineWalls): transparent fill, visible stroke only.
+          fill: "transparent",
           scaleX: 1,
           scaleY: 1,
           controlledby: "",
