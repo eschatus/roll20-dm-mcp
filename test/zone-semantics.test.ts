@@ -108,7 +108,7 @@ describe("zone path rendering (issue #162)", () => {
   // an 8-digit hex fill as a 25%-opaque tint in a live game — the Roll20 wiki saved in
   // this repo (data/Mod_Objects - Roll20 Wiki.html) only ever shows 6-digit fill
   // examples, so that remains unverified outside this relay/emulator.
-  it("creates the path with a 25%-opaque rgba() fill of the requested colour, and an opaque stroke", async () => {
+  it("creates the path with the alpha-bearing form of the requested colour as fill, and an opaque stroke", async () => {
     const created = await h.callTool("create_zone", {
       name: "Web",
       color: "#123456",
@@ -120,7 +120,7 @@ describe("zone path rendering (issue #162)", () => {
     const data = created.json as { id: string };
     const pathObj = h.emu.getObj("path", data.id);
     expect(pathObj).toBeTruthy();
-    expect(pathObj!.get("fill")).toBe("rgba(18,52,86,0.25)");
+    expect(pathObj!.get("fill")).toBe("#12345640");
     expect(pathObj!.get("stroke")).toBe("#123456");
     // Never set at all — a re-introduced fill_opacity would be silently dropped by
     // Roll20's real createObj exactly as #162 showed, so we guard the emulator's
@@ -150,16 +150,16 @@ describe("zone path rendering (issue #162)", () => {
   // the emulator's object store. `color` is an unvalidated free-form z.string() in
   // src/tools/zones.ts, so every one of these reaches the relay exactly as given.
   describe("withZoneAlpha edge cases (via create_zone's color argument)", () => {
-    it("converts a 6-digit #RRGGBB input to a 25%-opaque rgba() fill", async () => {
+    it("appends the alpha to a 6-digit #RRGGBB input", async () => {
       const created = await h.callTool("create_zone", { name: "Six", color: "#aa00ff", centerX: 0, centerY: 0, pageId });
       const pathObj = h.emu.getObj("path", (created.json as { id: string }).id)!;
-      expect(pathObj.get("fill")).toBe("rgba(170,0,255,0.25)");
+      expect(pathObj.get("fill")).toBe("#aa00ff40");
     });
 
-    it("ignores an incoming alpha byte on an already-8-digit input", async () => {
+    it("replaces (does not double-append) the alpha on an already-8-digit input", async () => {
       const created = await h.callTool("create_zone", { name: "Eight", color: "#aa00ffcc", centerX: 0, centerY: 0, pageId });
       const pathObj = h.emu.getObj("path", (created.json as { id: string }).id)!;
-      expect(pathObj.get("fill")).toBe("rgba(170,0,255,0.25)");
+      expect(pathObj.get("fill")).toBe("#aa00ff40");
     });
 
     it('leaves "transparent" unchanged', async () => {
