@@ -11,13 +11,14 @@ import { registerCharacterEditTools } from "./tools/characters-edit.js";
 import { registerDdbPumpTools } from "./tools/ddbPump.js";
 import { registerZoneTools } from "./tools/zones.js";
 import { registerScreenshotTools } from "./tools/screenshot.js";
+import { BUILD_VERSION } from "./build-version.js";
 
 // Single source of truth for the combat server's tool set, shared by the stdio
 // (index-combat.ts) and HTTP (index-http.ts) entry points so they never drift.
 export function buildCombatServer(): McpServer {
   const server = new McpServer({
     name: "roll20-dm",
-    version: "0.1.0",
+    version: BUILD_VERSION,
   });
 
   registerCampaignTools(server);

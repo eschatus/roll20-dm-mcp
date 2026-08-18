@@ -10,10 +10,11 @@ import { registerVisionTools } from "./tools/vision.js";
 import { registerBatchTools } from "./tools/batch.js";
 import { registerZoneTools } from "./tools/zones.js";
 import { registerScreenshotTools } from "./tools/screenshot.js";
+import { BUILD_VERSION } from "./build-version.js";
 
 const server = new McpServer({
   name: "roll20-dm-maps",
-  version: "0.1.0",
+  version: BUILD_VERSION,
 });
 
 // The maps suite owns the full map/wall/zone domain: page setup, vision/wall
