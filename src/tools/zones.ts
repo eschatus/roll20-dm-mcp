@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as roll20 from "../bridge/roll20.js";
+import { getLastPing } from "../bridge/roll20-rt.js";
 import { json } from "./combatHelpers.js";
 
 // Map zone tools — named AoE/terrain areas drawn on the map. Part of the maps
@@ -24,11 +25,34 @@ import { json } from "./combatHelpers.js";
 export const ZONE_TERRAINS = ["difficult", "damaging"] as const;
 export type ZoneTerrain = (typeof ZONE_TERRAINS)[number];
 
-export const zoneDurationSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("instant") }),
-  z.object({ type: z.literal("rounds"), n: z.number().int().positive() }),
-  z.object({ type: z.literal("concentration"), caster: z.string() }),
-]);
+// Issue #163: the default zod union error ("no matching discriminator") gives a
+// model nothing to repair from — it doesn't say what "type" values are legal or
+// what was actually sent. Name both explicitly so a rejected call is fixable on
+// the next try. This only replaces the MESSAGE on the union's own no-match
+// issue (thrown when `type` isn't one of the three literals below); per-field
+// errors inside a matched variant (e.g. `n` sent as a string) keep zod's normal
+// message. Acceptance is unchanged — still exactly these three literal shapes.
+export const zoneDurationSchema = z.discriminatedUnion(
+  "type",
+  [
+    z.object({ type: z.literal("instant") }),
+    z.object({ type: z.literal("rounds"), n: z.number().int().positive() }),
+    z.object({ type: z.literal("concentration"), caster: z.string() }),
+  ],
+  {
+    error: (issue) => {
+      if (issue.code !== "invalid_union" || !issue.discriminator) return undefined;
+      const got =
+        issue.input && typeof issue.input === "object"
+          ? (issue.input as Record<string, unknown>)[issue.discriminator]
+          : undefined;
+      return (
+        `duration.${issue.discriminator} must be one of "instant", "rounds", "concentration" (got ${JSON.stringify(got)}). ` +
+        `Full shapes: {"type":"instant"} | {"type":"rounds","n":<int>} | {"type":"concentration","caster":"<id>"}.`
+      );
+    },
+  }
+);
 export type ZoneDuration = z.infer<typeof zoneDurationSchema>;
 
 export interface ZoneMeta {
@@ -97,12 +121,13 @@ export function lookupZoneTransition(substance: string, trigger: string): ZoneTr
 export function registerZoneTools(server: McpServer): void {
   server.tool(
     "create_zone",
-    "Draw a named AoE zone on the map — difficult terrain, spell area (Web, Cloudkill, Spirit Guardians, etc.), or any persistent effect area. Circle or rect. Zones persist on the map and can be listed/cleared by name. Use centerTokenId to anchor to a token's current position. Optionally tag with terrain (difficult/damaging) and duration (instant/rounds(n)/concentration) — rounds(n) zones expire at a round boundary via process_round_end_zones, not automatically.",
+    "Draw a named AoE zone on the map — difficult terrain, spell area (Web, Cloudkill, Spirit Guardians, etc.), or any persistent effect area. Circle or rect. Zones persist on the map and can be listed/cleared by name. Target via ONE of: atPing (centers on the GM's last shift+click map ping — the natural 'web fills the doorway, there' gesture), centerTokenId (anchor to a token's current position), or centerX+centerY (exact page pixels). Optionally tag with terrain (difficult/damaging) and duration (instant/rounds(n)/concentration) — rounds(n) zones expire at a round boundary via process_round_end_zones, not automatically.",
     {
       name: z.string().describe("Zone name, e.g. 'Web', 'Difficult Terrain', 'Spirit Guardians (Zeno)'"),
       shape: z.enum(["circle", "rect"]).default("circle"),
+      atPing: z.boolean().default(false).describe("Center on the most recent shift+click map ping (within the last 3 minutes). The natural input for a fixed-area spell with no anchor token, e.g. 'web fills the doorway, there'."),
       centerTokenId: z.string().optional().describe("Anchor zone to this token's current position"),
-      centerX: z.number().optional().describe("X center in page pixels (use if no centerTokenId)"),
+      centerX: z.number().optional().describe("X center in page pixels (use if no atPing/centerTokenId)"),
       centerY: z.number().optional().describe("Y center in page pixels"),
       radiusFeet: z.number().default(15).describe("Radius in feet for circles; half-width/height for rects"),
       widthFeet: z.number().optional().describe("Width in feet for rect zones (defaults to radiusFeet*2)"),
@@ -117,28 +142,41 @@ export function registerZoneTools(server: McpServer): void {
       duration: zoneDurationSchema
         .optional()
         .describe(
-          "{type:'instant'} | {type:'rounds', n} | {type:'concentration', caster}. caster is a token id/name — just the linkage; the break cascade is a separate concern. Defaults to instant."
+          'One of three complete objects — copy one whole, do not mix fields across them: {"type":"instant"} | {"type":"rounds","n":<number of rounds>} | {"type":"concentration","caster":"<token id or name>"}. caster is just the linkage; the break cascade is a separate concern. Defaults to instant.'
         ),
       pageId: z.string().optional(),
     },
-    async ({ name, shape, centerTokenId, centerX, centerY, radiusFeet, widthFeet, heightFeet, color, terrain, duration, pageId }) => {
+    async ({ name, shape, atPing, centerTokenId, centerX, centerY, radiusFeet, widthFeet, heightFeet, color, terrain, duration, pageId }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
 
-      let cx = centerX ?? 0;
-      let cy = centerY ?? 0;
-      if (centerTokenId) {
+      // ── Targeting: one of three modes — see the tool description above ──
+      let cx: number;
+      let cy: number;
+      let zonePage = activePage;
+      if (atPing) {
+        const ping = getLastPing();
+        if (!ping) throw new Error("No recent map ping seen. Shift+click the spot in Roll20, then call again (rt transport must be connected).");
+        zonePage = ping.pageId || activePage;
+        cx = ping.x;
+        cy = ping.y;
+      } else if (centerTokenId) {
         type TokenPos = { left: number; top: number };
         const t = await roll20.relayCommand<TokenPos | null>({ action: "getTokenById", tokenId: centerTokenId });
         if (!t) throw new Error(`Token not found: ${centerTokenId}`);
         cx = t.left;
         cy = t.top;
+      } else if (centerX !== undefined && centerY !== undefined) {
+        cx = centerX;
+        cy = centerY;
+      } else {
+        throw new Error("Target via atPing, centerTokenId, or centerX + centerY");
       }
 
       const resolvedColor = color ?? defaultZoneColor(terrain);
 
       const result = await roll20.relayCommand({
         action: "createZone",
-        pageId: activePage,
+        pageId: zonePage,
         name,
         shape,
         centerX: cx,
