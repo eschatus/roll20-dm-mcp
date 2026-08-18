@@ -4,6 +4,12 @@
 // No setup required — the MCP server sends commands via !ai-relay chat commands,
 // and results are written back to Campaign properties.
 
+// Single source of truth for this deployed script's version. ACTIONS["ping"] echoes it so the
+// TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
+// deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
+// (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
+var AI_RELAY_VERSION = "2.2.0";
+
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
 function writeResult(nonce, data, error) {
@@ -2146,7 +2152,7 @@ ACTIONS["batchExec"] = function (args, msg, nonce, senderPlayerId) {
       };
 ACTIONS["ping"] = function (args, msg, nonce, senderPlayerId) {
         {
-        writeResult(nonce, { pong: true, version: "2.1.0" });
+        writeResult(nonce, { pong: true, version: AI_RELAY_VERSION });
         return;
       }
       };

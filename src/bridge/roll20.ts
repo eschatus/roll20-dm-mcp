@@ -7,6 +7,7 @@ import { getActiveCampaign } from "../registry/campaigns.js";
 import { rtEnabled, rtRelayCommand, rtGet } from "./roll20-rt.js";
 import { READONLY_ACTIONS, newNonce } from "./actions.js";
 import { recordSuccess, recordFailure, circuitOpen } from "./transport-health.js";
+import { ensureRelayVersionChecked } from "./relay-version-check.js";
 
 const RELAY_TIMEOUT_MS = 30_000;
 
@@ -316,6 +317,11 @@ export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
   // explicit dev opt-out via ROLL20_TRANSPORT=browser.
   if (rtEnabled()) {
     const action = cmd.action as string;
+
+    // Version handshake: fire a one-time, un-awaited liveness+version probe (cached for the
+    // process — see relay-version-check.ts). Never blocks or delays this call; a mismatch is
+    // reported asynchronously once the probe resolves, whenever that is.
+    ensureRelayVersionChecked();
 
     // Circuit-breaker gate (single source of truth in transport-health.ts, issue #102).
     // When OPEN we throw immediately WITHOUT calling rtRelayCommand — so no failure is recorded
