@@ -396,18 +396,21 @@ function makeCirclePath(radiusPx) {
 // the opacity is a one-line tune. UNVERIFIED against the live Roll20 renderer — the
 // wiki only ever shows 6-digit examples, so whether Roll20's canvas actually honours
 // the alpha channel on an 8-digit hex fill is untested outside this relay.
-const ZONE_FILL_ALPHA_HEX = "40"; // 0x40/255 ≈ 0.25 opaque = 75% transparent
+const ZONE_FILL_OPACITY = 0.25; // 0.25 opaque = 75% transparent
 
-// Returns `color` with the zone alpha applied: a 6-digit #RRGGBB gets ZONE_FILL_ALPHA_HEX
-// appended, an already-8-digit #RRGGBBAA gets its alpha replaced (not double-appended).
-// Anything else — "transparent", a malformed string, or a non-string input — is returned
-// unchanged (or coerced to "transparent" if it isn't even a string) rather than corrupted;
-// this never returns undefined/null/NaN, since writing one of those into a Roll20 object
-// async-crashes the whole Mod sandbox (see CLAUDE.md's setSafe/stripUndef guidance).
+// Returns `color` as a 25%-opaque fill string. Roll20 has NO `fill_opacity` property on a
+// path, so the alpha must ride inside the colour value itself. An 8-digit #RRGGBBAA hex was
+// tried first and VERIFIED NOT TO WORK against the live build (2026-08-18): Roll20 ignored
+// the alpha byte and painted the zone solid. `rgba(r,g,b,a)` is the remaining candidate.
+// Anything that isn't a clean 6/8-digit hex ("transparent", a malformed string) is returned
+// unchanged; a non-string falls back to "transparent". Never returns undefined/null/NaN —
+// writing one of those into a Roll20 object async-crashes the whole Mod sandbox (CLAUDE.md).
 function withZoneAlpha(color) {
   let hex = typeof color === "string" ? /^#([0-9a-fA-F]{6})(?:[0-9a-fA-F]{2})?$/.exec(color) : null;
   if (!hex) return typeof color === "string" ? color : "transparent";
-  return "#" + hex[1] + ZONE_FILL_ALPHA_HEX;
+  let n = parseInt(hex[1], 16);
+  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return "rgba(" + r + "," + g + "," + b + "," + ZONE_FILL_OPACITY + ")";
 }
 
 function getMonsterEpithets(tokenName) {
