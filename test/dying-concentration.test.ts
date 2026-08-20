@@ -1,12 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Issue #135 — PC dying state + the concentration model.
 //
-//  - mark_dying: prone + unconscious, token STAYS on the token layer (never
+//  - set_pc_dying: prone + unconscious, token STAYS on the token layer (never
 //    dead, never map layer); rejects NPCs/sidekicks (use kill_token instead).
 //  - break_concentration: removes the Concentrating marker, zeroes aura1_radius,
 //    deletes only zones whose duration is {type:"concentration", caster}
 //    linked to that token — other zones untouched.
-//  - mark_dying auto-cascades break_concentration when the PC was concentrating
+//  - set_pc_dying auto-cascades break_concentration when the PC was concentrating
 //    (going down breaks it implicitly).
 //  - Revival: clearing 'unconscious' via set_token_marker leaves 'prone' in place.
 //  - kill_token still works for an explicit DM death declaration (3 failed saves).
@@ -48,7 +48,7 @@ beforeAll(() => {
     aura1_radius: 15,
   });
 
-  // A sidekick and an NPC — both should reject mark_dying.
+  // A sidekick and an NPC — both should reject set_pc_dying.
   h.emu.createToken({ pageid: pageId, name: "Tua", controlledby: "player-glint", bar1_value: 0, bar1_max: 22 });
   characters.setSidekick("Tua", true);
   h.emu.createToken({ pageid: pageId, name: "Goblin Cutter", controlledby: "", bar1_value: 0, bar1_max: 7 });
@@ -56,12 +56,12 @@ beforeAll(() => {
 
 afterAll(() => h.teardown());
 
-describe("mark_dying — PC dying state", () => {
+describe("set_pc_dying — PC dying state", () => {
   it("applies prone + unconscious and keeps the token on the token layer", async () => {
     const id = tokenId("Thorne");
     expect(layer(id)).not.toBe("map");
 
-    const { text } = await h.callTool("mark_dying", { characterName: "Thorne" });
+    const { text } = await h.callTool("set_pc_dying", { characterName: "Thorne" });
 
     expect(markers(id)).toMatch(/Prone::4444315/);
     expect(markers(id)).toMatch(/Unconscious::4444317/);
@@ -71,11 +71,11 @@ describe("mark_dying — PC dying state", () => {
   });
 
   it("rejects a sidekick — points at kill_token instead", async () => {
-    await expect(h.callTool("mark_dying", { characterName: "Tua" })).rejects.toThrow(/kill_token/i);
+    await expect(h.callTool("set_pc_dying", { characterName: "Tua" })).rejects.toThrow(/kill_token/i);
   });
 
   it("rejects an NPC — points at kill_token instead", async () => {
-    await expect(h.callTool("mark_dying", { characterName: "Goblin Cutter" })).rejects.toThrow(/kill_token/i);
+    await expect(h.callTool("set_pc_dying", { characterName: "Goblin Cutter" })).rejects.toThrow(/kill_token/i);
   });
 
   it("auto-cascades break_concentration when the downed PC was concentrating", async () => {
@@ -90,7 +90,7 @@ describe("mark_dying — PC dying state", () => {
     const before = await h.callTool("list_zones", { pageId });
     expect((before.json as Array<{ name: string }>).some((z) => z.name.includes("Spirit Guardians"))).toBe(true);
 
-    const { text } = await h.callTool("mark_dying", { characterName: "Glint" });
+    const { text } = await h.callTool("set_pc_dying", { characterName: "Glint" });
 
     expect(markers(glintId)).toMatch(/Prone::4444315/);
     expect(markers(glintId)).toMatch(/Unconscious::4444317/);
@@ -155,7 +155,7 @@ describe("revival semantics", () => {
       pageid: pageId, name: "Brie Mossfrond", controlledby: "player-brie",
       bar1_value: 0, bar1_max: 18,
     });
-    await h.callTool("mark_dying", { characterName: "Brie Mossfrond" });
+    await h.callTool("set_pc_dying", { characterName: "Brie Mossfrond" });
     const id = tokenId("Brie Mossfrond");
     expect(markers(id)).toMatch(/Prone::4444315/);
     expect(markers(id)).toMatch(/Unconscious::4444317/);
@@ -173,7 +173,7 @@ describe("kill_token — explicit death declaration still works for a PC", () =>
       pageid: pageId, name: "Doomed Rook", controlledby: "player-rook",
       bar1_value: 0, bar1_max: 16,
     });
-    await h.callTool("mark_dying", { characterName: "Doomed Rook" });
+    await h.callTool("set_pc_dying", { characterName: "Doomed Rook" });
     const id = tokenId("Doomed Rook");
     expect(layer(id)).not.toBe("map");
 

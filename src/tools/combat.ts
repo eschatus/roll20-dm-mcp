@@ -147,8 +147,8 @@ export function registerCombatTools(server: McpServer): void {
   );
 
   server.tool(
-    "mark_dying",
-    "Mark a TRUE PC as DYING when they drop to 0 HP (issue #135) — applies prone + unconscious and the token STAYS on the token layer (never map layer, never dead). Death saves are player-owned (3 fails); only call kill_token when the DM explicitly declares the PC dead. If the PC was concentrating, the concentration teardown (marker + aura + linked zones) fires automatically — going down breaks it implicitly. NOT for NPCs or sidekicks (Tua, Salros Eventide, Amri, etc.) — those die immediately via kill_token, no dying state. Revival: clear 'unconscious' with set_token_marker (active:false) — prone STAYS until the DM says the PC stands up.",
+    "set_pc_dying",
+    "Put a TRUE PC into the DYING state when they drop to 0 HP (issue #135) — applies prone + unconscious and the token STAYS on the token layer (never map layer, never dead). Death saves are player-owned (3 fails); only call kill_token when the DM explicitly declares the PC dead. If the PC was concentrating, the concentration teardown (marker + aura + linked zones) fires automatically — going down breaks it implicitly. NOT for NPCs or sidekicks (Tua, Salros Eventide, Amri, etc.) — those die immediately via kill_token, no dying state. Revival: clear 'unconscious' with set_token_marker (active:false) — prone STAYS until the DM says the PC stands up.",
     {
       characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Thorne'."),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
@@ -197,7 +197,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "break_concentration",
-    "Tear down a concentration effect on a token (issue #135): removes the Concentrating marker, zeroes its aura (aura1_radius=0), and deletes any zone whose duration is {type:'concentration', caster} linked to this token (zone metadata from issue #134). Returns what was torn down. Use when the DM declares the break directly ('she loses the spell', 'the guardians fade'), when a concentration save fails after damage (ask the DM a one-word question first per skills/dm-rules.md — don't call this unasked), or via the automatic cascade in mark_dying. Never call this on a 'Passed' concentration save.",
+    "Tear down a concentration effect on a token (issue #135): removes the Concentrating marker, zeroes its aura (aura1_radius=0), and deletes any zone whose duration is {type:'concentration', caster} linked to this token (zone metadata from issue #134). Returns what was torn down. Use when the DM declares the break directly ('she loses the spell', 'the guardians fade'), when a concentration save fails after damage (ask the DM a one-word question first per skills/dm-rules.md — don't call this unasked), or via the automatic cascade in set_pc_dying. Never call this on a 'Passed' concentration save.",
     {
       characterName: z.string().optional().describe("The concentrating token/character's name exactly as on the map, e.g. 'Glint'."),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),

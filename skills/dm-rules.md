@@ -74,7 +74,9 @@ convenience would conflict with a rule below, the rule wins.
 - **D&D Beyond is read-only.** Only players change their own DDB HP/conditions. There is no
   `ddb_update_hp`/`apply_damage`/`heal_character` — don't try to push HP to DDB or PC tokens.
 - Single status marker: `set_token_marker`. There is **no** `apply_condition`/`remove_condition`.
-- Downed PC: `mark_dying` (prone + unconscious, stays on token layer). Concentration break:
+  **Any "mark \<name\> as \<condition\>" is this tool** — "mark Glint as concentrating" is
+  `set_token_marker(condition:"concentrating", active:true)`, never a dying/death tool (issue #168).
+- Downed PC: `set_pc_dying` (prone + unconscious, stays on token layer). Concentration break:
   `break_concentration` (marker + aura + linked zones, in one call).
 - Token visuals/position/aura/layer: `set_token_props`.
 - Areas: `create_zone` / `clear_zone` / `list_zones`; `find_tokens_in_range` for AoE targeting.
@@ -84,7 +86,7 @@ convenience would conflict with a rule below, the rule wins.
 - When a token dies: mark it dead **and** move it to the **map** layer (`set_token_props
   layer="map"`) immediately. Sidekick tokens (Tua, Salros Eventide, Amri) die and get marked the
   same way despite being player-controlled — see the sidekick note under "Real tool names".
-- **A true PC dropping to 0 HP is DYING, not dead** (issue #135). Call `mark_dying` — it applies
+- **A true PC dropping to 0 HP is DYING, not dead** (issue #135). Call `set_pc_dying` — it applies
   `prone` + `unconscious` and the token **stays on the token layer** (never map layer, never
   auto-dead). Death saves are player-owned (3 fails = dead). Only call `kill_token` when the DM
   **explicitly declares the PC dead** ("she fails her third save", "he's gone"). NPCs and
@@ -105,13 +107,13 @@ convenience would conflict with a rule below, the rule wins.
 - Breaks arrive two ways:
   - **Declaratively** — the DM says the spell ends ("she loses Bless", "the guardians fade") or
     the save already happened at the table. Call `break_concentration` directly, no question asked.
-  - **Implicitly** — going down auto-fires the cascade. `mark_dying` checks for the Concentrating
+  - **Implicitly** — going down auto-fires the cascade. `set_pc_dying` checks for the Concentrating
     marker and calls `break_concentration` itself; you never need to do this by hand.
 - **Damage hits a concentrating token and the DM says nothing about it:** apply the damage first,
   then ask ONE short question the DM can answer in a word — *"\<Name\> — concentration?"* On
   "Failed" (or equivalent), call `break_concentration`. On "Passed", do nothing further. **Never
   tear down concentration unasked** unless the DM already declared the break or the token just
-  went down (mark_dying's own cascade).
+  went down (set_pc_dying's own cascade).
 - Undead Fortitude: when a zombie/undead drops to 0 from non-radiant, non-crit damage, auto-roll
   it (DC = 5 + damage taken) via `roll_dice`.
 - **Retcon = compensating delta, not rollback.** "That was 7 not 12" → apply +5, don't reset and
