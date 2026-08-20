@@ -38,6 +38,7 @@ python3-dev installed, CUDA passthrough live. Probe scripts: `~/fit4.py`, `~/fit
   Best local config: cloud prompt + slim tools ≈ 9k prefix.
 - **#148** — registers `mark_dying` / `break_concentration` / `process_round_end_zones` /
   `set_token_class`, which #139/#140/#143 added but never put in any allowlist.
+  ⚠ `mark_dying` was renamed to `set_pc_dying` by #168 — allowlist the NEW name.
   ⚠ Check before merge: golden `13a concentration-micro-question` fell 3/3 → 1/3, likely
   because the model now calls `break_concentration` instead of asking the DM first.
 - **#145** merged — trace generator + `golden-lib.ts` (`npm run gen:traces`).
