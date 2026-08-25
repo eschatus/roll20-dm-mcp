@@ -50,6 +50,25 @@ export function coerceStringArray(v: unknown): unknown {
   return v;
 }
 
+// Tolerate a JSON-stringified array — and a bare single object — for object-array
+// params, mirroring coerceStringArray (models sometimes stringify the whole array).
+// Anything else falls through untouched for Zod to reject.
+export function coerceObjectArray(v: unknown): unknown {
+  if (Array.isArray(v)) return v;
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (s.startsWith("[") || s.startsWith("{")) {
+      try {
+        const parsed: unknown = JSON.parse(s);
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch { /* not JSON — let Zod reject the string */ }
+    }
+    return v;
+  }
+  if (v && typeof v === "object") return [v];
+  return v;
+}
+
 // Tolerate the ways small/cloud models pass boolean params: "true"/"false"/"1"/"0"
 // are mapped to native booleans; real booleans pass through unchanged; anything else
 // is returned untouched for Zod to reject. Use as a Zod preprocess:

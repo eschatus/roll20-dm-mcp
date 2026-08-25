@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.2.0";
+var AI_RELAY_VERSION = "2.3.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -1621,12 +1621,16 @@ ACTIONS["mergeTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
       };
 ACTIONS["rollInitiativeForTokens"] = function (args, msg, nonce, senderPlayerId) {
         {
-        // Roll d20 + initiative bonus for each token. Tries common 5e attribute names.
+        // Roll d20 + initiative bonus for each token. An explicit per-token bonus in
+        // args.bonusOverrides ({tokenId: bonus}) wins outright (#172 — tokens with no
+        // sheet, or a wrong sheet, get a caller-supplied bonus); otherwise tries common
+        // 5e attribute names on the linked sheet.
         // Posts a public gothic HTML initiative card by default (rollPublic defaults true).
         // Duplicate-named tokens are renamed with a random epithet (e.g. "Goblin the Savage") so they
         // are distinguishable both on the map and in the turn tracker.
         let initAttrNames = ["initiative_bonus", "npc_initiative", "dex_mod", "dexterity_mod"];
         let rollPublic = args.rollPublic !== false; // default true
+        let bonusOverrides = args.bonusOverrides || {};
 
         // Pass 1: count names to detect duplicates
         let nameCounts = {};
@@ -1661,7 +1665,10 @@ ACTIONS["rollInitiativeForTokens"] = function (args, msg, nonce, senderPlayerId)
 
           let initBonus = 0;
           let charId = token.get("represents");
-          if (charId) {
+          let override = parseInt(bonusOverrides[tokenId]);
+          if (!isNaN(override)) {
+            initBonus = override;   // explicit caller bonus beats the sheet (#172)
+          } else if (charId) {
             for (let i = 0; i < initAttrNames.length; i++) {
               let attrs = findObjs({ _type: "attribute", _characterid: charId, name: initAttrNames[i] });
               if (attrs.length > 0) {

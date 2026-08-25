@@ -12,7 +12,7 @@ import {
 import { getLastPing } from "../bridge/roll20-rt.js";
 import {
   type TurnEntry, type BatchResult,
-  text, json, num, indexBatchResults, coerceStringArray, coerceBoolean,
+  text, json, num, indexBatchResults, coerceStringArray, coerceBoolean, coerceObjectArray,
   tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId,
 } from "./combatHelpers.js";
 
@@ -452,19 +452,24 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "roll_initiative",
-    "Roll initiative for tokens on the current (or specified) page and load results into Roll20's turn order tracker. Use names to roll for an EXPLICIT list of named combatants (the common case at combat start, e.g. ['Bugbear','Droop','Iarno']). Use nameFilter for a single substring instead. Use flatInit to place matched tokens at a fixed value instead of rolling. NPCs dropped on the map without an HP bar are auto-initialized from DDB average HP at this point (disable with initHp:false) so AoE/damage actually lands.",
+    "Roll initiative for tokens on the current (or specified) page and load results into Roll20's turn order tracker. PREFERRED: pass entries — a JSON array of objects, one per combatant — to supply the initiative bonus and starting HP explicitly, e.g. entries: [{\"match\":\"Bugbear\",\"bonus\":2,\"hp\":27},{\"match\":\"Droop\",\"bonus\":1,\"hp\":5}]. An entry's bonus rolls 1d20+bonus through the Roll20 roller (beats any sheet-derived bonus); its hp seeds bar1/bar1_max (NPCs and sidekicks only — PCs are never touched); either field may be omitted to fall back to the sheet / existing bar. Use names for a plain list without overrides, nameFilter for a single substring, flatInit to place matched tokens at a fixed value instead of rolling.",
     {
       pageId: z.string().optional().describe("Page to roll for. Defaults to the current player page."),
       npcOnly: z.preprocess(coerceBoolean, z.boolean().default(true)).describe("If true, skip tokens whose controlledby field contains a player ID (i.e. PC tokens). Accepts \"true\"/\"false\" strings for model compatibility."),
       clearFirst: z.preprocess(coerceBoolean, z.boolean().default(false)).describe("Wipe the existing turn order before adding rolls. Set true at combat start. Accepts \"true\"/\"false\" strings for model compatibility."),
       flatInit: z.number().int().optional().describe("If set, place all matched tokens at this fixed initiative value instead of rolling."),
-      names: z.preprocess(coerceStringArray, z.array(z.string())).optional().describe("Explicit list of token names to roll for, e.g. ['Bugbear the Heavy-Handed','Droop','Iarno']. Matches a token if a given name is contained in (or equals) the token's name, case-insensitive — so partial names work. A JSON-stringified array or a single name string are both accepted."),
+      entries: z.preprocess(coerceObjectArray, z.array(z.object({
+        match: z.string().describe("Token name (contains-either-way, case-insensitive — epithets work) or exact token id."),
+        bonus: z.number().int().optional().describe("Explicit initiative bonus: rolls 1d20+bonus via the Roll20 roller, ignoring the sheet. Omit to use the sheet-derived bonus."),
+        hp: z.number().int().positive().optional().describe("Seed bar1 AND bar1_max to this value. Applies to NPCs and sidekicks only; a matched PC's bar is never written. Omit to leave HP alone."),
+      }))).optional().describe("PREFERRED. JSON array of per-combatant objects {match, bonus?, hp?} — both selects the combatants and supplies explicit initiative bonus / starting HP. Example: [{\"match\":\"Bugbear\",\"bonus\":2,\"hp\":27},{\"match\":\"Droop\"}]. Combines with names (union)."),
+      names: z.preprocess(coerceStringArray, z.array(z.string())).optional().describe("Explicit list of token names to roll for, e.g. ['Bugbear the Heavy-Handed','Droop','Iarno']. Matches a token if a given name is contained in (or equals) the token's name, case-insensitive — so partial names work. A JSON-stringified array or a single name string are both accepted. Use entries instead when you also want to supply a bonus or HP."),
       nameFilter: z.string().optional().describe("Case-insensitive substring filter on token names. E.g. 'goblin' matches 'Goblin 1', 'Goblin Archer', etc. Prefer `names` for an explicit multi-creature list."),
       publicRoll: z.preprocess(coerceBoolean, z.boolean().default(true)).describe("If true (default), posts a public gothic initiative card to chat showing all rolled tokens sorted by result. Pass false to roll silently. Accepts \"true\"/\"false\" strings for model compatibility."),
       nearPcsFeet: z.number().optional().describe("Only include NPCs within this many feet of any PC token — use at combat start so distant mobs elsewhere on the map don't join the fight. 60-90 is a good default when the DM just says 'roll inits'."),
-      initHp: z.preprocess(coerceBoolean, z.boolean().default(true)).describe("Auto-initialize bar1/bar1_max from DDB average HP for any NPC combatant with no HP bar set (bar1_max unset → hp:null). PCs are never touched. Set false to skip the DDB lookups. Accepts \"true\"/\"false\" strings for model compatibility."),
+      initHp: z.preprocess(coerceBoolean, z.boolean().default(true)).describe("DEPRECATED — resolve HP yourself and pass it via entries[].hp instead; the DDB compendium lookup silently misses reskins/homebrew and will be removed with the #171 extraction. While it lasts: auto-initialize bar1/bar1_max from DDB average HP for any NPC combatant with no HP bar set. PCs are never touched. Set false to skip the DDB lookups. Accepts \"true\"/\"false\" strings for model compatibility."),
     },
-    async ({ pageId, npcOnly, clearFirst, flatInit, names, nameFilter, publicRoll, nearPcsFeet, initHp }) => {
+    async ({ pageId, npcOnly, clearFirst, flatInit, entries, names, nameFilter, publicRoll, nearPcsFeet, initHp }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
       // Sidekicks (issue #132) are player-controlled but route as NPCs for
       // initiative purposes too — npcOnly should still pick them up, and
@@ -496,18 +501,26 @@ export function registerCombatTools(server: McpServer): void {
 
       const TOKEN_LAYERS = new Set(["tokens", "objects"]);
       const needle = nameFilter?.toLowerCase();
+      const entryList = entries ?? [];
       // Explicit name list: a token matches if a provided name is contained in (or
       // equals) the token's name, or vice versa — case-insensitive. Tolerant of
       // epithets ("Bugbear" ↔ "Bugbear the Heavy-Handed") and full names alike.
-      const wanted = names?.map((n) => n.toLowerCase().trim()).filter(Boolean) ?? null;
-      const matchesWanted = (name: string) => {
+      // entries[].match values join the selection (union with names); an entry's
+      // match may also be an exact token id.
+      const nameMatches = (w: string, name: string) => {
         const tn = name.toLowerCase();
-        return wanted!.some((w) => tn.includes(w) || w.includes(tn));
+        return tn.includes(w) || w.includes(tn);
       };
+      const selectors = [...(names ?? []), ...entryList.map((e) => e.match)]
+        .map((n) => n.toLowerCase().trim()).filter(Boolean);
+      const wanted = (names?.length || entryList.length) ? selectors : null;
+      const entryIds = new Set(entryList.map((e) => e.match));
+      const matchesWanted = (t: { id: string; name: string }) =>
+        entryIds.has(t.id) || wanted!.some((w) => nameMatches(w, t.name));
       const combatants = tokens.filter((t) => {
         if (!TOKEN_LAYERS.has(t.layer)) return false;
         if (npcOnly && isPcToken(t, sidekickNames)) return false;
-        if (wanted && wanted.length && !matchesWanted(t.name)) return false;
+        if (wanted && wanted.length && !matchesWanted(t)) return false;
         if (needle && !t.name.toLowerCase().includes(needle)) return false;
         if (nearIds && !nearIds.has(t.id)) return false;
         return true;
@@ -518,14 +531,49 @@ export function registerCombatTools(server: McpServer): void {
         return text(`No tokens found on token layer. All graphic layers on this page: [${layers.join(", ")}]. Try list_tokens for full details.`);
       }
 
+      // Per-combatant explicit overrides (#172): first entry to match a token wins —
+      // an exact token-id match beats a name match. One entry may match several
+      // tokens (match:"Goblin" seeds the whole mob). Keyed by token id so the
+      // relay's duplicate-epithet renames can't detach them.
+      const entryFor = new Map<string, { match: string; bonus?: number; hp?: number }>();
+      const usedEntries = new Set<object>();
+      for (const t of combatants) {
+        const e = entryList.find((x) => x.match === t.id)
+          ?? entryList.find((x) => nameMatches(x.match.toLowerCase().trim(), t.name));
+        if (e) { entryFor.set(t.id, e); usedEntries.add(e); }
+      }
+      const entriesUnmatched = entryList.filter((e) => !usedEntries.has(e)).map((e) => e.match);
+
+      // Explicit HP from entries seeds bar1/bar1_max outright, before rolling (the
+      // relay renames duplicates with epithets — id-keyed writes are immune, but
+      // keep the ordering anyway). NPC/sidekick routing: a matched PC's bar is
+      // NEVER written — Beyond20 owns it.
+      const hpSeeded: string[] = [];
+      const hpSkippedPc: string[] = [];
+      const explicitHpIds = new Set<string>();
+      {
+        const ops: { id: string; action: string; args: Record<string, unknown> }[] = [];
+        for (const t of combatants) {
+          const hp = entryFor.get(t.id)?.hp;
+          if (hp === undefined) continue;
+          if (isPcToken(t, sidekickNames)) { hpSkippedPc.push(t.name); continue; }
+          explicitHpIds.add(t.id);
+          hpSeeded.push(`${t.name} → ${hp}`);
+          ops.push({ id: `hpseed:${t.id}`, action: "setTokenBar", args: { tokenId: t.id, value: hp, max: hp } });
+        }
+        if (ops.length) await roll20.relayCommand({ action: "batchExec", ops });
+      }
+
       // Auto-init HP bars for NPC combatants placed without one (bar1_max unset →
       // hp:null → damage/AoE silently no-ops). Look up average HP from DDB by the
       // token's (pre-epithet) name, one lookup per unique name, then write bar1 in
       // a single batch. PCs are never touched (Beyond20 owns their bars). Must run
       // BEFORE rollInitiativeForTokens, which renames duplicates with epithets.
+      // DEPRECATED path (#172): callers should pass entries[].hp; this DDB fallback
+      // is removed with the #171 extraction. Tokens just seeded explicitly are out.
       const hpInit = { set: [] as string[], missed: [] as string[] };
       if (initHp) {
-        const needHp = combatants.filter((t) => !isPcToken(t, sidekickNames) && !hasHpBar(t));
+        const needHp = combatants.filter((t) => !isPcToken(t, sidekickNames) && !hasHpBar(t) && !explicitHpIds.has(t.id));
         if (needHp.length) {
           const avgByName = new Map<string, number | null>();
           for (const nm of new Set(needHp.map((t) => t.name))) avgByName.set(nm, await resolveMonsterAvgHp(nm));
@@ -551,10 +599,15 @@ export function registerCombatTools(server: McpServer): void {
         newEntries = combatants.map((t) => ({ id: t.id, pr: String(flatInit), custom: "", _pageid: activePage }));
         lines = combatants.map((t) => `${t.name}: ${flatInit}`);
       } else {
+        // Explicit bonuses ride to the relay keyed by token id and beat the
+        // sheet-derived bonus there (#172).
+        const bonusOverrides: Record<string, number> = {};
+        for (const [id, e] of entryFor) if (e.bonus !== undefined) bonusOverrides[id] = e.bonus;
         const rolls = await roll20.relayCommand<{ tokenId: string; name: string; d20: number; initBonus: number; total: number }[]>({
           action: "rollInitiativeForTokens",
           tokenIds: combatants.map((t) => t.id),
           rollPublic: publicRoll,
+          ...(Object.keys(bonusOverrides).length ? { bonusOverrides } : {}),
         });
         rolls.sort((a, b) => b.total - a.total);
         newEntries = rolls.map((r) => ({ id: r.tokenId, pr: String(r.total), custom: "", _pageid: activePage }));
@@ -579,6 +632,9 @@ export function registerCombatTools(server: McpServer): void {
         rolledFor: newEntries.length,
         results: lines,
         turnOrder: finalOrder.map((e) => ({ id: e.id, pr: num(e.pr) ?? e.pr })),
+        ...(hpSeeded.length ? { hpSeeded } : {}),
+        ...(hpSkippedPc.length ? { hpSkippedPc: hpSkippedPc.map((n) => `${n} (PC — bar never written)`) } : {}),
+        ...(entriesUnmatched.length ? { entriesUnmatched } : {}),
         ...(hpInit.set.length ? { hpInitialized: hpInit.set } : {}),
         ...(hpInit.missed.length ? { hpLookupFailed: hpInit.missed } : {}),
       }, false);
