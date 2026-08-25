@@ -84,12 +84,20 @@ export function registerDdbPumpTools(server: McpServer): void {
 
   server.tool(
     "ddb_roll_pump_status",
-    "Report whether the D&D Beyond roll pump is running and how many rolls it has relayed.",
+    "Report the D&D Beyond roll pump's connection health (CONNECTED vs RETRYING, consecutive failures, last error) and how many rolls it has relayed. RETRYING with a climbing failure count means the socket keeps dropping — usually an expired DDB session token; re-harvest and restart the pump.",
     {},
     async () => {
       if (!pump || !pumpInfo) return text("Roll pump: not running.");
       const mins = Math.round((Date.now() - pumpInfo.started) / 60000);
-      return text(`Roll pump: RUNNING · game ${pumpInfo.gameId} · ${pumpInfo.names.length ? pumpInfo.names.join(", ") : "all characters"} · ${pumpInfo.posted} roll(s) relayed · up ${mins}m${pumpInfo.lastError ? ` · last error: ${pumpInfo.lastError}` : ""}`);
+      // Connection health, not object existence — a pump in a reconnect loop must
+      // not report as healthy (issue #166).
+      const s = pump.status();
+      const health =
+        s.state === "connected" ? "CONNECTED" :
+        s.state === "retrying" ? `RETRYING (${s.failures} consecutive failure${s.failures === 1 ? "" : "s"})` :
+        s.state.toUpperCase();
+      const lastError = s.lastError ?? pumpInfo.lastError;
+      return text(`Roll pump: ${health} · game ${pumpInfo.gameId} · ${pumpInfo.names.length ? pumpInfo.names.join(", ") : "all characters"} · ${pumpInfo.posted} roll(s) relayed · up ${mins}m${lastError ? ` · last error: ${lastError}` : ""}`);
     }
   );
 }

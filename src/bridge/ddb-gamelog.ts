@@ -66,12 +66,28 @@ export interface PumpOptions {
 const REFRESH_LEAD_MS = 40_000;
 const MIN_CONNECT_MS = 30_000;
 const BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 20_000];
+// A socket that opens and dies immediately is a FAILURE (issue #166: the far end
+// accepts the upgrade and then drops us — every cycle logs "connected"). Only a
+// connection that proves usable — a frame received, or the open surviving this
+// long — resets the backoff counter.
+const HEALTHY_AFTER_MS = 15_000;
+
+export type PumpConnState = "idle" | "connecting" | "connected" | "retrying" | "stopped";
+export interface PumpStatus {
+  state: PumpConnState;
+  /** Consecutive failures since the last healthy connection (drives the backoff index). */
+  failures: number;
+  lastError: string | null;
+}
 
 export class DdbGameLogPump {
   private ws: WebSocket | null = null;
   private stopped = false;
   private refreshTimer: NodeJS.Timeout | null = null;
+  private healthyTimer: NodeJS.Timeout | null = null;
   private failures = 0;
+  private connState: PumpConnState = "idle";
+  private lastError: string | null = null;
   private readonly seen = new Set<string>();   // message ids already emitted (dedup)
   private readonly entityFilter: Set<string> | null;
   private readonly skipBeyond20: boolean;
@@ -82,6 +98,18 @@ export class DdbGameLogPump {
   }
 
   private log(s: string) { this.opts.onStatus?.(s); }
+
+  /** Live connection health, surfaced through ddb_roll_pump_status (issue #166). */
+  status(): PumpStatus {
+    return { state: this.connState, failures: this.failures, lastError: this.lastError };
+  }
+
+  // The connection has proven usable — reset the backoff so the next hiccup
+  // starts the ladder from the bottom again.
+  private markHealthy(): void {
+    if (this.healthyTimer) { clearTimeout(this.healthyTimer); this.healthyTimer = null; }
+    this.failures = 0;
+  }
 
   /**
    * Seed the dedup set from REST history so a fresh connection (which replays recent
@@ -110,7 +138,9 @@ export class DdbGameLogPump {
 
   stop(): void {
     this.stopped = true;
+    this.connState = "stopped";
     if (this.refreshTimer) { clearTimeout(this.refreshTimer); this.refreshTimer = null; }
+    if (this.healthyTimer) { clearTimeout(this.healthyTimer); this.healthyTimer = null; }
     this.ws?.removeAllListeners();
     try { this.ws?.close(); } catch { /* already closing */ }
     this.ws = null;
@@ -119,6 +149,7 @@ export class DdbGameLogPump {
 
   private async connect(): Promise<void> {
     if (this.stopped) return;
+    this.connState = "connecting";
     let token: string, userId: string, expiresAt: number;
     try {
       ({ token, userId, expiresAt } = await rtAuthToken());
@@ -133,20 +164,28 @@ export class DdbGameLogPump {
     this.ws = ws;
 
     ws.on("open", () => {
-      this.failures = 0;
+      // NOT a failures reset — a doomed socket still opens before the far end drops
+      // it (issue #166). Health = a frame arrives (onFrame) or the open survives
+      // HEALTHY_AFTER_MS; either resets the backoff via markHealthy().
+      this.connState = "connected";
       this.log(`[ddb-pump] connected to game ${this.opts.gameId}`);
+      this.healthyTimer = setTimeout(() => this.markHealthy(), HEALTHY_AFTER_MS);
       // Proactively cycle the connection before the JWT lapses.
       const lifetime = Math.max(MIN_CONNECT_MS, expiresAt - Date.now() - REFRESH_LEAD_MS);
       this.refreshTimer = setTimeout(() => { this.log("[ddb-pump] refreshing JWT"); this.cycle(); }, lifetime);
     });
-    ws.on("message", (buf: WebSocket.RawData) => this.onFrame(String(buf)));
-    ws.on("error", (e) => this.log(`[ddb-pump] ws error: ${(e as Error).message}`));
+    ws.on("message", (buf: WebSocket.RawData) => { this.markHealthy(); this.onFrame(String(buf)); });
+    ws.on("error", (e) => {
+      this.lastError = (e as Error).message;
+      this.log(`[ddb-pump] ws error: ${(e as Error).message}`);
+    });
     ws.on("close", (code) => { if (!this.stopped) this.scheduleReconnect(`closed (${code})`); });
   }
 
   /** Tear down the current socket and immediately reconnect with a fresh token. */
   private cycle(): void {
     if (this.refreshTimer) { clearTimeout(this.refreshTimer); this.refreshTimer = null; }
+    if (this.healthyTimer) { clearTimeout(this.healthyTimer); this.healthyTimer = null; }
     const old = this.ws;
     this.ws = null;
     old?.removeAllListeners();
@@ -157,6 +196,9 @@ export class DdbGameLogPump {
   private scheduleReconnect(why: string): void {
     if (this.stopped) return;
     if (this.refreshTimer) { clearTimeout(this.refreshTimer); this.refreshTimer = null; }
+    if (this.healthyTimer) { clearTimeout(this.healthyTimer); this.healthyTimer = null; }
+    this.connState = "retrying";
+    this.lastError = why;
     const delay = BACKOFF_MS[Math.min(this.failures, BACKOFF_MS.length - 1)];
     this.failures++;
     this.log(`[ddb-pump] ${why} — reconnecting in ${delay}ms`);
