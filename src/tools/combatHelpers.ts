@@ -105,6 +105,26 @@ export function renderRollCard(title: string, rows: RollCardRow[]): string {
   return `&{template:default} {{name=${escapeRollText(title)}}} ${parts.join(" ")}`;
 }
 
+// ── Mob-plan whisper card ─────────────────────────────────────────────────────
+// Default rendering for a plan stored via set_mob_plan without caller-supplied
+// HTML. Whispered to the DM by the turn hook when the mob's turn comes up, so it
+// must be a self-contained inline-styled block like the tactics cascade's card.
+export interface MobPlan { name: string; shortTerm: string; mediumTerm?: string; longGoal?: string }
+
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+export function renderMobPlanCard(plan: MobPlan): string {
+  const line = (label: string, v?: string) =>
+    v ? `<div style='margin-top:4px;'><b style='color:#9a86d8;'>${label}:</b> ${escapeHtml(v)}</div>` : "";
+  return "<div style='border:1px solid #4a3a6a;border-left-width:3px;background:#0c0814;padding:6px 10px;border-radius:2px;color:#cbc0e8;font-family:Georgia,serif;line-height:1.5;'>"
+    + `<div style='color:#9a86d8;font-weight:bold;'>🧠 ${escapeHtml(plan.name)}</div>`
+    + line("Now", plan.shortTerm)
+    + line("Then", plan.mediumTerm)
+    + line("Goal", plan.longGoal)
+    + "</div>";
+}
+
 // ── Turn order ────────────────────────────────────────────────────────────────
 // Roll20 turn order entry: {id, pr (string), custom, _pageid}. _pageid is
 // required — without it Roll20's tracker shows "no tokens on this stage". The

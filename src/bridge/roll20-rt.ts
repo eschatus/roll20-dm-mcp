@@ -300,9 +300,49 @@ function handleChatChild(key: string | null, val: unknown, live: boolean): void 
       _playerCommandListener({ who: String(m.who || ""), playerid: String(m.playerid || ""), content });
     }
   }
-  // An AIBRIDGE result resolves a pending relay; anything else is real table chat → buffer it.
-  if (!tryResolveContent(content)) bufferChat(val);
+  // An AIBRIDGE result resolves a pending relay; anything else is real table chat →
+  // buffer it (get_recent_chat) and forward it over the SSE stream (external brain).
+  if (!tryResolveContent(content)) {
+    bufferChat(val);
+    forwardChat(val, key, live);
+  }
 }
+
+// Forward live table chat — players' messages, !-commands, !dm — over the in-process
+// SSE stream so an external subscriber (the gem) can run its own player-command
+// handling without a relay round-trip (#171: the transport stays here, the brain moves
+// out). Same exclusions as bufferChat (no !ai-relay, no API-origin bridge/Mod output),
+// same cleaned shape + inlinerolls so Beyond20 roll results arrive machine-readable;
+// live-only so the connect-time replay burst can't re-fire a subscriber's handlers.
+function forwardChat(val: unknown, key: string | null, live: boolean): void {
+  if (!live) return;
+  const m = val as { content?: unknown; who?: unknown; type?: unknown; playerid?: unknown; inlinerolls?: unknown };
+  const content = m?.content;
+  if (typeof content !== "string") return;
+  if (content.startsWith("!ai-relay")) return;          // our own commands
+  if (m.playerid === "API") return;                     // bridge/Mod output (incl. AIBRIDGE whispers)
+  const rolls = Array.isArray(m.inlinerolls) ? m.inlinerolls : [];
+  _broadcast({
+    type: "chat-message",
+    message: {
+      who: String(m.who || ""),
+      playerid: String(m.playerid || ""),
+      type: String(m.type || ""),
+      content: cleanChat(content),
+      isCommand: content.startsWith("!"),
+      inlinerolls: rolls.map((r) => {
+        const rr = r as { expression?: string; results?: { total?: number } };
+        return { expression: String(rr?.expression ?? ""), total: rr?.results?.total ?? null };
+      }),
+      timestamp: Date.now(),
+      key,
+    },
+  });
+}
+
+// Narrow test seam: drive the chat-child handler directly (src/bridge/roll20-rt.chat.test.ts)
+// without a live RTDB connection. Same pattern as __setAnthropicForTest elsewhere.
+export const __handleChatChildForTest = handleChatChild;
 
 async function connect(): Promise<RtConn> {
   const { roll20CampaignId } = getActiveCampaign();
@@ -906,12 +946,27 @@ export interface TurnOrderEntry { id?: string; pr?: string | number; custom?: st
 export interface MobPlanData { name: string; shortTerm: string; mediumTerm?: string; longGoal?: string }
 export interface DmInboxEntry { who: string; playerid: string; content: string; type: "query" | "intent"; timestamp: number; key: string }
 
+// Live table chat forwarded raw over SSE (see forwardChat): every player message,
+// !-command, and !dm — never the bridge's own traffic. `key` is the RTDB child key
+// (subscriber-side dedup); `isCommand` flags !-prefixed messages.
+export interface ChatMessageEvent {
+  who: string;
+  playerid: string;
+  type: string;
+  content: string;
+  isCommand: boolean;
+  inlinerolls: { expression: string; total: number | null }[];
+  timestamp: number;
+  key: string | null;
+}
+
 export type RtdbBroadcastEvent =
   | { type: "combat-update"; turnOrder: TurnOrderEntry[]; round: number }
   | { type: "mob-plan"; tokenId: string; plan: MobPlanData }
   | { type: "inbox-item"; item: DmInboxEntry }
   | { type: "sandbox-status"; ok: boolean }
-  | { type: "map-ping"; ping: MapPing };
+  | { type: "map-ping"; ping: MapPing }
+  | { type: "chat-message"; message: ChatMessageEvent };
 
 // Latest map ping seen on the `broadcast` channel. Aged by OUR receive clock,
 // not the sender's ts (client clocks skew).

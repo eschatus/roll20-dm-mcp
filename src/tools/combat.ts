@@ -9,11 +9,12 @@ import {
   saveAttrNames, resolveSaveBonus, damageOnSave,
   isPcToken, splitPcNpc, isDowned, resolveNamesToTokens, hasHpBar,
 } from "./aoe.js";
-import { getLastPing } from "../bridge/roll20-rt.js";
+import { getLastPing, publishMobPlan } from "../bridge/roll20-rt.js";
 import {
   type TurnEntry, type BatchResult,
   text, json, num, indexBatchResults, coerceStringArray, coerceBoolean, coerceObjectArray,
   tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId, renderRollCard,
+  renderMobPlanCard,
 } from "./combatHelpers.js";
 
 // ONE canonical condition table — Roll20 status marker tags for D&D 5e
@@ -1496,6 +1497,41 @@ export function registerCombatTools(server: McpServer): void {
     async () => {
       const result = await roll20.relayCommand<Record<string, unknown>>({ action: "getMobPlans" });
       return json(result, false);
+    }
+  );
+
+  server.tool(
+    "set_mob_plan",
+    "Store (or clear) the tactical plan for one mob token — the storage primitive behind plan_all_tactics, exposed so an external brain (the gem) can do its own planning. The stored plan is whispered to the DM when the token's turn comes up, readable back via get_mob_plans, and pushed to the HUD immediately. Target with characterName or tokenId. Pass clear:true to remove a stored plan (e.g. the mob died or the plan is stale).",
+    {
+      characterName: z.string().optional().describe("Token name exactly as on the map — the usual way to target."),
+      tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
+      shortTerm: z.string().optional().describe("What the mob does RIGHT NOW (this turn). Required unless clear:true."),
+      mediumTerm: z.string().optional().describe("Plan for the next few rounds."),
+      longGoal: z.string().optional().describe("The creature's overall goal in this fight."),
+      html: z.string().optional().describe("Pre-rendered whisper-card HTML. Omit to auto-render a card from the plan fields."),
+      clear: z.preprocess(coerceBoolean, z.boolean().default(false)).describe("true to delete the stored plan instead of writing one. Accepts \"true\"/\"false\" strings for model compatibility."),
+    },
+    async ({ characterName, tokenId, shortTerm, mediumTerm, longGoal, html, clear }) => {
+      let resolvedTokenId = tokenId;
+      if (!resolvedTokenId) {
+        if (!characterName) throw new Error("Provide characterName or tokenId");
+        resolvedTokenId = await resolveTokenOrThrow(characterName);
+      }
+      if (clear) {
+        await roll20.relayCommand({ action: "setMobPlan", tokenId: resolvedTokenId, html: "" });
+        return text(`Mob plan cleared for ${characterName ?? resolvedTokenId}.`);
+      }
+      if (!shortTerm) throw new Error("shortTerm is required unless clear:true");
+      const tok = await roll20.relayCommand<{ name?: string } | null>({ action: "getTokenById", tokenId: resolvedTokenId });
+      const name = tok?.name || characterName || resolvedTokenId;
+      const plan = { name, shortTerm, ...(mediumTerm ? { mediumTerm } : {}), ...(longGoal ? { longGoal } : {}) };
+      const card = html || renderMobPlanCard(plan);
+      await roll20.relayCommand({ action: "setMobPlan", tokenId: resolvedTokenId, html: card, plan });
+      // Same HUD push as the tactics cascade — the SSE stream is the delivery
+      // path; RTDB writes to aibridge/* are denied on every shard.
+      publishMobPlan(resolvedTokenId, plan);
+      return text(`Mob plan stored for ${name} — the DM gets it whispered on that token's turn.`);
     }
   );
 
