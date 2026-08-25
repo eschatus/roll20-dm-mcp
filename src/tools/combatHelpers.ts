@@ -80,6 +80,31 @@ export function coerceBoolean(v: unknown): unknown {
   return v;
 }
 
+// ── Roll cards ────────────────────────────────────────────────────────────────
+// Render PRE-COMPUTED roll results as a Roll20 default-template card, for the
+// postChat relay action (post_roll_as_character). The dice were already rolled
+// elsewhere — D&D Beyond, the gem's roll-pump bridging, a companion app — so the
+// output must carry no [[…]] inline-roll syntax, which Roll20 would re-roll into
+// different numbers. Escaping strips template-breaking chars ({}|) and
+// neutralizes inline-roll brackets for the same reason.
+export interface RollCardRow { label: string; notation?: string; total: number | string; breakdown?: string }
+
+const escapeRollText = (s: string) =>
+  String(s).replace(/[{}|]/g, "").replace(/\[\[/g, "[").replace(/\]\]/g, "]");
+
+export function renderRollCard(title: string, rows: RollCardRow[]): string {
+  const parts = rows.map((r) => {
+    const label = escapeRollText(r.label.trim() || "Roll");
+    const notation = r.notation ? ` ${escapeRollText(r.notation)}` : "";
+    const total = escapeRollText(String(r.total));
+    const breakdown = r.breakdown ? escapeRollText(r.breakdown) : "";
+    // Show the die faces only when they say more than the bare total.
+    const detail = breakdown && breakdown !== total ? ` (${breakdown})` : "";
+    return `{{${label}${notation} = ${total}${detail}}}`;
+  });
+  return `&{template:default} {{name=${escapeRollText(title)}}} ${parts.join(" ")}`;
+}
+
 // ── Turn order ────────────────────────────────────────────────────────────────
 // Roll20 turn order entry: {id, pr (string), custom, _pageid}. _pageid is
 // required — without it Roll20's tracker shows "no tokens on this stage". The

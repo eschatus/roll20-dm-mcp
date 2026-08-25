@@ -13,7 +13,7 @@ import { getLastPing } from "../bridge/roll20-rt.js";
 import {
   type TurnEntry, type BatchResult,
   text, json, num, indexBatchResults, coerceStringArray, coerceBoolean, coerceObjectArray,
-  tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId,
+  tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId, renderRollCard,
 } from "./combatHelpers.js";
 
 // ONE canonical condition table — Roll20 status marker tags for D&D 5e
@@ -447,6 +447,26 @@ export function registerCombatTools(server: McpServer): void {
       });
       // NB: kept inline — this tool destructures a `text` param, which shadows the text() helper.
       return { content: [{ type: "text", text: `Narration sent (style: ${style})` }] };
+    }
+  );
+
+  server.tool(
+    "post_roll_as_character",
+    "Render an ALREADY-ROLLED result into Roll20 chat as a named character — a native-looking roll card showing exactly the numbers provided, never re-rolling them. This is the bridging seam for dice rolled outside Roll20 (D&D Beyond, a companion app). For fresh dice use roll_dice; for prose use send_narration. Example: {\"characterName\":\"Salros\",\"title\":\"Longbow Attack\",\"rolls\":[{\"label\":\"To Hit\",\"notation\":\"1d20+7\",\"total\":23,\"breakdown\":\"16+7\"},{\"label\":\"Damage\",\"notation\":\"1d8+3\",\"total\":9,\"breakdown\":\"6+3\"}]}",
+    {
+      characterName: z.string().describe("Speaker shown on the chat message — usually the rolling character's name."),
+      title: z.string().optional().describe("Card header, e.g. 'Longbow Attack' or 'Wisdom Save — via D&D Beyond'. Defaults to 'Dice roll'."),
+      rolls: z.preprocess(coerceObjectArray, z.array(z.object({
+        label: z.string().describe("Row label, e.g. 'To Hit', 'Damage', 'Wisdom Save'."),
+        notation: z.string().optional().describe("Dice notation for DISPLAY only, e.g. '1d20+7'. Never evaluated or re-rolled."),
+        total: z.number().describe("The pre-computed result to display."),
+        breakdown: z.string().optional().describe("Real die faces behind the total, e.g. '16+7'. Shown in parentheses when it differs from the total."),
+      })).min(1)).describe("JSON array of roll rows, one per line on the card."),
+    },
+    async ({ characterName, title, rolls }) => {
+      const message = renderRollCard(title?.trim() || "Dice roll", rolls);
+      await roll20.relayCommand<{ ok: boolean }>({ action: "postChat", speakAs: characterName, message });
+      return text(`Posted ${rolls.length} roll row(s) to chat as ${characterName}.`);
     }
   );
 
