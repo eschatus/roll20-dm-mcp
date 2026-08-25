@@ -532,16 +532,22 @@ export function registerCombatTools(server: McpServer): void {
         const tn = name.toLowerCase();
         return tn.includes(w) || w.includes(tn);
       };
-      const selectors = [...(names ?? []), ...entryList.map((e) => e.match)]
+      // An entry match that IS a token id must only match by id — fed into the
+      // bidirectional name test it could sweep in an unrelated short-named token
+      // whose name happens to be a substring of the id.
+      const allTokenIds = new Set(tokens.map((t) => t.id));
+      const selectors = [...(names ?? []), ...entryList.map((e) => e.match).filter((m) => !allTokenIds.has(m))]
         .map((n) => n.toLowerCase().trim()).filter(Boolean);
-      const wanted = (names?.length || entryList.length) ? selectors : null;
+      // Selection is active whenever names/entries were given — even if every
+      // selector is an id-form match (selectors then empty, entryIds carries it).
+      const hasSelection = Boolean(names?.length || entryList.length);
       const entryIds = new Set(entryList.map((e) => e.match));
       const matchesWanted = (t: { id: string; name: string }) =>
-        entryIds.has(t.id) || wanted!.some((w) => nameMatches(w, t.name));
+        entryIds.has(t.id) || selectors.some((w) => nameMatches(w, t.name));
       const combatants = tokens.filter((t) => {
         if (!TOKEN_LAYERS.has(t.layer)) return false;
         if (npcOnly && isPcToken(t, sidekickNames)) return false;
-        if (wanted && wanted.length && !matchesWanted(t)) return false;
+        if (hasSelection && !matchesWanted(t)) return false;
         if (needle && !t.name.toLowerCase().includes(needle)) return false;
         if (nearIds && !nearIds.has(t.id)) return false;
         return true;
@@ -556,33 +562,58 @@ export function registerCombatTools(server: McpServer): void {
       // an exact token-id match beats a name match. One entry may match several
       // tokens (match:"Goblin" seeds the whole mob). Keyed by token id so the
       // relay's duplicate-epithet renames can't detach them.
+      const matchEntry = (t: { id: string; name: string }) =>
+        entryList.find((x) => x.match === t.id)
+          ?? entryList.find((x) => !allTokenIds.has(x.match) && nameMatches(x.match.toLowerCase().trim(), t.name));
       const entryFor = new Map<string, { match: string; bonus?: number; hp?: number }>();
-      const usedEntries = new Set<object>();
       for (const t of combatants) {
-        const e = entryList.find((x) => x.match === t.id)
-          ?? entryList.find((x) => nameMatches(x.match.toLowerCase().trim(), t.name));
-        if (e) { entryFor.set(t.id, e); usedEntries.add(e); }
+        const e = matchEntry(t);
+        if (e) entryFor.set(t.id, e);
+      }
+
+      // Entry reporting runs over ALL token-layer tokens, not just combatants: an
+      // entry whose token was excluded by npcOnly/nearPcsFeet is not "unmatched",
+      // and an hp entry pointing at a PC must surface as skipped even under the
+      // default npcOnly (the PC never reaches the roll at all).
+      const usedEntries = new Set<object>();
+      const hpSkippedPc: string[] = [];
+      if (entryList.length) {
+        for (const t of tokens) {
+          if (!TOKEN_LAYERS.has(t.layer)) continue;
+          const e = matchEntry(t);
+          if (!e) continue;
+          usedEntries.add(e);
+          if (e.hp !== undefined && isPcToken(t, sidekickNames)) hpSkippedPc.push(t.name);
+        }
       }
       const entriesUnmatched = entryList.filter((e) => !usedEntries.has(e)).map((e) => e.match);
 
       // Explicit HP from entries seeds bar1/bar1_max outright, before rolling (the
       // relay renames duplicates with epithets — id-keyed writes are immune, but
       // keep the ordering anyway). NPC/sidekick routing: a matched PC's bar is
-      // NEVER written — Beyond20 owns it.
+      // NEVER written — Beyond20 owns it (reported via hpSkippedPc above). Success
+      // is read from the per-op batch results — a failed write must not report as
+      // seeded, or the first AoE against that token silently no-ops.
       const hpSeeded: string[] = [];
-      const hpSkippedPc: string[] = [];
+      const hpSeedFailed: string[] = [];
       const explicitHpIds = new Set<string>();
       {
-        const ops: { id: string; action: string; args: Record<string, unknown> }[] = [];
-        for (const t of combatants) {
+        const cands = combatants.flatMap((t) => {
           const hp = entryFor.get(t.id)?.hp;
-          if (hp === undefined) continue;
-          if (isPcToken(t, sidekickNames)) { hpSkippedPc.push(t.name); continue; }
-          explicitHpIds.add(t.id);
-          hpSeeded.push(`${t.name} → ${hp}`);
-          ops.push({ id: `hpseed:${t.id}`, action: "setTokenBar", args: { tokenId: t.id, value: hp, max: hp } });
+          return hp !== undefined && !isPcToken(t, sidekickNames) ? [{ t, hp }] : [];
+        });
+        if (cands.length) {
+          const res = await roll20.relayCommand<BatchResult[]>({
+            action: "batchExec",
+            ops: cands.map(({ t, hp }) => ({ id: `hpseed:${t.id}`, action: "setTokenBar", args: { tokenId: t.id, value: hp, max: hp } })),
+          });
+          const byId = indexBatchResults(res, cands.map(({ t }) => `hpseed:${t.id}`));
+          for (const { t, hp } of cands) {
+            const r = byId.get(`hpseed:${t.id}`);
+            if (r?.ok) { explicitHpIds.add(t.id); hpSeeded.push(`${t.name} → ${hp}`); }
+            else hpSeedFailed.push(`${t.name}: ${r?.error ?? "no result"}`);
+          }
         }
-        if (ops.length) await roll20.relayCommand({ action: "batchExec", ops });
       }
 
       // Auto-init HP bars for NPC combatants placed without one (bar1_max unset →
@@ -654,6 +685,7 @@ export function registerCombatTools(server: McpServer): void {
         results: lines,
         turnOrder: finalOrder.map((e) => ({ id: e.id, pr: num(e.pr) ?? e.pr })),
         ...(hpSeeded.length ? { hpSeeded } : {}),
+        ...(hpSeedFailed.length ? { hpSeedFailed } : {}),
         ...(hpSkippedPc.length ? { hpSkippedPc: hpSkippedPc.map((n) => `${n} (PC — bar never written)`) } : {}),
         ...(entriesUnmatched.length ? { entriesUnmatched } : {}),
         ...(hpInit.set.length ? { hpInitialized: hpInit.set } : {}),
@@ -1520,6 +1552,7 @@ export function registerCombatTools(server: McpServer): void {
       }
       if (clear) {
         await roll20.relayCommand({ action: "setMobPlan", tokenId: resolvedTokenId, html: "" });
+        publishMobPlan(resolvedTokenId, null);   // HUD drops the card too
         return text(`Mob plan cleared for ${characterName ?? resolvedTokenId}.`);
       }
       if (!shortTerm) throw new Error("shortTerm is required unless clear:true");

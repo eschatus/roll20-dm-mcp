@@ -151,6 +151,38 @@ describe("roll_initiative entries (#172)", () => {
     expect(r.turnOrder.find((e) => e.id === droopId)).toBeDefined();
   });
 
+  it("reports a PC hp entry as skipped — not 'unmatched' — under the default npcOnly", async () => {
+    // With npcOnly:true the PC never enters the roll, but the DM asked to seed
+    // its HP: the answer must be "PC — bar never written", not a claim that the
+    // name didn't match anything.
+    const { json } = await h.callTool("roll_initiative", {
+      entries: [{ match: "Bugbear", bonus: 2 }, { match: "Glint", hp: 55 }],
+      initHp: false, publicRoll: false,
+    });
+    const r = json as InitResult;
+    expect(r.hpSkippedPc).toEqual(["Glint Klinkinski (PC — bar never written)"]);
+    expect(r.entriesUnmatched).toBeUndefined();
+    expect(bar(pcId)).toBe(30);   // still untouched
+  });
+
+  it("an exact-id entry never name-matches an unrelated short-named token", async () => {
+    // A token whose (weird) name is a substring of another token's id must not
+    // be swept into the roll by an id-form entry match.
+    const decoy = h.emu.createToken({
+      pageid: pageId, name: "00", controlledby: "", left: 420, top: 140,
+    }).id;
+    expect(bugbearId).toContain("00");   // the collision the guard exists for
+
+    const { json } = await h.callTool("roll_initiative", {
+      entries: [{ match: bugbearId, bonus: 1 }],
+      initHp: false, publicRoll: false,
+    });
+    const r = json as InitResult;
+    expect(r.turnOrder.find((e) => e.id === bugbearId)).toBeDefined();
+    expect(r.turnOrder.find((e) => e.id === decoy)).toBeUndefined();
+    expect(r.results.some((l) => l.startsWith("00:"))).toBe(false);
+  });
+
   it("reports entries that matched no token", async () => {
     const { json } = await h.callTool("roll_initiative", {
       entries: [{ match: "Bugbear" }, { match: "Nonexistent Wight", bonus: 3 }],

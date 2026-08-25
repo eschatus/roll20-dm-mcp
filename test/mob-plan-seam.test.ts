@@ -70,11 +70,14 @@ describe("set_mob_plan", () => {
     expect((json as PlanStore)[ghoulId]?.html).toBe("<div class='custom-card'>Bite</div>");
   });
 
-  it("clear:true removes the stored plan", async () => {
+  it("clear:true removes the stored plan and pushes the clear to the HUD", async () => {
+    events.length = 0;
     const { text } = await h.callTool("set_mob_plan", { characterName: "Ghoul", clear: true });
     expect(text).toMatch(/cleared/);
     const { json } = await h.callTool("get_mob_plans", {});
     expect((json as PlanStore)[ghoulId]).toBeUndefined();
+    // The HUD must drop the card, not keep showing a stale plan for a dead mob.
+    expect(events).toContainEqual({ type: "mob-plan", tokenId: ghoulId, plan: null });
   });
 
   it("requires shortTerm unless clearing", async () => {
