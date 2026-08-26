@@ -1,5 +1,4 @@
-import { pingMod, broadcastSandboxStatus } from "./roll20-rt.js";
-import { reconnectRoll20 } from "./roll20.js";
+import { pingMod, broadcastSandboxStatus, rtReconnect } from "./roll20-rt.js";
 
 const DEFAULT_INTERVAL_MS = 5 * 60_000;
 const WAKE_SETTLE_MS = 20_000;
@@ -48,7 +47,8 @@ async function runCycle(intervalMs: number): Promise<void> {
       console.error("[watchdog] sandbox ping missed — attempting wake via browser");
       broadcastSandboxStatus(false);
       try {
-        await reconnectRoll20({ hard: false });
+        // RT socket re-establish — there is no browser to rebind any more (#179).
+        await rtReconnect();
       } catch (e) {
         console.error("[watchdog] reconnect error:", (e as Error).message);
       }

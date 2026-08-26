@@ -143,6 +143,11 @@ This file records every non-obvious architectural choice made in this project. E
 
 ## 14. Mod deploy must run through the warm server page (the duplicate-relay incident)
 
+> **Superseded 2026-08-26 (#175/#177):** `release:mod`, `deployModScript` and the whole browser
+> deploy path were removed from this repo — deploying is a human-attended act, not something a
+> server or a dev session does. The incident below is kept because its LESSON outlived the code:
+> never create a second relay tab, and verify the LOAD (boot banner / ping), not the write.
+
 **What happened:** a one-command `release:mod` (deploy + soak from a fresh `tsx` process) **created a second relay script** in the Roll20 API console, which jammed the sandbox (two `chat:message` handlers) and took the live relay down.
 
 **Root cause:** `deployModScript` matches the existing `ai-relay.js` tab by reading `#scriptorder`. The MCP server reuses a *warm* `_modPage` where those tabs are already rendered; a fresh process navigated with `waitUntil: "domcontentloaded"` and queried the tabs **before Roll20's JS rendered them** → "no existing tab" → the create-new-script branch → duplicate.

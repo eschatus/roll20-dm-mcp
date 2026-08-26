@@ -13,7 +13,6 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { buildCombatServer } from "./server-combat.js";
 import { onRtdbEvent, startRtdbSubscriptions, rtEnabled } from "./bridge/roll20-rt.js";
 import { startWatchdog } from "./bridge/sandbox-watchdog.js";
-import { initPlayerCommands } from "./bridge/player-commands.js";
 
 // Long-running HTTP MCP server. One process owns the shared Playwright browser
 // (via src/bridge/browser.ts singletons) and serves multiple clients — the Voice
@@ -235,9 +234,10 @@ httpServer.listen(PORT, HOST, () => {
   // stderr so it never pollutes any stdio JSON-RPC consumer.
   console.error(`[roll20-dm http] MCP server listening on http://${HOST}:${PORT}/mcp`);
   if (rtEnabled()) startWatchdog();
-  // Player chat commands (!tactics, !recall, …) ride the RTDB chat subscription,
-  // so start it at boot rather than waiting for the first HUD /events client.
-  initPlayerCommands();
+  // Player chat commands (!tactics, !recall, …) are ANSWERED BY THE GEM now (#171): this
+  // server forwards every live table message as a `chat-message` SSE event and the gem's
+  // player-command handling subscribes to it. The RTDB chat subscription is what produces
+  // those events, so it still starts at boot rather than waiting for the first /events client.
   startRtdbSubscriptions().catch((e) =>
     console.error("[roll20-dm http] rtdb subscriptions failed at boot (will retry on HUD connect):", (e as Error).message),
   );

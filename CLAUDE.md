@@ -6,10 +6,11 @@ below: **Maps development** and **Combat development**.
 
 ## What this is
 
-AI-assisted D&D 5e session management for **Roll20 + D&D Beyond**. Three components:
+AI-assisted D&D 5e session management for **Roll20**. Three components:
 
 - **`roll20-dm`** — live-combat MCP server over **HTTP** (`src/index-http.ts` → `src/server-combat.ts`).
-  HP, conditions, initiative, dice, narration, turn hooks, AoE, tactics, DDB reads. Also keeps the two
+  HP, conditions, initiative, dice, narration, turn hooks, AoE, mob-plan storage. Roll20 ONLY — no
+  D&D Beyond, no LLM (#171). Also keeps the two
   **dual-use** map tools it needs live: **zones** (fixed-area spells) and **screenshot** (board vision).
 - **`roll20-dm-maps`** — map-prep MCP server over **stdio** (`src/index-maps.ts`). Owns the full
   **map/wall/zone domain**: battlemap upload, Claude-Vision wall detection, DL walls/doors, token
@@ -25,19 +26,27 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
 
 ## Build / run / test / deploy
 
-- **Node 20+** (TypeScript 6 build needs it). `npm install` then `npx playwright install chromium`.
+- **Node 20+** (TypeScript 6 build needs it). `npm install` — **no browser step**: this repo has no
+  Playwright dependency at all (#179).
 - `npm run serve` — runs the HTTP server via `tsx` (no build step needed for dev). First run
   generates `ROLL20_MCP_TOKEN`, writes it to `.env`, and injects it into `.mcp.json`.
 - `npm run build` — `tsc` → `dist/`. **Required** for the stdio servers referenced in `.mcp.json`
   (`dist/index-maps.js`) and `npm start`. Not required for `npm run serve`.
 - `npm test` — vitest (`src/**/*.test.ts` + `test/*.test.ts`). `npm run test:watch` to iterate.
-- **Mod redeploy (manual, easy to forget):** the relay (`mod-scripts/ai-relay.js`) runs inside the
-  Roll20 API sandbox; a change to it only takes effect once deployed. **One command does it:
-  `npm run release:mod`** (`src/recon/release-mod.ts`) — deploys to the *active* campaign via browser
-  automation (background page; doesn't disturb a live session), then runs the soak and exits non-zero
-  if either fails. (Equivalent to `deploy_mod_script` + `tsx src/recon/soak-test.ts` by hand, or the
-  old fully-manual paste-into-the-API-console.) CI runs `node --check mod-scripts/ai-relay.js` as a
-  syntax gate but cannot deploy.
+  Single file: `npx vitest run test/zone-semantics.test.ts`; single case: add `-t "name substring"`.
+- `npm run lint` — eslint over `src/` + `test/`.
+- **Mod redeploy is EXTERNAL to this repo (#175).** The relay (`mod-scripts/ai-relay.js`) runs in
+  the Roll20 API sandbox and only takes effect once deployed — but deploying means driving a
+  browser against a live account, so it is a human-attended act, not something an MCP server or a
+  dev session does. Paste `mod-scripts/ai-relay.js` into the campaign's API console yourself (or
+  use the gem's attended flow). Verify the LOAD, never the write: the sandbox banner
+  `[GM_AI_Bridge] Relay script loaded (vX.Y.Z)` or a `ping` returning the version. Deploys are
+  **per-campaign** — each campaign carries its own copy, so one can run a newer relay than another.
+  CI runs `node --check mod-scripts/ai-relay.js` as a syntax gate.
+- **Relay version handshake:** `AI_RELAY_VERSION` (`mod-scripts/ai-relay.js`) and
+  `EXPECTED_RELAY_VERSION` (`src/bridge/relay-version.ts`) are a hand-synced pair, locked by
+  `test/relay-version.test.ts` — bump BOTH when changing `ai-relay.js` in a way worth flagging to a
+  DM on a stale deploy. A mismatch warns once (never throws) and surfaces via `transport_status`.
 - `src/recon/*` are manual live scripts (real campaign), run with `tsx` — the smoke/soak layer.
   They are excluded from the prod build.
 
@@ -45,24 +54,33 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
 
 `Claude → MCP tool (TS) → roll20.relayCommand({action,…}) → ai-relay.js (Mod sandbox) → Roll20 objects`
 
-- **RT is the DEFAULT and combat is browserless** (`ROLL20_TRANSPORT` defaults to `rt`; set
-  `=browser` to opt OUT to the legacy relay, dev only). `relayCommand` pushes `!ai-relay {JSON}`
+- **RT is the DEFAULT and combat is browserless** (RT is the ONLY transport — the legacy browser relay is gone (#122/#179)). `relayCommand` pushes `!ai-relay {JSON}`
   over the campaign's Firebase RTDB and reads `AIBRIDGE_RESULT` back over an RTDB child listener
   (~50ms). It carries **reads AND writes** — the Mod executes every action regardless of transport.
   Some reads are served even more directly (`rtGet`/`tryDirectRead` off RTDB; `CLIENT_READS` in
   `roll20.ts` off live Backbone, but only on the explicit `=browser` path).
-- **No silent browser fallback on the combat relay.** A packaged install ships no Playwright, so an
-  RT failure SURFACES (clear error → re-harvest the token in the gem) rather than quietly reaching
-  for a Chromium that isn't there. The browser→chat relay (types into chat, reads `/w gm` via
-  MutationObserver) runs ONLY under `ROLL20_TRANSPORT=browser`. Token harvest itself is first-party
-  session capture in the gem's own Electron browser (intercept Roll20's `signInWithCustomToken` /
-  read DDB's `CobaltSession` cookie) — NOT OAuth, no registered client. (See issue #83.)
-- **D&D Beyond is READ-ONLY and browserless** (`DDB_TRANSPORT` defaults to `rt`): `CobaltSession`
-  cookie → short-lived JWT → `character-service`/`monster-service`. No DDB writes exist; all the
-  write tools were removed.
+- **THERE IS NO BROWSER IN THIS REPO (#179).** Not in either server, not in recon, not in
+  `package.json`. If a thing needs a browser, it is not an MCP tool here — that rule is why page
+  creation was rebuilt over RTDB (#178) and why `screenshot_roll20` left. The browser recon
+  instruments live in the sibling `roll20-recon` repo; the wall-dataset harvesters live in
+  `wall-seg`. Credentials are FURNISHED, never minted: the RT token is read from
+  `<data dir>/roll20-rt-token.json` (campaign-scoped) and art uploads from
+  `roll20-upload-cache.json`; both throw a typed error (`Roll20TokenUnavailableError`,
+  `Roll20UploadCredentialError`) naming what to refresh instead of harvesting. Art upload is a
+  plain multipart POST — browserless, credential furnished. Harvesting happens in the gem's own
+  logged-in session, where a human is present. The legacy browser→chat relay is DELETED (#122/#179) —
+  RT is the only transport, and an RT failure is a loud hard stop, never a quiet fallback. Harvest
+  is first-party session capture in the gem's own Electron browser (intercepting Roll20's
+  `signInWithCustomToken`) — NOT OAuth, no registered client. (See #83, #177.)
+- **There is no D&D Beyond here any more (#171 Phase 2).** The whole bridge — cobalt→JWT auth,
+  character/monster reads, the game-log roll pump — extracted to **beyond-mcp**
+  (github.com/eschatus/beyond-mcp), which the gem bundles and treats as its default lookup backend.
+  Anything wanting DDB stats resolves them THERE and passes them in (see `roll_initiative`'s
+  `entries[]`, and the token tools' caller-supplied stats). This server holds no DDB credential.
 
 Deep dives: `docs/decisions.md`, `docs/roll20-api-coverage.md`, `docs/roll20-realtime-protocol.md`,
-`docs/ddb-browserless-protocol.md`, `docs/choreography.md`, `docs/security.md`, `docs/build-and-test-plan.md`.
+`docs/choreography.md`, `docs/security.md`, `docs/build-and-test-plan.md`. (The DDB protocol docs
+moved to beyond-mcp with the code.)
 
 ## Project-wide gotchas (these have bitten us — heed them)
 
@@ -74,9 +92,19 @@ Deep dives: `docs/decisions.md`, `docs/roll20-api-coverage.md`, `docs/roll20-rea
   (`test/relay-actions-smoke.test.ts` → "setSafe write guard") proves bad values are dropped, not
   written. (`docs` + memory: relay-undefined-firebase-crash.)
 - **Roll20 object quirks:** read type as `_type` (not `type`); turn-order entries need `_pageid`;
-  `createObj("page")` is **unsupported** in the sandbox — pages are made by `createPageViaUI`
-  (Playwright). Walls use `pathv2` (re-anchors to the first point regardless of passed x/y — pass
-  first-point-as-center).
+  `createObj("page")` is **unsupported in the Mod sandbox** — but that is a MOD limitation, not an
+  RTDB one: `rtCreatePage` (`roll20-rt.ts`) creates pages by writing the `pages` node directly,
+  proved live in #178. **Its units bite:** page `width`/`height` are **70px units, not cells**
+  (rendered cell size is `70 * snapping_increment`), and `zorder`/`thumbnail`/`placement` are
+  per-page content that must be RESET, never copied from the template page. The RTDB page carries
+  only 16 fields — `scale_number`/`scale_units`/`showgrid` live on the MOD's page object, so
+  creation is RTDB then `setPageProps`. Walls use `pathv2` (re-anchors to the first point
+  regardless of passed x/y — pass first-point-as-center).
+- **Roll20 `path` objects silently drop unsupported properties.** They have no `name`, `gmnotes`,
+  or working `fill_opacity` — `createObj`/`set` just discards the write, no error (bit us twice:
+  #162, #164). Zone metadata therefore lives in **`state.GM_AI_Bridge.zones`**, not on the path
+  object; zone tint is baked into the fill color instead of an opacity prop. Anything keyed off
+  path-object metadata is dead by construction — go through the zones state.
 - **The Mod sandbox cannot import TS.** Tables that must agree are kept in **hand-synced copies** —
   most importantly the condition→marker map lives in three places (`src/tools/combat.ts` array,
   `src/bridge/markers.ts` Record, `mod-scripts/ai-relay.js`) and they are **not identical**
@@ -117,7 +145,7 @@ src/index-http.ts        roll20-dm HTTP server bootstrap (auth, /mcp, /events SS
 src/server-combat.ts     registers the roll20-dm toolset
 src/index-maps.ts        roll20-dm-maps stdio server (registers the map toolset)
 src/tools/               MCP tools (one register*Tools fn per file)
-src/bridge/              roll20.ts (relay+fallback), roll20-rt.ts (RT), dndbeyond.ts, ddb-rt.ts,
+src/bridge/              roll20.ts (relay+fallback), roll20-rt.ts (RT),
                          markers.ts, relayState.ts, browser.ts, transport-health.ts
 src/registry/            campaigns + character registries (JSON-backed)
 mod-scripts/ai-relay.js  the Roll20 Mod sandbox relay (deploy manually)
@@ -125,7 +153,13 @@ skills/                  dm-rules.md (canonical play rules), dm-map-setup.md
 .claude/commands/        /combat, /round (session choreography)
 docs/                    architecture, decisions, protocols, coverage, security
 test/                    integration tests + the Roll20 emulator (roll20-emulator.ts, harness.ts)
+scripts/                 one-off live diagnostics (run with tsx, e.g. dump-character-attrs.ts)
+wiki/                    GitHub wiki content (user-facing setup/player docs)
 ```
+
+**Mothballed/leftover directories — don't develop here:** `training/` moved to dm-whisper
+(`training/MOVED.md` is the tombstone); a local untracked `voice-hud/` may linger from before the
+2026-08-11 gem split — the real code is in the dm-whisper repo.
 
 Adding a tool: write `register*Tools(server)` with a Zod schema in the right `src/tools/*.ts`, wire
 any new relay action into `mod-scripts/ai-relay.js`'s `ACTIONS` map (then redeploy the Mod), and register
@@ -159,14 +193,21 @@ the registration; the rest of vision/wall tooling is maps-only.)
   violates it.
 - `pathv2` re-anchors to the first point regardless of passed x/y — build paths first-point-as-center.
 - **Upload dedup:** `upload_and_place` reuses a stale art-library asset by filename — use a unique
-  filename. `create_monster_token` 404s without a DDB compendium entry → fall back to
-  `create_npc_token`.
+  filename.
+- **Token creation takes CALLER-SUPPLIED STATS** (#171): `create_pc_token` / `create_npc_token` /
+  `create_monster_token` perform no lookup — resolve HP/AC yourself (ddb-mcp, a module stat block,
+  the DM) and pass them. `create_monster_token` is now identical to `create_npc_token` and kept only
+  for existing callers; the old "404s without a DDB compendium entry, fall back to `create_npc_token`"
+  gotcha is gone with the lookup. **Pass `controlledBy` on `create_pc_token`** — `createToken` has no
+  such field, so it's a follow-up write, and without it the token fails `isPcToken` and its HP routes
+  to `bar1` like an NPC's. AC is reported back but never stored: `createToken` doesn't set
+  `represents`, so a bare token has no sheet to hold it.
 - `batch_import_maps` is the folder→Roll20 pipeline (uses `listPages` + the steps above).
 
 ## Combat development
 
 **Server:** `roll20-dm` (HTTP, `src/server-combat.ts`). **Code:** `src/tools/combat.ts`,
-`src/tools/tactics.ts`, `src/tools/aoe.ts`, `src/tools/combatHelpers.ts`, `src/bridge/relayState.ts`.
+`src/tools/aoe.ts`, `src/tools/combatHelpers.ts`, `src/bridge/relayState.ts`.
 **Canonical play rules:** `skills/dm-rules.md`. **Choreography:** `.claude/commands/{combat,round}.md`.
 
 **HP model (important):** routing is THREE-way (`classifyToken`/`isPcToken`/`splitPcNpc` in
@@ -181,7 +222,7 @@ registry override (`sidekick: true`, `src/registry/characters.ts`) is needed to 
   NPC** (`kill_token`: immediate dead marker + map layer, no PC dying/death-saves state). Set/clear
   the override with `set_token_class` (voice: "Tua is a sidekick").
 - `update_token_hp` (single), `update_hp_many` (batch), `resolve_aoe` (AoE), and `roll_initiative`
-  (npcOnly / DDB HP auto-init) all read the same `sidekickNames` set
+  (npcOnly / `entries[].hp` seeding) all read the same `sidekickNames` set
   (`registry.listSidekickNames()`) so a sidekick routes as an NPC everywhere HP/death routing is
   decided. See issue #132.
 
@@ -198,14 +239,23 @@ hand-synced table copies.)
   `roll_initiative npcOnly=true`; adjust one entry with `update_turn_order`; insert round markers with
   `inject_round_marker` (needs `formula:"+1"`). The only wholesale wipe is `clear_turn_order`
   (between encounters); `setTurnOrder` is also reachable via `batch_exec` — don't pass it wholesale.
+  (Both `setTurnOrder` paths are now ONE implementation in `runBatchOp`. They used to be two copies
+  that had drifted on the argument name — `entries` vs `turnorder` — so a `batch_exec` setTurnOrder
+  wrote `[]` and erased every player's initiative while reporting `ok:true`. Never re-fork them;
+  `test/relay-actions.test.ts` pins both paths.)
 - **PC initiative is read-only** — players roll their own.
-- `roll_initiative` always arms the turn hook itself. `clearFirst=true` is the only thing that
-  auto-fires tactics (`fireTacticsForPage`); with `clearFirst=false` call `plan_all_tactics`
-  explicitly.
+- `roll_initiative` always arms the turn hook itself. It no longer fires tactics — the gem plans
+  and stores plans through `set_mob_plan` (#171).
 - **Never auto-advance the turn** — `advance_turn` only on the DM's explicit say-so.
 
-**Tactics:** `plan_tactics`/`plan_all_tactics` scale by creature Int/Wis to a tier (`TIER_CONFIGS`
-in `tactics.ts`); tiers 4–5 are multi-model cascades (Haiku→Sonnet→Opus). Dice always roll through
+**Tactics live in the gem now (#171 Phase 2).** This server keeps only the *storage* primitives:
+`set_mob_plan` writes a mob's plan (the turn hook whispers it to the DM on that token's turn),
+`get_mob_plans` reads them back, and `clear_mob_plans` wipes them all at encounter end — plans
+persist in relay state until overwritten or cleared, so a stale one resurfaces as a whisper the next
+time that token's turn comes up. There is no model call and no `ANTHROPIC_API_KEY` on the combat
+server — `@anthropic-ai/sdk` remains in `package.json` solely for the maps suite's
+`analyze_battlemap`. Player `!`-commands are likewise ANSWERED by the gem; this server only
+forwards them, as `chat-message` events on the `/events` SSE stream. Dice always roll through
 Roll20's public roller (`roll_dice`), never a TS RNG.
 
 **Narration convention (the assistant reports; the DM narrates):** emit a markdown report every turn;
@@ -213,10 +263,6 @@ never put numbers (HP/damage/totals) in player-visible `send_narration`; narrate
 effect countdowns; dead tokens → mark dead + move to the map layer; emanations (Spirit Guardians) use
 a token **aura**, fixed areas use `create_zone`. Full rules: `skills/dm-rules.md`.
 
-**DDB monster mapper (done, 2026-06-20):** `dndbeyond.getMonster()` routes to `rtGetMonster` and
-normalizes the raw monster-service v1 shape (id-arrays like `challengeRatingId`/`movements`/
-`damageAdjustments`, plus HTML `*Description` blobs) into `DdbMonster` via `mapRawMonster`. Lookup
-tables are baked in `src/bridge/ddb-monster-tables.ts` (captured from DDB's `config/json`); the one
-drifting table, `damageAdjustments`, is overlaid from a lazy 7-day disk cache (`rtGetDamageAdjustments`,
-gated so it never harvests a browser). `ddb_get_monster` now returns a real `challengeRating`. See
-`docs/ddb-browserless-protocol.md`.
+**DDB monster lookup lives in beyond-mcp now** — its `ddb_get_monster` / `ddb_get_party_snapshot`
+(the latter carries site-computed AC + max HP for a whole party in one call). Nothing in this repo
+talks to D&D Beyond.

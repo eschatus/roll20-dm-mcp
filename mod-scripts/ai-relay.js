@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.3.0";
+var AI_RELAY_VERSION = "2.4.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -806,8 +806,11 @@ function runBatchOp(action, args) {
       return p === "rich" ? tokenRich(t) : tokenSummary(t, p);
     }
     case "setTurnOrder": {
-      Campaign().set("turnorder", JSON.stringify(args.turnorder || []));
-      return { ok: true };
+      // `entries` is what every caller sends (src/tools/combat.ts); `turnorder` is kept only
+      // as a legacy alias. Reading the wrong one here silently wiped the whole turn order.
+      var toEntries = args.entries || args.turnorder || [];
+      Campaign().set("turnorder", JSON.stringify(toEntries));
+      return { ok: true, count: toEntries.length };
     }
     case "createHandout": {
       let h = createObj("handout", {
@@ -1555,11 +1558,11 @@ ACTIONS["getTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
       }
       };
 ACTIONS["setTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
-        {
-        Campaign().set("turnorder", JSON.stringify(args.entries || []));
-        writeResult(nonce, { ok: true, count: (args.entries || []).length });
-        return;
-      }
+        // Single implementation lives in runBatchOp. These were two copies that had DRIFTED
+        // on the argument NAME — this one read args.entries, runBatchOp's read args.turnorder,
+        // and every TS caller sends `entries`. So batch_exec + setTurnOrder wrote [] and erased
+        // every player's initiative while reporting ok:true. Delegate; never re-fork this.
+        writeResult(nonce, runBatchOp("setTurnOrder", args));
       };
 ACTIONS["mergeTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
         {

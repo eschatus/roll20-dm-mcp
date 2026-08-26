@@ -68,6 +68,49 @@ describe("atomic mergeTurnOrder", () => {
   });
 });
 
+describe("setTurnOrder — direct and batched paths agree", () => {
+  // These were two copies of the same handler that had drifted on the ARGUMENT NAME:
+  // ACTIONS read args.entries, runBatchOp read args.turnorder, and every TS caller sends
+  // `entries`. A batch_exec setTurnOrder therefore wrote [] — erasing every player's
+  // initiative — and reported ok:true. ACTIONS now delegates to the single implementation.
+  const order = [
+    { id: "pc-1", pr: "17", custom: "" },
+    { id: "gob-1", pr: "9", custom: "" },
+  ];
+  const readOrder = () => JSON.parse(String(emu.campaignModel.get("turnorder") || "[]")) as Array<{ id: string }>;
+
+  it("writes the entries it was given via the direct action", () => {
+    emu.campaignModel.set("turnorder", "[]");
+    const res = emu.relay<{ ok: boolean; count: number }>({ action: "setTurnOrder", entries: order });
+    expect(res).toMatchObject({ ok: true, count: 2 });
+    expect(readOrder().map((e) => e.id)).toEqual(["pc-1", "gob-1"]);
+  });
+
+  it("writes the SAME entries through batch_exec — never silently empties the order", () => {
+    emu.campaignModel.set("turnorder", "[]");
+    const res = emu.relay<Array<{ ok: boolean; data?: { count?: number } }>>({
+      action: "batchExec",
+      ops: [{ id: "a", action: "setTurnOrder", args: { entries: order } }],
+    });
+    expect(res[0].ok).toBe(true);
+    // The regression: this used to be [] with ok:true.
+    expect(readOrder().map((e) => e.id)).toEqual(["pc-1", "gob-1"]);
+    expect(res[0].data?.count).toBe(2);
+  });
+
+  it("still honors the legacy `turnorder` alias in a batch op", () => {
+    emu.campaignModel.set("turnorder", "[]");
+    emu.relay({ action: "batchExec", ops: [{ id: "a", action: "setTurnOrder", args: { turnorder: order } }] });
+    expect(readOrder().map((e) => e.id)).toEqual(["pc-1", "gob-1"]);
+  });
+
+  it("an explicit empty write still clears (clear_turn_order's contract)", () => {
+    emu.campaignModel.set("turnorder", JSON.stringify(order));
+    emu.relay({ action: "setTurnOrder", entries: [] });
+    expect(readOrder()).toEqual([]);
+  });
+});
+
 describe("same-nonce replay idempotency", () => {
   it("a resent nonce echoes the prior result and does NOT re-run advanceTurn", () => {
     emu.campaignModel.set(

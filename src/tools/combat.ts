@@ -1,9 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as registry from "../registry/characters.js";
-import * as ddb from "../bridge/dndbeyond.js";
 import * as roll20 from "../bridge/roll20.js";
-import { fireTacticsForPage } from "./tactics.js";
 import {
   SAVE_ABILITIES, type SaveAbility, type AoeToken,
   saveAttrNames, resolveSaveBonus, damageOnSave,
@@ -54,27 +52,6 @@ const RESERVED_MARKER_CONDITIONS: Record<string, string> = (() => {
   }
   return out;
 })();
-
-// Average HP from the DDB compendium, keyed by lowercased monster name so a mob
-// of identical tokens is a single lookup. Misses (unknown monster, network) cache
-// as null so we don't retry them all session. Falls back to stripping a duplicate
-// epithet (" the Savage") when the direct name search misses.
-const monsterHpCache = new Map<string, number | null>();
-async function resolveMonsterAvgHp(name: string): Promise<number | null> {
-  const key = name.toLowerCase().trim();
-  if (monsterHpCache.has(key)) return monsterHpCache.get(key)!;
-  let hp: number | null = null;
-  for (const candidate of [name, name.replace(/\s+the\s+\S+$/i, "")]) {
-    try {
-      const m = await ddb.getMonster(candidate);
-      const avg = Number(m.averageHitPoints);
-      if (isFinite(avg) && avg > 0) { hp = avg; break; }
-    } catch { /* try next candidate */ }
-    if (candidate === name && !/\s+the\s+\S+$/i.test(name)) break; // no epithet to strip
-  }
-  monsterHpCache.set(key, hp);
-  return hp;
-}
 
 export function registerCombatTools(server: McpServer): void {
   server.tool(
@@ -488,9 +465,8 @@ export function registerCombatTools(server: McpServer): void {
       nameFilter: z.string().optional().describe("Case-insensitive substring filter on token names. E.g. 'goblin' matches 'Goblin 1', 'Goblin Archer', etc. Prefer `names` for an explicit multi-creature list."),
       publicRoll: z.preprocess(coerceBoolean, z.boolean().default(true)).describe("If true (default), posts a public gothic initiative card to chat showing all rolled tokens sorted by result. Pass false to roll silently. Accepts \"true\"/\"false\" strings for model compatibility."),
       nearPcsFeet: z.number().optional().describe("Only include NPCs within this many feet of any PC token — use at combat start so distant mobs elsewhere on the map don't join the fight. 60-90 is a good default when the DM just says 'roll inits'."),
-      initHp: z.preprocess(coerceBoolean, z.boolean().default(true)).describe("DEPRECATED — resolve HP yourself and pass it via entries[].hp instead; the DDB compendium lookup silently misses reskins/homebrew and will be removed with the #171 extraction. While it lasts: auto-initialize bar1/bar1_max from DDB average HP for any NPC combatant with no HP bar set. PCs are never touched. Set false to skip the DDB lookups. Accepts \"true\"/\"false\" strings for model compatibility."),
     },
-    async ({ pageId, npcOnly, clearFirst, flatInit, entries, names, nameFilter, publicRoll, nearPcsFeet, initHp }) => {
+    async ({ pageId, npcOnly, clearFirst, flatInit, entries, names, nameFilter, publicRoll, nearPcsFeet }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
       // Sidekicks (issue #132) are player-controlled but route as NPCs for
       // initiative purposes too — npcOnly should still pick them up, and
@@ -616,31 +592,6 @@ export function registerCombatTools(server: McpServer): void {
         }
       }
 
-      // Auto-init HP bars for NPC combatants placed without one (bar1_max unset →
-      // hp:null → damage/AoE silently no-ops). Look up average HP from DDB by the
-      // token's (pre-epithet) name, one lookup per unique name, then write bar1 in
-      // a single batch. PCs are never touched (Beyond20 owns their bars). Must run
-      // BEFORE rollInitiativeForTokens, which renames duplicates with epithets.
-      // DEPRECATED path (#172): callers should pass entries[].hp; this DDB fallback
-      // is removed with the #171 extraction. Tokens just seeded explicitly are out.
-      const hpInit = { set: [] as string[], missed: [] as string[] };
-      if (initHp) {
-        const needHp = combatants.filter((t) => !isPcToken(t, sidekickNames) && !hasHpBar(t) && !explicitHpIds.has(t.id));
-        if (needHp.length) {
-          const avgByName = new Map<string, number | null>();
-          for (const nm of new Set(needHp.map((t) => t.name))) avgByName.set(nm, await resolveMonsterAvgHp(nm));
-          const ops = needHp
-            .filter((t) => (avgByName.get(t.name) ?? 0) > 0)
-            .map((t) => ({ id: `hpinit:${t.id}`, action: "setTokenBar", args: { tokenId: t.id, value: avgByName.get(t.name)!, max: avgByName.get(t.name)! } }));
-          if (ops.length) await roll20.relayCommand({ action: "batchExec", ops });
-          for (const t of needHp) {
-            const hp = avgByName.get(t.name);
-            if (hp && hp > 0) hpInit.set.push(`${t.name} → ${hp}`);
-            else hpInit.missed.push(t.name);
-          }
-        }
-      }
-
       // Roll20 turn order entry format: {id, pr (string), custom, _pageid}
       // _pageid is required — without it Roll20's tracker shows "no tokens on this stage"
 
@@ -677,8 +628,9 @@ export function registerCombatTools(server: McpServer): void {
       const finalOrder = merged.turnorder ?? newEntries;
       await roll20.relayCommand({ action: "setTurnHook", enabled: true, reset: true });
 
-      // Auto-fire tactics at combat start — whisper cards arrive as each mob's plan completes.
-      if (clearFirst) void fireTacticsForPage(activePage);
+      // Tactics are planned by the gem now (#171); it watches the turn order over the
+      // /events stream and stores each mob's plan with set_mob_plan. This server no
+      // longer auto-fires anything at combat start.
 
       return json({
         rolledFor: newEntries.length,
@@ -688,22 +640,7 @@ export function registerCombatTools(server: McpServer): void {
         ...(hpSeedFailed.length ? { hpSeedFailed } : {}),
         ...(hpSkippedPc.length ? { hpSkippedPc: hpSkippedPc.map((n) => `${n} (PC — bar never written)`) } : {}),
         ...(entriesUnmatched.length ? { entriesUnmatched } : {}),
-        ...(hpInit.set.length ? { hpInitialized: hpInit.set } : {}),
-        ...(hpInit.missed.length ? { hpLookupFailed: hpInit.missed } : {}),
       }, false);
-    }
-  );
-
-  server.tool(
-    "debug_turn_order",
-    "Read the raw Campaign.turnorder string directly from the Roll20 browser page (bypasses relay). Use this to see the exact format Roll20 uses internally.",
-    {},
-    async () => {
-      const raw = await roll20.evaluate(() => {
-        const camp = (window as any).Campaign;
-        return camp ? camp.get("turnorder") : "Campaign not found";
-      });
-      return text(String(raw));
     }
   );
 
@@ -815,93 +752,6 @@ export function registerCombatTools(server: McpServer): void {
         names,
       });
       return json({ charSheetId: resolvedCharId, attributes: attrs });
-    }
-  );
-
-  server.tool(
-    "full_sync_character",
-    "Sync a PC from D&D Beyond to their Roll20 2014 OGL character sheet: ability scores, HP, AC, initiative, passive perception, speed, and proficiency bonus. Pass charSheetId to override the token's linked sheet.",
-    {
-      characterName: z.string(),
-      charSheetId: z.string().optional().describe("Override the Roll20 character sheet ID (use when the token's 'represents' field hasn't been updated yet)"),
-    },
-    async ({ characterName, charSheetId }) => {
-      const entry = registry.lookup(characterName);
-      if (!entry?.roll20TokenId || entry.ddbCharId === undefined) {
-        throw new Error(`Character not registered: ${characterName}`);
-      }
-
-      const [stats, tokenData] = await Promise.all([
-        ddb.getCharacterStats(entry.ddbCharId),
-        roll20.relayCommand<{ id: string; represents: string } | null>({
-          action: "getTokenById",
-          tokenId: entry.roll20TokenId,
-        }),
-      ]);
-
-      const resolvedCharId = charSheetId ?? tokenData?.represents;
-      if (!resolvedCharId) {
-        throw new Error(`Token ${entry.roll20TokenId} has no linked character sheet. Pass charSheetId explicitly or link the token to a sheet in Roll20.`);
-      }
-
-      // 2014 OGL sheet: split into two sequential batches to avoid Roll20 sandbox timeout.
-      // Batch 1 — ability scores (triggers heavy sheet worker cascade for mods/saves/skills).
-      const abilityScores: Record<string, number> = {};
-      for (const [ability, score] of Object.entries(stats.abilityScores)) {
-        abilityScores[ability] = score;
-      }
-
-      // Batch 2 — stats the sheet does NOT auto-compute.
-      const derivedStats: Record<string, string | number | { current: number; max: number }> = {
-        ac: stats.armorClass,
-        hp: { current: stats.hp.current, max: stats.hp.max },
-        hp_temp: stats.hp.temp,
-        passive_wisdom: stats.passivePerception,
-        initiative_bonus: stats.initiativeBonus,
-        speed: stats.walkSpeed,
-        pb: stats.proficiencyBonus,
-        level: stats.level,
-      };
-
-      const [scoresResult, derivedResult] = await Promise.all([
-        roll20.relayCommand<{ updated: string[]; created: string[]; failed: string[] }>({
-          action: "setCharacterAttributes",
-          charId: resolvedCharId,
-          attributes: abilityScores,
-        }),
-        roll20.relayCommand<{ updated: string[]; created: string[]; failed: string[] }>({
-          action: "setCharacterAttributes",
-          charId: resolvedCharId,
-          attributes: derivedStats,
-        }),
-      ]);
-
-      const result = {
-        updated: [...scoresResult.updated, ...derivedResult.updated],
-        created: [...scoresResult.created, ...derivedResult.created],
-        failed: [...scoresResult.failed, ...derivedResult.failed],
-      };
-
-      await roll20.relayCommand({
-        action: "setTokenBar",
-        tokenId: entry.roll20TokenId,
-        value: stats.hp.current,
-        max: stats.hp.max,
-      });
-
-      return json({
-        character: stats.name,
-        charSheetId: resolvedCharId,
-        level: stats.level,
-        classes: stats.classes,
-        hp: `${stats.hp.current}/${stats.hp.max}`,
-        ac: stats.armorClass,
-        initiativeBonus: stats.initiativeBonus,
-        passivePerception: stats.passivePerception,
-        updated: result.updated.length,
-        created: result.created.length,
-        failed: result.failed,
-      });
     }
   );
 
@@ -1524,7 +1374,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "get_mob_plans",
-    "Read the stored tactical plans for all mob tokens. Plans are set by plan_all_tactics and persist until overwritten by a fresh run. Returns a map of tokenId → { html, plan: { name, shortTerm, mediumTerm?, longGoal? } }.",
+    "Read the stored tactical plans for all mob tokens. Plans are written with set_mob_plan and persist until overwritten or cleared. Returns a map of tokenId → { html, plan: { name, shortTerm, mediumTerm?, longGoal? } }.",
     {},
     async () => {
       const result = await roll20.relayCommand<Record<string, unknown>>({ action: "getMobPlans" });
@@ -1534,7 +1384,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "set_mob_plan",
-    "Store (or clear) the tactical plan for one mob token — the storage primitive behind plan_all_tactics, exposed so an external brain (the gem) can do its own planning. The stored plan is whispered to the DM when the token's turn comes up, readable back via get_mob_plans, and pushed to the HUD immediately. Target with characterName or tokenId. Pass clear:true to remove a stored plan (e.g. the mob died or the plan is stale).",
+    "Store (or clear) the tactical plan for one mob token. Planning happens in the caller (the gem's tactics cascade); this server just stores what you decide. The stored plan is whispered to the DM when the token's turn comes up, readable back via get_mob_plans, and pushed to the HUD immediately. Target with characterName or tokenId. Pass clear:true to remove a stored plan (e.g. the mob died or the plan is stale).",
     {
       characterName: z.string().optional().describe("Token name exactly as on the map — the usual way to target."),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
@@ -1569,36 +1419,17 @@ export function registerCombatTools(server: McpServer): void {
   );
 
   server.tool(
-    "sync_character_state",
-    "Pull ground truth from D&D Beyond and push to Roll20 token (reconciles drift)",
-    { characterName: z.string() },
-    async ({ characterName }) => {
-      const entry = registry.lookup(characterName);
-      if (!entry?.roll20TokenId || entry.ddbCharId === undefined) {
-        throw new Error(`Character not registered: ${characterName}`);
-      }
-
-      const [stats, tokenData] = await Promise.all([
-        ddb.getCharacterStats(entry.ddbCharId),
-        roll20.relayCommand<{ represents: string } | null>({ action: "getTokenById", tokenId: entry.roll20TokenId }),
-      ]);
-
-      const { hp, conditions: activeConditions } = stats;
-      const currentHp = hp.current;
-      const maxHp = hp.max;
-
-      const effectiveConditions = [...activeConditions];
-      if (currentHp * 2 <= maxHp) effectiveConditions.push("wounded");
-
-      await roll20.relayCommand({ action: "setTokenBar", tokenId: entry.roll20TokenId, value: currentHp, max: maxHp });
-      await roll20.relayCommand({
-        action: "syncConditionsToToken",
-        tokenId: entry.roll20TokenId,
-        charId: tokenData?.represents || undefined,
-        conditions: effectiveConditions,
-      });
-
-      return text(`Synced ${characterName}: HP ${currentHp}/${maxHp}, conditions: [${effectiveConditions.join(", ") || "none"}]`);
+    "clear_mob_plans",
+    "Wipe every stored mob tactical plan at once — use at the end of an encounter. Stored plans persist in relay state until overwritten or cleared, and a stale plan is whispered to the DM whenever that token's turn comes up again, so leaving old ones behind means an old encounter's tactics resurface in the next fight. Clears one token instead with set_mob_plan clear:true.",
+    {},
+    async () => {
+      // Read the ids first so the HUD can be told which cards to drop — clearMobPlans
+      // itself returns only {ok}, and a HUD that isn't told keeps rendering them.
+      const plans = await roll20.relayCommand<Record<string, unknown>>({ action: "getMobPlans" }).catch(() => ({}));
+      const ids = Object.keys(plans ?? {});
+      await roll20.relayCommand({ action: "clearMobPlans" });
+      for (const id of ids) publishMobPlan(id, null);
+      return text(`Cleared ${ids.length} stored mob plan(s).`);
     }
   );
 

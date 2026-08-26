@@ -23,8 +23,6 @@ import {
   getDatabase, ref, get, push, set, update, remove, runTransaction, serverTimestamp, query, limitToLast, onChildAdded, onValue,
   type Database, type DatabaseReference,
 } from "firebase/database";
-import { getPage, closeBrowser } from "./browser.js";
-import type { Page } from "playwright";
 import { getActiveCampaign } from "../registry/campaigns.js";
 import { READONLY_ACTIONS, newNonce } from "./actions.js";
 import { recordSuccess, recordFailure } from "./transport-health.js";
@@ -81,7 +79,7 @@ export function rtEnabled(): boolean {
 // multiple instances (roll20-99910, roll20-99922, …); a hardcoded URL only reads one shard, so
 // campaigns on another shard read empty and silently fall back to the Mod. Captured at harvest.
 interface TokenCache { campaignId: string; customToken: string; databaseURL: string; harvestedAt: number }
-interface HarvestResult { customToken: string; databaseURL: string }
+interface RtCredential { customToken: string; databaseURL: string }
 
 function readTokenCache(): TokenCache | null {
   try { return existsSync(TOKEN_CACHE) ? JSON.parse(readFileSync(TOKEN_CACHE, "utf-8")) : null; }
@@ -98,72 +96,28 @@ async function pollFor(get: () => string | null, ms: number): Promise<string | n
   return get();
 }
 
-async function harvestCustomToken(campaignId: string): Promise<HarvestResult> {
-  const page: Page = await getPage("roll20");
-  let captured: string | null = null;
-  let capturedNs: string | null = null;
-  const onReq = (req: import("playwright").Request) => {
-    if (!req.url().includes("signInWithCustomToken")) return;
-    try { const b = JSON.parse(req.postData() || "{}"); if (b.token) captured = b.token as string; }
-    catch { /* not the body we want */ }
-  };
-  // The editor opens its realtime socket against the campaign's actual RTDB instance
-  // (wss://…firebaseio.com/.ws?…&ns=roll20-XXXXX). Capture that namespace so we connect to the
-  // SAME shard the live client uses — see TokenCache.databaseURL.
-  const onWs = (ws: import("playwright").WebSocket) => {
-    const u = ws.url();
-    if (capturedNs || !/firebaseio/.test(u)) return;
-    const m = /[?&]ns=([^&]+)/.exec(u);
-    if (m) capturedNs = decodeURIComponent(m[1]);
-  };
-  page.on("request", onReq);
-  page.on("websocket", onWs);
-  const url = `https://app.roll20.net/editor/setcampaign/${campaignId}/`;
-  try {
-    // Pass 1: a normal load catches the case where the editor hasn't authed yet this session.
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
-    captured = await pollFor(() => captured, 8_000);
-    if (!captured) {
-      // Already authed (restored from IndexedDB) → force a fresh sign-in so the call re-fires.
-      await page.evaluate(() => new Promise<void>((res) => {
-        const del = indexedDB.deleteDatabase("firebaseLocalStorageDb");
-        del.onsuccess = del.onerror = del.onblocked = () => res();
-      })).catch(() => {});
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
-      captured = await pollFor(() => captured, 25_000);
-    }
-    // The realtime socket / firebase config appear only after the editor JS boots — and that can
-    // be slow on a COLD (archived) campaign, which is why the ws-only capture missed it before
-    // (it raced a 10s window the socket opened after). Poll BOTH the captured ws ns and the page's
-    // own FIREBASE_ROOT global — the global is authoritative and persists, unlike the one-shot ws
-    // event — for a generous window. The onWs handler still feeds capturedNs if it fires first.
-    if (!capturedNs) {
-      const end = Date.now() + 30_000;
-      while (Date.now() < end && !capturedNs) {
-        const dbUrl = await page.evaluate(() => {
-          const w = window as unknown as { FIREBASE_ROOT?: string; databaseURL?: string };
-          return w.FIREBASE_ROOT || w.databaseURL || null;
-        }).catch(() => null);
-        if (dbUrl) { const m = /\/\/([^.]+)\.firebaseio/.exec(String(dbUrl)); if (m) { capturedNs = m[1]; break; } }
-        await new Promise((r) => setTimeout(r, 500));
-      }
-    }
-  } finally {
-    page.off("request", onReq);
-    page.off("websocket", onWs);
+/**
+ * Raised when no usable Roll20 realtime credential is available. The server READS this
+ * credential; it never mints one. Harvesting is a first-party, human-attended act that
+ * belongs in the gem's own Electron session (issue #177, sibling of #175) — an MCP server
+ * must not be able to open a browser against a live account on its own initiative.
+ *
+ * Deliberately loud: a silent browser harvest is exactly the failure mode #83 closed on the
+ * relay path, and the same reasoning applies to the credential the relay runs on.
+ */
+export class Roll20TokenUnavailableError extends Error {
+  constructor(readonly campaignId: string, reason: string) {
+    super(
+      `No usable Roll20 realtime token for campaign ${campaignId} (${reason}). ` +
+      `This server reads the token but never harvests one — reconnect Roll20 in the gem to ` +
+      `re-harvest, or point ROLL20_DATA_DIR at the data dir holding a current ` +
+      `roll20-rt-token.json for THIS campaign (the token is campaign-scoped).`
+    );
+    this.name = "Roll20TokenUnavailableError";
   }
-  if (!captured) throw new Error("roll20-rt: could not harvest a Firebase custom token from the editor (logged in?)");
-  const databaseURL = capturedNs ? `https://${capturedNs}.firebaseio.com` : FIREBASE_CONFIG.databaseURL;
-  if (!capturedNs) console.error(`[roll20-rt] WARNING: no Firebase namespace detected for campaign ${campaignId}; falling back to ${FIREBASE_CONFIG.databaseURL} (reads will be empty if this campaign is on another shard)`);
-  mkdirSync(path.dirname(TOKEN_CACHE), { recursive: true });
-  writeFileSync(TOKEN_CACHE, JSON.stringify({ campaignId, customToken: captured, databaseURL, harvestedAt: Date.now() } as TokenCache), "utf-8");
-  // Token cached — browser no longer needed until a Mod-relay write comes in. Close it now
-  // so it doesn't sit as a visible window; it will reopen on demand for sendChat/writes.
-  closeBrowser().catch(() => {});
-  return { customToken: captured, databaseURL };
 }
 
-async function getCustomToken(campaignId: string, forceFresh = false): Promise<HarvestResult> {
+async function getCustomToken(campaignId: string, forceFresh = false): Promise<RtCredential> {
   if (!forceFresh) {
     const c = readTokenCache();
     // Require databaseURL too: a pre-shard-fix cache entry lacks it, so treat that as a miss and
@@ -172,7 +126,20 @@ async function getCustomToken(campaignId: string, forceFresh = false): Promise<H
       return { customToken: c.customToken, databaseURL: c.databaseURL };
     }
   }
-  return harvestCustomToken(campaignId);
+  // No harvest fallback by design (#177): read it or fail loudly.
+  const c = readTokenCache();
+  if (!c) throw new Roll20TokenUnavailableError(campaignId, "no token file — nothing has harvested one");
+  if (c.campaignId !== campaignId) {
+    throw new Roll20TokenUnavailableError(
+      campaignId,
+      `the cached token belongs to campaign ${c.campaignId}; tokens are campaign-scoped`,
+    );
+  }
+  if (!c.databaseURL) throw new Roll20TokenUnavailableError(campaignId, "cached token predates shard capture and has no databaseURL");
+  throw new Roll20TokenUnavailableError(
+    campaignId,
+    `cached token is ${Math.round((Date.now() - c.harvestedAt) / 60000)}m old (max ${Math.round(TOKEN_MAX_AGE_MS / 60000)}m)`,
+  );
 }
 
 // --- Connection (singleton per campaign) ---
@@ -910,6 +877,60 @@ export async function rtStoragePath(): Promise<string> {
 export async function rtRawDb(): Promise<{ db: import("firebase/database").Database; storagePath: string }> {
   const conn = await getConn();
   return { db: conn.db, storagePath: conn.storagePath };
+}
+
+// Create a Roll20 PAGE by writing the campaign's RTDB `pages` node directly (#178).
+//
+// CLAUDE.md's "`createObj("page")` is unsupported" is a MOD SANDBOX limitation and says nothing
+// about RTDB. Verified live against a throwaway campaign: push() + set() is accepted, all fields
+// read back, and the page opens and edits normally in the editor. This replaces the Playwright
+// `createPageViaUI`, which was a workaround for a restriction that never applied to this path.
+//
+// UNITS — the thing that will bite you: `width`/`height` are 70px UNITS, not cells. The rendered
+// cell size is `70 * snapping_increment`, so cells = (width * 70) / (70 * snapping_increment).
+// With the default snapping_increment of 1 the page is `widthSquares` standard 70px squares, which
+// is what every caller means. Writing width as a cell count with a fractional increment silently
+// produces a page 1/increment too big.
+//
+// NOTE the RTDB page carries only 16 fields — no scale_number/scale_units/showgrid/background_color.
+// Those live on the MOD's page object, so callers finish the job with a setPageProps relay call.
+export async function rtCreatePage(opts: {
+  name: string;
+  widthSquares: number;
+  heightSquares: number;
+  snappingIncrement?: number;
+}): Promise<string> {
+  const { db, storagePath } = await rtRawDb();
+
+  // Mirror an existing page: it is the only trustworthy source for the client-filled fields, and
+  // guessing a minimal object is how you get a page that lists but will not open.
+  const pages = await rtGet<Record<string, Record<string, unknown>>>("pages");
+  const template = Object.values(pages ?? {})[0];
+  if (!template) throw new Error("rtCreatePage: campaign has no existing page to mirror a schema from");
+
+  const page: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(template)) {
+    if (typeof v === "object" && v !== null) continue;   // subcollections are separate nodes
+    page[k] = v;
+  }
+
+  // Per-page CONTENT must be reset, never inherited: zorder is the template's own object stacking
+  // list, thumbnail is its map art, and placement is its slot in the page list.
+  const placements = Object.values(pages ?? {})
+    .map((p) => Number(p?.placement))
+    .filter((n) => Number.isFinite(n));
+  page.zorder = "";
+  page.thumbnail = "";
+  page.placement = (placements.length ? Math.max(...placements) : 0) + 10;
+  page.name = opts.name;
+  page.width = opts.widthSquares;
+  page.height = opts.heightSquares;
+  page.snapping_increment = opts.snappingIncrement ?? 1;
+
+  const newRef = push(ref(db, `${storagePath}/pages`));
+  page.id = newRef.key;                     // Roll20 objects carry their own id
+  await set(newRef, stripUndefWrite(page));
+  return newRef.key!;
 }
 
 // Merge-write fields onto a node under the storage root (RTDB update = partial merge), like the

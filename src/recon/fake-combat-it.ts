@@ -20,7 +20,6 @@
 //   - toggleCondition (parallel x6) ..... runTransaction on statusmarkers (RMW race fix)
 //   - adjustPcHp + getPcHp .............. runTransaction on gmnotes PCHP block
 //   - rollInitiative + advanceTurn ...... turn hook + round-end narration
-//   - internalPlanToken tier 5 .......... Opus 4.8 + adaptive thinking (the tier-5 400 fix)
 //   - switch_campaign → CoS → back ...... per-campaign state reset on switch
 //   - getStats() ........................ transport counters / fallback tracking
 
@@ -29,7 +28,6 @@ import * as campaigns from "../registry/campaigns.js";
 import * as roll20 from "../bridge/roll20.js";
 import { rtEnabled, rtGet } from "../bridge/roll20-rt.js";
 import { getStats } from "../bridge/transport-health.js";
-import { internalPlanToken } from "../tools/tactics.js";
 
 const HARNESS_SLUG = process.env.HARNESS_CAMPAIGN || "candlekeep-and-golden-vault";
 const SAFE = /candlekeep|test|harness/i;
@@ -150,20 +148,10 @@ async function main() {
     }
   }
 
-  // --- 6. TACTICS — Opus 4.8 tier 5 (the headline 400 fix) -----------------
-  console.error("\n[tactics — model calls]");
-  await step("tier-5 plan (Opus 4.8, full cascade, NO 400)", () =>
-    internalPlanToken(mage, pageId, { intOverride: 22, wisOverride: 22, postToChat: true, debug: false }),
-    (r) => {
-      if (r.error) return `plan error: ${r.error}`;
-      if (r.tier !== 5) return `expected tier 5, got ${r.tier}`;
-      if (!r.shortTermPlan?.trim()) return "empty short-term plan";
-      if (!r.longTermGoal?.trim()) return "no long-term goal — Opus cascade pass didn't complete";
-      return null;
-    });
-  await step("tier-0 plan (Haiku, instinct)", () =>
-    internalPlanToken(gobA, pageId, { intOverride: 3, wisOverride: 3, postToChat: false, debug: false }),
-    (r) => r.error ? `plan error: ${r.error}` : (r.tier === 0 && r.shortTermPlan?.trim() ? null : `tier=${r.tier} plan="${r.shortTermPlan}"`));
+  // --- 6. (was TACTICS) -----------------------------------------------------
+  // The tactics model cascade moved to the gem (#171). Mob plans are now written
+  // through the set_mob_plan primitive by whatever brain is driving; the relay-side
+  // storage is still exercised by the clearMobPlans step below.
 
   // --- 7. Transport counters ----------------------------------------------
   console.error("\n[transport_status]");

@@ -446,6 +446,9 @@ export class Roll20Emulator {
       aura1_radius: t.get("aura1_radius"),
       represents: t.get("represents"),
       gmnotes: t.get("gmnotes"),
+      // PC/NPC/sidekick HP + death routing keys off this (isPcToken), so a test must
+      // be able to see it — without it a token that IS player-controlled looks unowned.
+      controlledby: t.get("controlledby"),
     };
   }
 

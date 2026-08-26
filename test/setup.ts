@@ -21,7 +21,8 @@ fs.mkdirSync(dataDir, { recursive: true });
 process.env.ROLL20_CAMPAIGN_ID ??= "test-roll20";
 process.env.DDB_CAMPAIGN_ID ??= "test-ddb";
 
-// Allow the tactics module's module-level `new Anthropic()` to construct. The CI
-// suites inject a mock client; only the live-eval suite uses a real key, which a
-// developer supplies explicitly (we never overwrite it here).
-process.env.ANTHROPIC_API_KEY ??= "test-key-not-used-by-mock";
+// Allows the maps suite's vision module (`src/tools/vision.ts`) to construct its
+// module-level `new Anthropic()` when a test imports it — analyze_battlemap is the
+// only model call left in this repo and no test invokes it, so the value is never
+// used. The combat server reaches no Anthropic code at all since #171 Phase 2.
+process.env.ANTHROPIC_API_KEY ??= "test-key-never-used";

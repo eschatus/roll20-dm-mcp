@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "wall-labeler",
+      "runtimeExecutable": "E:\\personalProjects\\wall-seg\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["E:\\personalProjects\\wall-seg\\labelapp\\server.py", "--port", "8780", "--host", "127.0.0.1"],
+      "port": 8780
+    }
+  ]
+}

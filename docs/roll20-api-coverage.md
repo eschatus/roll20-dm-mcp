@@ -97,7 +97,7 @@ Campaign specials: `change:campaign:turnorder`, `change:campaign:playerpageid`, 
 | `toggleCondition` | set_token_marker, update_token_hp | combat | resolves via 3-tier `resolveMarkerForState`; +`active_conditions` |
 | `syncConditionsToToken` | update_token_hp, sync_character_state | combat | replace all markers |
 | `getTokenMarkers` | get_token_markers | combat | campaign custom markers |
-| `createToken` | create_pc_token, create_monster_token, create_npc_token | maps | **does not set `represents`** |
+| `createToken` | create_pc_token, create_monster_token, create_npc_token | maps | **does not set `represents`** (so no sheet, no AC) and takes no `controlledby` — create_pc_token sets it with a follow-up `setTokenProps`. All three take caller-supplied stats since #171. |
 | `createGraphic` | place_map_image, upload_and_place_map_image | maps | map-layer image |
 | `createPath` / `createPaths` | (internal) | — | legacy path |
 | `createWalls` | auto_place_dl_walls | maps | tries `pathv2` first, falls back to legacy `path` |

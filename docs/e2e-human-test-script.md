@@ -66,7 +66,7 @@ ID `17491327`) is the project's control campaign (no real PCs) — skip Phase 1'
 ## Phase 1 — New campaign setup & the Mod relay
 
 > Exercises: `register_campaign`, `switch_campaign` (+ the **switch-then-wait**
-> rule), `deploy_mod_script` / `npm run release:mod`, the **soak test**, and
+> rule), the Mod relay deploy (now MANUAL — paste into the API console, #175), the **soak test**, and
 > `transport_status`.
 
 | # | Action | Expected | ✓ |
@@ -75,7 +75,7 @@ ID `17491327`) is the project's control campaign (no real PCs) — skip Phase 1'
 | 1.2 | (A) "Switch to e2e-test" → `switch_campaign { slugOrName: "e2e-test" }` ⚠ | switches **and then STOPS** — the assistant must **wait for your confirmation** before any further tool call (rule: `skills/dm-rules.md` "switch then wait") | [ ] |
 | 1.3 | **Judge checkpoint:** did the assistant correctly *not* chain another tool after the switch? | yes = PASS | [ ] |
 | 1.4 | Confirm "go ahead" → `active_campaign` 🔒 | shows e2e-test active | [ ] |
-| 1.5 | Deploy the Mod relay: `npm run release:mod` (minify → deploy to active campaign → 12s settle → soak) ⚠ | exits **0**; logs "OK — relay deployed and soaked clean." | [ ] |
+| 1.5 | Deploy the Mod relay BY HAND: paste `mod-scripts/ai-relay.js` into the campaign's API console and save ⚠ | Mod console shows `[GM_AI_Bridge] Relay script loaded (vX.Y.Z)` with the expected version — verify the LOAD, not the save | [ ] |
 | 1.6 | Read the soak output | round-trip `pong`, direct reads, scratch-token create, **PC-HP via `adjustPcHp`**, batchExec, dice engine, cleanup — all pass | [ ] |
 | 1.7 | (A) "transport status" → `transport_status` 🔒 | RT healthy; **circuit breaker closed**; counters present; active campaign = e2e-test | [ ] |
 

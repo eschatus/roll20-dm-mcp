@@ -3,11 +3,13 @@
 //
 //  - Routes roll20.relayCommand / evaluate through the in-memory emulator via the
 //    bridge test seam (no browser).
-//  - Injects a mock Anthropic client so the full tactics pipeline runs without
-//    real API calls (the live-eval suite opts back into the real client).
-//  - Provides a FakeMcpServer that captures the real combat/tactics tool handlers
-//    so tests can invoke them exactly as the MCP server would (zod defaults + all).
+//  - Provides a FakeMcpServer that captures the real combat tool handlers so tests
+//    can invoke them exactly as the MCP server would (zod defaults + all).
 //  - Seeds a "diverse tiered warband" encounter for the round test.
+//
+// No LLM seam here any more: the tactics cascade moved to the gem (#171), so nothing
+// this harness drives calls a model. The warband's Int/Wis spread is kept because the
+// turn/HP/marker tests read it as ordinary token data.
 //
 // Isolation: ROLL20_DATA_DIR + ROLL20_CAMPAIGN_ID/DDB_CAMPAIGN_ID are set by
 // vitest.config so the character/campaign registries use a throwaway temp dir and
@@ -16,10 +18,8 @@
 import { z } from "zod";
 import { Roll20Emulator } from "./roll20-emulator.js";
 import * as roll20 from "../src/bridge/roll20.js";
-import * as tactics from "../src/tools/tactics.js";
 import * as characters from "../src/registry/characters.js";
 import { registerCombatTools } from "../src/tools/combat.js";
-import { registerTacticsTools } from "../src/tools/tactics.js";
 import { registerZoneTools } from "../src/tools/zones.js";
 
 // ── Fake MCP server ───────────────────────────────────────────────────────────
@@ -38,47 +38,16 @@ export class FakeMcpServer {
   }
 }
 
-// ── Mock Anthropic ────────────────────────────────────────────────────────────
-export interface MockCall { userContent: string; model: string }
-
-export function makeMockAnthropic(planner?: (userContent: string) => string) {
-  const calls: MockCall[] = [];
-  const client = {
-    messages: {
-      create: async (params: Record<string, unknown>) => {
-        const msgs = params.messages as Array<{ content: string }>;
-        const userContent = String(msgs?.[0]?.content ?? "");
-        calls.push({ userContent, model: String(params.model) });
-        const text = (planner ?? defaultPlanner)(userContent);
-        return { content: [{ type: "text", text }], stop_reason: "end_turn", usage: {} };
-      },
-    },
-  };
-  return { client, calls };
-}
-
-// Deterministic stand-in for a tactical recommendation, in the tool's output shape.
-function defaultPlanner(userContent: string): string {
-  // Pull the acting creature's name out of the context if present (best-effort).
-  const m = userContent.match(/It is ([^’'\n.]+?)'s turn/) ?? userContent.match(/\[SELF\][^\n]*\bname:\s*([^\n]+)/i);
-  const who = m ? m[1].trim() : "the creature";
-  return `**Move:** reposition for advantage · **Action:** attack the nearest wounded foe · **Note:** mock plan for ${who}`;
-}
-
 // ── Harness ───────────────────────────────────────────────────────────────────
 export interface Harness {
   emu: Roll20Emulator;
   server: FakeMcpServer;
-  mock: ReturnType<typeof makeMockAnthropic>;
   callTool(name: string, args?: Record<string, unknown>): Promise<{ text: string; json: unknown }>;
   teardown(): void;
 }
 
 export interface HarnessOptions {
   seed?: number;
-  planner?: (userContent: string) => string;
-  /** Use the real Anthropic client (live-eval suite). Default false = mock. */
-  liveLLM?: boolean;
 }
 
 export function setupHarness(opts: HarnessOptions = {}): Harness {
@@ -100,12 +69,8 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
     },
   });
 
-  const mock = makeMockAnthropic(opts.planner);
-  if (!opts.liveLLM) tactics.__setAnthropicForTest(mock.client as never);
-
   const server = new FakeMcpServer();
   registerCombatTools(server as never);
-  registerTacticsTools(server as never);
   registerZoneTools(server as never);
 
   async function callTool(name: string, args: Record<string, unknown> = {}) {
@@ -120,7 +85,7 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
   }
 
   return {
-    emu, server, mock, callTool,
+    emu, server, callTool,
     teardown: () => {
       roll20.__setBridgeTestTransport(null);
       if (_prevTransport === undefined) delete process.env.ROLL20_TRANSPORT;
@@ -131,9 +96,9 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
 
 // ── Scenario: a diverse tiered warband ───────────────────────────────────────
 // 2 PCs vs a mixed encounter spanning the tactical tiers, plus a spellcaster
-// (AoE) and an emanation user, so one round exercises every tier, spells, zones,
-// and auras. NPC stats are pre-baked into each token's gmnotes TACDATA cache so
-// tactics planning is deterministic and never reaches for D&D Beyond.
+// (AoE) and an emanation user, so one round exercises a mixed board, spells, zones,
+// and auras. NPC stats stay pre-baked into each token's gmnotes TACDATA cache so the
+// board is deterministic and no test reaches for D&D Beyond.
 export interface WarbandToken {
   name: string;
   id: string;

@@ -5,14 +5,17 @@ import * as path from "path";
 import sharp from "sharp";
 import Anthropic from "@anthropic-ai/sdk";
 import * as roll20 from "../bridge/roll20.js";
-import { MODELS } from "./tactics.js";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
   defaultHeaders: { "anthropic-beta": "prompt-caching-2024-07-31" },
 });
 
-const VISION_MODEL = MODELS.sonnet;
+// The battlemap wall-detection pass is now the ONLY model call left in this repo — the
+// tactics cascade that used to share a MODELS table moved to the gem (#171). This is
+// prep-time and maps-suite only, so the combat server needs no ANTHROPIC_API_KEY.
+// Unchanged id: swapping it changes wall-detection output and belongs in its own PR.
+const VISION_MODEL = "claude-sonnet-4-6";
 const DEFAULT_MAX_DIM = 1500;
 const MAX_TOKENS_HARD_LIMIT = 50_000;
 
