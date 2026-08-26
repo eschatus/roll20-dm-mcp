@@ -176,8 +176,15 @@ the registration; the rest of vision/wall tooling is maps-only.)
   violates it.
 - `pathv2` re-anchors to the first point regardless of passed x/y — build paths first-point-as-center.
 - **Upload dedup:** `upload_and_place` reuses a stale art-library asset by filename — use a unique
-  filename. `create_monster_token` 404s without a DDB compendium entry → fall back to
-  `create_npc_token`.
+  filename.
+- **Token creation takes CALLER-SUPPLIED STATS** (#171): `create_pc_token` / `create_npc_token` /
+  `create_monster_token` perform no lookup — resolve HP/AC yourself (ddb-mcp, a module stat block,
+  the DM) and pass them. `create_monster_token` is now identical to `create_npc_token` and kept only
+  for existing callers; the old "404s without a DDB compendium entry, fall back to `create_npc_token`"
+  gotcha is gone with the lookup. **Pass `controlledBy` on `create_pc_token`** — `createToken` has no
+  such field, so it's a follow-up write, and without it the token fails `isPcToken` and its HP routes
+  to `bar1` like an NPC's. AC is reported back but never stored: `createToken` doesn't set
+  `represents`, so a bare token has no sheet to hold it.
 - `batch_import_maps` is the folder→Roll20 pipeline (uses `listPages` + the steps above).
 
 ## Combat development
