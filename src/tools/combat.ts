@@ -1569,6 +1569,21 @@ export function registerCombatTools(server: McpServer): void {
   );
 
   server.tool(
+    "clear_mob_plans",
+    "Wipe every stored mob tactical plan at once — use at the end of an encounter. Stored plans persist in relay state until overwritten or cleared, and a stale plan is whispered to the DM whenever that token's turn comes up again, so leaving old ones behind means an old encounter's tactics resurface in the next fight. Clears one token instead with set_mob_plan clear:true.",
+    {},
+    async () => {
+      // Read the ids first so the HUD can be told which cards to drop — clearMobPlans
+      // itself returns only {ok}, and a HUD that isn't told keeps rendering them.
+      const plans = await roll20.relayCommand<Record<string, unknown>>({ action: "getMobPlans" }).catch(() => ({}));
+      const ids = Object.keys(plans ?? {});
+      await roll20.relayCommand({ action: "clearMobPlans" });
+      for (const id of ids) publishMobPlan(id, null);
+      return text(`Cleared ${ids.length} stored mob plan(s).`);
+    }
+  );
+
+  server.tool(
     "sync_character_state",
     "Pull ground truth from D&D Beyond and push to Roll20 token (reconciles drift)",
     { characterName: z.string() },

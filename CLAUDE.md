@@ -232,8 +232,10 @@ hand-synced table copies.)
 - **Never auto-advance the turn** — `advance_turn` only on the DM's explicit say-so.
 
 **Tactics live in the gem now (#171 Phase 2).** This server keeps only the *storage* primitives:
-`set_mob_plan` writes a mob's plan (the turn hook whispers it to the DM on that token's turn) and
-`get_mob_plans` reads them back. There is no model call and no `ANTHROPIC_API_KEY` on the combat
+`set_mob_plan` writes a mob's plan (the turn hook whispers it to the DM on that token's turn),
+`get_mob_plans` reads them back, and `clear_mob_plans` wipes them all at encounter end — plans
+persist in relay state until overwritten or cleared, so a stale one resurfaces as a whisper the next
+time that token's turn comes up. There is no model call and no `ANTHROPIC_API_KEY` on the combat
 server — `@anthropic-ai/sdk` remains in `package.json` solely for the maps suite's
 `analyze_battlemap`. Player `!`-commands are likewise ANSWERED by the gem; this server only
 forwards them, as `chat-message` events on the `/events` SSE stream. Dice always roll through

@@ -84,3 +84,31 @@ describe("set_mob_plan", () => {
     await expect(h.callTool("set_mob_plan", { characterName: "Ghoul" })).rejects.toThrow(/shortTerm/);
   });
 });
+
+describe("clear_mob_plans", () => {
+  // Deleting the tactics cascade in Phase 2 Half A also deleted clear_tactic_memory,
+  // which was the only caller of the clearMobPlans relay action — leaving no way to
+  // wipe plans in bulk. A live campaign was found holding 28 stale ones, which the
+  // turn hook would whisper again the next time those tokens came up.
+  it("wipes every stored plan and tells the HUD to drop each card", async () => {
+    await h.callTool("set_mob_plan", { characterName: "Ghoul", shortTerm: "Claw" });
+    const second = h.emu.createToken({
+      pageid: pageId, name: "Ghast", controlledby: "", bar1_value: 30, bar1_max: 30, left: 210, top: 140,
+    });
+    await h.callTool("set_mob_plan", { tokenId: second.id, shortTerm: "Flank" });
+    expect(Object.keys((await h.callTool("get_mob_plans", {})).json as PlanStore)).toHaveLength(2);
+
+    events.length = 0;
+    const { text } = await h.callTool("clear_mob_plans", {});
+    expect(text).toMatch(/Cleared 2 stored mob plan/);
+    expect((await h.callTool("get_mob_plans", {})).json).toEqual({});
+    // Both cards dropped, not just the last one.
+    expect(events).toContainEqual({ type: "mob-plan", tokenId: ghoulId, plan: null });
+    expect(events).toContainEqual({ type: "mob-plan", tokenId: second.id, plan: null });
+  });
+
+  it("is a no-op that still reports honestly when nothing is stored", async () => {
+    const { text } = await h.callTool("clear_mob_plans", {});
+    expect(text).toMatch(/Cleared 0 stored mob plan/);
+  });
+});
