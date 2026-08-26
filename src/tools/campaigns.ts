@@ -1,9 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import path from "path";
 import { z } from "zod";
 import * as campaigns from "../registry/campaigns.js";
-import { reconnectRoll20 } from "../bridge/roll20.js";
-import { readModConsole, deployModScript, modEditorUrl, dumpModPageStructure } from "../bridge/mod-editor.js";
 
 export function registerCampaignTools(server: McpServer): void {
   server.tool(
@@ -125,76 +122,4 @@ export function registerCampaignTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "reconnect_browser",
-    "Force-rebind the Playwright browser + Roll20 page when relay commands or reads start failing/hanging with 'Target page, context or browser has been closed' (browser crashed, tab closed, page wedged, hooks dead). Tears down the cached Chromium context AND the Roll20 editor-page handle, then relaunches/reattaches and re-navigates to the active campaign. Use this instead of restarting the whole MCP server.",
-    {
-      hard: z
-        .boolean()
-        .optional()
-        .describe("Default true: fully close the Chromium context before relaunching (kills a zombie browser). Set false for a soft re-acquire that reattaches if the browser is still alive."),
-    },
-    async ({ hard }) => {
-      let name = "(unknown campaign)";
-      try { name = campaigns.getActiveCampaign().name; } catch { /* no active campaign — still fine to rebind */ }
-      try {
-        const res = await reconnectRoll20({ hard: hard !== false });
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Rebound Roll20 browser (${res.hard ? "hard relaunch/reattach" : "soft re-acquire"}) for "${name}" — page at ${res.url}`,
-            },
-          ],
-        };
-      } catch (err) {
-        return {
-          content: [{ type: "text", text: `Reconnect failed: ${(err as Error).message}. If the profile is locked, close stray Chromium windows and retry, or restart the MCP server.` }],
-        };
-      }
-    }
-  );
-
-  server.tool(
-    "dump_mod_page_structure",
-    "Debug: dump all id/class selectors from the Roll20 Mod editor page to find the right console/editor selectors.",
-    {},
-    async () => {
-      const { roll20CampaignId } = campaigns.getActiveCampaign();
-      const dump = await dumpModPageStructure(roll20CampaignId);
-      return { content: [{ type: "text", text: dump }] };
-    }
-  );
-
-  server.tool(
-    "read_mod_console",
-    "Read recent lines from the Roll20 Mod Output Console (API editor page). Returns log() output from the sandbox. Opens the API editor in a separate browser page — does not disturb the game session.",
-    {},
-    async () => {
-      const { roll20CampaignId } = campaigns.getActiveCampaign();
-      const lines = await readModConsole(roll20CampaignId);
-      return {
-        content: [{ type: "text", text: lines.length ? lines.join("\n") : "(console empty)" }],
-      };
-    }
-  );
-
-  server.tool(
-    "deploy_mod_script",
-    "Deploy the local ai-relay.js to Roll20 via browser automation: opens the API editor in a background page, sets the CodeMirror content, and clicks Save. Does not disturb the active game session.",
-    {
-      scriptPath: z
-        .string()
-        .optional()
-        .describe("Absolute path to the relay script. Defaults to mod-scripts/ai-relay.js in the repo root."),
-    },
-    async ({ scriptPath }) => {
-      const { roll20CampaignId } = campaigns.getActiveCampaign();
-      const resolvedPath = scriptPath ?? path.resolve("mod-scripts/ai-relay.js");
-      const result = await deployModScript(roll20CampaignId, resolvedPath, { tabName: "ai-relay.js" });
-      return {
-        content: [{ type: "text", text: `Deployed ${result.linesWritten} lines to campaign ${roll20CampaignId}.` }],
-      };
-    }
-  );
 }

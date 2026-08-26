@@ -34,13 +34,14 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
 - `npm test` — vitest (`src/**/*.test.ts` + `test/*.test.ts`). `npm run test:watch` to iterate.
   Single file: `npx vitest run test/zone-semantics.test.ts`; single case: add `-t "name substring"`.
 - `npm run lint` — eslint over `src/` + `test/`.
-- **Mod redeploy (manual, easy to forget):** the relay (`mod-scripts/ai-relay.js`) runs inside the
-  Roll20 API sandbox; a change to it only takes effect once deployed. **One command does it:
-  `npm run release:mod`** (`src/recon/release-mod.ts`) — deploys to the *active* campaign via browser
-  automation (background page; doesn't disturb a live session), then runs the soak and exits non-zero
-  if either fails. (Equivalent to `deploy_mod_script` + `tsx src/recon/soak-test.ts` by hand, or the
-  old fully-manual paste-into-the-API-console.) CI runs `node --check mod-scripts/ai-relay.js` as a
-  syntax gate but cannot deploy.
+- **Mod redeploy is EXTERNAL to this repo (#175).** The relay (`mod-scripts/ai-relay.js`) runs in
+  the Roll20 API sandbox and only takes effect once deployed — but deploying means driving a
+  browser against a live account, so it is a human-attended act, not something an MCP server or a
+  dev session does. Paste `mod-scripts/ai-relay.js` into the campaign's API console yourself (or
+  use the gem's attended flow). Verify the LOAD, never the write: the sandbox banner
+  `[GM_AI_Bridge] Relay script loaded (vX.Y.Z)` or a `ping` returning the version. Deploys are
+  **per-campaign** — each campaign carries its own copy, so one can run a newer relay than another.
+  CI runs `node --check mod-scripts/ai-relay.js` as a syntax gate.
 - **Relay version handshake:** `AI_RELAY_VERSION` (`mod-scripts/ai-relay.js`) and
   `EXPECTED_RELAY_VERSION` (`src/bridge/relay-version.ts`) are a hand-synced pair, locked by
   `test/relay-version.test.ts` — bump BOTH when changing `ai-relay.js` in a way worth flagging to a
@@ -58,9 +59,13 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
   (~50ms). It carries **reads AND writes** — the Mod executes every action regardless of transport.
   Some reads are served even more directly (`rtGet`/`tryDirectRead` off RTDB; `CLIENT_READS` in
   `roll20.ts` off live Backbone, but only on the explicit `=browser` path).
-- **No silent browser fallback on the combat relay.** A packaged install ships no Playwright, so an
-  RT failure SURFACES (clear error → re-harvest the token in the gem) rather than quietly reaching
-  for a Chromium that isn't there. The browser→chat relay (types into chat, reads `/w gm` via
+- **The combat server CANNOT open a browser at all (#177).** If a thing needs a browser, it is not
+  an MCP tool here. Credentials are FURNISHED, never minted: the RT token is read from
+  `<data dir>/roll20-rt-token.json` (campaign-scoped) and art uploads from
+  `roll20-upload-cache.json`; both throw a typed error (`Roll20TokenUnavailableError`,
+  `Roll20UploadCredentialError`) naming what to refresh instead of harvesting. Art upload is a
+  plain multipart POST — browserless, credential furnished. Harvesting happens in the gem's own
+  logged-in session, where a human is present. The browser→chat relay (types into chat, reads `/w gm` via
   MutationObserver) runs ONLY under `ROLL20_TRANSPORT=browser`. Token harvest itself is first-party
   session capture in the gem's own Electron browser (intercept Roll20's `signInWithCustomToken` /
   read DDB's `CobaltSession` cookie) — NOT OAuth, no registered client. (See issue #83.)

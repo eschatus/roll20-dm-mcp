@@ -536,157 +536,34 @@ async function uploadArtDirect(localAbsPath: string, cache: UploadCache): Promis
   return url;
 }
 
-export async function uploadArt(localAbsPath: string): Promise<string> {
-  // Fast path: try direct HTTP with cached credentials (no browser needed).
-  const cache = readUploadCache();
-  if (cache) {
-    try {
-      return await uploadArtDirect(localAbsPath, cache);
-    } catch (e) {
-      console.error(`[roll20] direct upload failed, falling back to Playwright: ${(e as Error).message}`);
-      // Invalidate the cache so the next Playwright upload refreshes it.
-      try { writeUploadCache({ ...cache, harvestedAt: 0 }); } catch {}
-    }
+/**
+ * Raised when the furnished Roll20 upload credential is missing or stale. Uploads go over
+ * a plain multipart POST (uploadArtDirect) — no browser — but the endpoint + session cookies
+ * have to come from somewhere. Harvesting them is a human-attended act that belongs in the
+ * gem's own logged-in session, not in an MCP server (#177).
+ */
+export class Roll20UploadCredentialError extends Error {
+  constructor(reason: string) {
+    super(
+      `Roll20 art upload unavailable (${reason}). Uploads are browserless here — this server ` +
+      `POSTs the file itself but never harvests the credential. Refresh it from the gem's ` +
+      `logged-in Roll20 session, or point ROLL20_DATA_DIR at a data dir holding a current ` +
+      `roll20-upload-cache.json ({endpoint, cookies, harvestedAt}, ${UPLOAD_CACHE_TTL_MS / 3_600_000}h TTL).`
+    );
+    this.name = "Roll20UploadCredentialError";
   }
+}
 
-  // Playwright path — used on first upload or after a direct-upload failure.
-  const page = await getEditorPage();
-
-  // Dismiss any open art library dialog before starting — Roll20's file input loses its
-  // change-event listener after one upload, so re-opening fresh is the only reliable way
-  // to get a new listener for sequential uploads. Without this, every second upload hangs.
-  await page.evaluate(() => {
-    const dialog = document.getElementById("imagedialog");
-    if (!dialog) return;
-    // Try Bootstrap .modal('hide') if jQuery is present
-    try { const jq = (window as unknown as Record<string, unknown>)["$"] as ((s: string) => Record<string, (a: string) => void>) | undefined; jq?.("#imagedialog")?.["modal"]?.("hide"); } catch {}
-    // Fallback: click the × close button
-    const closeBtn = dialog.querySelector<HTMLElement>(".close, button[data-dismiss='modal']");
-    if (closeBtn) closeBtn.click();
-  }).catch(() => {});
-  await new Promise(r => setTimeout(r, 500));
-
-  // Intercept ALL network responses during the upload window and log them for diagnostics.
-  // Roll20 Jumpgate may PUT to S3/R2 (not POST to Roll20), so we capture any method.
-  let capturedUrl: string | null = null;
-  const uploadLog: string[] = [];
-  const onResponse = async (response: import("playwright").Response) => {
-    const method = response.request().method();
-    const url = response.url();
-    try {
-      const ct = response.headers()["content-type"] ?? "";
-      if (ct.includes("json")) {
-        const body = await response.json().catch(() => null);
-        const found = extractCdnUrl(body);
-        uploadLog.push(`${method} ${url} JSON: ${JSON.stringify(body).slice(0, 300)}`);
-        if (found && !capturedUrl) capturedUrl = found;
-      } else if (ct.includes("xml") || ct.includes("text")) {
-        const text = await response.text().catch(() => "");
-        uploadLog.push(`${method} ${url} TEXT: ${text.slice(0, 300)}`);
-        // Roll20 often returns JSON with Content-Type: text/plain — try parsing it
-        if (text.trimStart().startsWith("{")) {
-          try {
-            const parsed = JSON.parse(text) as unknown;
-            const found = extractCdnUrl(parsed);
-            if (found && !capturedUrl) capturedUrl = found;
-          } catch { /* not JSON */ }
-        }
-        // Some CDN responses embed the URL in XML Location or <Location> element
-        const xmlLoc = text.match(/<Location>(https?:\/\/[^<]+)<\/Location>/)?.[1];
-        if (xmlLoc && isCdnUrl(xmlLoc) && !capturedUrl) capturedUrl = xmlLoc;
-      } else if (isCdnUrl(url)) {
-        uploadLog.push(`${method} ${url} (CDN request)`);
-      }
-    } catch { /* ignore */ }
-  };
-  page.on("response", onResponse);
-
+export async function uploadArt(localAbsPath: string): Promise<string> {
+  // Browserless by construction (#177): a direct multipart POST with furnished credentials.
+  // There is deliberately NO Playwright fallback — it used to harvest the credential itself,
+  // which is the capability being removed. If the file can't go over HTTP, it doesn't go.
+  const cache = readUploadCache();
+  if (!cache) throw new Roll20UploadCredentialError("no roll20-upload-cache.json, or it is older than its TTL");
   try {
-    // Open art library panel
-    await page.evaluate(() => {
-      const el = document.querySelector<HTMLElement>("a[href='#imagedialog']");
-      if (!el) throw new Error("Art library tab not found");
-      el.click();
-    });
-    await new Promise(r => setTimeout(r, 600));
-
-    await page.evaluate(() => {
-      const btn = document.querySelector<HTMLElement>("button.btn.showuploaddialog");
-      if (!btn) throw new Error("showuploaddialog button not found");
-      btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await new Promise(r => setTimeout(r, 800));
-
-    // Snapshot ALL img.src values before upload (not filtered by URL pattern,
-    // because Jumpgate may use a different CDN domain/path than the old regex assumed).
-    const preUploadImgs = await page.evaluate(() =>
-      Array.from(document.querySelectorAll<HTMLImageElement>("img"))
-        .map(i => i.src).filter(Boolean)
-    ).catch(() => [] as string[]);
-    const preSet = new Set(preUploadImgs);
-
-    // Always trigger via filechooser — using the stale hidden input directly causes every
-    // second upload to silently fail (the change-event listener is consumed after first use).
-    // Clicking the dropzone button forces Roll20 to open a fresh file picker with a new listener.
-    const [fileChooser] = await Promise.all([
-      page.waitForEvent("filechooser", { timeout: 15_000 }),
-      page.evaluate(() => {
-        const btn = document.querySelector<HTMLElement>("button.file-uploader__dropzone-button");
-        const inp = document.querySelector<HTMLElement>("input[type='file']");
-        const target = btn ?? inp;
-        if (!target) throw new Error("upload button/input not found");
-        target.click();
-      }),
-    ]);
-    await fileChooser.setFiles(localAbsPath);
-
-    // Poll for a new img.src that (a) wasn't there before and (b) looks like a CDN URL.
-    // Also check data-src (lazy-load pattern). Derive "original" from whatever thumb URL we find.
-    const deadline = Date.now() + 120_000;
-    while (!capturedUrl && Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, 2000));
-      if (!capturedUrl) {
-        capturedUrl = await page.evaluate((args: { preSet: string[] }) => {
-          const pre = new Set(args.preSet);
-          const isCdn = (s: string) =>
-            s.startsWith("http") && (s.includes("d20.io") || s.includes("roll20.net") || s.includes("cloudfront.net"));
-          // Check img.src and img[data-src]
-          for (const img of Array.from(document.querySelectorAll<HTMLImageElement>("img"))) {
-            for (const src of [img.src, img.dataset["src"] ?? ""]) {
-              if (src && !pre.has(src) && isCdn(src)) {
-                // Normalise to "original": strip thumb suffix variants
-                return src
-                  .replace(/\/thumb\.webp(\?.*)?$/, "/original.webp")
-                  .replace(/\/thumb\.jpg(\?.*)?$/, "/original.webp")
-                  .replace(/[?&]thumb=[^&]*/, "");
-              }
-            }
-          }
-          return null;
-        }, { preSet: preUploadImgs }).catch(() => null);
-      }
-    }
-
-    // Write diagnostic log regardless of outcome
-    const { writeFileSync } = await import("fs");
-    const logPath = dataPath("upload-debug.log");
-    writeFileSync(logPath, [`=== upload ${path.basename(localAbsPath)} ${new Date().toISOString()} ===`, ...uploadLog, `capturedUrl: ${capturedUrl ?? "null"}`].join("\n") + "\n", { flag: "a" });
-
-    if (!capturedUrl) {
-      throw new Error(
-        "Art upload timed out — Roll20 upload response not detected. " +
-        "The file may have uploaded — check Roll20 art library and use place_map_image with the URL manually."
-      );
-    }
-
-    return capturedUrl;
-  } finally {
-    page.off("response", onResponse);
-    // Reset art library UI state so sequential uploads start clean
-    await page.evaluate(() => {
-      const close = document.querySelector<HTMLElement>("#imagedialog .close, #imagedialog [data-dismiss]");
-      if (close) close.click();
-    }).catch(() => {});
+    return await uploadArtDirect(localAbsPath, cache);
+  } catch (e) {
+    throw new Roll20UploadCredentialError(`direct upload failed: ${(e as Error).message}`);
   }
 }
 

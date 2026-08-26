@@ -645,19 +645,6 @@ export function registerCombatTools(server: McpServer): void {
   );
 
   server.tool(
-    "debug_turn_order",
-    "Read the raw Campaign.turnorder string directly from the Roll20 browser page (bypasses relay). Use this to see the exact format Roll20 uses internally.",
-    {},
-    async () => {
-      const raw = await roll20.evaluate(() => {
-        const camp = (window as any).Campaign;
-        return camp ? camp.get("turnorder") : "Campaign not found";
-      });
-      return text(String(raw));
-    }
-  );
-
-  server.tool(
     "get_turn_order",
     "Return the current Roll20 initiative turn order with token names resolved.",
     {},

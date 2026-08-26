@@ -7,7 +7,6 @@ import { registerJournalTools } from "./tools/journal.js";
 import { registerTransportTools } from "./tools/transport.js";
 import { registerCharacterEditTools } from "./tools/characters-edit.js";
 import { registerZoneTools } from "./tools/zones.js";
-import { registerScreenshotTools } from "./tools/screenshot.js";
 import { BUILD_VERSION } from "./build-version.js";
 
 // Single source of truth for the combat server's tool set, shared by the stdio
@@ -29,7 +28,6 @@ export function buildCombatServer(): McpServer {
   // (board vision). The prep-only analysis/wall tools (registerVisionTools) do NOT
   // belong here — see index-maps.ts.
   registerZoneTools(server);
-  registerScreenshotTools(server);
 
   return server;
 }
