@@ -3,7 +3,6 @@ import { z } from "zod";
 import * as registry from "../registry/characters.js";
 import * as ddb from "../bridge/dndbeyond.js";
 import * as roll20 from "../bridge/roll20.js";
-import { fireTacticsForPage } from "./tactics.js";
 import {
   SAVE_ABILITIES, type SaveAbility, type AoeToken,
   saveAttrNames, resolveSaveBonus, damageOnSave,
@@ -677,8 +676,9 @@ export function registerCombatTools(server: McpServer): void {
       const finalOrder = merged.turnorder ?? newEntries;
       await roll20.relayCommand({ action: "setTurnHook", enabled: true, reset: true });
 
-      // Auto-fire tactics at combat start — whisper cards arrive as each mob's plan completes.
-      if (clearFirst) void fireTacticsForPage(activePage);
+      // Tactics are planned by the gem now (#171); it watches the turn order over the
+      // /events stream and stores each mob's plan with set_mob_plan. This server no
+      // longer auto-fires anything at combat start.
 
       return json({
         rolledFor: newEntries.length,
@@ -1524,7 +1524,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "get_mob_plans",
-    "Read the stored tactical plans for all mob tokens. Plans are set by plan_all_tactics and persist until overwritten by a fresh run. Returns a map of tokenId → { html, plan: { name, shortTerm, mediumTerm?, longGoal? } }.",
+    "Read the stored tactical plans for all mob tokens. Plans are written with set_mob_plan and persist until overwritten or cleared. Returns a map of tokenId → { html, plan: { name, shortTerm, mediumTerm?, longGoal? } }.",
     {},
     async () => {
       const result = await roll20.relayCommand<Record<string, unknown>>({ action: "getMobPlans" });
@@ -1534,7 +1534,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "set_mob_plan",
-    "Store (or clear) the tactical plan for one mob token — the storage primitive behind plan_all_tactics, exposed so an external brain (the gem) can do its own planning. The stored plan is whispered to the DM when the token's turn comes up, readable back via get_mob_plans, and pushed to the HUD immediately. Target with characterName or tokenId. Pass clear:true to remove a stored plan (e.g. the mob died or the plan is stale).",
+    "Store (or clear) the tactical plan for one mob token. Planning happens in the caller (the gem's tactics cascade); this server just stores what you decide. The stored plan is whispered to the DM when the token's turn comes up, readable back via get_mob_plans, and pushed to the HUD immediately. Target with characterName or tokenId. Pass clear:true to remove a stored plan (e.g. the mob died or the plan is stale).",
     {
       characterName: z.string().optional().describe("Token name exactly as on the map — the usual way to target."),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),

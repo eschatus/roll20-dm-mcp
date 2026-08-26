@@ -9,7 +9,7 @@ below: **Maps development** and **Combat development**.
 AI-assisted D&D 5e session management for **Roll20 + D&D Beyond**. Three components:
 
 - **`roll20-dm`** — live-combat MCP server over **HTTP** (`src/index-http.ts` → `src/server-combat.ts`).
-  HP, conditions, initiative, dice, narration, turn hooks, AoE, tactics, DDB reads. Also keeps the two
+  HP, conditions, initiative, dice, narration, turn hooks, AoE, mob-plan storage, DDB reads. Also keeps the two
   **dual-use** map tools it needs live: **zones** (fixed-area spells) and **screenshot** (board vision).
 - **`roll20-dm-maps`** — map-prep MCP server over **stdio** (`src/index-maps.ts`). Owns the full
   **map/wall/zone domain**: battlemap upload, Claude-Vision wall detection, DL walls/doors, token
@@ -31,6 +31,8 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
 - `npm run build` — `tsc` → `dist/`. **Required** for the stdio servers referenced in `.mcp.json`
   (`dist/index-maps.js`) and `npm start`. Not required for `npm run serve`.
 - `npm test` — vitest (`src/**/*.test.ts` + `test/*.test.ts`). `npm run test:watch` to iterate.
+  Single file: `npx vitest run test/zone-semantics.test.ts`; single case: add `-t "name substring"`.
+- `npm run lint` — eslint over `src/` + `test/`.
 - **Mod redeploy (manual, easy to forget):** the relay (`mod-scripts/ai-relay.js`) runs inside the
   Roll20 API sandbox; a change to it only takes effect once deployed. **One command does it:
   `npm run release:mod`** (`src/recon/release-mod.ts`) — deploys to the *active* campaign via browser
@@ -38,6 +40,10 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
   if either fails. (Equivalent to `deploy_mod_script` + `tsx src/recon/soak-test.ts` by hand, or the
   old fully-manual paste-into-the-API-console.) CI runs `node --check mod-scripts/ai-relay.js` as a
   syntax gate but cannot deploy.
+- **Relay version handshake:** `AI_RELAY_VERSION` (`mod-scripts/ai-relay.js`) and
+  `EXPECTED_RELAY_VERSION` (`src/bridge/relay-version.ts`) are a hand-synced pair, locked by
+  `test/relay-version.test.ts` — bump BOTH when changing `ai-relay.js` in a way worth flagging to a
+  DM on a stale deploy. A mismatch warns once (never throws) and surfaces via `transport_status`.
 - `src/recon/*` are manual live scripts (real campaign), run with `tsx` — the smoke/soak layer.
   They are excluded from the prod build.
 
@@ -77,6 +83,11 @@ Deep dives: `docs/decisions.md`, `docs/roll20-api-coverage.md`, `docs/roll20-rea
   `createObj("page")` is **unsupported** in the sandbox — pages are made by `createPageViaUI`
   (Playwright). Walls use `pathv2` (re-anchors to the first point regardless of passed x/y — pass
   first-point-as-center).
+- **Roll20 `path` objects silently drop unsupported properties.** They have no `name`, `gmnotes`,
+  or working `fill_opacity` — `createObj`/`set` just discards the write, no error (bit us twice:
+  #162, #164). Zone metadata therefore lives in **`state.GM_AI_Bridge.zones`**, not on the path
+  object; zone tint is baked into the fill color instead of an opacity prop. Anything keyed off
+  path-object metadata is dead by construction — go through the zones state.
 - **The Mod sandbox cannot import TS.** Tables that must agree are kept in **hand-synced copies** —
   most importantly the condition→marker map lives in three places (`src/tools/combat.ts` array,
   `src/bridge/markers.ts` Record, `mod-scripts/ai-relay.js`) and they are **not identical**
@@ -125,7 +136,13 @@ skills/                  dm-rules.md (canonical play rules), dm-map-setup.md
 .claude/commands/        /combat, /round (session choreography)
 docs/                    architecture, decisions, protocols, coverage, security
 test/                    integration tests + the Roll20 emulator (roll20-emulator.ts, harness.ts)
+scripts/                 one-off live diagnostics (run with tsx, e.g. dump-character-attrs.ts)
+wiki/                    GitHub wiki content (user-facing setup/player docs)
 ```
+
+**Mothballed/leftover directories — don't develop here:** `training/` moved to dm-whisper
+(`training/MOVED.md` is the tombstone); a local untracked `voice-hud/` may linger from before the
+2026-08-11 gem split — the real code is in the dm-whisper repo.
 
 Adding a tool: write `register*Tools(server)` with a Zod schema in the right `src/tools/*.ts`, wire
 any new relay action into `mod-scripts/ai-relay.js`'s `ACTIONS` map (then redeploy the Mod), and register
@@ -166,7 +183,7 @@ the registration; the rest of vision/wall tooling is maps-only.)
 ## Combat development
 
 **Server:** `roll20-dm` (HTTP, `src/server-combat.ts`). **Code:** `src/tools/combat.ts`,
-`src/tools/tactics.ts`, `src/tools/aoe.ts`, `src/tools/combatHelpers.ts`, `src/bridge/relayState.ts`.
+`src/tools/aoe.ts`, `src/tools/combatHelpers.ts`, `src/bridge/relayState.ts`.
 **Canonical play rules:** `skills/dm-rules.md`. **Choreography:** `.claude/commands/{combat,round}.md`.
 
 **HP model (important):** routing is THREE-way (`classifyToken`/`isPcToken`/`splitPcNpc` in
@@ -198,14 +215,21 @@ hand-synced table copies.)
   `roll_initiative npcOnly=true`; adjust one entry with `update_turn_order`; insert round markers with
   `inject_round_marker` (needs `formula:"+1"`). The only wholesale wipe is `clear_turn_order`
   (between encounters); `setTurnOrder` is also reachable via `batch_exec` — don't pass it wholesale.
+  (Both `setTurnOrder` paths are now ONE implementation in `runBatchOp`. They used to be two copies
+  that had drifted on the argument name — `entries` vs `turnorder` — so a `batch_exec` setTurnOrder
+  wrote `[]` and erased every player's initiative while reporting `ok:true`. Never re-fork them;
+  `test/relay-actions.test.ts` pins both paths.)
 - **PC initiative is read-only** — players roll their own.
-- `roll_initiative` always arms the turn hook itself. `clearFirst=true` is the only thing that
-  auto-fires tactics (`fireTacticsForPage`); with `clearFirst=false` call `plan_all_tactics`
-  explicitly.
+- `roll_initiative` always arms the turn hook itself. It no longer fires tactics — the gem plans
+  and stores plans through `set_mob_plan` (#171).
 - **Never auto-advance the turn** — `advance_turn` only on the DM's explicit say-so.
 
-**Tactics:** `plan_tactics`/`plan_all_tactics` scale by creature Int/Wis to a tier (`TIER_CONFIGS`
-in `tactics.ts`); tiers 4–5 are multi-model cascades (Haiku→Sonnet→Opus). Dice always roll through
+**Tactics live in the gem now (#171 Phase 2).** This server keeps only the *storage* primitives:
+`set_mob_plan` writes a mob's plan (the turn hook whispers it to the DM on that token's turn) and
+`get_mob_plans` reads them back. There is no model call and no `ANTHROPIC_API_KEY` on the combat
+server — `@anthropic-ai/sdk` remains in `package.json` solely for the maps suite's
+`analyze_battlemap`. Player `!`-commands are likewise ANSWERED by the gem; this server only
+forwards them, as `chat-message` events on the `/events` SSE stream. Dice always roll through
 Roll20's public roller (`roll_dice`), never a TS RNG.
 
 **Narration convention (the assistant reports; the DM narrates):** emit a markdown report every turn;

@@ -4,7 +4,6 @@ import { registerCampaignTools } from "./tools/campaigns.js";
 import { registerCampaignContextTools } from "./tools/campaignContext.js";
 import { registerCombatTools } from "./tools/combat.js";
 import { registerDdbTools } from "./tools/ddb.js";
-import { registerTacticsTools } from "./tools/tactics.js";
 import { registerJournalTools } from "./tools/journal.js";
 import { registerTransportTools } from "./tools/transport.js";
 import { registerCharacterEditTools } from "./tools/characters-edit.js";
@@ -25,7 +24,6 @@ export function buildCombatServer(): McpServer {
   registerCampaignContextTools(server);
   registerCombatTools(server);
   registerDdbTools(server);
-  registerTacticsTools(server);
   registerJournalTools(server);
   registerTransportTools(server);
   registerCharacterEditTools(server);
