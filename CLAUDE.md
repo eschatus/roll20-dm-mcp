@@ -6,10 +6,11 @@ below: **Maps development** and **Combat development**.
 
 ## What this is
 
-AI-assisted D&D 5e session management for **Roll20 + D&D Beyond**. Three components:
+AI-assisted D&D 5e session management for **Roll20**. Three components:
 
 - **`roll20-dm`** — live-combat MCP server over **HTTP** (`src/index-http.ts` → `src/server-combat.ts`).
-  HP, conditions, initiative, dice, narration, turn hooks, AoE, mob-plan storage, DDB reads. Also keeps the two
+  HP, conditions, initiative, dice, narration, turn hooks, AoE, mob-plan storage. Roll20 ONLY — no
+  D&D Beyond, no LLM (#171). Also keeps the two
   **dual-use** map tools it needs live: **zones** (fixed-area spells) and **screenshot** (board vision).
 - **`roll20-dm-maps`** — map-prep MCP server over **stdio** (`src/index-maps.ts`). Owns the full
   **map/wall/zone domain**: battlemap upload, Claude-Vision wall detection, DL walls/doors, token
@@ -63,12 +64,15 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
   MutationObserver) runs ONLY under `ROLL20_TRANSPORT=browser`. Token harvest itself is first-party
   session capture in the gem's own Electron browser (intercept Roll20's `signInWithCustomToken` /
   read DDB's `CobaltSession` cookie) — NOT OAuth, no registered client. (See issue #83.)
-- **D&D Beyond is READ-ONLY and browserless** (`DDB_TRANSPORT` defaults to `rt`): `CobaltSession`
-  cookie → short-lived JWT → `character-service`/`monster-service`. No DDB writes exist; all the
-  write tools were removed.
+- **There is no D&D Beyond here any more (#171 Phase 2).** The whole bridge — cobalt→JWT auth,
+  character/monster reads, the game-log roll pump — extracted to **beyond-mcp**
+  (github.com/eschatus/beyond-mcp), which the gem bundles and treats as its default lookup backend.
+  Anything wanting DDB stats resolves them THERE and passes them in (see `roll_initiative`'s
+  `entries[]`, and the token tools' caller-supplied stats). This server holds no DDB credential.
 
 Deep dives: `docs/decisions.md`, `docs/roll20-api-coverage.md`, `docs/roll20-realtime-protocol.md`,
-`docs/ddb-browserless-protocol.md`, `docs/choreography.md`, `docs/security.md`, `docs/build-and-test-plan.md`.
+`docs/choreography.md`, `docs/security.md`, `docs/build-and-test-plan.md`. (The DDB protocol docs
+moved to beyond-mcp with the code.)
 
 ## Project-wide gotchas (these have bitten us — heed them)
 
@@ -128,7 +132,7 @@ src/index-http.ts        roll20-dm HTTP server bootstrap (auth, /mcp, /events SS
 src/server-combat.ts     registers the roll20-dm toolset
 src/index-maps.ts        roll20-dm-maps stdio server (registers the map toolset)
 src/tools/               MCP tools (one register*Tools fn per file)
-src/bridge/              roll20.ts (relay+fallback), roll20-rt.ts (RT), dndbeyond.ts, ddb-rt.ts,
+src/bridge/              roll20.ts (relay+fallback), roll20-rt.ts (RT),
                          markers.ts, relayState.ts, browser.ts, transport-health.ts
 src/registry/            campaigns + character registries (JSON-backed)
 mod-scripts/ai-relay.js  the Roll20 Mod sandbox relay (deploy manually)
@@ -205,7 +209,7 @@ registry override (`sidekick: true`, `src/registry/characters.ts`) is needed to 
   NPC** (`kill_token`: immediate dead marker + map layer, no PC dying/death-saves state). Set/clear
   the override with `set_token_class` (voice: "Tua is a sidekick").
 - `update_token_hp` (single), `update_hp_many` (batch), `resolve_aoe` (AoE), and `roll_initiative`
-  (npcOnly / DDB HP auto-init) all read the same `sidekickNames` set
+  (npcOnly / `entries[].hp` seeding) all read the same `sidekickNames` set
   (`registry.listSidekickNames()`) so a sidekick routes as an NPC everywhere HP/death routing is
   decided. See issue #132.
 
@@ -246,10 +250,6 @@ never put numbers (HP/damage/totals) in player-visible `send_narration`; narrate
 effect countdowns; dead tokens → mark dead + move to the map layer; emanations (Spirit Guardians) use
 a token **aura**, fixed areas use `create_zone`. Full rules: `skills/dm-rules.md`.
 
-**DDB monster mapper (done, 2026-06-20):** `dndbeyond.getMonster()` routes to `rtGetMonster` and
-normalizes the raw monster-service v1 shape (id-arrays like `challengeRatingId`/`movements`/
-`damageAdjustments`, plus HTML `*Description` blobs) into `DdbMonster` via `mapRawMonster`. Lookup
-tables are baked in `src/bridge/ddb-monster-tables.ts` (captured from DDB's `config/json`); the one
-drifting table, `damageAdjustments`, is overlaid from a lazy 7-day disk cache (`rtGetDamageAdjustments`,
-gated so it never harvests a browser). `ddb_get_monster` now returns a real `challengeRating`. See
-`docs/ddb-browserless-protocol.md`.
+**DDB monster lookup lives in beyond-mcp now** — its `ddb_get_monster` / `ddb_get_party_snapshot`
+(the latter carries site-computed AC + max HP for a whole party in one call). Nothing in this repo
+talks to D&D Beyond.

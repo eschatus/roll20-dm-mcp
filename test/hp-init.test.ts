@@ -1,29 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // #5 — NPC tokens with null HP bars.
 //
-// Two halves, both against the real emulator:
-//  1. roll_initiative auto-initializes bar1/bar1_max from DDB average HP for any
-//     NPC combatant placed without one (ddb.getMonster is mocked here so the
-//     average is deterministic and no network is touched). PCs are never touched.
-//  2. resolve_aoe / update_token_hp / update_hp_many surface "no HP bar" instead
-//     of silently writing 0 to a bar-less token.
+// The other half of this file used to cover roll_initiative's DDB average-HP
+// auto-init. That path is gone with the DDB bridge (#171 Phase 2) — callers pass
+// entries[].hp instead, covered by test/initiative-entries.test.ts.
+//
+// What remains is the guard that outlived it: resolve_aoe / update_token_hp /
+// update_hp_many must SURFACE a bar-less token instead of silently writing 0 to it.
 // ─────────────────────────────────────────────────────────────────────────────
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-
-// Mock only getMonster; keep the rest of the DDB bridge real.
-vi.mock("../src/bridge/dndbeyond.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/bridge/dndbeyond.js")>();
-  return {
-    ...actual,
-    getMonster: vi.fn(async (nameOrId: string | number) => {
-      const n = String(nameOrId).toLowerCase();
-      if (n.includes("dire wolf")) {
-        return { id: 1, name: "Dire Wolf", averageHitPoints: 37, armorClass: 14, challengeRating: "1", largeAvatarUrl: null };
-      }
-      throw new Error(`Monster not found: ${nameOrId}`);
-    }),
-  };
-});
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 
 import { setupHarness, seedWarband, type Harness, type Warband } from "./harness.js";
 
@@ -37,51 +22,6 @@ beforeAll(() => {
   w = seedWarband(h.emu);
 });
 afterAll(() => h.teardown());
-
-describe("roll_initiative HP auto-init (#5)", () => {
-  it("initializes a bar-less NPC from DDB average HP and reports it", async () => {
-    const wolf = h.emu.createToken({ pageid: w.pageId, name: "Dire Wolf", controlledby: "", left: 200, top: 200 });
-    expect(max(wolf.id)).toBe(0); // no bar to start
-
-    const { json } = await h.callTool("roll_initiative", { nameFilter: "dire wolf", initHp: true, publicRoll: false });
-    const r = json as { hpInitialized?: string[]; hpLookupFailed?: string[] };
-
-    expect(max(wolf.id)).toBe(37);
-    expect(val(wolf.id)).toBe(37);
-    expect(r.hpInitialized).toContain("Dire Wolf → 37");
-  });
-
-  it("flags an NPC the compendium doesn't know and leaves its bar untouched", async () => {
-    const beast = h.emu.createToken({ pageid: w.pageId, name: "Mystery Beast", controlledby: "", left: 340, top: 200 });
-
-    const { json } = await h.callTool("roll_initiative", { nameFilter: "mystery beast", initHp: true, publicRoll: false });
-    const r = json as { hpInitialized?: string[]; hpLookupFailed?: string[] };
-
-    expect(max(beast.id)).toBe(0); // still no bar — graceful, not a phantom
-    expect(r.hpLookupFailed).toContain("Mystery Beast");
-  });
-
-  it("never initializes a PC-controlled token, even with npcOnly:false", async () => {
-    const ghost = h.emu.createToken({ pageid: w.pageId, name: "Dire Wolf Familiar", controlledby: w.playerId, left: 410, top: 200 });
-
-    const { json } = await h.callTool("roll_initiative", { nameFilter: "familiar", npcOnly: false, initHp: true, publicRoll: false });
-    const r = json as { hpInitialized?: string[] };
-
-    // Name would match the DDB mock, but the PC guard skips it: bar stays unset.
-    expect(max(ghost.id)).toBe(0);
-    expect(r.hpInitialized ?? []).not.toContain("Dire Wolf Familiar → 37");
-  });
-
-  it("skips the DDB lookups entirely when initHp:false", async () => {
-    const wolf2 = h.emu.createToken({ pageid: w.pageId, name: "Dire Wolf", controlledby: "", left: 480, top: 200 });
-
-    const { json } = await h.callTool("roll_initiative", { nameFilter: "dire wolf", initHp: false, publicRoll: false });
-    const r = json as { hpInitialized?: string[] };
-
-    expect(max(wolf2.id)).toBe(0);
-    expect(r.hpInitialized).toBeUndefined();
-  });
-});
 
 describe("no-HP-bar warnings (#5)", () => {
   it("resolve_aoe reports a bar-less target as not-applied instead of a phantom hit", async () => {

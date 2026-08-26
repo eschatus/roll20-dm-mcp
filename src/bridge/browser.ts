@@ -13,16 +13,16 @@ async function pwChromium(): Promise<typeof import("playwright").chromium> {
 }
 import { dataPath } from "../dataDir.js";
 
-type Site = "roll20" | "ddb";
+// Roll20 only. The "ddb" site went with the D&D Beyond bridge (#171 Phase 2) — this
+// process no longer holds or harvests a CobaltSession, and beyond-mcp owns that surface.
+type Site = "roll20";
 
 const SITE_URLS: Record<Site, string> = {
   roll20: "https://app.roll20.net/",
-  ddb: "https://www.dndbeyond.com/",
 };
 
 const LOGIN_URLS: Record<Site, string> = {
   roll20: "https://app.roll20.net/sessions/new",
-  ddb: "https://www.dndbeyond.com/login",
 };
 
 // Port used for CDP reattachment across server restarts and multi-server setups.
@@ -189,7 +189,6 @@ async function isLoggedIn(page: Page, site: Site): Promise<boolean> {
     await page.waitForTimeout(1500);
     const url = page.url();
     if (site === "roll20") return !url.includes("/sessions/new");
-    if (site === "ddb") return !url.includes("/login");
     return false;
   } catch (e) {
     // Return true only if we're already on the target site — plausibly still live.
@@ -218,16 +217,8 @@ async function loginRoll20(page: Page): Promise<void> {
   );
 }
 
-async function loginDdb(page: Page): Promise<void> {
-  if (HIDE_BROWSER) await setBrowserWindowState(page, "normal"); // un-minimize so the GM can log in
-  console.error("[roll20-dm] DnD Beyond login required — complete login in the Chromium browser window, then this will continue automatically.");
-  await page.goto(LOGIN_URLS.ddb, { waitUntil: "commit", timeout: 15_000 }).catch(() => {});
-  await waitForManualAuth(page, "ddb", 120_000);
-}
-
 const LOGIN_FNS: Record<Site, (page: Page) => Promise<void>> = {
   roll20: loginRoll20,
-  ddb: loginDdb,
 };
 
 // Per-site promise cache — same race-prevention pattern as _contextPromise.

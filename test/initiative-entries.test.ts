@@ -8,8 +8,8 @@
 //   - hp seeds bar1/bar1_max under the existing NPC/sidekick routing — a PC's
 //     bar is never written, even when an entry matches it.
 //   - Player turn-order entries survive (mergeTurnOrder path untouched).
-// All calls pass initHp:false — the deprecated DDB auto-init is exercised by
-// hp-init.test.ts and is not under test here.
+// entries[].hp is now the ONLY way roll_initiative seeds HP: the DDB average-HP
+// auto-init it superseded was deleted with the bridge (#171 Phase 2).
 // ─────────────────────────────────────────────────────────────────────────────
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { setupHarness, type Harness } from "./harness.js";
@@ -65,7 +65,7 @@ describe("roll_initiative entries (#172)", () => {
   it("explicit bonus beats the sheet bonus and rolls through the Roll20 roller", async () => {
     const { json } = await h.callTool("roll_initiative", {
       entries: [{ match: "Bugbear", bonus: 5 }],
-      initHp: false, publicRoll: false,
+      publicRoll: false,
     });
     const r = json as InitResult;
 
@@ -83,7 +83,7 @@ describe("roll_initiative entries (#172)", () => {
   it("falls back to the sheet bonus when an entry omits bonus", async () => {
     const { json } = await h.callTool("roll_initiative", {
       entries: [{ match: "Bugbear" }],
-      initHp: false, publicRoll: false,
+      publicRoll: false,
     });
     const r = json as InitResult;
     expect(r.results.find((l) => l.startsWith("Bugbear:"))).toMatch(/Bugbear: \d+\+1 = /);
@@ -92,7 +92,7 @@ describe("roll_initiative entries (#172)", () => {
   it("matches an entry by exact token id", async () => {
     const { json } = await h.callTool("roll_initiative", {
       entries: [{ match: bugbearId, bonus: 3 }],
-      initHp: false, publicRoll: false,
+      publicRoll: false,
     });
     const r = json as InitResult;
     expect(r.results.find((l) => l.startsWith("Bugbear:"))).toMatch(/\+3 = /);
@@ -109,7 +109,7 @@ describe("roll_initiative entries (#172)", () => {
         { match: "Tua", bonus: 2, hp: 22 },
         { match: "Glint", bonus: 4, hp: 99 },
       ],
-      npcOnly: false, initHp: false, publicRoll: false,
+      npcOnly: false, publicRoll: false,
     });
     const r = json as InitResult;
 
@@ -126,7 +126,7 @@ describe("roll_initiative entries (#172)", () => {
   it("explicit hp overwrites an existing bar (the caller said so)", async () => {
     const { json } = await h.callTool("roll_initiative", {
       entries: [{ match: "Droop", hp: 12 }],
-      initHp: false, publicRoll: false,
+      publicRoll: false,
     });
     expect((json as InitResult).hpSeeded).toContain("Droop → 12");
     expect(bar(droopId)).toBe(12);
@@ -141,7 +141,7 @@ describe("roll_initiative entries (#172)", () => {
 
     const { json } = await h.callTool("roll_initiative", {
       entries: [{ match: "Bugbear", bonus: 2 }, { match: "Droop", bonus: 0 }],
-      clearFirst: true, initHp: false, publicRoll: false,
+      clearFirst: true, publicRoll: false,
     });
     const r = json as InitResult;
 
@@ -157,7 +157,7 @@ describe("roll_initiative entries (#172)", () => {
     // name didn't match anything.
     const { json } = await h.callTool("roll_initiative", {
       entries: [{ match: "Bugbear", bonus: 2 }, { match: "Glint", hp: 55 }],
-      initHp: false, publicRoll: false,
+      publicRoll: false,
     });
     const r = json as InitResult;
     expect(r.hpSkippedPc).toEqual(["Glint Klinkinski (PC — bar never written)"]);
@@ -175,7 +175,7 @@ describe("roll_initiative entries (#172)", () => {
 
     const { json } = await h.callTool("roll_initiative", {
       entries: [{ match: bugbearId, bonus: 1 }],
-      initHp: false, publicRoll: false,
+      publicRoll: false,
     });
     const r = json as InitResult;
     expect(r.turnOrder.find((e) => e.id === bugbearId)).toBeDefined();
@@ -186,7 +186,7 @@ describe("roll_initiative entries (#172)", () => {
   it("reports entries that matched no token", async () => {
     const { json } = await h.callTool("roll_initiative", {
       entries: [{ match: "Bugbear" }, { match: "Nonexistent Wight", bonus: 3 }],
-      initHp: false, publicRoll: false,
+      publicRoll: false,
     });
     expect((json as InitResult).entriesUnmatched).toEqual(["Nonexistent Wight"]);
   });
@@ -194,7 +194,7 @@ describe("roll_initiative entries (#172)", () => {
   it("accepts a JSON-stringified entries array (model compatibility)", async () => {
     const { json } = await h.callTool("roll_initiative", {
       entries: JSON.stringify([{ match: "Bugbear", bonus: 7 }]),
-      initHp: false, publicRoll: false,
+      publicRoll: false,
     });
     expect((json as InitResult).results.find((l) => l.startsWith("Bugbear:"))).toMatch(/\+7 = /);
   });
