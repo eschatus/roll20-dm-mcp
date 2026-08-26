@@ -3,6 +3,7 @@ import { z } from "zod";
 import { readFileSync, statSync } from "fs";
 import path from "path";
 import * as roll20 from "../bridge/roll20.js";
+import { rtCreatePage } from "../bridge/roll20-rt.js";
 
 // --- Local-asset confinement ---------------------------------------------------
 // import_map_file / upload_and_place_map_image read arbitrary local paths handed
@@ -65,7 +66,9 @@ export function registerMapTools(server: McpServer): void {
       let created = false;
 
       if (!page) {
-        const newId = await roll20.createPageViaUI(name, widthSquares, heightSquares, scaleNumber, scaleUnits);
+        // Browserless (#178): RTDB creates the page, then setPageProps below fills in the fields
+        // the RTDB page does not carry (scale_number/scale_units/showgrid).
+        const newId = await rtCreatePage({ name, widthSquares, heightSquares });
         page = { id: newId, name, width: widthSquares, height: heightSquares };
         created = true;
       }

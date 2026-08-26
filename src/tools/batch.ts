@@ -6,6 +6,7 @@ import { dataPath } from "../dataDir.js";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import * as roll20 from "../bridge/roll20.js";
+import { rtCreatePage } from "../bridge/roll20-rt.js";
 import { prepareImage, analyzeImageTwoPass, detectGridByAutocorrelation, processWalls, HoughCandidate, Wall as VisionWall } from "./vision.js";
 import { ASSET_BASE } from "./maps.js";
 
@@ -199,7 +200,7 @@ export function registerBatchTools(server: McpServer): void {
           if (existingPage) {
             pageId = existingPage.id;
           } else {
-            pageId = await roll20.createPageViaUI(pageName, wSq, hSq, 5, "ft");
+            pageId = await rtCreatePage({ name: pageName, widthSquares: wSq, heightSquares: hSq });
           }
           await roll20.relayCommand({
             action: "setPageProps", pageId,

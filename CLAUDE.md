@@ -26,7 +26,8 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
 
 ## Build / run / test / deploy
 
-- **Node 20+** (TypeScript 6 build needs it). `npm install` then `npx playwright install chromium`.
+- **Node 20+** (TypeScript 6 build needs it). `npm install` — **no browser step**: this repo has no
+  Playwright dependency at all (#179).
 - `npm run serve` — runs the HTTP server via `tsx` (no build step needed for dev). First run
   generates `ROLL20_MCP_TOKEN`, writes it to `.env`, and injects it into `.mcp.json`.
 - `npm run build` — `tsc` → `dist/`. **Required** for the stdio servers referenced in `.mcp.json`
@@ -53,22 +54,24 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
 
 `Claude → MCP tool (TS) → roll20.relayCommand({action,…}) → ai-relay.js (Mod sandbox) → Roll20 objects`
 
-- **RT is the DEFAULT and combat is browserless** (`ROLL20_TRANSPORT` defaults to `rt`; set
-  `=browser` to opt OUT to the legacy relay, dev only). `relayCommand` pushes `!ai-relay {JSON}`
+- **RT is the DEFAULT and combat is browserless** (RT is the ONLY transport — the legacy browser relay is gone (#122/#179)). `relayCommand` pushes `!ai-relay {JSON}`
   over the campaign's Firebase RTDB and reads `AIBRIDGE_RESULT` back over an RTDB child listener
   (~50ms). It carries **reads AND writes** — the Mod executes every action regardless of transport.
   Some reads are served even more directly (`rtGet`/`tryDirectRead` off RTDB; `CLIENT_READS` in
   `roll20.ts` off live Backbone, but only on the explicit `=browser` path).
-- **The combat server CANNOT open a browser at all (#177).** If a thing needs a browser, it is not
-  an MCP tool here. Credentials are FURNISHED, never minted: the RT token is read from
+- **THERE IS NO BROWSER IN THIS REPO (#179).** Not in either server, not in recon, not in
+  `package.json`. If a thing needs a browser, it is not an MCP tool here — that rule is why page
+  creation was rebuilt over RTDB (#178) and why `screenshot_roll20` left. The browser recon
+  instruments live in the sibling `roll20-recon` repo; the wall-dataset harvesters live in
+  `wall-seg`. Credentials are FURNISHED, never minted: the RT token is read from
   `<data dir>/roll20-rt-token.json` (campaign-scoped) and art uploads from
   `roll20-upload-cache.json`; both throw a typed error (`Roll20TokenUnavailableError`,
   `Roll20UploadCredentialError`) naming what to refresh instead of harvesting. Art upload is a
   plain multipart POST — browserless, credential furnished. Harvesting happens in the gem's own
-  logged-in session, where a human is present. The browser→chat relay (types into chat, reads `/w gm` via
-  MutationObserver) runs ONLY under `ROLL20_TRANSPORT=browser`. Token harvest itself is first-party
-  session capture in the gem's own Electron browser (intercept Roll20's `signInWithCustomToken` /
-  read DDB's `CobaltSession` cookie) — NOT OAuth, no registered client. (See issue #83.)
+  logged-in session, where a human is present. The legacy browser→chat relay is DELETED (#122/#179) —
+  RT is the only transport, and an RT failure is a loud hard stop, never a quiet fallback. Harvest
+  is first-party session capture in the gem's own Electron browser (intercepting Roll20's
+  `signInWithCustomToken`) — NOT OAuth, no registered client. (See #83, #177.)
 - **There is no D&D Beyond here any more (#171 Phase 2).** The whole bridge — cobalt→JWT auth,
   character/monster reads, the game-log roll pump — extracted to **beyond-mcp**
   (github.com/eschatus/beyond-mcp), which the gem bundles and treats as its default lookup backend.
@@ -89,9 +92,14 @@ moved to beyond-mcp with the code.)
   (`test/relay-actions-smoke.test.ts` → "setSafe write guard") proves bad values are dropped, not
   written. (`docs` + memory: relay-undefined-firebase-crash.)
 - **Roll20 object quirks:** read type as `_type` (not `type`); turn-order entries need `_pageid`;
-  `createObj("page")` is **unsupported** in the sandbox — pages are made by `createPageViaUI`
-  (Playwright). Walls use `pathv2` (re-anchors to the first point regardless of passed x/y — pass
-  first-point-as-center).
+  `createObj("page")` is **unsupported in the Mod sandbox** — but that is a MOD limitation, not an
+  RTDB one: `rtCreatePage` (`roll20-rt.ts`) creates pages by writing the `pages` node directly,
+  proved live in #178. **Its units bite:** page `width`/`height` are **70px units, not cells**
+  (rendered cell size is `70 * snapping_increment`), and `zorder`/`thumbnail`/`placement` are
+  per-page content that must be RESET, never copied from the template page. The RTDB page carries
+  only 16 fields — `scale_number`/`scale_units`/`showgrid` live on the MOD's page object, so
+  creation is RTDB then `setPageProps`. Walls use `pathv2` (re-anchors to the first point
+  regardless of passed x/y — pass first-point-as-center).
 - **Roll20 `path` objects silently drop unsupported properties.** They have no `name`, `gmnotes`,
   or working `fill_opacity` — `createObj`/`set` just discards the write, no error (bit us twice:
   #162, #164). Zone metadata therefore lives in **`state.GM_AI_Bridge.zones`**, not on the path

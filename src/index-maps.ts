@@ -9,7 +9,6 @@ import { registerTokenTools } from "./tools/tokens.js";
 import { registerVisionTools } from "./tools/vision.js";
 import { registerBatchTools } from "./tools/batch.js";
 import { registerZoneTools } from "./tools/zones.js";
-import { registerScreenshotTools } from "./tools/screenshot.js";
 import { BUILD_VERSION } from "./build-version.js";
 
 const server = new McpServer({
@@ -27,7 +26,6 @@ registerTokenTools(server);
 registerVisionTools(server);
 registerBatchTools(server);
 registerZoneTools(server);
-registerScreenshotTools(server);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

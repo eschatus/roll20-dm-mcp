@@ -879,6 +879,60 @@ export async function rtRawDb(): Promise<{ db: import("firebase/database").Datab
   return { db: conn.db, storagePath: conn.storagePath };
 }
 
+// Create a Roll20 PAGE by writing the campaign's RTDB `pages` node directly (#178).
+//
+// CLAUDE.md's "`createObj("page")` is unsupported" is a MOD SANDBOX limitation and says nothing
+// about RTDB. Verified live against a throwaway campaign: push() + set() is accepted, all fields
+// read back, and the page opens and edits normally in the editor. This replaces the Playwright
+// `createPageViaUI`, which was a workaround for a restriction that never applied to this path.
+//
+// UNITS — the thing that will bite you: `width`/`height` are 70px UNITS, not cells. The rendered
+// cell size is `70 * snapping_increment`, so cells = (width * 70) / (70 * snapping_increment).
+// With the default snapping_increment of 1 the page is `widthSquares` standard 70px squares, which
+// is what every caller means. Writing width as a cell count with a fractional increment silently
+// produces a page 1/increment too big.
+//
+// NOTE the RTDB page carries only 16 fields — no scale_number/scale_units/showgrid/background_color.
+// Those live on the MOD's page object, so callers finish the job with a setPageProps relay call.
+export async function rtCreatePage(opts: {
+  name: string;
+  widthSquares: number;
+  heightSquares: number;
+  snappingIncrement?: number;
+}): Promise<string> {
+  const { db, storagePath } = await rtRawDb();
+
+  // Mirror an existing page: it is the only trustworthy source for the client-filled fields, and
+  // guessing a minimal object is how you get a page that lists but will not open.
+  const pages = await rtGet<Record<string, Record<string, unknown>>>("pages");
+  const template = Object.values(pages ?? {})[0];
+  if (!template) throw new Error("rtCreatePage: campaign has no existing page to mirror a schema from");
+
+  const page: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(template)) {
+    if (typeof v === "object" && v !== null) continue;   // subcollections are separate nodes
+    page[k] = v;
+  }
+
+  // Per-page CONTENT must be reset, never inherited: zorder is the template's own object stacking
+  // list, thumbnail is its map art, and placement is its slot in the page list.
+  const placements = Object.values(pages ?? {})
+    .map((p) => Number(p?.placement))
+    .filter((n) => Number.isFinite(n));
+  page.zorder = "";
+  page.thumbnail = "";
+  page.placement = (placements.length ? Math.max(...placements) : 0) + 10;
+  page.name = opts.name;
+  page.width = opts.widthSquares;
+  page.height = opts.heightSquares;
+  page.snapping_increment = opts.snappingIncrement ?? 1;
+
+  const newRef = push(ref(db, `${storagePath}/pages`));
+  page.id = newRef.key;                     // Roll20 objects carry their own id
+  await set(newRef, stripUndefWrite(page));
+  return newRef.key!;
+}
+
 // Merge-write fields onto a node under the storage root (RTDB update = partial merge), like the
 // Roll20 UI does when you edit a token. No Mod, no chat.
 export async function rtUpdate(relPath: string, partial: Record<string, unknown>): Promise<void> {
