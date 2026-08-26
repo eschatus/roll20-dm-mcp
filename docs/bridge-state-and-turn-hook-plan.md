@@ -1,5 +1,9 @@
 # Plan: GM bridge-state token + turn-hook migration to TS
 
+> **Status: SUPERSEDED** — the two-token bridge scheme is infeasible (RTDB denies client writes) and
+> the narration half is now the **gem's** job, not TS-in-this-server's (#171). Kept for the
+> constraint it documents.
+
 > **⚠ STATUS: SUPERSEDED / LARGELY INFEASIBLE AS WRITTEN (2026-06-20).** Two premises this plan
 > rests on turned out to be false:
 > 1. **"Writes → direct RTDB writes."** Roll20's RTDB security rules **deny client writes** to
@@ -18,6 +22,14 @@
 > relay — not off a bridge token. The Mod still owns turn-hook auto-narration; TS produces its
 > markdown report separately (the two are complementary — see `skills/dm-rules.md`). Auto-roll
 > initiative for NPC tokens dropped mid-combat shipped via the Mod's `add:graphic` hook.
+>
+> **Update 2026-08-26 (v2.0.0).** Phase 2's goal — "TS owns combat narration, LLM-driven" — is now
+> answered a different way and should not be revived here: **the gem owns all model work** (#171).
+> This server holds no model and no `ANTHROPIC_API_KEY` on the combat path. Mob plans reach the DM
+> through `set_mob_plan`/`get_mob_plans`/`clear_mob_plans` (relay state, whispered by the Mod's turn
+> hook) plus the SSE broadcast; the Mod still owns turn-hook auto-narration. Also note the "Context"
+> section below is wrong on one point even as history: **writes were never direct RTDB writes** —
+> that is the false premise this banner opens with.
 >
 > The text below is kept for historical context only. Do not implement it without first solving the
 > RTDB-write-denied constraint.

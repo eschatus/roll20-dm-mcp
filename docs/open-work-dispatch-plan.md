@@ -1,5 +1,21 @@
 # Open-work dispatch plan (Opus orchestrator → parallel Sonnet workers)
 
+> **Status: DONE — the backlog it dispatched is cleared, and the repo it planned against no longer
+> exists in that shape.** Every track resolved (see Status below): Wave 1 merged, HANDLERMAP done
+> (#23), BRIDGE parked and now permanently so (the gem owns narration, #171), IMG dropped. Three of
+> its standing assumptions are dead as of v2.0.0 (2026-08-26):
+> - **`voice-hud/` is not in this repo** (gem split, 2026-08-11), so the VHUD track and cross-cutting
+>   rule 5 point at **dm-whisper**. Its subject — phase-gated tools — was later *removed* outright;
+>   `docs/phase-removal.md` is the tombstone.
+> - **`deploy_mod_script` no longer exists** (#175). The orchestrator's post-merge step is now a
+>   human paste into the campaign's API console, per campaign, verified by the load banner, then
+>   `tsx src/recon/soak-test.ts`.
+> - `docs/ddb-browserless-protocol.md` (cited below) left with the DDB bridge (#171 Phase 2).
+>
+> Kept for the orchestration pattern, which is the durable part: one worker per track, disjoint file
+> ownership, exactly one worker allowed to touch `ai-relay.js` per wave, emulator-not-live-campaign
+> as the worker's regression net.
+
 A plan for a future **Opus** session to clear the remaining design-doc backlog by **dispatching
 independent tracks to parallel Sonnet subagents** (the `Agent` tool), then integrating their PRs.
 It exists so the orchestrator doesn't re-derive scope, and so workers don't collide on shared files.

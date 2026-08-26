@@ -40,7 +40,7 @@ Ask the DM for the page name if not provided. Default: 30×20 squares, 5ft scale
 
 Call `auto_place_dl_walls` with the walls from step 2. **Always pass `strokeColor: "#0044FF"`**
 (blue) for DL walls — the tool defaults to yellow `#FFFF00`, which violates the project convention
-(blue for walls, green for windows). Tune the geometry for the map type:
+(blue `#0044FF` for walls, cyan `#00FFFF` for windows). Tune the geometry for the map type:
 
 **Stone dungeon / cave (rough walls):**
 ```

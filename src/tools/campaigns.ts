@@ -5,7 +5,7 @@ import * as campaigns from "../registry/campaigns.js";
 export function registerCampaignTools(server: McpServer): void {
   server.tool(
     "register_campaign",
-    "Register a campaign by name with its Roll20 and D&D Beyond IDs",
+    "Register a campaign by name with its Roll20 id. ddbCampaignId is a linkage id passed through to a D&D Beyond lookup server (beyond-mcp) — nothing here reads D&D Beyond; pass \"0\" if unused.",
     {
       name: z.string().describe("Human-readable campaign name, e.g. 'Curse of Strahd'"),
       roll20CampaignId: z.string().describe("Roll20 campaign ID from the URL: app.roll20.net/campaigns/details/XXXXXX"),

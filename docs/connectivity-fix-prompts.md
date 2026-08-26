@@ -1,5 +1,27 @@
 # Connectivity hardening — implementation prompt series
 
+> **Status: DONE / SUPERSEDED — do not run these prompts.** The series was consumed: the
+> transport-health circuit breaker (Prompt 5) and the sandbox watchdog (Prompt 6) shipped and are
+> live in `src/bridge/transport-health.ts` and `src/bridge/sandbox-watchdog.ts`; the rest either
+> shipped or were overtaken by #122/#177/#179.
+>
+> **The "Shared context" block immediately below is now actively wrong** and is the reason this file
+> needs a banner rather than a quiet archive. Corrections, in the order it makes the claims:
+> - (2) **`src/bridge/roll20.ts` is not a Playwright fallback.** There is no fallback and no
+>   Playwright — RT is the only transport, and `roll20.ts` is now the dispatcher + circuit-breaker
+>   gate + the art-upload POST.
+> - (3) **`src/bridge/browser.ts` does not exist.** No Chromium singleton, no CDP reattach, no
+>   `playwright` dependency (#179).
+> - The **invariant is stronger now**, not weaker: a mutating write cannot cross transports because
+>   there is only one transport. `shouldFallback` was deleted; `READONLY_ACTIONS` lives in
+>   `src/bridge/actions.ts`.
+> - Credentials are **furnished, never minted** (#177) — nothing here can harvest a token, which
+>   dissolves the Chromium-relaunch-loop hazard Prompt 1 was written against.
+> - `voice-hud/` is gone (gem split, 2026-08-11) — Prompts 2 and 7, and item 5 of Prompt 8, describe
+>   files in the **dm-whisper** repo.
+>
+> Kept because the failure analyses are good and the shipped modules still behave as described.
+
 Each prompt below is self-contained and intended for a fresh Sonnet session working in
 `e:\personalProjects\roll20-dm-mcp`. Run them **in order** — later prompts assume earlier
 ones have landed. After each prompt: `npm run build` must pass at the repo root, and
@@ -25,6 +47,11 @@ Shared context to paste at the top of every session:
 ---
 
 ## Prompt 1 — Stop `/events` from launching Chromium in a retry loop
+
+> **✅ MOOT AT THE ROOT (#177/#179).** The hazard was `getCustomToken()` → `harvestCustomToken()`
+> launching Chromium on every failed retry. There is no `harvestCustomToken` and no Chromium:
+> `getCustomToken` reads the furnished `roll20-rt-token.json` and throws
+> `Roll20TokenUnavailableError`. A failing auth loop now costs a file read and a clear error.
 
 **Problem.** In `src/index-http.ts`, the `/events` SSE handler calls
 `startRtdbSubscriptions()` unconditionally on every connection. If RT auth fails (no
@@ -212,6 +239,13 @@ and `transport_status` reports it. Add a vitest for the health state machine
 
 ## Prompt 6 — Sandbox watchdog: detect and wake a sleeping/crashed Mod
 
+> **✅ SHIPPED, with a different wake step.** `src/bridge/sandbox-watchdog.ts` exists and works as
+> described (`pingMod()` probe, single-flight, loud stop after a second miss, `sandbox-status`
+> broadcast). But the "wake dance" it calls is `rtReconnect()` — **not** `reconnectRoll20({hard:false})`,
+> which is gone with the browser (#179). Note the honest limit that follows: nothing browserless can
+> actually *join the game*, so the watchdog now **detects** a sleeping sandbox and says so, rather
+> than reliably waking it. Something must connect to the campaign for real.
+
 **Problem.** The Roll20 API sandbox sleeps when nobody is connected to the game and
 crashes outright on certain bad writes (see memory: undefined → `t.set()` kills it).
 In RT (browserless) mode nothing keeps it awake, so Mod-destined commands time out
@@ -278,6 +312,12 @@ by a roster build). Roster names still update across turns.
 ---
 
 ## Prompt 8 — Small perf + hygiene sweep
+
+> **Partly shipped, partly moot.** Item 1 (campaign read cache) shipped — `_campaignPageCache` /
+> `CAMPAIGN_CACHE_TTL_MS = 30_000` in `roll20-rt.ts`, cleared by `_clearCampaignPageCache()`. Items 2
+> and 3 are **moot**: `page.on("load")` and `browser.ts`'s `isLoggedIn` went with the browser (#179).
+> Item 5 is the **gem's** now (dm-whisper). Item 4 (`seenKeys` insertion-order trim) is worth
+> re-checking against `roll20-rt.ts` before assuming it landed.
 
 Batch of independent low-risk items:
 

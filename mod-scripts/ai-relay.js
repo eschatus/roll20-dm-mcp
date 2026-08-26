@@ -1825,7 +1825,7 @@ ACTIONS["setMobPlan"] = function (args, msg, nonce, senderPlayerId) {
 ACTIONS["getMobPlans"] = function (args, msg, nonce, senderPlayerId) {
         {
         // Read all stored mob plans. Plans persist until overwritten by a fresh
-        // plan_all_tactics run (they are NOT deleted when the token's turn fires).
+        // set_mob_plan write (they are NOT deleted when the token's turn fires).
         writeResult(nonce, B().mobPlans || {});
         return;
       }
@@ -2777,7 +2777,7 @@ on("change:campaign:turnorder", function(obj, prev) {
   }
 
   // Show the stored mob tactical plan for this token (persists — not deleted here;
-  // overwritten by the next plan_all_tactics run).
+  // overwritten by the next set_mob_plan write).
   let mobPlan = bs.mobPlans[newFirst.id] || null;
 
   let hpLine = "";

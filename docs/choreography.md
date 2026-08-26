@@ -2,15 +2,14 @@
 
 Two complete traces showing every hop a request makes from DM speech to final state change.
 
-> **Transport note (applies to every `relayCommand` below).** When `ROLL20_TRANSPORT=rt`
-> is set (RT is opt-in; unset = Playwright), commands are pushed as `!ai-relay {JSON}` over the campaign's Firebase RTDB
-> and the Mod's `AIBRIDGE_RESULT` is read back over an RTDB child listener — no browser needed
-> (~49ms warm). On *any* RT failure (auth, timeout, disconnect, or an open circuit breaker)
-> the same command (same nonce, so the Mod's `PROCESSED_NONCES` LRU deduplicates) falls back to
-> the Playwright path: type `!ai-relay …` into the Roll20 chat input and read the `/w gm`
-> result div via a `MutationObserver`. Some reads are served even more directly from the
-> browser's live Backbone models (`CLIENT_READS` in `roll20.ts`) when a browser is attached.
-> The traces below show the relay hop generically; substitute whichever transport is live.
+> **Transport note (applies to every `relayCommand` below).** **RT is the only transport.**
+> Commands are pushed as `!ai-relay {JSON}` over the campaign's Firebase RTDB and the Mod's
+> `AIBRIDGE_RESULT` is read back over an RTDB child listener — no browser anywhere (~49ms warm).
+> There is **no fallback**: on an RT failure (auth, timeout, disconnect, or an open circuit breaker)
+> `relayCommand` throws, naming the fix ("reconnect Roll20 in the gem to re-harvest the token").
+> The legacy Playwright chat-typing relay and `CLIENT_READS` were deleted in #122/#179, and
+> `ROLL20_TRANSPORT=browser` now selects nothing. Some reads are served without touching the Mod at
+> all, straight off the RTDB subtree (`rtGet`/`tryDirectRead` in `roll20-rt.ts`).
 
 ---
 
@@ -44,13 +43,17 @@ MCP Server (tool result returned to Claude)
   ▼
 MCP Server — src/tools/maps.ts
   │
-  │  page creation is browser-only (createObj("page") is unsupported in the Mod sandbox):
-  │  roll20.createPageViaUI(name, w, h, …) — Playwright clicks "Create Page", diffs the page
-  │  list to learn the new pageId. Then relayCommand({ action: "setPageProps", … }) sizes it.
+  │  page creation is BROWSERLESS (#178). createObj("page") is unsupported in the *Mod sandbox*,
+  │  but that limitation never applied to RTDB: rtCreatePage() (roll20-rt.ts) mirrors an existing
+  │  page's schema and writes a new child under the campaign's top-level `pages` node, resetting
+  │  the per-page content fields (zorder/thumbnail/placement) rather than copying them.
+  │  ⚠ width/height on the RTDB page are 70px UNITS, not cells (rendered cell = 70 * snapping_increment).
+  │  The RTDB page carries only 16 fields, so scale_number/scale_units/showgrid are a follow-up
+  │  relayCommand({ action: "setPageProps", … }) against the Mod's page object.
   ▼
-Roll20 (UI automation + Mod relay for setPageProps)
+Roll20 RTDB (page node) + Mod relay for setPageProps
   │
-  │  new page "Dungeon Entrance" exists; pageId discovered → "pageId123"
+  │  new page "Dungeon Entrance" exists; pageId is the RTDB push key → "pageId123"
   ▼
 MCP Server
   │
@@ -75,7 +78,10 @@ Claude reports back (DM-facing markdown):
   "Created page 'Dungeon Entrance'. Placed 42/42 wall segments on the DL layer."
 ```
 
-**Total hops:** DM → Claude → MCP Server → Anthropic API → MCP Server → Roll20 relay (page + walls) → Roll20 campaign
+**Total hops:** DM → Claude → MCP Server → Anthropic API → MCP Server → Roll20 RTDB (page) + Roll20 relay (walls) → Roll20 campaign
+
+(`ANTHROPIC_API_KEY` is needed for exactly this hop — `analyze_battlemap` in the **maps** suite. The
+combat server makes no model call and needs no key.)
 
 ---
 
@@ -96,11 +102,11 @@ Claude (MCP client)
 MCP Server — src/tools/combat.ts
   │
   │  resolveTokenOrThrow("Eli") → fuzzy-matches the live page token list → tokenId "tok_abc"
-  │  → reads the token, computes isPcToken(token) (by `controlledby`). Eli is a PC.
+  │  → reads the token, computes classifyToken(token) — THREE-way: PC / NPC / sidekick
+  │    (`controlledby` plus the characters-registry `sidekick: true` override). Eli is a PC.
   │
-  │  D&D Beyond is READ-ONLY — no HP/condition write is issued.
-  │  (Optional, read-only: ddb_get_character may be polled at round start to spot-check
-  │   drift; it is never written.)
+  │  Nothing here talks to D&D Beyond — the whole DDB bridge left for beyond-mcp (#171 Phase 2).
+  │  Roll20 token + relay state is the only source of truth for live combat.
   │
   │  PC branch: HP lives in relay state (a block in the token's gmnotes), NOT the visible
   │  token bar — Beyond20 owns a player's bar1, so it is NEVER written. The relay does the
@@ -138,17 +144,22 @@ Claude reports (DM-facing markdown report — numbers stay here, never in player
 
 **Total hops:** DM → Claude → MCP Server → Roll20 relay (HP via adjustPcHp for a PC / setTokenProps for an NPC + condition via toggleCondition) → Roll20 token/state updated
 
-**Note on the HP write model:** routing is by `controlledby` (`isPcToken`). A **PC's** HP is
-tracked in relay state (a block in the token's gmnotes) via `adjustPcHp`, and the visible token
-bar is **never** written — Beyond20 owns a player's bar1. An **NPC's** HP is `bar1` on the token.
-This split is enforced identically across `update_token_hp` (single), `update_hp_many` (AoE), and
-`resolve_aoe` — the "never touch a PC bar" guarantee holds on all of them. Conditions are always
-written to the Roll20 token. The token/state is the source of truth for live combat.
-D&D Beyond write code (`patchCharacter`, `applyCondition`, `ddb_update_hp`, and the old
-`apply_damage` / `heal_character` DDB branches) has been **removed** — DDB condition writes
-returned 405 and HP writes were unreliable. DDB remains available read-only (character/monster
-stat lookups, optional round-start drift checks). The single HP primitive is now
-`update_token_hp`; conditions go through `set_token_marker`.
+**Note on the HP write model:** routing is **three-way** (`classifyToken`/`isPcToken`/`splitPcNpc`
+in `src/tools/aoe.ts`). A **PC's** HP is tracked in relay state (a block in the token's gmnotes)
+via `adjustPcHp`, and the visible token bar is **never** written — Beyond20 owns a player's bar1.
+An **NPC's** HP is `bar1` on the token. A **sidekick** (player-controlled but flagged
+`sidekick: true` in `src/registry/characters.ts`) routes as an NPC — `bar1`, and it dies like an
+NPC — because `controlledby` alone cannot tell it from a PC (#132). All four HP paths
+(`update_token_hp`, `update_hp_many`, `resolve_aoe`, and `roll_initiative`'s HP seeding) read the
+same `registry.listSidekickNames()` set, so the "never touch a PC bar" guarantee and the sidekick
+override hold identically on every one of them (`test/pc-bar-invariant.test.ts`,
+`test/sidekick-routing.test.ts`). Conditions are always written to the Roll20 token. The single HP
+primitive is `update_token_hp`; conditions go through `set_token_marker`.
+
+**Note on stats coming in from outside:** nothing in this repo looks a character or monster up.
+Max HP, AC and the like are resolved by the caller (beyond-mcp, a module stat block, the DM) and
+passed in — see `roll_initiative`'s `entries: [{match, bonus?, hp?}]` and the caller-supplied stats
+on `create_pc_token` / `create_npc_token` / `create_monster_token`.
 
 ---
 

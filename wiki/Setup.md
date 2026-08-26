@@ -1,13 +1,20 @@
-> 📖 **roll20-dm-mcp wiki** · [Home](Home) · [Setup](Setup) · [Voice HUD Gem](Voice-HUD-Gem) · [Player Commands](Player-Commands)
+> 📖 **roll20-dm-mcp wiki** · [Home](Home) · [Setup](Setup) · [Voice HUD Gem](Voice-HUD-Gem)
 
 # Setup Guide
 
 This system puts an AI assistant at your elbow during D&D 5e sessions on Roll20. It reads your campaign live, tracks combat, and can update tokens, conditions, and initiative on your voice command — while you stay in the story with your players.
 
+This repository is **two MCP servers over Roll20 primitives**:
+
+- **`roll20-dm`** — the live-combat server, over **HTTP** on `127.0.0.1:39200`. HP, conditions, initiative, dice, narration, turn hooks, AoE, zones, the DM inbox. Started with `npm run serve` and kept running during play.
+- **`roll20-dm-maps`** — the map-prep server, over **stdio**. Battlemap upload, wall/door detection and placement, page creation, token placement. Started on demand by your MCP client, from `dist/` — so it needs `npm run build`.
+
+Roll20 only. There is **no D&D Beyond** in this repo and **no browser** in it either (#171, #179) — see [What this is not](#what-this-is-not) below.
+
 There are two ways to talk to it:
 
-- **The Gem** — a floating overlay on your screen with voice push-to-talk and a chat panel (requires an Anthropic API key)
-- **Claude Code** — the Claude CLI, useful for map prep, session setup, and anything you don't need during live play
+- **The Gem** (DM Whisper) — a floating overlay with voice push-to-talk and a chat panel. Lives in [its own repository](https://github.com/eschatus/dm-whisper) now.
+- **Claude Code** — the Claude CLI, useful for map prep, session setup, and live play alike.
 
 Both connect to the same server. You can run them simultaneously.
 
@@ -18,47 +25,57 @@ Both connect to the same server. You can run them simultaneously.
 | Requirement | Notes |
 |---|---|
 | Node.js 20 or later | `node --version` to check (the TypeScript 6 build needs Node 20+) |
-| Roll20 Pro or Mentor subscription | Required for the Mod (API) Scripts feature |
-| A Roll20 campaign | Where the Mod script will live |
-| D&D Beyond account | Optional — only needed for DDB stat lookups |
-| Anthropic API key | Required for the Gem; not required for Claude Code |
+| Roll20 Pro or Mentor subscription | Required for the Mod (API) Scripts feature — nothing works without it |
+| A Roll20 campaign | Where the Mod script will live (one deploy per campaign) |
+| A way to harvest the Roll20 realtime token | Normally the Gem. This server never harvests one — see step 5 |
+| Anthropic API key | Only for the maps suite's `analyze_battlemap`. The combat server needs no model key |
+
+---
+
+## What this is not
+
+Three things this repo used to do and no longer does. If you have older notes, they are wrong:
+
+- **No browser.** There is no Playwright dependency, no Chromium to install, no `npx playwright install` step. Nothing here opens a browser window.
+- **No D&D Beyond.** The whole DDB bridge — auth, character reads, monster reads — moved to **[beyond-mcp](https://github.com/eschatus/beyond-mcp)**, which the Gem bundles and uses as its lookup backend. There are no `ddb_*` tools here and no DDB credential. `ddbCampaignId` survives in the campaign registry purely as a linkage id passed through to that server.
+- **No model call in the combat server.** Tactical planning is decided by the Gem and merely *stored* here (`set_mob_plan` / `get_mob_plans` / `clear_mob_plans`); the turn hook whispers the stored plan to the DM when that token's turn comes up. Player `!`-commands are likewise answered by the Gem — this server just forwards live chat as `chat-message` events on `/events`.
 
 ---
 
 ## 1. Install
 
 ```bash
-git clone https://github.com/your-repo/roll20-dm-mcp
+git clone https://github.com/eschatus/roll20-dm-mcp
 cd roll20-dm-mcp
 npm install
 npm run build
 ```
 
+`npm run build` is required for `roll20-dm-maps` (which runs `dist/index-maps.js`) and for `npm start`. It is *not* required for `npm run serve`, which runs the HTTP server through `tsx`.
+
 ---
 
 ## 2. Configure
 
-Copy the example env file and fill it in:
+A `.env` file in the project root is optional — the defaults work. The settings that matter:
 
-```bash
-cp .env.example .env
-```
+| Variable | Default | What it does |
+|---|---|---|
+| `ROLL20_DATA_DIR` | `./data` | Where credentials and the campaign/character registries live. **Must be the same directory the Gem writes to** (see step 5). |
+| `ROLL20_MCP_TOKEN` | auto-generated | Bearer token for the HTTP server. Written for you on first run. |
+| `ROLL20_HTTP_PORT` / `ROLL20_HTTP_HOST` | `39200` / `127.0.0.1` | Where the combat server listens. |
+| `ANTHROPIC_API_KEY` | — | Only read by the maps suite's `analyze_battlemap`. |
+| `ROLL20_CAMPAIGN_ID` / `DDB_CAMPAIGN_ID` | — | Single-campaign fallback if you'd rather not use `register_campaign` / `switch_campaign`. |
 
-Open `.env` and set at minimum:
+You do **not** put a Roll20 password anywhere. The server authenticates with a harvested realtime token (step 5), not credentials.
 
-```
-ANTHROPIC_API_KEY=sk-ant-...   # only needed for the Gem
-```
-
-You do **not** need to put your Roll20 or D&D Beyond passwords in `.env`. The server reaches Roll20 over the realtime (RT) transport using a token it harvests when you sign in through the browser once (step 5); D&D Beyond reads use a `CobaltSession` cookie harvested the same way. You can pre-seed the DDB cookie by setting `DDB_COBALT` directly if you'd rather skip that harvest.
-
-The `BROWSER_USER_DATA_DIR` path is where your one-time Roll20 and DDB login sessions are stored on disk. The default (`./data/browser-session`) works fine, but keep it outside any cloud-synced folder — it holds live session cookies.
+> `data/` is gitignored and holds live credentials. Keep it out of any cloud-synced folder, and never commit it.
 
 ---
 
 ## 3. Deploy the Roll20 Mod script
 
-The Mod script is the server's hands inside Roll20. It receives commands from the server and writes changes to your campaign.
+The Mod script is the server's hands inside Roll20. It receives commands from the server and writes changes to your campaign. **Deploying is manual and human-attended** — it means pasting code into a live account's console, which is not something an MCP server or a dev session should do on its own. (The old `npm run release:mod` script and the `deploy_mod_script` tool are gone.)
 
 1. Open your Roll20 campaign
 2. Go to **Settings → API Scripts**
@@ -66,9 +83,17 @@ The Mod script is the server's hands inside Roll20. It receives commands from th
 4. Open `mod-scripts/ai-relay.js` from this repo, copy all of it, paste it in
 5. Click **Save Script**
 
-The script activates immediately. You do not need to restart Roll20.
+**Verify the load, not the save.** A saved script can still fail to start. Check the API Output Console for:
 
-> **Note:** The script is gated to GM-only senders. Players cannot trigger it.
+```
+[GM_AI_Bridge] Relay script loaded (v2.4.0)
+```
+
+The current version is **2.4.0**, and it must match `EXPECTED_RELAY_VERSION` in `src/bridge/relay-version.ts`. A mismatch warns once and shows up in `transport_status`; it never throws, so a stale deploy fails in confusing ways rather than loudly. Check the banner.
+
+**Deploys are per-campaign.** Each Roll20 game carries its own copy of the script, so one campaign can be running an older relay than another. Re-paste after every update to `ai-relay.js`, in every campaign you run.
+
+> **Note:** The script is gated to GM-only senders (`senderIsGM`). Players cannot trigger it.
 
 ---
 
@@ -78,25 +103,66 @@ The script activates immediately. You do not need to restart Roll20.
 npm run serve
 ```
 
-On first run it generates an auth token, writes it to `.env`, and injects it into `.mcp.json` so Claude Code can find the server. You'll see a message in the terminal when this happens.
+On first run it generates an auth token and writes it to `.env`. If a `.mcp.json` already exists in the project root with a `roll20-dm` entry, it also injects the bearer header there so Claude Code can find the server — but **it does not create `.mcp.json`**, and that file is gitignored, so a fresh clone has none. Write it yourself first:
 
-The server runs as long as the terminal stays open. Keep it running during play.
+```json
+{
+  "mcpServers": {
+    "roll20-dm": {
+      "type": "http",
+      "url": "http://127.0.0.1:39200/mcp"
+    },
+    "roll20-dm-maps": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/abs/path/to/roll20-dm-mcp/dist/index-maps.js"],
+      "cwd": "/abs/path/to/roll20-dm-mcp"
+    }
+  }
+}
+```
+
+(On Windows, escape the backslashes: `C:\\Users\\you\\roll20-dm-mcp\\dist\\index-maps.js`.)
+
+Then run `npm run serve` — the `Authorization` header appears in the `roll20-dm` block — and restart Claude Code.
+
+The server runs as long as the terminal stays open. Keep it running during play. Besides `/mcp` it serves `/events`, a bearer-authenticated SSE stream carrying `combat-update`, `mob-plan`, `inbox-item`, `sandbox-status`, `map-ping`, and `chat-message` events; that's how the Gem's HUD and its player-command handling stay in sync.
 
 ---
 
-## 5. Log into Roll20 and D&D Beyond
+## 5. Furnish the Roll20 credentials
 
-By default the server talks to Roll20 **browserlessly** over the realtime (RT) transport — it does not need a browser open to send commands during play. The persistent Playwright browser exists only to **harvest credentials once** (the Roll20 RT token and, if you use it, the D&D Beyond `CobaltSession` cookie) and as a fallback if RT is unavailable.
+Roll20 access is **furnished, never minted**. The server reads two files out of `ROLL20_DATA_DIR` and, when one is absent, stale, or scoped to the wrong campaign, throws a typed error naming exactly what to refresh — `Roll20TokenUnavailableError` or `Roll20UploadCredentialError`. There is deliberately no browser fallback: a packaged install ships no browser, so a credential failure must surface rather than quietly reach for a Chromium that isn't there.
 
-By default this browser sits minimized in the taskbar (`DMW_BROWSER_HIDE=0` in `.env` keeps it on screen). When a login is needed it automatically un-minimizes so you can sign in.
+| File | Shape | Life | Needed for |
+|---|---|---|---|
+| `roll20-rt-token.json` | `{campaignId, customToken, databaseURL, harvestedAt}` | ~50 min from harvest | Everything. The token is **campaign-scoped** and carries that campaign's RTDB shard. |
+| `roll20-upload-cache.json` | `{endpoint, cookies, harvestedAt}` | 8 h | Art upload only (`upload_and_place_map_image`). |
 
-On first run (or if a harvested token/cookie has expired) you need to log in manually:
+### The supported path — the Gem harvests
 
-1. The browser window pops to the foreground. Navigate to `roll20.net` and sign in — the server intercepts Roll20's sign-in token and caches it to `data/roll20-rt-token.json`.
-2. If you use D&D Beyond, also navigate to `dndbeyond.com` and sign in — the `CobaltSession` cookie is cached to `data/ddb-cobalt.json`. (You can skip this harvest by setting `DDB_COBALT` in `.env` directly.)
-3. Once the token/cookie are cached, the browser can stay in the background — RT carries reads and writes from then on, and you do not need to interact with it again.
+The Gem's **Connect Roll20** button opens an Electron window, you sign in normally, and it writes both files. It is first-party session capture in the Gem's own browser (it intercepts Roll20's `signInWithCustomToken` call) — not OAuth, no registered client.
 
-The harvested credentials are reused until they expire (typically weeks or months), so you only need to do this once per expiry.
+Harvest is **per-campaign**: point the Gem at the campaign you're about to run *before* pressing Connect. A token minted for campaign A cannot read campaign B, and switching campaigns means reconnecting.
+
+> ⚠️ **The data-dir trap.** `ROLL20_DATA_DIR` (this server, default `./data`) and `DMW_DATA_DIR` (the Gem, default `%APPDATA%\DM Whisper` on Windows) must resolve to the **same directory**. If they don't, the Gem harvests into a folder the server never reads — and the two also keep separate campaign registries, so they silently disagree about which campaign is active.
+
+### Without the Gem — the honest gap
+
+If you run this server on its own (plain Claude Code, no Gem), **there is currently no built-in way to obtain a token.** Your two options are to run the Gem once purely to harvest, or to build the file by hand. The manual route works but is fiddly, and the ~50-minute window means you do it right before starting the server.
+
+With the campaign's Roll20 **editor** open in Chrome/Edge:
+
+- **`campaignId`** — the number in the campaign URL.
+- **`customToken`** — DevTools → **Network** → filter `signInWithCustomToken` → reload → open the request → **Payload** → copy the `token` field.
+- **`databaseURL`** — `https://<ns>.firebaseio.com`, where `<ns>` is the `ns=` query parameter on the editor's `firebaseio.com` **websocket** (Network → WS). Equivalently, read `window.FIREBASE_ROOT` in the Console.
+- **`harvestedAt`** — `Date.now()`.
+
+Write those four fields to `<ROLL20_DATA_DIR>/roll20-rt-token.json` and start the server within the window.
+
+Once a connection is established it stays live for the session — the ~50-minute limit governs *making* a connection (server start, campaign switch), not holding one. A mid-session restart means a fresh harvest.
+
+There is no practical hand-built equivalent for `roll20-upload-cache.json`; without it, art upload fails cleanly and nothing else is affected.
 
 ---
 
@@ -107,22 +173,24 @@ Tell the server which Roll20 campaign to work with.
 In Claude Code (set it up via **Track A** below first, so the `roll20-dm` tools are available), run:
 
 ```
-register_campaign with name "My Campaign", roll20CampaignId "12345678"
+register_campaign with name "My Campaign", roll20CampaignId "12345678", ddbCampaignId "0"
 ```
 
 You can find your campaign ID in the Roll20 URL: `roll20.net/campaigns/details/12345678`.
 
-If you also use D&D Beyond, include `ddbCampaignId` to enable stat lookups.
+`ddbCampaignId` is required by the schema but inert here — nothing in this repo reads D&D Beyond. Pass your DDB campaign id if you run beyond-mcp alongside (it's the id that links the two), or `"0"` if you don't.
+
+Then `switch_campaign` to make it active. Remember that the realtime token from step 5 is campaign-scoped, so switching campaigns means a fresh harvest.
 
 ---
 
 ## Track A — Claude Code
 
-Restart Claude Code so it picks up the `.mcp.json` update from step 4. After restart, the `roll20-dm` tools will be available.
+Restart Claude Code so it picks up the `.mcp.json` from step 4. After restart, the `roll20-dm` and `roll20-dm-maps` tools will be available.
 
 You can verify this is working by asking Claude: `list_campaigns` or `active_campaign`.
 
-Use Claude Code for map prep, deploying tokens before a session, and anything that doesn't need split-second response at the table. During live play, the Gem is faster — but Claude Code works perfectly well for running combat if you don't have or want the Gem.
+Use Claude Code for map prep, deploying tokens before a session, and anything that doesn't need split-second response at the table. During live play, the Gem is faster — but Claude Code works perfectly well for running combat if you don't have or want the Gem. (Note that without the Gem you'll need the manual token harvest from step 5.)
 
 ---
 
@@ -133,47 +201,19 @@ The Gem is an Electron overlay that floats on your screen. It shows a glowing fa
 > **The Gem lives in its own repository now.** It was split out to
 > [`eschatus/dm-whisper`](https://github.com/eschatus/dm-whisper) on 2026-08-11 and is closed
 > source; this repository is the MCP server it talks to, and stays open under MIT. Everything in
-> Track B happens in that checkout, not this one. If you do not have access to it, Track A above
-> is complete on its own.
+> Track B happens in that checkout, not this one — including its own setup instructions, which are
+> canonical. If you do not have access to it, Track A above is complete on its own.
 
-### Install the Gem
+What matters from *this* side of the relationship:
 
-```bash
-git clone https://github.com/eschatus/dm-whisper
-cd dm-whisper
-npm install
-```
+- The Gem pins this repository as a dependency by tag (currently `#v2.0.0`) and builds it in the clone, so you do not need a separate checkout of roll20-dm-mcp for the Gem to run. Changes here reach the Gem only when it re-pins.
+- It bundles `skills/dm-rules.md` and `mod-scripts/ai-relay.js` from this repo into its installer.
+- It furnishes the two credential files from step 5, and it is the only supported harvester.
+- It consumes the `/events` SSE stream, and it owns the two responsibilities this server gave up: deciding tactical plans (storing them via `set_mob_plan`) and answering player `!`-commands (off `chat-message` events).
+- `DMW_DATA_DIR` and `ROLL20_DATA_DIR` must point at the **same** directory, or the Gem and the server keep separate registries and credentials and silently disagree.
+- The Gem calls the Anthropic API directly and needs its own `ANTHROPIC_API_KEY`, set in the Gem repo's `.env`. This server does not.
 
-`npm install` pulls this server in as a pinned dependency and builds it, so you do not need a
-separate checkout of roll20-dm-mcp for the Gem to run.
-
-### Anthropic API key
-
-The Gem calls the Anthropic API directly. Set `ANTHROPIC_API_KEY` in the Gem repo's own `.env` —
-copy `.env.example` to start. That file also carries the one setting the split made mandatory:
-`DMW_DATA_DIR` and `ROLL20_DATA_DIR` must point at the SAME directory, or the Gem and the server
-keep separate campaign registries and silently disagree about which campaign is active.
-
-### Start the Gem
-
-```bash
-cd dm-whisper
-npm start
-```
-
-The gem window appears on screen. It starts in ghost mode (dim, transparent) and comes alive when you hold the PTT key.
-
-### Voice — works out of the box
-
-Voice (push-to-talk) works with **no extra setup**. The Gem ships a bundled whisper.cpp resident STT server (`whisper-server.exe` + the `ggml-base.en.bin` model) — no Python, no venv, no downloads. `npm start` launches it automatically. If you don't want voice, you can ignore it and type into the Gem's Chat tab instead.
-
-**Default (CPU):** the bundled `ggml-base.en.bin` model gives good accuracy and runs on CPU. Nothing to install.
-
-**GPU (NVIDIA CUDA / Vulkan):** drop in a cuBLAS or Vulkan build of `whisper-server` and point the Gem at it with `DMW_WHISPER_BIN` (or `DMW_WHISPER_SERVER_BIN`) in `.env`. No code change needed — it's a drop-in binary swap. For higher accuracy on a capable GPU you can also point `DMW_WHISPER_MODEL` at a larger ggml model (e.g. `ggml-medium.en.bin` or `ggml-large-v3.bin`).
-
-**Deprecated alternative — Python faster-whisper:** the old Python faster-whisper sidecar is mothballed (#46) and not required by anything. If you specifically want it, opt in with `DMW_STT_ENGINE=faster-whisper` and install its venv (`stt/requirements.txt`, in the Gem repo). The bundled whisper.cpp server is the supported path.
-
-**PTT key:** The default is `Right Ctrl` (hold to speak, release to send). Change it in the Gem's Config tab if needed. The confirm key (for write proposals) defaults to `Right Shift`.
+Setup, voice/STT configuration, PTT bindings, and the panel walkthrough all live in the dm-whisper repo.
 
 ---
 
@@ -181,10 +221,14 @@ Voice (push-to-talk) works with **no extra setup**. The Gem ships a bundled whis
 
 With the server running and Claude Code (or the Gem) connected:
 
-1. In Claude Code, ask: `get_current_page` — should return your current Roll20 page
-2. Roll a token onto the map and ask: `list_tokens` — your token should appear
-3. Say or type to the Gem: `"who's on the map?"` — should list tokens
+1. In Claude Code, ask: `transport_status` — reports this server's build, whether it can reach Roll20, the active campaign, and whether the deployed Mod relay's version matches `EXPECTED_RELAY_VERSION`. Start here; it names most failures outright.
+2. Drop a token onto the map and ask: `list_tokens` — your token should appear. That's the combat server round-tripping through the Mod script.
+3. If you registered `roll20-dm-maps`, ask: `get_current_page` — should return your current Roll20 page. (`get_current_page` is a maps-suite tool; the combat server doesn't have it.)
+4. Say or type to the Gem: `"who's on the map?"` — should list tokens.
 
-If `get_current_page` fails, the Roll20 relay isn't reaching the Mod. Double-check that the script is saved and your Roll20 campaign is open.
+If `list_tokens` fails, work down this list:
 
-If the DDB tools return errors, the cached DDB session cookie has likely expired — re-login to D&D Beyond in the background browser (see step 5) to refresh it. (DDB reads run browserlessly from that cookie; the browser is only needed to (re)harvest it.)
+- **"No usable Roll20 realtime token…"** — the credential from step 5 is missing, older than ~50 minutes, or belongs to another campaign; the message says which. Reconnect Roll20 in the Gem (pointed at *this* campaign), or redo the manual build.
+- **Timeout / "sandbox unreachable"** — the Mod script isn't running. Check the campaign's API Output Console for the load banner (step 3) and re-paste if it's absent or the version is stale.
+- **Relay version mismatch in `transport_status`** — re-paste `mod-scripts/ai-relay.js` into that campaign.
+- **Map tools missing or failing to load** — run `npm run build`; `roll20-dm-maps` runs the compiled `dist/`.

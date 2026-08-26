@@ -6,6 +6,15 @@ This file records every non-obvious architectural choice made in this project. E
 
 ## 1. Playwright cookie sessions instead of D&D Beyond OAuth
 
+> **SUPERSEDED 2026-08-26 (#171 Phase 2 / #179).** There is no D&D Beyond in this repo at all any
+> more — the whole bridge (cobalt→JWT auth, character/monster reads, the game-log roll pump) and all
+> seven `ddb_*` tools were extracted to **beyond-mcp** (github.com/eschatus/beyond-mcp), which the gem
+> bundles under the same tool names. This server holds no DDB credential. The intermediate step (DDB
+> went browserless: `CobaltSession` cookie → short-lived JWT, no Playwright) is also gone with it.
+> The lesson below outlived both: there is no OAuth path to a DDB character sheet, so any DDB
+> integration is a session-cookie integration with full-account scope — that constraint now lives in
+> beyond-mcp's threat model.
+
 **Choice:** Authenticate to D&D Beyond using the `cobalt` session cookie captured from a Playwright-driven browser login, rather than any OAuth flow.
 
 **Why:** D&D Beyond does not expose a stable public API, and no OAuth endpoint grants programmatic access to character sheets from a server process. The `cobalt` cookie is the community-documented approach for server-side DDB automation. The same pattern is used by tools like `ddb-importer` and prior homebrew Beyond20 replacements.
@@ -17,6 +26,16 @@ This file records every non-obvious architectural choice made in this project. E
 ---
 
 ## 2. `userDataDir` session persistence in Playwright
+
+> **SUPERSEDED 2026-08-26 (#177/#179).** There is no Playwright in this repo — it is not a
+> dependency, `npm install` pulls no Chromium, and neither server can open a browser. Nothing here
+> holds a `userDataDir`. **Credentials are FURNISHED, never minted:** the server *reads*
+> `<data dir>/roll20-rt-token.json` (campaign-scoped) and `roll20-upload-cache.json` (8h TTL) and
+> throws a typed error (`Roll20TokenUnavailableError` / `Roll20UploadCredentialError`) naming what to
+> refresh when either is absent or stale. Harvesting is a human-attended act that happens in the
+> gem's own logged-in Electron session. The lesson survives the code: a harvested browser session is
+> a password vault with full account scope, which is exactly why an unattended server must not be
+> able to create one.
 
 **Choice:** Use `chromium.launchPersistentContext(userDataDir)` so sessions survive MCP server restarts, rather than logging in fresh each time.
 
@@ -55,10 +74,22 @@ This file records every non-obvious architectural choice made in this project. E
 **Trade-offs:** Campaign attributes with empty `characterid` are an undocumented but stable feature of Roll20's data model. Handouts would be more visible and editable but slower.
 
 > **SUPERSEDED — transport is now chat-command driven.** The attribute-queue (`change:attribute` on `GM_AI_Bridge_cmd` / `GM_AI_Bridge_result`) has been replaced by a `!ai-relay {JSON}` chat command: the MCP server types the command into Roll20 chat, the relay handles it on `chat:message`, and the result is whispered back as a hidden `/w gm` div read by a MutationObserver. State that needs to persist across sandbox restarts lives in `state.GM_AI_Bridge` (see `docs/roll20-api-coverage.md`), not in attributes. Because chat is a player-writable channel, authorization is enforced by a GM-only sender check (`playerIsGM`) in the handler — see `security.md` §6.
+>
+> **Superseded again 2026-08-26 (#122/#179):** the *typing-into-chat* half is gone too. The
+> `!ai-relay {JSON}` command shape and the `AIBRIDGE_RESULT` whisper are unchanged, but they now
+> travel over the campaign's Firebase RTDB (Decision 11) — no browser, no MutationObserver. The
+> GM-only sender check (`senderIsGM`) is still the authorization boundary, and still matters for
+> exactly the reason recorded above: chat is player-writable whatever writes into it.
 
 ---
 
 ## 6. Single-slot command queue
+
+> **SUPERSEDED — the attribute slot is gone (see Decision 5), but the concurrency model changed with
+> it.** Commands are now nonce-matched: each `!ai-relay` carries a nonce, the caller keeps a
+> `nonce → pending` map (`pending` in `roll20-rt.ts`) and resolves on the matching `AIBRIDGE_RESULT`
+> child, so there is no single slot left to clobber. The Mod's `PROCESSED_NONCES` LRU deduplicates a
+> re-sent nonce. The trade-off recorded below therefore no longer applies as written.
 
 **Choice:** The relay uses a single `cmd`/`result` attribute pair (one command at a time) rather than a ring buffer or numbered queue.
 
@@ -90,6 +121,13 @@ This file records every non-obvious architectural choice made in this project. E
 
 ## 9. Campaign registry + persisted active campaign
 
+> **Still current, with one dead trade-off (#179).** The second bullet below — "the Roll20 editor
+> page lazily navigates to the active campaign's URL on the next tool call that needs the browser" —
+> describes machinery that no longer exists; there is no browser. A campaign switch now just changes
+> which RTDB connection/credential the RT transport uses, and the RT token is **campaign-scoped**, so
+> switching to a campaign whose token was never harvested fails loudly with
+> `Roll20TokenUnavailableError` rather than navigating anywhere.
+
 **Choice:** Store all campaigns in `data/campaigns.json` (a named slug → `{ roll20CampaignId, ddbCampaignId }` map). The active campaign is persisted to `data/active-campaign.json` by `setActiveCampaign` and restored on startup by `restoreActiveCampaign` (in `src/registry/campaigns.ts`). The character registry is partitioned by campaign slug.
 
 **Why:** The DM runs 13+ campaigns. A single `.env` variable for campaign ID only works for one. Campaigns are long-lived (months/years) so they persist in a file. The active campaign was *originally* in-memory (reset on restart), but that meant a mid-session server restart silently dropped the active campaign and the next tool could touch the wrong one. Persisting it to `active-campaign.json` survives restarts, so the DM does not have to re-`switch_campaign` after every restart.
@@ -109,9 +147,26 @@ This file records every non-obvious architectural choice made in this project. E
 
 > Note: a `test/relay-actions.test.ts` harness now exists (a Roll20 emulator exercising `ai-relay.js` pure helpers), partially satisfying the precondition. The handler-map split is still deferred.
 
+> **RESOLVED — the refactor shipped (#23, deployed + soaked).** The precondition was met first, in the
+> order this entry insisted on: the emulator harness landed, *then* the split. `ai-relay.js` now
+> dispatches through `var ACTIONS = {}` / `ACTIONS["<action>"] = function (args, msg, nonce, senderPlayerId)`
+> — one function per action, no `switch` — produced by a verbatim TS-compiler-API transform
+> (`scripts/handlermap-transform.mjs`) with the emulator as the regression net.
+
 ---
 
 ## 11. Browserless Firebase RTDB transport (the default; opt OUT via `ROLL20_TRANSPORT=browser`)
+
+> **UPDATED 2026-08-26 (#122/#177/#179) — the opt-out in the heading no longer exists.** RT is now
+> the **only** transport. The legacy Playwright browser→chat relay and `CLIENT_READS` are deleted
+> (zero references in `src/`), so `ROLL20_TRANSPORT=browser` selects nothing. Two other details in
+> the entry below are stale: (a) the server **does not harvest** the Firebase custom token — it
+> reads a furnished `data/roll20-rt-token.json` and throws `Roll20TokenUnavailableError` when it is
+> missing, wrong-campaign, or stale (see Decision 2); (b) the same-nonce idempotency machinery is no
+> longer about guarding a browser path's retries — it guards `rtRelayCommand`'s own in-process
+> retries and the Mod's `PROCESSED_NONCES` LRU. The circuit breaker (3 consecutive failures, 30s
+> reset/probe) is unchanged and is what `transport_status` reports. The reasoning below is why the
+> browser went away rather than staying as a fallback, so it is worth keeping intact.
 
 **Choice:** Use a browserless Firebase Realtime Database transport as the **default**. `rtEnabled()` is true unless `ROLL20_TRANSPORT=browser` (i.e. unset → RT). The MCP server harvests Roll20's per-campaign Firebase custom token (intercepted from the browser's `signInWithCustomToken` request, cached in `data/roll20-rt-token.json`, TTL ~50 min), then pushes `!ai-relay {JSON}` commands into the campaign's RTDB chat node and reads `AIBRIDGE_RESULT` back over an RTDB child listener. The legacy Playwright browser→chat relay is now a dev opt-out reachable only under `ROLL20_TRANSPORT=browser`.
 

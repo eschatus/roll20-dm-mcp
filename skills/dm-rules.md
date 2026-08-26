@@ -30,6 +30,10 @@ convenience would conflict with a rule below, the rule wins.
   save, check, Undead Fortitude, death save, anything — must use `roll_dice`. Never compute,
   estimate, or guess a result in your head. Players see every roll in Roll20 chat; that visibility
   is non-negotiable. Batch multiple rolls into one `roll_dice` call (multiple items in the array).
+  - **A result that already exists is mirrored, never re-rolled.** Numbers the table already got
+    outside Roll20 (Beyond20, a companion app, the DM reading off a sheet) go into chat with
+    `post_roll_as_character` — it renders exactly the totals you hand it as a roll card, speaking
+    as that character, and rolls nothing. `roll_dice` is for fresh dice only.
 - **PC initiative is read-only.** Never roll, set, or modify a player's initiative. Always
   `roll_initiative` with `npcOnly=true`. Players roll their own.
 - **Never write the turn order wholesale.** Never call `setTurnOrder` / pass a full order —
@@ -69,10 +73,19 @@ convenience would conflict with a rule below, the rule wins.
   - **Temp HP:** sidekicks → add straight to `bar1` (accepted approximation, no separate temp-HP
     field); PCs → lives on their DDB sheet, no gem action.
   - **Sidekick tokens** (Tua, Salros Eventide, Amri) are `bar1`/NPC-style for HP and death despite
-    being player-controlled — treat these named tokens' HP as bar1/NPC-style even though routing
-    doesn't yet special-case them by name (tracking issue #132).
-- **D&D Beyond is read-only.** Only players change their own DDB HP/conditions. There is no
-  `ddb_update_hp`/`apply_damage`/`heal_character` — don't try to push HP to DDB or PC tokens.
+    being player-controlled. Routing handles them on its own once the character carries the
+    sidekick override; if a companion's HP is landing in tracked PC state instead of on `bar1`,
+    set the override with `set_token_class` ("Tua is a sidekick") — issue #132.
+- **There is no D&D Beyond in this server, and DDB is read-only wherever it lives.** Any `ddb_*`
+  tool you can see belongs to a separate lookup server, and it only ever READS. Only players change
+  their own DDB HP/conditions. There is no `ddb_update_hp`/`apply_damage`/`heal_character`
+  anywhere — never try to push HP to DDB or to a PC's token bar.
+- NPC initiative: `roll_initiative` with `npcOnly=true`. **Prefer the `entries` array** —
+  `[{match, bonus?, hp?}]`, one object per combatant. `bonus` rolls `1d20+bonus` through the Roll20
+  roller instead of trusting whatever the sheet says; `hp` seeds `bar1`/`bar1_max` for NPCs and
+  sidekicks (a PC's bar is never written, whatever you pass). Resolve those numbers yourself first
+  — from the stat block, the DM, or a lookup server — this tool looks nothing up. `names` /
+  `nameFilter` still work for a plain roll with no overrides.
 - Single status marker: `set_token_marker`. There is **no** `apply_condition`/`remove_condition`.
   **Any "mark \<name\> as \<condition\>" is this tool** — "mark Glint as concentrating" is
   `set_token_marker(condition:"concentrating", active:true)`, never a dying/death tool (issue #168).
@@ -161,14 +174,25 @@ what you did, mechanically and explicitly.
   represents the effect, or "knocked into the grease" describing terrain that's already there.
   Report them as context in your narration, not as a missed tool call.
 
-## Tactics
+## Tactics (mob plans)
 
-- **At combat start** (right after NPC initiative is rolled) and **at the top of each new
-  round**, call `plan_all_tactics` **once** — it whispers GM-only tactical cards for every mob,
-  scaled by Int/Wis. It changes no tokens and needs no confirmation, so run it immediately (it's
-  meant to work while the players take their turns). Don't repeat it within a round, and don't
-  narrate its output — just note "tactics planned" in your report. For a single creature, use
-  `plan_tactics` with that token.
+**The thinking is yours; the server only stores what you decide.** There is no tactics tool any
+more — `plan_tactics` and `plan_all_tactics` are gone, and calling either is an error mid-fight.
+Work out what a mob intends the same way you work out anything else, then write it down.
+
+- **At combat start** (right after NPC initiative is rolled) and **at the top of each new round**,
+  decide each mob's intent and store it with `set_mob_plan` — target by `characterName` or
+  `tokenId`, and pass `shortTerm` (what it does *this* turn) plus optionally `mediumTerm` (the next
+  few rounds) and `longGoal` (what it wants out of this fight).
+- The turn hook whispers the stored plan to the DM, GM-only, when that token's turn comes up. You
+  don't deliver it and you never narrate it to the table — just note "plans stored" in your report.
+- Storing a plan changes no tokens and needs no confirmation, so do it immediately — it's meant to
+  happen while the players take their turns.
+- `get_mob_plans` reads them all back. `set_mob_plan clear:true` drops one mob's plan (it died, or
+  the plan went stale).
+- **Wipe the board at the end of every encounter with `clear_mob_plans`.** Plans persist in relay
+  state until overwritten or cleared, so a leftover one resurfaces as a whisper part-way through
+  the *next* fight.
 
 ## Areas: aura vs. zone
 

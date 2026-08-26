@@ -1,5 +1,12 @@
 # The Gem — DM Guide
 
+> **Where the Gem actually lives.** The Gem (DM Whisper) is a separate application, in its own
+> repository — **github.com/eschatus/dm-whisper** — since 2026-08-11. This repo is the MCP server it
+> drives. The guide below is kept here because it explains the DM-facing behaviour this server
+> exists to serve, but **the gem repo is canonical for anything about the gem's own UI**; when the
+> two disagree, believe that one. Everything described here as a *table effect* (HP, conditions,
+> initiative, zones, whispers) is this server's job and is current as of v2.0.0.
+
 The Gem is a floating overlay you run alongside Roll20. Think of it as a quiet assistant sitting at your elbow: you run the table, you narrate, you make the calls — the Gem handles the bookkeeping on your word.
 
 The goal is to keep you in the story. You speak to your players, and with a key held down you speak to the Gem at the same time. Token HP updates, conditions, initiative — all happen in the background while the narrative keeps moving.
@@ -171,9 +178,16 @@ The Gem never advances the turn automatically — that's your call.
 
 ### Tactical plans
 
-When combat starts, the Gem generates a tactical plan for each NPC group (if the tactical assistant is enabled). The current creature's short-term goal appears in the tactic strip at the bottom of the gem. Click it to see the full plan with medium-term goal and overall objective.
+When combat starts, the Gem works out a tactical plan for each NPC group and **stores it on the
+table** — the server keeps plans in relay state (`set_mob_plan` / `get_mob_plans` /
+`clear_mob_plans`), and the turn hook whispers the relevant one to you when that token's turn comes
+up. The current creature's short-term goal appears in the tactic strip at the bottom of the gem;
+click it to see the full plan.
 
-Plans update each round based on the current battlefield state.
+The **thinking is the Gem's**, not the server's — this server holds no model and makes no model call
+(#171). One consequence worth knowing at the table: plans **persist until overwritten or cleared**,
+so a stale plan will resurface as a whisper the next time that token acts. Clearing them at the end
+of a fight is a real step, not cosmetic.
 
 ### Ending combat
 
@@ -227,7 +241,10 @@ Network URLs, PTT key bindings, and STT model settings. The LLM provider / Ollam
 
 ## Player commands
 
-Players can type these in Roll20 chat and receive whispered replies:
+Players can type these in Roll20 chat and receive whispered replies. **The Gem answers them, not the
+server** (#171): this server forwards every live table message to the Gem as a `chat-message` event
+on its `/events` SSE stream, and the Gem whispers back. So the commands work while the Gem is
+running and connected — with the Gem closed, a `!tactics` gets no reply.
 
 | Command | What it does |
 |---|---|
@@ -238,13 +255,20 @@ Players can type these in Roll20 chat and receive whispered replies:
 | `!rules <question>` | 5e rules lookup; escalated to the DM if the assistant isn't confident |
 | `!help` | This list, whispered to you |
 
-See [player-commands.md](player-commands.md) for full details including cooldowns and information discipline.
+Cooldowns and information discipline (what a low-Int character is allowed to be told, how a bad
+`!recall` roll degrades into rumour) are the Gem's rules and are documented in the **dm-whisper**
+repo. The old `docs/player-commands.md` left this repo with that code.
 
 ---
 
 ## Tips and gotchas
 
-**The Mod script must be open.** Roll20 unloads API scripts when the campaign isn't active. Make sure your campaign is open in the browser before starting a session.
+**The Mod script must be deployed, and awake.** The relay (`mod-scripts/ai-relay.js`) is pasted into
+each campaign's API console **by hand, per campaign** — nothing deploys it for you — so a campaign
+you haven't set up, or one still on an old paste, will misbehave in confusing ways. Check the API
+console for `[GM_AI_Bridge] Relay script loaded (vX.Y.Z)`. Separately, Roll20 puts the API sandbox to
+sleep when nobody is in the game: keep the campaign open in a browser tab during a session, or the
+first few commands will time out until something wakes it.
 
 **Rebuild the roster when you add tokens.** The roster is a snapshot — it doesn't update live. If you drop a new NPC mid-combat, rebuild before asking the Gem about them.
 
@@ -254,4 +278,14 @@ See [player-commands.md](player-commands.md) for full details including cooldown
 
 **Names must match the map.** If you say "the big goblin" and the token is named "Goblin Chief", add a nickname. The Gem matches against the actual token names — it won't invent a name.
 
-**DDB lookups use a cached session cookie.** DDB stat reads (AC, spell save DC, monster stats) run browserlessly via a `CobaltSession` cookie harvested once on first login (exchanged for a short-lived token per request). If DDB calls start erroring, re-login to D&D Beyond in the background browser window to refresh the cookie. (Only if you've forced `DDB_TRANSPORT=browser` does it need a live Playwright DDB session.)
+**D&D Beyond lookups come from a different server now.** Stat reads (AC, spell save DC, monster
+stats) moved to **beyond-mcp**, which the Gem bundles alongside this one and which keeps the
+`CobaltSession` credential. This server holds no DDB credential and never calls D&D Beyond. If DDB
+lookups start erroring, that's beyond-mcp's session to refresh — the Roll20 side keeps working
+regardless.
+
+**If Roll20 itself stops responding, it's the token.** This server never logs into Roll20: it reads
+a realtime token the Gem harvested (per campaign) and refuses to work when that token is missing,
+stale, or belongs to a different campaign. The error says which. The fix is always the same —
+reconnect Roll20 in the Gem to re-harvest — and it's why switching to a campaign the Gem has never
+connected to fails immediately rather than half-working.

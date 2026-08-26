@@ -34,11 +34,12 @@ DEAD THIS FIGHT: comma-separated names
 Round N events: [2-3 sentence summary]
 ```
 
-**Spell slot tracking**: DDB is read-only **and exposes no spell-slot data via any MCP tool**
-(`ddb_get_character` returns HP, temp HP, AC, passive perception, and conditions only — not slots).
-So the snapshot is the **sole** authority for slots/prepared spells — there is nothing to spot-check
-them against. Update the snapshot whenever a PC casts. You *can* spot-check HP/conditions against
-`ddb_get_character`, but never slots.
+**The snapshot is the only PC bookkeeping there is.** This server has no D&D Beyond bridge —
+there is no `ddb_get_character` to spot-check against, and nothing here reports spell slots or
+prepared spells. So the snapshot is the **sole** authority for slots, and for PC HP it is the
+running record alongside the relay's tracked-HP state. Update it whenever a PC casts or takes
+damage. (If a separate DDB lookup server is connected, its reads can corroborate HP and
+conditions — never slots — but that is not a tool of this server and it never writes.)
 
 ## Step 1: Orient
 
@@ -59,7 +60,9 @@ Extract (see dm-rules.md for the condition/death/wound and voice-to-text rules):
 - **NPC saves** — auto-roll via `roll_dice` using stat-block bonuses; apply resistances silently.
 - **PC saves** — note as pending; the player rolls their own. Don't hold up the action list.
 - **HP directly stated** — set HP to that value.
-- **Deaths/unconscious** — apply `Unconscious`/`dead`, then move dead tokens to the map layer.
+- **Deaths/unconscious** — NPCs and sidekicks: `kill_token` (dead marker + map layer). A true PC
+  at 0 HP is **dying, not dead**: `set_pc_dying` (prone + unconscious, token *stays* on the token
+  layer). Only `kill_token` a PC when the DM explicitly declares them dead. See dm-rules.md.
 - **AoE template cleanup** — one-shot spells: `remove_object` the template. Persistent effects
   (Web, Cloudkill, Spike Growth, Wall of Fire): move template to map layer + rename ("Cloudkill
   — Round N").
@@ -105,9 +108,10 @@ When the order cycles back to the first combatant:
 
 1. **Terse mechanical summary**: who fell, active conditions, effect countdowns, current stakes
    in a line or two. No exact HP numbers, no dramatic recap — the DM delivers the drama.
-2. **Spot-check DDB** — `ddb_get_character` per surviving PC; compare **HP and conditions** to the
-   snapshot and note discrepancies (without correcting DDB). DDB does not return spell slots, so
-   slots can't be checked here — the snapshot is authoritative for those.
-3. **Check the turn hook** — if not firing, re-enable `set_turn_hook enabled=true`.
+2. **Expire timed zones** — `process_round_end_zones` deletes any `rounds(n)` zone that ran out
+   and returns the list; fold those into the countdown line ("the grease fire burns out"). Then
+   refresh mob plans for the new round with `set_mob_plan` (see dm-rules.md → Tactics).
+3. **Check the turn hook** — `check_turn_hook`; if not firing, re-enable `set_turn_hook
+   enabled=true`.
 
 Then: "Ready for next narration?"

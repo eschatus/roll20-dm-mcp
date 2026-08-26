@@ -10,12 +10,12 @@ AI-assisted D&D 5e session management for **Roll20**. Three components:
 
 - **`roll20-dm`** — live-combat MCP server over **HTTP** (`src/index-http.ts` → `src/server-combat.ts`).
   HP, conditions, initiative, dice, narration, turn hooks, AoE, mob-plan storage. Roll20 ONLY — no
-  D&D Beyond, no LLM (#171). Also keeps the two
-  **dual-use** map tools it needs live: **zones** (fixed-area spells) and **screenshot** (board vision).
+  D&D Beyond, no LLM, no browser (#171, #179). Also keeps the dual-use **zones** tools it needs live
+  (fixed-area spells). `screenshot_roll20` is GONE — a screenshot needs a renderer.
 - **`roll20-dm-maps`** — map-prep MCP server over **stdio** (`src/index-maps.ts`). Owns the full
   **map/wall/zone domain**: battlemap upload, Claude-Vision wall detection, DL walls/doors, token
   creation, zones, screenshots. The prep-only analysis/wall tools (`registerVisionTools`) live here only;
-  zones (`zones.ts`) + screenshot (`screenshot.ts`) are **shared modules** registered in both servers.
+  `zones.ts` is a **shared module** registered in both servers.
 - **DM Whisper** — the Electron voice gem (PTT → Whisper STT → Claude agent). **No longer in this
   repo.** Split out to https://github.com/eschatus/dm-whisper on 2026-08-11 and closed source; it
   consumes this repository as a pinned dependency and bundles `skills/dm-rules.md`,
@@ -146,7 +146,7 @@ src/server-combat.ts     registers the roll20-dm toolset
 src/index-maps.ts        roll20-dm-maps stdio server (registers the map toolset)
 src/tools/               MCP tools (one register*Tools fn per file)
 src/bridge/              roll20.ts (relay+fallback), roll20-rt.ts (RT),
-                         markers.ts, relayState.ts, browser.ts, transport-health.ts
+                         markers.ts, relayState.ts, transport-health.ts
 src/registry/            campaigns + character registries (JSON-backed)
 mod-scripts/ai-relay.js  the Roll20 Mod sandbox relay (deploy manually)
 skills/                  dm-rules.md (canonical play rules), dm-map-setup.md
@@ -172,17 +172,19 @@ the tool in the correct server — **`server-combat.ts`** (roll20-dm) or **`inde
 
 **Server:** `roll20-dm-maps` (stdio, `src/index-maps.ts`). **Code:** `src/tools/maps.ts`,
 `src/tools/vision.ts`, `src/tools/tokens.ts`, `src/tools/batch.ts`, `src/tools/zones.ts`,
-`src/tools/screenshot.ts`. **Skill:** `skills/dm-map-setup.md`. (`zones.ts` + `screenshot.ts` are shared
-with the combat server — register them in **both** `index-maps.ts` and `server-combat.ts` if you touch
-the registration; the rest of vision/wall tooling is maps-only.)
+**Skill:** `skills/dm-map-setup.md`. (`zones.ts` is shared with the combat server — register it in
+**both** `index-maps.ts` and `server-combat.ts` if you touch the registration; the rest of the
+vision/wall tooling is maps-only.)
 
 **Pipeline** (image → playable lit map):
 1. `analyze_battlemap({imagePath})` — `src/tools/vision.ts` calls the Anthropic API
    (`VISION_MODEL = claude-sonnet-4-6`) to return grid size/offset, wall centerlines, doors,
    windows, secret doors, plus `estimatedTokens`/`imageDimensions`. There's a two-pass Hough
    refinement option.
-2. `setup_roll20_page(...)` — creates the page via **`createPageViaUI`** (Playwright; `createObj("page")`
-   is unsupported) then `setPageProps` to size it.
+2. `setup_roll20_page(...)` — creates the page **browserlessly via `rtCreatePage`** (a direct RTDB
+   write to the `pages` node, #178 — `createObj("page")` is a MOD-sandbox limitation only), then
+   `setPageProps` over the Mod for the fields the RTDB page doesn't carry (scale_number/scale_units/
+   showgrid). NB page `width`/`height` are **70px units, not cells**.
 3. `auto_place_dl_walls({walls, strokeColor})` — places DL `pathv2` walls.
 4. `decorate_openings({doors, windows, secretDoors})` — creates **native Roll20 DL door/window
    objects** (not map-layer rectangles): doors `#FF0000`, windows `#00FFFF`, secret doors `#9932CC`.

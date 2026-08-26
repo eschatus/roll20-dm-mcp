@@ -1,5 +1,21 @@
 # Relay Payload Slimming — Spec
 
+> **Status: DONE (Tier 1) / PARTLY SUPERSEDED (Tier 2)** — Tier 1 shipped in `ccd90d5`; the DDB items
+> (T2.4, half of T2.5) left the repo with the DDB bridge (#171 Phase 2) and can never be done here.
+>
+> Re-checked 2026-08-26 against v2.0.0. What that changes about the plan below:
+> - **`src/tools/ddb.ts` no longer exists.** T2.4 (`ddb_list_campaign_characters` → `{id,name}`), the
+>   `avatarUrl`/`largeAvatarUrl` drops, and the `ddb_list_campaigns` compact-stringify item are all
+>   **moot here** — that code, and the same waste, is beyond-mcp's now. The `../src/tools/ddb.ts`
+>   links below are dead.
+> - **`voice-hud/` no longer exists** either (gem split, 2026-08-11), so the `roster.ts` links are
+>   dead too. The roster builder still passes `profile:"lean"` — it just does so from the gem repo.
+> - **Genuinely still open in THIS repo: T2.2.** `read_character_attributes` (`src/tools/combat.ts`)
+>   still takes `names` as *optional*, described as "omit for all" — so a full-sheet dump remains one
+>   argument-less call away. That was the item this spec most wanted closed.
+> - T2.3's row cap shipped (`maxRows`, default 60, `__truncated` flag, `ai-relay.js`); its field
+>   projection did not.
+
 Trim the relay's read payloads down to what's actually consumed, on the hot paths the voice agent
 hits every turn. Pure context/transport savings — **no behavior change**. One relay redeploy covers
 all of it.

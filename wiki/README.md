@@ -4,13 +4,23 @@ Publish-ready GitHub **wiki** pages for the user-facing guides. The wiki is a *s
 repo — it doesn't show in PRs and doesn't version with the code — so we stage the pages here
 and publish them deliberately.
 
-**Why these three:** `Setup`, `Voice-HUD-Gem`, and `Player-Commands` have a broad audience
-(DMs and **players**) who won't clone the repo — they need a URL. Code-coupled docs
-(protocols, decisions, API coverage, security) stay in `docs/` so they track the code.
+**Why these:** `Setup` and `Voice-HUD-Gem` have an audience that won't clone the repo — they need
+a URL. Code-coupled docs (protocols, decisions, API coverage, security) stay in `docs/` so they
+track the code.
 
-**Files:** `Home.md`, `Setup.md`, `Voice-HUD-Gem.md`, `Player-Commands.md`, `_Sidebar.md`.
-They mirror `docs/setup-guide.md`, `docs/gem-guide.md`, `docs/player-commands.md` verbatim
-(plus a nav header).
+**Files:** `Home.md`, `Setup.md`, `Voice-HUD-Gem.md`, `_Sidebar.md`.
+
+- `Setup.md` mirrors `docs/setup-guide.md` verbatim, plus a nav header — regenerate it rather than
+  editing it by hand (see [Keeping in sync](#keeping-in-sync)).
+- `Home.md`, `Voice-HUD-Gem.md`, and `_Sidebar.md` have no source doc in `docs/` and are edited
+  here directly.
+
+> **Removed:** there is no `Player-Commands` page. Player `!`-commands are answered by the DM
+> Whisper gem now, not by this server, so that page belongs in the
+> [dm-whisper](https://github.com/eschatus/dm-whisper) repo. (The page had been linked from every
+> nav header for a while without ever existing — every one of those links 404'd.) Likewise
+> `Voice-HUD-Gem.md` no longer mirrors `docs/gem-guide.md`: the Gem is canonical in its own repo,
+> and this page is a pointer plus the server side of the seam.
 
 ## Publish
 
@@ -25,18 +35,17 @@ via the web UI, then push:
    cp wiki/*.md roll20-dm-mcp.wiki/
    cd roll20-dm-mcp.wiki && git add . && git commit -m "Publish user guides" && git push
    ```
+   (`README.md` is this note — don't copy it to the wiki.)
 
 ## Keeping in sync
 
-The `docs/` copies stay canonical-in-repo; treat these as generated. When a source doc changes,
-re-stage:
+`docs/setup-guide.md` stays canonical in-repo; treat `wiki/Setup.md` as generated. When the source
+doc changes, re-stage:
 
 ```sh
-for p in "setup-guide:Setup" "gem-guide:Voice-HUD-Gem" "player-commands:Player-Commands"; do
-  src="docs/${p%%:*}.md"; dst="wiki/${p##*:}.md"
-  { printf '> 📖 **roll20-dm-mcp wiki** · [Home](Home) · [Setup](Setup) · [Voice HUD Gem](Voice-HUD-Gem) · [Player Commands](Player-Commands)\n\n'; cat "$src"; } > "$dst"
-done
+{ printf '> 📖 **roll20-dm-mcp wiki** · [Home](Home) · [Setup](Setup) · [Voice HUD Gem](Voice-HUD-Gem)\n\n'; \
+  cat docs/setup-guide.md; } > wiki/Setup.md
 ```
 
-(Once the wiki is live, consider slimming the `docs/` user-facing trio to a one-line pointer at
-the wiki page to kill the duplication.)
+(Once the wiki is live, consider slimming `docs/setup-guide.md` to a one-line pointer at the wiki
+page to kill the duplication.)

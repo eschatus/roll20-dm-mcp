@@ -1,63 +1,30 @@
-# Packaging DM Whisper into an installer (#48, epic #49 Phase 4)
+# Moved — installer packaging lives in `dm-whisper`
 
-Goal: a one-click installer a non-savvy DM runs — no terminal, no Python, no Node, no Claude
-Code. The gem launches + supervises everything (Phase B, #53) on a per-user data dir (Phase 1).
+Tombstoned 2026-08-26. Packaging DM Whisper into a one-click installer (#48, epic #49 Phase 4) is
+the gem's build, and the gem is at **https://github.com/eschatus/dm-whisper** —
+`electron-builder.yml`, `scripts/bundle:server`, `npm run dist:dir` / `npm run dist`, the whisper
+binary + model staging, icons, and signing/notarization all live there. `release.yml` (the installer
+CI workflow) moved with it on 2026-08-11; it only ever lived here because `.github/` sat at the repo
+root while the subtree split moved just `voice-hud/`.
 
-**Status: scaffold.** The gem-side config + asset paths are wired; the **server bundle** is the
-remaining work before `npm run dist` yields a *working* installer. This doc is the plan + the open
-decisions.
+This file was the plan-and-open-decisions doc while that work was scaffolded here. Its remaining
+checklist is the gem's to close.
 
-## What's wired (this PR)
-- **`voice-hud/electron-builder.yml`** — appId/product, asar `files`, `asarUnpack` for the native
-  `uiohook-napi`, `extraResources` for `skills/`, the CPU whisper binary, the `base.en` model, and
-  the server bundle; NSIS (win) + dmg (mac) targets.
-- **Runtime asset paths are packaged-aware** (`bootstrap.ts` exports `DMW_ASSET_ROOT=resourcesPath`
-  when `app.isPackaged`; `config.ts` whisper paths + `persona.ts` skills path read it). Dev unchanged.
-- **Scripts:** `bundle:server` (esbuild), `dist:dir` (unpacked, for testing), `dist` (installer).
+## What stays true of THIS repo
 
-## The hard part: bundling the server
-The MCP server (`src/`) is a full Node app with heavy deps. It can't ship as raw `dist/` (no
-`node_modules`). Plan:
-
-1. **esbuild it to one file.** `npm run bundle:server` → `dist-server/dist/index-http.js` (CJS),
-   which `extraResources` ships to `<resources>/server/dist/index-http.js` — exactly what
-   `serverSupervisor.buildServerSpawn(packaged)` spawns. esbuild inlines `firebase`,
-   `@modelcontextprotocol/sdk`, `@anthropic-ai/sdk`, etc.
-2. **Exclude Playwright** (`--external:playwright`). It's the browser *fallback* only; a packaged
-   gem-primary user runs **browserless** (`ROLL20_TRANSPORT=rt` + `DDB_COBALT`), so Chromium
-   (~150 MB + a browser download) isn't needed at runtime. The RT token + cobalt are harvested by
-   the config wizard (#47). If a build ever needs the fallback, ship Playwright as an optional
-   component. **Verify the esbuild bundle boots with playwright external** (lazy-require guards in
-   `roll20.ts`/`browser.ts` so an absent Playwright doesn't crash import).
-
-## Open decisions / TODO before a working installer
-- [ ] **esbuild server bundle** boots under Electron-as-Node with Playwright external (lazy-require
-      the browser path). This is the gating item.
-- [x] **Native rebuild — solved by skipping it.** `uiohook-napi` is `prebuildify --napi` (N-API →
-      ABI-stable across Node *and* Electron) and ships a `win32-x64` prebuilt that `node-gyp-build`
-      loads as-is. So `npmRebuild: false` ships the prebuilt and avoids `@electron/rebuild`'s
-      node-gyp source compile — **no MSVC toolchain needed on the build box**. (Per-OS builds use
-      that OS's prebuilt: build the mac `.dmg` on a Mac, etc.)
-- [ ] **Model bundling:** ship `base.en` (~150 MB) as the offline floor. `medium.en` (the chosen
-      default, ~1.5 GB) + the cuBLAS/Metal **GPU** builds are too big/platform-specific to bundle —
-      the **wizard (#47) downloads** the hardware-appropriate model + GPU binary on first run. (So
-      the bundled default is `base.en`; the wizard upgrades to `medium.en` per the rig decision.)
-- [ ] **whisper binary in `data/whisper/`** must be present at build time (CPU `whisper-cli.exe` +
-      `whisper-server.exe`). On macOS, ship the Metal build (or `brew install whisper-cpp` path).
-- [ ] **Icons:** `build/icon.ico` (win) + `build/icon.icns` (mac).
-- [ ] **Signing/notarization:** win `CSC_LINK`/`CSC_KEY_PASSWORD`; mac hardenedRuntime + notarize
-      (needed for Bill's M4 to run it without Gatekeeper friction).
-- [ ] **First-run token bootstrap:** the server auto-generates `ROLL20_MCP_TOKEN` into `.env` today;
-      packaged, that must persist in the per-user dir and be shared with the gem (wizard, #47).
-- [ ] **`.env` / API key:** packaged has no repo `.env` — the wizard collects `ANTHROPIC_API_KEY`
-      and writes it to the per-user dir.
-
-## Build (once the above lands)
-```sh
-cd voice-hud
-npm install                 # pulls electron-builder + esbuild; rebuilds uiohook-napi for Electron
-npm run dist:dir            # unpacked build in release/ — smoke-test the packaged app first
-npm run dist                # the installer (NSIS .exe / .dmg) in release/
-```
-`dist:dir` first — the packaged-only code paths (DMW_ASSET_ROOT, app.isPackaged supervision, the
-server spawn) only execute in a real build, so that's where the remaining path bugs surface.
+- **The server ships as a dependency of the gem, and `package.json` is set up for it.** The `files`
+  array (`dist`, `src`, `skills`, `mod-scripts`, `LICENSE`, `NOTICE`) plus the `prepare` build script
+  exist precisely so a git install produces a usable server: with no `files` field npm falls back to
+  `.gitignore`, which lists `dist/`, so `prepare` would build and npm would then discard the output.
+  The `//files` comment in `package.json` records that trap — don't "tidy" either field away.
+- **The Playwright question is settled, not deferred.** The plan's gating item was "esbuild the
+  server with `--external:playwright` and verify it boots with the browser absent". There is no
+  Playwright to externalize any more (#179): it is not a dependency, there are no lazy-require
+  guards to get right, and no ~150 MB Chromium decision to make. A packaged install being
+  browserless is now a property of the source, not of the bundler flags.
+- **What the installer must furnish instead:** this server reads credentials and never mints them —
+  `roll20-rt-token.json` (campaign-scoped) and `roll20-upload-cache.json` (8h TTL), both harvested by
+  the gem, plus `ROLL20_MCP_TOKEN` persisted in the per-user data dir. `ANTHROPIC_API_KEY` is needed
+  only by the **maps** suite's `analyze_battlemap`; the combat server makes no model call.
+- **The Mod is not part of any installer.** `mod-scripts/ai-relay.js` is packed so the gem can hand
+  it to the DM, but deploying it is a manual paste into each campaign's API console (#175).

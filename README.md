@@ -1,209 +1,166 @@
 # roll20-dm-mcp
 
-AI-assisted D&D 5e session management for Roll20 + D&D Beyond. Three components:
+MCP servers that drive a **Roll20** table: hit points, conditions, initiative, dice, narration,
+areas of effect, dynamic-lighting walls, tokens and maps — as primitives an AI assistant can call
+during a live D&D 5e session.
 
-- **`roll20-dm` MCP server** — live combat assistant over HTTP: HP tracking, conditions, initiative, dice, narration, turn hooks, AoE targeting, zones, tactical AI advisor, DDB character/monster reads.
-- **`roll20-dm-maps` MCP server** — map prep pipeline (stdio): upload battlemaps, auto-place dynamic lighting walls via Claude Vision, token creation.
-- **Voice HUD** (*separate repository since 2026-08-11, closed source*) — transparent Electron overlay: push-to-talk → Whisper STT → Claude agent → live tabletop. The DM speaks; the gem acts. It consumes this server as a dependency; nothing here depends on it.
+Two servers, one job each:
+
+- **`roll20-dm`** — live combat, over HTTP. HP and conditions, initiative and turn order, dice,
+  narration, AoE resolution, zones, mob-plan storage, the DM inbox, and an SSE event stream.
+- **`roll20-dm-maps`** — map prep, over stdio. Battlemap upload and placement, Claude-Vision wall
+  detection, dynamic-lighting walls and doors, page creation, token creation.
+
+**Roll20 only.** No D&D Beyond, no language model in the combat server, and **no browser anywhere** —
+`playwright` is not a dependency and neither server can open one. If a thing genuinely needs a
+browser, it isn't a tool here.
 
 ![The scrying gem over a live Roll20 encounter](assets/gem-in-play.png)
 
-> *The push-to-talk **scrying gem** overlaying a live Roll20 fight — the gold tray surfaces the current combatant's tactics; the turn order sits at left. More shots in the [Voice HUD](#voice-hud) section.*
+> *[DM Whisper](https://github.com/eschatus/dm-whisper) — a separate project — pushing this server
+> during a live fight. The DM speaks; the gem decides; this server makes it true on the board.*
 
-## Architecture
+## Where this sits
+
+This repo is one backend among several. It does **not** contain the intelligence.
 
 ```mermaid
 flowchart TD
-    HUD["Voice HUD (Electron)<br/>PTT → Whisper STT → Claude agent"]
-    CC["Claude Code<br/>map prep · /combat · /round"]
-    SRV["roll20-dm MCP server<br/>HTTP · bearer auth"]
+    GEM["DM Whisper (Electron)<br/>the brain: tactics, player answers,<br/>orchestration · harvests credentials"]
+    CC["Claude Code<br/>map prep · session skills"]
+    SRV["roll20-dm<br/>HTTP · bearer auth"]
     MAPS["roll20-dm-maps<br/>stdio"]
-    RT["RT transport<br/>Firebase RTDB · ~50ms"]
-    PW["Playwright fallback<br/>types !ai-relay into chat"]
+    BEY["beyond-mcp<br/>D&D Beyond lookups"]
+    RT["Firebase RTDB<br/>the only transport · ~50ms"]
     MOD["ai-relay.js<br/>Roll20 Mod sandbox"]
     R20["Roll20 objects<br/>tokens · walls · turn order"]
-    DDB["D&D Beyond<br/>browserless · read-only"]
 
-    HUD -->|MCP| SRV
+    GEM -->|MCP| SRV
+    GEM -->|MCP| BEY
     CC -->|MCP| SRV
     CC -->|MCP| MAPS
     SRV --> RT
-    SRV -. fallback .-> PW
     MAPS --> RT
     RT --> MOD
-    PW --> MOD
     MOD --> R20
-    SRV --> DDB
+    SRV -.->|SSE /events| GEM
 ```
 
-<details><summary>Detailed text view</summary>
+| repo | owns |
+|---|---|
+| **roll20-dm-mcp** (here) | the Roll20 bridge — primitives and the event stream |
+| [dm-whisper](https://github.com/eschatus/dm-whisper) | the brain, the voice UI, and credential harvesting |
+| [beyond-mcp](https://github.com/eschatus/beyond-mcp) | D&D Beyond reads — characters, monsters, party snapshots |
+
+The gem talks to each backend through an anti-corruption layer, so this server stays deliberately
+**Roll20-native** rather than pretending to be a generic VTT interface.
+
+## How a tool call reaches the table
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  Voice HUD (Electron)                               │
-│  PTT → Whisper STT → Claude Haiku agent             │
-│  transparent gem overlay, always on top             │
-└────────────────────┬────────────────────────────────┘
-                     │ HTTP MCP (bearer auth, port 39200)
-┌────────────────────▼────────────────────────────────┐
-│  roll20-dm MCP server (HTTP, src/index-http.ts)     │
-│                                                     │
-│  ┌── RT transport (set ROLL20_TRANSPORT=rt) ──┐     │
-│  │  Firebase RTDB: direct reads (~50ms warm)  │     │
-│  │  + relays !ai-relay commands (reads AND    │     │
-│  │  writes) to the Mod, reads result back.    │     │
-│  │  signInWithCustomToken harvested once,      │     │
-│  │  cached to data/roll20-rt-token.json        │     │
-│  └────────────────────────────────────────────┘     │
-│                                                     │
-│  ┌── Mod relay FALLBACK (Playwright) ─────────┐     │
-│  │  used only if RT is unavailable:           │     │
-│  │  !ai-relay {JSON} typed into Roll20 chat   │     │
-│  │  ← result via MutationObserver             │     │
-│  └────────────────────────────────────────────┘     │
-│  (the Roll20 Mod sandbox executes every action,     │
-│   createObj/.set, regardless of which transport)    │
-│                                                     │
-│  ┌── D&D Beyond (browserless) ────────────────┐     │
-│  │  CobaltSession cookie → JWT (ttl 300s)     │     │
-│  │  character-service / monster-service       │     │
-│  │  plain fetch, no browser needed            │     │
-│  └────────────────────────────────────────────┘     │
-└─────────────────────────────────────────────────────┘
-
-Claude Code (separate MCP client, same server)
-  └── map prep, session setup, /combat, /round skills
+assistant → MCP tool (TypeScript) → relayCommand({action, …})
+          → Firebase RTDB → ai-relay.js (Roll20 Mod sandbox) → Roll20 objects
 ```
 
-</details>
+The Mod script executes every action; the transport just carries it. Some reads are served straight
+off RTDB without troubling the Mod, and page creation writes the `pages` node directly.
 
-### Transport layers
+**RT is the only transport.** There is no browser fallback — if the realtime connection fails, you
+get a loud, actionable error rather than a silent detour.
 
-| Layer | Read latency | Write latency | When used |
-|---|---|---|---|
-| RT (Firebase RTDB) | ~50ms warm | ~50ms warm | When `ROLL20_TRANSPORT=rt` — reads AND writes: direct RTDB reads + `!ai-relay` command relay to the Mod |
-| Mod relay (Playwright) | 3–4s | 3–4s | Used when RT is unset, and as the fallback for any action if RT is unavailable (auth/timeout/circuit-open) |
-| DDB REST | ~200ms | — | Character sheets, monster stats, campaign roster (read-only) |
+## Credentials are furnished, never minted
 
-The browser window opens for the initial RT token harvest (and DDB cookie harvest) and as the relay fallback when RT is down. It sits minimized otherwise and pops to the foreground when a manual login is needed.
+This server **reads** its credentials and never harvests them. That is deliberate: harvesting means
+driving a browser against your live Roll20 account, which is a human-attended act.
 
-## Setup
-
-```bash
-cp .env.example .env
-# Required: ANTHROPIC_API_KEY, ROLL20_EMAIL, ROLL20_PASSWORD
-# Optional: DDB_COBALT (skip DDB browser harvest), ROLL20_MCP_TOKEN (auto-generated if absent),
-#           ROLL20_TRANSPORT (set "rt" to enable the Firebase RTDB transport; unset = Playwright path),
-#           DDB_TRANSPORT (defaults to "rt"; set "browser" for the legacy DDB path)
-
-npm install
-npx playwright install chromium
-npm run build
-```
-
-### First run
-
-```bash
-npm run serve          # starts roll20-dm HTTP server on port 39200
-```
-
-On first run with no `ROLL20_MCP_TOKEN` in `.env`, the server auto-generates a token, writes it to `.env`, and updates `.mcp.json` with the bearer header. Restart Claude Code once to pick up the new header.
-
-`.mcp.json` is gitignored — it contains the live bearer token and is regenerated automatically.
-
-## MCP server registration
-
-Servers are defined in `.mcp.json` (gitignored, auto-managed):
-
-| Key | Transport | Entry point | Use when |
-|---|---|---|---|
-| `roll20-dm` | HTTP (port 39200) | `src/index-http.ts` (`npm run serve`) | Live session or Voice HUD |
-| `roll20-dm-maps` | stdio | `dist/index-maps.js` | Map prep between sessions |
-
-## Deploy the Roll20 Mod script
-
-1. Open your Roll20 campaign → Settings → API Scripts
-2. Create a new script, paste `mod-scripts/ai-relay.js`
-3. Save — active immediately, no restart needed
-
-The relay receives `!ai-relay {JSON}` commands and whispers results back as hidden divs read by a MutationObserver in the Playwright session.
-
-## Voice HUD
-
-The scrying gem — a transparent cushion-cut crystal overlay that floats above Roll20 in the corner of the screen.
-
-| Tactic tray | Proper-noun vocab | Nickname aliases |
+| file (in the data dir) | what it is | lifetime |
 |---|---|---|
-| ![Tactic tray](assets/gem-tactics-tray.png) | ![Proper Nouns tab](assets/ledger-proper-nouns.png) | ![Nicknames tab](assets/ledger-nicknames.png) |
+| `roll20-rt-token.json` | the realtime credential — **campaign-scoped**, carries that campaign's RTDB shard | ~50 min |
+| `roll20-upload-cache.json` | endpoint + cookies for art upload (uploads themselves are a plain HTTP POST) | 8 h |
 
-> **The HUD moved out of this repository on 2026-08-11** and its source was closed — see
-> `NOTICE`. What follows describes how it behaves and how it talks to this server, which is
-> still worth documenting here because this server is the half it talks to. It is no longer
-> buildable from this checkout, and the `voice-hud/` paths named below now refer to files in
-> the DM Whisper repository. **This server remains open source under MIT and is entirely
-> usable without the HUD** — any MCP client can drive it.
+When one is missing, stale, or belongs to a different campaign, you get a typed error
+(`Roll20TokenUnavailableError`, `Roll20UploadCredentialError`) that names what to refresh.
 
-**Controls:**
-- Hold **Right Ctrl** → speak → release to send (configurable via `DMW_PTT_KEY`)
-- **Right Shift** to confirm a proposed write action
-- **Esc** to cancel
-- Click the ✥ handle to drag the gem
-- Click the ✦ icon to open the Scrying Ledger (full panel with Chat, Config, Debug tabs)
+**DM Whisper is the supported harvester** — its *Connect Roll20* button opens a window, you log in,
+and it writes both files. Point `ROLL20_DATA_DIR` at the same directory the gem uses, or the two
+will silently diverge. Running without the gem means building the token file by hand; see
+[docs/mcp-setup-for-dms.md](docs/mcp-setup-for-dms.md).
 
-**Agent:** cloud Anthropic (Claude Haiku) only by default. Local Ollama is **mothballed and off** — it's hidden unless you set `DMW_ENABLE_LOCAL_LLM=1`, which surfaces the cloud/local brain buttons in the Chat tab (selection then persists across restarts). With the flag unset there is no visible toggle and the provider is forced to cloud.
+## Quick start
 
-**STT:** bundled **whisper.cpp resident server** (`whisper-server` + `ggml-base.en.bin`) — runs on CPU out of the box, no Python. GPU is a drop-in cuBLAS/Vulkan binary swap via `DMW_WHISPER_BIN`. The old Python faster-whisper sidecar is mothballed behind `DMW_STT_ENGINE=faster-whisper`. A **global base vocabulary** of common D&D terms (initiative, saving throw, the abilities/skills/conditions/damage types, dice) plus per-campaign character names, nicknames, and vocab are injected as `initial_prompt` for every transcription, updated after each agent turn. The base set lives in `voice-hud/src/baseVocab.ts` (separate from per-campaign vocab) — extend it without touching code via a JSON array at `<DMW_DATA_DIR>/base-vocab.json`.
+```bash
+npm install          # Node 20+. No browser download — there is no Chromium step.
+npm run serve        # roll20-dm on http://127.0.0.1:39200/mcp (+ /events)
+npm run build        # required for the stdio maps server
+```
 
-**STT correction** (`voice-hud/src/correction.ts`): a deterministic post-STT pass that fixes Whisper's residue against the same glossary, in microseconds. Three ordered, toggleable passes — (1) **notation** (`"two dee six"` → `2d6`, `"nat twenty"` → `nat 20`), (2) **literal map** (exact swaps like `"dee see"` → `DC`), (3) **fuzzy + phonetic**: Double Metaphone is the primary gate, fuzzy ratio secondary, with a common-word guard so real English is left alone (`cave`↛`save`). Despaced multi-word spans match single-word names, so a split name like `"hair gone"` → `Haregon`. Built for precision — a missed correction is cheap; a wrong one corrupts the parse, so stubborn names go in the literal map.
+First run generates `ROLL20_MCP_TOKEN` into `.env`. Register a campaign, furnish a token, and deploy
+the Mod relay — the full walkthrough is in **[docs/mcp-setup-for-dms.md](docs/mcp-setup-for-dms.md)**
+(DM-facing) or **[docs/setup-guide.md](docs/setup-guide.md)** (developer-facing).
 
-**Config:** all runtime knobs (PTT key, STT model, MCP URL, provider, etc.) are exposed in the Scrying Ledger Config tab and persisted to `voice-hud/.env`.
+`ANTHROPIC_API_KEY` is needed only by the maps suite's `analyze_battlemap`. The combat server makes
+no model calls at all.
 
-**Debug:** the Scrying Ledger Debug tab streams the main process `console.error` log live, with 500-entry history.
+## Deploying the Mod relay
 
-## Campaign context
+`mod-scripts/ai-relay.js` runs inside Roll20's API sandbox, and a change to it takes effect only
+once deployed. **You deploy it by hand** — paste it into the campaign's *Settings → API Scripts* and
+save. There is no deploy tool and no `release:mod` script; both drove a browser.
 
-`data/campaign-context.json` is the shared source of truth for per-campaign vocab, nickname aliases, and DM notes. Both the MCP server tools (`add_vocab`, `add_nickname`, `set_campaign_notes`) and the Voice HUD wizard panel read and write this file. The agent can extend it at any time via tool calls.
+Two things worth knowing:
 
-## Claude Code skills
+- **Verify the load, not the save.** The Mod console must print
+  `[GM_AI_Bridge] Relay script loaded (v2.4.0)`. A successful paste is not a running script.
+- **Deploys are per-campaign.** Each campaign carries its own copy, so one table can be running an
+  older relay than another. A mismatch is reported through `transport_status`.
 
-`.claude/commands/` contains slash commands for live sessions:
+## What the servers expose
 
-- `/combat` — session startup: switch campaign, list tokens, enable turn hook, roll NPC initiative, arm player inbox loop, plan all tactics
-- `/round` — parse DM narration → propose action list (HP changes, conditions, narration) → execute on confirmation
+**`roll20-dm`** — tokens and HP (`update_token_hp`, `update_hp_many`, `kill_token`, `set_pc_dying`),
+conditions and markers (`set_token_marker`, `break_concentration`), initiative
+(`roll_initiative` with explicit `entries`, `update_turn_order`, `inject_round_marker`,
+`advance_turn`), dice (`roll_dice`, `post_roll_as_character`), AoE (`resolve_aoe`) and zones,
+character-sheet reads and writes, mob plans (`set_mob_plan`, `get_mob_plans`, `clear_mob_plans`),
+the DM inbox, narration and whispers, `batch_exec`, and campaign management.
 
-## Tactical Advisor
+**`roll20-dm-maps`** — `analyze_battlemap`, `setup_roll20_page`, `upload_and_place_map_image`,
+`auto_place_dl_walls`, `decorate_openings`, `place_polyline_walls`, token creation, layer and FX
+tools, and `batch_import_maps`.
 
-`plan_tactics` / `plan_all_tactics` generates per-monster turn plans scaled to creature Intelligence and Wisdom. Called automatically at combat start and at the top of each round (both from the `/combat` skill and the Voice HUD agent).
+HP routing is three-way and deliberate: **PCs** track HP in relay state (never their token bar —
+Beyond20 owns that), **NPCs** use `bar1`, and **sidekicks** are player-controlled but route as NPCs
+via a registry override. Tools pick the path; callers don't.
 
-| Tier | Int/Wis avg | Model (thinking budget) | Cascade | Behavior |
-|---|---|---|---|---|
-| 0 Feral | ≤5 | Haiku | none | Pure instinct |
-| 1 Dim | ≤8 | Haiku | none | Basic predatory logic |
-| 2 Average | ≤11 | Sonnet | none | Reads the battlefield |
-| 3 Sharp | ≤15 | Sonnet (3k) | none | Coordinates with allies |
-| 4 Brilliant | ≤20 | Sonnet (8k) | medium: Haiku → Sonnet | Short + medium-term planning |
-| 5 Mastermind | 21+ | Opus (16k) | full: Haiku → Sonnet → Opus | Full 3-stage strategic cascade |
+### The event stream
 
-(Tiers 0–3 run a single model; tiers 4–5 run a multi-model cascade — the "Model" column is the final/long-term stage. See `TIER_CONFIGS` in `src/tools/tactics.ts`.)
+`GET /events` (bearer auth) is a Server-Sent Events stream: `combat-update`, `chat-message` (every
+live table message and `!`-command, forwarded raw), `mob-plan` (`plan: null` means cleared),
+`inbox-item`, `map-ping`, `sandbox-status`. This is how an external brain follows the table without
+polling.
 
-Plans are whispered GM-only and surfaced again automatically when the initiative tracker reaches each mob's turn.
+## Development
 
-## Key design decisions
+```bash
+npm test             # vitest — includes a Roll20 Mod emulator that runs the real ai-relay.js
+npm run lint
+```
 
-**RT transport carries reads and writes.** The Firebase RTDB token is harvested once via browser (intercepting `signInWithCustomToken`), cached to `data/roll20-rt-token.json`, and reused. Reads come straight off RTDB; writes (and Mod-served reads) are relayed as `!ai-relay` commands over RTDB to the Mod, which executes them and writes the result back. The Playwright chat path is a fallback used only when RT is unavailable (a shared per-command nonce + the Mod's `PROCESSED_NONCES` LRU make the rt→browser fallback idempotent even for mutations).
+The emulator loads `mod-scripts/ai-relay.js` into a Node `vm` with a fake Roll20 API, so relay
+behaviour is testable without a browser or a live game.
 
-**D&D Beyond is fully browserless.** `CobaltSession` cookie is harvested once and cached to `data/ddb-cobalt.json`. Every DDB read thereafter is a plain HTTPS fetch via `character-service` or `monster-service` — no Chromium involved.
+Start with **[CLAUDE.md](CLAUDE.md)** — it's the orientation doc, and it documents the gotchas that
+have actually bitten this project (the `setSafe` write chokepoint, hand-synced tables the Mod
+sandbox can't import, initiative-safety rules, and the page-creation unit trap).
 
-**D&D Beyond is read-only.** HP and conditions are tracked on Roll20 tokens. DDB is polled for character state (HP, conditions, stats) but never written to.
+Deep dives live in [docs/](docs/): architecture decisions, the realtime protocol, API coverage,
+security, and choreography.
 
-**PC initiative is read-only.** `roll_initiative` always uses `npcOnly=true`. Players set their own initiative; the Mod never touches PC entries.
+## Related
 
-**Player initiatives are preserved, not wiped.** A raw wholesale `setTurnOrder` would replace the entire order (erasing players), so the initiative paths avoid it: `roll_initiative` writes via an atomic `mergeTurnOrder` (read-merge-write in one tick), and `clearFirst=true` strips **only** NPC entries (`clearNpcFirst`) — player-controlled entries and round markers are always kept. `update_turn_order` upserts a single entry the same way. The only wholesale wipe is `clear_turn_order` (explicit, between encounters); `setTurnOrder` is also reachable via `batch_exec` if you pass it deliberately. So a player's rolled/assigned initiative survives rolling and adjusting — it's erased only when you clear it.
+- [dm-whisper](https://github.com/eschatus/dm-whisper) — the voice gem; pins this repo by tag
+- [beyond-mcp](https://github.com/eschatus/beyond-mcp) — D&D Beyond lookups
+- `roll20-recon` — browser-driven protocol archaeology, kept out of this repo on purpose
 
-**AoE emanations use token auras; fixed areas use zones.** Spirit Guardians, Aura of Protection, etc. → `set_token_props aura1_radius`. Fireball, Web, Cloudkill → `create_zone` on the map layer.
+## License
 
-**Duplicate token epithets.** Tokens sharing a name get epithets at initiative roll time (`Wolf the Scarred`, `Wolf the Gaunt`) — assigned from creature-type word banks, stored in the token name.
-
-**Tactical data cached in gmnotes.** Monster ability scores and action text are written to `gmnotes` on first plan under `TACDATA:`. Subsequent plans skip the DDB lookup — survives MCP server restarts.
-
-**Shared campaign context.** `data/campaign-context.json` is written by the MCP server tools, the Voice HUD wizard, and the agent's `add_vocab`/`add_nickname` calls — one file, no sync needed.
+MIT — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

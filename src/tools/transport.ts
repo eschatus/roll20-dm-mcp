@@ -29,7 +29,7 @@ export function registerTransportTools(server: McpServer): void {
               // null = no mismatch detected yet (either not probed, or the deployed relay matches).
               mismatch,
               note: mismatch
-                ? `Roll20 relay is out of date — found ${mismatch.found}, expected ${mismatch.expected}. Run "npm run release:mod" to redeploy.`
+                ? `Roll20 relay is out of date — found ${mismatch.found}, expected ${mismatch.expected}. Paste mod-scripts/ai-relay.js into this campaign's Roll20 API console (Settings → API Scripts) and save, then confirm the Mod console prints "Relay script loaded (v${mismatch.expected})". Deploys are per-campaign.`
                 : undefined,
             },
           }),

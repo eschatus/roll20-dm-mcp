@@ -1,18 +1,18 @@
 # Roll20 realtime transport — reverse-engineering notes
 
-Captured 2026-06-05 via `src/recon/roll20-protocol.ts` (read-only; nothing modified in the
-campaign). Goal: replace the Playwright chat-typing relay with a browserless client that injects
+Captured 2026-06-05 via a read-only recon script (since retired; the surviving RTDB probes are
+`src/recon/rtdb-schema.ts`, `rt-reads.ts`, `rt-roundtrip.ts`, `ping-probe.ts`). Nothing was modified
+in the campaign. Goal: replace the Playwright chat-typing relay with a browserless client that injects
 the `!ai-relay` chat message and reads the `AIBRIDGE_RESULT` whisper back — **keeping
 `mod-scripts/ai-relay.js` unchanged.** This build is Roll20's "jumpgate" editor.
 
-## STATUS: ✅ VALIDATED end-to-end (2026-06-05)
+## STATUS: ✅ VALIDATED end-to-end (2026-06-05); the ONLY transport since 2026-08-26
 
-Implemented in `src/bridge/roll20-rt.ts`. **RT is the DEFAULT transport now** (`rtEnabled()` =
-`ROLL20_TRANSPORT` unset or anything but `browser`); combat is browserless and an RT failure
-**surfaces** (no automatic Playwright fallback). Opt OUT to the legacy browser→chat relay with
-`ROLL20_TRANSPORT=browser` (dev only). Live round-trip confirmed: **~420ms cold / ~49ms warm**
-(vs. the much slower chat-typing relay). The Mod script, all ~40 relay actions, and the
-`AIBRIDGE_RESULT` protocol are unchanged.
+Implemented in `src/bridge/roll20-rt.ts`. **RT is the only transport** — the legacy Playwright
+browser→chat relay and `CLIENT_READS` were deleted in #122/#179, so `ROLL20_TRANSPORT=browser`
+selects nothing and there is no fallback of any kind. An RT failure surfaces as a thrown error
+naming the fix. Live round-trip confirmed: **~420ms cold / ~49ms warm**. The Mod script, its relay
+actions, and the `AIBRIDGE_RESULT` protocol are unchanged.
 
 Roll20's tabletop state and chat live in a **Firebase Realtime Database**. The Mod sandbox reacts
 to `on("chat:message")`. Chat is written **exclusively over Firebase** (confirmed: no chat XHR
@@ -25,9 +25,10 @@ endpoint). A Node client authenticated to the same RTDB:
    arrives as a live `/chat` child and is parsed exactly like the old `OBSERVER_SCRIPT`.
 
 > Gotcha that cost us time: the relay only validates when the **API/Mod sandbox is actually alive**.
-> A wedged sandbox (e.g. the [undefined→Firebase crash](relay-undefined-firebase-crash.md)) makes
-> BOTH the browser relay and RT time out identically — it is not a transport bug. Restart the
-> sandbox (API console → Save Script) before suspecting the client.
+> A wedged sandbox (e.g. the undefined→Firebase crash — see `CLAUDE.md`'s `setSafe` rule) times out
+> exactly like a dead transport; it is not a transport bug, and back when there were two transports
+> both failed identically, which is how we know. Restart the sandbox (API console → Save Script)
+> before suspecting the client. `transport_status` and the `ping` version echo tell them apart.
 
 ## Firebase project (public web config — safe to record)
 
@@ -49,25 +50,36 @@ WebSocket actually observed (Firebase redirects the base host to a regional shar
 token** (a real 3-segment JWT) is minted opaquely by the editor bootstrap and handed straight to
 `signInWithCustomToken`; we could not pin a standalone endpoint that returns it.
 
-Chosen approach (see `getCustomToken`/`harvestCustomToken` in roll20-rt.ts): **harvest the custom
-token once via the browser**, then operate over the socket:
-1. Load `/editor/setcampaign/<id>/` in the persistent (logged-in) browser and **intercept the
-   `signInWithCustomToken` request body** to capture the custom token. The modular SDK only fires
-   that call on a *fresh* auth, so if the editor restored from IndexedDB we delete
-   `firebaseLocalStorageDb` and reload to force a fresh sign-in.
-2. Feed that custom token to the Node `firebase` SDK's `signInWithCustomToken` → the SDK gets the
-   Firebase **ID token** and **auto-refreshes** it for the whole process lifetime (~1h tokens).
-3. Cache the custom token to `data/roll20-rt-token.json` (<50 min) so quick restarts skip the
-   browser; a cold start past the window touches Chromium once, then runs fully on the socket.
+Chosen approach: **capture the custom token once in a logged-in first-party session**, then operate
+over the socket. **Since #177 this server does NOT do the capture** — it reads a furnished
+credential and never mints one:
+
+1. **Harvest (elsewhere — the gem, human present).** Load `/editor/setcampaign/<id>/` in the gem's
+   own logged-in Electron browser and **intercept the `signInWithCustomToken` request body** to
+   capture the custom token. The modular SDK only fires that call on a *fresh* auth, so if the
+   editor restored from IndexedDB, `firebaseLocalStorageDb` is deleted and the page reloaded to
+   force a fresh sign-in. The harvester writes `<data dir>/roll20-rt-token.json`
+   (`{campaignId, customToken, databaseURL, harvestedAt}`).
+2. **Read (here).** `getCustomToken` in `roll20-rt.ts` reads that file and validates three things —
+   it is for **this** campaign (tokens are campaign-scoped), it carries a `databaseURL` (pre-shard-
+   fix caches don't, and would reconnect to the wrong shard), and it is inside the max age. Any miss
+   throws `Roll20TokenUnavailableError` naming which of the three failed. **There is no harvest
+   fallback**: an unattended MCP server must not be able to drive a browser against a live account
+   (#177, sibling of #175/#83).
+3. Feed that custom token to the Node `firebase` SDK's `signInWithCustomToken` → the SDK gets the
+   Firebase **ID token** and **auto-refreshes** it for the whole process lifetime (~1h tokens). So a
+   long session only needs the custom token to be fresh at connect time.
 
 ID-token claims (read via `getIdTokenResult()`, no manual JWT decode):
 `{ currentcampaign:"campaign-<id>-<key>", is_gm:true, playerid, userid, … exp≈+1h }`.
 `currentcampaign` = the `<storagePath>`; `playerid`/`userid` populate the chat-write fields.
 
 > Live token VALUES are intentionally NOT recorded here. Treat them as secrets.
-> Fully-browserless follow-up (not done): persist the firebase refresh token and refresh ID tokens
-> via `securetoken.googleapis.com` — but the official Auth SDK has no Node API to ingest a raw
-> refresh/ID token, so that path requires the zero-dep raw-wire client instead of the SDK.
+> Longer-lived-credential follow-up (still not done, and now lower value): persist the firebase
+> refresh token and refresh ID tokens via `securetoken.googleapis.com` — but the official Auth SDK
+> has no Node API to ingest a raw refresh/ID token, so that path requires the zero-dep raw-wire
+> client instead of the SDK. It would extend how long a furnished credential stays usable; it would
+> not change *who* mints it, which is the point of #177.
 
 ## Firebase RTDB wire protocol (as observed)
 
@@ -130,25 +142,28 @@ signaling). Not used for chat or object state; irrelevant to the relay.
 
 This was the plan; it shipped. Current state:
 
-- `src/bridge/roll20-rt.ts` implements the same `relayCommand` interface as `roll20.ts`, backed by an
-  authenticated RTDB connection. **RT is the default and combat never silently falls back to a
-  browser** — on the default path an RT failure re-throws (a clear "reconnect to re-harvest the token"
-  error) instead of reaching for a Chromium a packaged install doesn't ship. The Playwright
-  `roll20.ts` path is reachable **only** under `ROLL20_TRANSPORT=browser` (legacy dev opt-out). A
-  circuit breaker (`circuitOpen` in `src/bridge/transport-health.ts`) fast-fails RT calls once it has
-  seen consecutive failures, rather than paying the full timeout each time.
-- Direct reads exist on **both** paths: `rtGet`/`tryDirectRead` reads the campaign storage subtree
-  directly — tokens at `<storagePath>/graphics/page/<pid>`, paths at `paths/page/<pageId>`,
-  doors/windows at `doors|windows/page/<pageId>`, and the page list at top-level `pages` (serving
-  `listPages`, `getTokens`, `getTokenById`, `getTurnOrder`, `getTokenMarkers`, `getPaths`,
-  `getDoors`) — and `CLIENT_READS` in `roll20.ts` still
-  serves some reads off the browser's live Backbone models when a browser is attached. Both fall back
-  to the Mod relay on error.
-- Token refresh: the Firebase SDK auto-refreshes the ID token; the custom token is re-harvested on a
-  ~50 min cache TTL. (Raw refresh-token persistence via the `securetoken` endpoint was *not* needed.)
-- DDB went fully browserless separately (CobaltSession → JWT) — see `docs/ddb-browserless-protocol.md`.
+- `src/bridge/roll20-rt.ts` backs `relayCommand` (`roll20.ts` is now just the dispatcher + the
+  circuit-breaker gate + the art-upload POST). **RT never falls back to anything** — an RT failure
+  re-throws a clear "reconnect Roll20 in the gem to re-harvest the token" error. A circuit breaker
+  (`circuitOpen` in `src/bridge/transport-health.ts`: 3 consecutive failures, 30s reset/probe
+  window) fast-fails RT calls while it is known-down rather than paying the full timeout each time;
+  `transport_status` reports it.
+- Direct reads bypass the Mod entirely: `rtGet`/`tryDirectRead` reads the campaign storage subtree —
+  tokens at `<storagePath>/graphics/page/<pid>`, paths at `paths/page/<pageId>`, doors/windows at
+  `doors|windows/page/<pageId>`, and the page list at top-level `pages` (serving `listPages`,
+  `getTokens`, `getTokenById`, `getTurnOrder`, `getTokenMarkers`, `getPaths`, `getDoors`) — falling
+  back to the Mod relay on error. (`CLIENT_READS`, which served some of these off a live browser's
+  Backbone models, is deleted along with the browser.)
+- **Writes** go over RTDB too, in two flavours: everything the Mod owns travels as an `!ai-relay`
+  chat child, but page *creation* is a direct RTDB write (`rtCreatePage`, #178) — `createObj("page")`
+  is a **Mod sandbox** limitation that never applied to this path. Note `width`/`height` there are
+  70px **units**, not cells.
+- Token refresh: the Firebase SDK auto-refreshes the ID token for the process lifetime; the custom
+  token is not refreshed here at all — it is furnished, validated, and rejected when stale.
+- D&D Beyond is no longer part of this repo — the bridge and its protocol notes moved to **beyond-mcp**
+  with the code (#171 Phase 2).
 
-## Map pings: the `broadcast` channel (discovered 2026-06-11, src/recon/ping-sniff.ts)
+## Map pings: the `broadcast` channel (discovered 2026-06-11 by frame-sniffing)
 
 Shift+click map pings transit the campaign RTDB as a **put to
 `<storagePath>/broadcast`** — a single-value channel overwritten on every ping

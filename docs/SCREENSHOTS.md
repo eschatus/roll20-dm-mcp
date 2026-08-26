@@ -7,20 +7,22 @@ filenames below; wire the image tags into the README / wiki page once the file e
 
 ## Priority shots
 
-### 1. The Voice HUD gem — ✅ CAPTURED
+### 1. The Voice HUD gem — ✅ CAPTURED (now the gem repo's business)
 The scrying-gem overlay is the signature visual and **can't be captured headlessly**. Four shots
-are committed and wired into the README + the **Voice HUD Gem** wiki page:
+are committed here and wired into the README + the **Voice HUD Gem** wiki page:
 - `assets/gem-in-play.png` — the gem's tactic tray over a live Roll20 fight (hero).
 - `assets/gem-tactics-tray.png` — the expanded tactic tray (current creature + other mobs).
 - `assets/ledger-proper-nouns.png` — Scrying Ledger → Proper Nouns (STT vocab).
 - `assets/ledger-nicknames.png` — Scrying Ledger → Nicknames.
 
-Still nice-to-have: a shot of the **Inbox tab** with a classified `!dm` item (`assets/ledger-inbox.png`).
+> The gem itself moved to **dm-whisper** on 2026-08-11, so **new** gem shots belong there. These
+> four stay because this repo's README and wiki still show them.
 
 ### 2. A provisioned lit map → `assets/roll20-map.png`
-A battlemap with dynamic-lighting walls placed (blue `#0044FF`), doors, lit. Capture in Roll20, or
-via the `screenshot_roll20` tool — `dlEditor:true` renders the walls as colored lines, which makes
-the DL work legible.
+A battlemap with dynamic-lighting walls placed (blue `#0044FF`), doors, lit. **Capture it by hand in
+Roll20** (turn on the DL editor so the walls render as colored lines — that's what makes the work
+legible). The old `screenshot_roll20` tool is **gone** (#179): it needed Playwright, and this repo
+has no browser at all, so there is no headless capture path here for anything Roll20 renders.
 
 ⚠️ Use a **homemade / non-copyrighted map** for anything published publicly — module maps
 (Phandelver, Curse of Strahd, …) are WotC's.
