@@ -897,6 +897,7 @@ export function registerTacticsTools(server: McpServer): void {
         const had = tacticMemory.has(tokenId);
         tacticMemory.delete(tokenId);
         await roll20.relayCommand({ action: "setMobPlan", tokenId, html: "" });
+        publishMobPlan(tokenId, null);   // HUD drops the card too
         return { content: [{ type: "text", text: JSON.stringify({ cleared: had ? 1 : 0 }) }] };
       }
       const count = tacticMemory.size;

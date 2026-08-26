@@ -50,6 +50,25 @@ export function coerceStringArray(v: unknown): unknown {
   return v;
 }
 
+// Tolerate a JSON-stringified array — and a bare single object — for object-array
+// params, mirroring coerceStringArray (models sometimes stringify the whole array).
+// Anything else falls through untouched for Zod to reject.
+export function coerceObjectArray(v: unknown): unknown {
+  if (Array.isArray(v)) return v;
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (s.startsWith("[") || s.startsWith("{")) {
+      try {
+        const parsed: unknown = JSON.parse(s);
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch { /* not JSON — let Zod reject the string */ }
+    }
+    return v;
+  }
+  if (v && typeof v === "object") return [v];
+  return v;
+}
+
 // Tolerate the ways small/cloud models pass boolean params: "true"/"false"/"1"/"0"
 // are mapped to native booleans; real booleans pass through unchanged; anything else
 // is returned untouched for Zod to reject. Use as a Zod preprocess:
@@ -59,6 +78,51 @@ export function coerceBoolean(v: unknown): unknown {
   if (v === "true" || v === "1") return true;
   if (v === "false" || v === "0") return false;
   return v;
+}
+
+// ── Roll cards ────────────────────────────────────────────────────────────────
+// Render PRE-COMPUTED roll results as a Roll20 default-template card, for the
+// postChat relay action (post_roll_as_character). The dice were already rolled
+// elsewhere — D&D Beyond, the gem's roll-pump bridging, a companion app — so the
+// output must carry no [[…]] inline-roll syntax, which Roll20 would re-roll into
+// different numbers. Escaping strips template-breaking chars ({}|) and
+// neutralizes inline-roll brackets for the same reason.
+export interface RollCardRow { label: string; notation?: string; total: number | string; breakdown?: string }
+
+const escapeRollText = (s: string) =>
+  String(s).replace(/[{}|]/g, "").replace(/\[\[/g, "[").replace(/\]\]/g, "]");
+
+export function renderRollCard(title: string, rows: RollCardRow[]): string {
+  const parts = rows.map((r) => {
+    const label = escapeRollText(r.label.trim() || "Roll");
+    const notation = r.notation ? ` ${escapeRollText(r.notation)}` : "";
+    const total = escapeRollText(String(r.total));
+    const breakdown = r.breakdown ? escapeRollText(r.breakdown) : "";
+    // Show the die faces only when they say more than the bare total.
+    const detail = breakdown && breakdown !== total ? ` (${breakdown})` : "";
+    return `{{${label}${notation} = ${total}${detail}}}`;
+  });
+  return `&{template:default} {{name=${escapeRollText(title)}}} ${parts.join(" ")}`;
+}
+
+// ── Mob-plan whisper card ─────────────────────────────────────────────────────
+// Default rendering for a plan stored via set_mob_plan without caller-supplied
+// HTML. Whispered to the DM by the turn hook when the mob's turn comes up, so it
+// must be a self-contained inline-styled block like the tactics cascade's card.
+export interface MobPlan { name: string; shortTerm: string; mediumTerm?: string; longGoal?: string }
+
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+export function renderMobPlanCard(plan: MobPlan): string {
+  const line = (label: string, v?: string) =>
+    v ? `<div style='margin-top:4px;'><b style='color:#9a86d8;'>${label}:</b> ${escapeHtml(v)}</div>` : "";
+  return "<div style='border:1px solid #4a3a6a;border-left-width:3px;background:#0c0814;padding:6px 10px;border-radius:2px;color:#cbc0e8;font-family:Georgia,serif;line-height:1.5;'>"
+    + `<div style='color:#9a86d8;font-weight:bold;'>🧠 ${escapeHtml(plan.name)}</div>`
+    + line("Now", plan.shortTerm)
+    + line("Then", plan.mediumTerm)
+    + line("Goal", plan.longGoal)
+    + "</div>";
 }
 
 // ── Turn order ────────────────────────────────────────────────────────────────

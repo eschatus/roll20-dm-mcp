@@ -208,21 +208,39 @@ interface ChatEntry { who: string; type: string; content: string; inlinerolls: {
 const chatBuffer: ChatEntry[] = [];
 const CHAT_BUFFER_MAX = 100;
 
-function bufferChat(val: unknown): void {
+// Parse a /chat child into the cleaned table-chat shape shared by the buffer
+// (get_recent_chat) and the SSE forwarder (forwardChat) — ONE place decides what
+// counts as table chat, so the two views can't drift. Returns null for the
+// bridge's own traffic: !ai-relay commands and API-origin Mod output (incl.
+// AIBRIDGE whispers).
+function parseTableChat(val: unknown): { who: string; playerid: string; type: string; content: string; contentRaw: string; inlinerolls: { expression: string; total: number | null }[] } | null {
   const m = val as { content?: unknown; who?: unknown; type?: unknown; playerid?: unknown; inlinerolls?: unknown };
   const content = m?.content;
-  if (typeof content !== "string") return;
-  if (content.startsWith("!ai-relay")) return;          // our own commands
-  if (m.playerid === "API") return;                     // bridge/Mod output (incl. AIBRIDGE whispers)
+  if (typeof content !== "string") return null;
+  if (content.startsWith("!ai-relay")) return null;     // our own commands
+  if (m.playerid === "API") return null;                // bridge/Mod output (incl. AIBRIDGE whispers)
   const rolls = Array.isArray(m.inlinerolls) ? m.inlinerolls : [];
-  chatBuffer.push({
+  return {
     who: String(m.who || ""),
+    playerid: String(m.playerid || ""),
     type: String(m.type || ""),
     content: cleanChat(content),
+    contentRaw: content,
     inlinerolls: rolls.map((r) => {
       const rr = r as { expression?: string; results?: { total?: number } };
       return { expression: String(rr?.expression ?? ""), total: rr?.results?.total ?? null };
     }),
+  };
+}
+
+function bufferChat(val: unknown): void {
+  const entry = parseTableChat(val);
+  if (!entry) return;
+  chatBuffer.push({
+    who: entry.who,
+    type: entry.type,
+    content: entry.content,
+    inlinerolls: entry.inlinerolls,
     timestamp: Date.now(),
   });
   if (chatBuffer.length > CHAT_BUFFER_MAX) chatBuffer.shift();
@@ -300,9 +318,42 @@ function handleChatChild(key: string | null, val: unknown, live: boolean): void 
       _playerCommandListener({ who: String(m.who || ""), playerid: String(m.playerid || ""), content });
     }
   }
-  // An AIBRIDGE result resolves a pending relay; anything else is real table chat → buffer it.
-  if (!tryResolveContent(content)) bufferChat(val);
+  // An AIBRIDGE result resolves a pending relay; anything else is real table chat →
+  // buffer it (get_recent_chat) and forward it over the SSE stream (external brain).
+  if (!tryResolveContent(content)) {
+    bufferChat(val);
+    forwardChat(val, key, live);
+  }
 }
+
+// Forward live table chat — players' messages, !-commands, !dm — over the in-process
+// SSE stream so an external subscriber (the gem) can run its own player-command
+// handling without a relay round-trip (#171: the transport stays here, the brain moves
+// out). What counts as table chat is decided by parseTableChat, shared with the chat
+// buffer; live-only so the connect-time replay burst can't re-fire a subscriber's
+// handlers.
+function forwardChat(val: unknown, key: string | null, live: boolean): void {
+  if (!live) return;
+  const entry = parseTableChat(val);
+  if (!entry) return;
+  _broadcast({
+    type: "chat-message",
+    message: {
+      who: entry.who,
+      playerid: entry.playerid,
+      type: entry.type,
+      content: entry.content,
+      isCommand: entry.contentRaw.startsWith("!"),
+      inlinerolls: entry.inlinerolls,
+      timestamp: Date.now(),
+      key,
+    },
+  });
+}
+
+// Narrow test seam: drive the chat-child handler directly (src/bridge/roll20-rt.chat.test.ts)
+// without a live RTDB connection. Same pattern as __setAnthropicForTest elsewhere.
+export const __handleChatChildForTest = handleChatChild;
 
 async function connect(): Promise<RtConn> {
   const { roll20CampaignId } = getActiveCampaign();
@@ -906,12 +957,28 @@ export interface TurnOrderEntry { id?: string; pr?: string | number; custom?: st
 export interface MobPlanData { name: string; shortTerm: string; mediumTerm?: string; longGoal?: string }
 export interface DmInboxEntry { who: string; playerid: string; content: string; type: "query" | "intent"; timestamp: number; key: string }
 
+// Live table chat forwarded raw over SSE (see forwardChat): every player message,
+// !-command, and !dm — never the bridge's own traffic. `key` is the RTDB child key
+// (subscriber-side dedup); `isCommand` flags !-prefixed messages.
+export interface ChatMessageEvent {
+  who: string;
+  playerid: string;
+  type: string;
+  content: string;
+  isCommand: boolean;
+  inlinerolls: { expression: string; total: number | null }[];
+  timestamp: number;
+  key: string | null;
+}
+
 export type RtdbBroadcastEvent =
   | { type: "combat-update"; turnOrder: TurnOrderEntry[]; round: number }
-  | { type: "mob-plan"; tokenId: string; plan: MobPlanData }
+  // plan:null = the plan was CLEARED — subscribers must drop the token's card.
+  | { type: "mob-plan"; tokenId: string; plan: MobPlanData | null }
   | { type: "inbox-item"; item: DmInboxEntry }
   | { type: "sandbox-status"; ok: boolean }
-  | { type: "map-ping"; ping: MapPing };
+  | { type: "map-ping"; ping: MapPing }
+  | { type: "chat-message"; message: ChatMessageEvent };
 
 // Latest map ping seen on the `broadcast` channel. Aged by OUR receive clock,
 // not the sender's ts (client clocks skew).
@@ -1034,7 +1101,8 @@ async function _doStartRtdbSubscriptions(): Promise<void> {
 // has no Firebase access, so neither side could ever populate that node. Cross-session/reconnect
 // replay, if needed, must come from the Mod via the getMobPlans relay action (servable on any
 // shard) — never a client RTDB write.
-export function publishMobPlan(tokenId: string, plan: MobPlanData): void {
+// plan:null broadcasts a CLEAR — the HUD drops the token's card.
+export function publishMobPlan(tokenId: string, plan: MobPlanData | null): void {
   _broadcast({ type: "mob-plan", tokenId, plan });
 }
 
