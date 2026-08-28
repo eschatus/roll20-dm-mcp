@@ -98,7 +98,9 @@ describe("a full round of combat", () => {
 
   it("resolves Arch-Cultist Zeno's Spirit Guardians as an emanation aura hitting nearby PCs", async () => {
     // Emanation = aura on the caster (per the project's emanation convention).
-    await h.callTool("set_token_props", { tokenId: w.npcs.cultist.id, aura1_radius: 15, aura1_color: "#ffff00", showplayers_aura1: true });
+    // Targeted by characterName, not tokenId — issue #182: this is the tool every
+    // sibling mutation tool lets you address by name, and models reach for it here too.
+    await h.callTool("set_token_props", { characterName: "Arch-Cultist Zeno", aura1_radius: 15, aura1_color: "#ffff00", showplayers_aura1: true });
     expect(Number(h.emu.tokenProps(w.npcs.cultist.id).aura1_radius)).toBe(15);
 
     await h.callTool("create_zone", { name: "Spirit Guardians (Zeno)", centerTokenId: w.npcs.cultist.id, radiusFeet: 15, color: "#ffff00" });

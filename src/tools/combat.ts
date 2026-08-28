@@ -967,9 +967,10 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "set_token_props",
-    "Set one or more properties on a Roll20 token — name, position, aura, tint, bars, layer, etc. Use aura1_radius (feet, 0 to clear) + aura1_color (#hex) + showplayers_aura1=true for visible spell auras. Use tint_color for colored overlays.",
+    "Set one or more properties on a Roll20 token — name, position, aura, tint, bars, layer, etc. Use aura1_radius (feet, 0 to clear) + aura1_color (#hex) + showplayers_aura1=true for visible spell auras. Use tint_color for colored overlays. Target with characterName (or tokenId) — same as every other token-mutation tool.",
     {
-      tokenId: z.string(),
+      characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Thorne'."),
+      tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
       name: z.string().optional(),
       left: z.number().optional().describe("X position in page pixels"),
       top: z.number().optional().describe("Y position in page pixels"),
@@ -993,13 +994,18 @@ export function registerCombatTools(server: McpServer): void {
       controlledby: z.string().optional(),
       showname: z.boolean().optional(),
     },
-    async ({ tokenId, ...fields }) => {
+    async ({ characterName, tokenId, ...fields }) => {
+      let resolvedTokenId = tokenId;
+      if (!resolvedTokenId) {
+        if (!characterName) throw new Error("Provide characterName or tokenId");
+        resolvedTokenId = await resolveTokenOrThrow(characterName);
+      }
       const props: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(fields)) {
         if (v !== undefined) props[k] = v;
       }
-      await roll20.relayCommand({ action: "setTokenProps", tokenId, props });
-      return text(`Updated token ${tokenId}: ${Object.keys(props).join(", ")}`);
+      await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props });
+      return text(`Updated token ${characterName ?? resolvedTokenId}: ${Object.keys(props).join(", ")}`);
     }
   );
 
