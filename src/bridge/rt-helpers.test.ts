@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  parseAibridge, cleanChat, parsePcHpBlock, writePcHpBlock,
+  parseAibridge, cleanChat, resolveInlineRolls, parsePcHpBlock, writePcHpBlock,
   mapToken, parseTurnorder, stripUndefWrite, parseBroadcastPing,
 } from "./rt-helpers.js";
 
@@ -93,6 +93,44 @@ describe("cleanChat", () => {
   });
   it("caps at 240 chars", () => {
     expect(cleanChat("x".repeat(500)).length).toBe(240);
+  });
+});
+
+// #187: rolltemplate content indexes into inlinerolls instead of carrying the number.
+describe("resolveInlineRolls", () => {
+  const rolls = [{ total: 16 }, { total: 7 }];
+
+  it("substitutes $[[n]] with inlinerolls[n].total", () => {
+    expect(resolveInlineRolls("{{r1=$[[0]]}} {{dmg1=$[[1]]}}", rolls)).toBe("{{r1=16}} {{dmg1=7}}");
+  });
+
+  it("leaves content untouched when there are no pointers", () => {
+    expect(resolveInlineRolls("Rigan searches the altar", rolls)).toBe("Rigan searches the altar");
+  });
+
+  it("leaves a pointer VERBATIM rather than inventing a number", () => {
+    // Out of range, and a roll that produced no total — both must stay visibly unresolved.
+    expect(resolveInlineRolls("$[[5]]", rolls)).toBe("$[[5]]");
+    expect(resolveInlineRolls("$[[0]]", [{ total: null }])).toBe("$[[0]]");
+    expect(resolveInlineRolls("$[[0]]", [])).toBe("$[[0]]");
+  });
+
+  it("keeps a zero total (0 is a real result, not a missing one)", () => {
+    expect(resolveInlineRolls("$[[0]]", [{ total: 0 }])).toBe("0");
+  });
+
+  it("handles null/undefined and a missing rolls argument", () => {
+    expect(resolveInlineRolls(null)).toBe("");
+    expect(resolveInlineRolls(undefined)).toBe("");
+    expect(resolveInlineRolls("$[[0]]")).toBe("$[[0]]");
+  });
+
+  it("resolves BEFORE cleanChat's cap, so a late pointer survives a long template", () => {
+    // 244 chars unresolved (over the 240 cap), 240 exactly once "$[[0]]" becomes "16".
+    const long = "x".repeat(230) + " {{r1=$[[0]]}}";
+    expect(cleanChat(resolveInlineRolls(long, rolls))).toContain("{{r1=16}}");
+    // Proof the order matters: cleaning first truncates the pointer out of reach.
+    expect(resolveInlineRolls(cleanChat(long), rolls)).not.toContain("16");
   });
 });
 

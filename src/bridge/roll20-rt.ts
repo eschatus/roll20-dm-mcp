@@ -29,7 +29,7 @@ import { recordSuccess, recordFailure } from "./transport-health.js";
 import { resolveMarkerForState, computeHpThresholds, WOUNDED_MARKER, DEAD_MARKER } from "./markers.js";
 import { trackCustomState, getCustomStates as getCustomStatesStore } from "./relayState.js";
 import {
-  AIBRIDGE_MARKER as MARKER, parseAibridge, cleanChat,
+  AIBRIDGE_MARKER as MARKER, parseAibridge, cleanChat, resolveInlineRolls,
   parsePcHpBlock, writePcHpBlock, type PcHpEntry,
   mapToken, parseTurnorder, stripUndefWrite,
   parseBroadcastPing, type MapPing,
@@ -187,16 +187,19 @@ function parseTableChat(val: unknown): { who: string; playerid: string; type: st
   if (content.startsWith("!ai-relay")) return null;     // our own commands
   if (m.playerid === "API") return null;                // bridge/Mod output (incl. AIBRIDGE whispers)
   const rolls = Array.isArray(m.inlinerolls) ? m.inlinerolls : [];
+  const inlinerolls = rolls.map((r) => {
+    const rr = r as { expression?: string; results?: { total?: number } };
+    return { expression: String(rr?.expression ?? ""), total: rr?.results?.total ?? null };
+  });
   return {
     who: String(m.who || ""),
     playerid: String(m.playerid || ""),
     type: String(m.type || ""),
-    content: cleanChat(content),
+    // Resolve $[[n]] roll pointers against inlinerolls BEFORE cleanChat truncates (#187), so
+    // `content` carries the actual totals instead of indices into a sibling array.
+    content: cleanChat(resolveInlineRolls(content, inlinerolls)),
     contentRaw: content,
-    inlinerolls: rolls.map((r) => {
-      const rr = r as { expression?: string; results?: { total?: number } };
-      return { expression: String(rr?.expression ?? ""), total: rr?.results?.total ?? null };
-    }),
+    inlinerolls,
   };
 }
 
