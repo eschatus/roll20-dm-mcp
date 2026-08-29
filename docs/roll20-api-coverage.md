@@ -21,10 +21,10 @@ is **out of scope here**, not "bridged with Playwright".
 > browser session to read them through — if a future task needs a property table that isn't here,
 > open the page in your own browser and paste what you find.
 
-Last analyzed: 2026-08-26 (repo v2.0.0). Relay version string: `2.4.0` (reported by the `ping`
+Last analyzed: 2026-08-26 (repo v2.0.0). Relay version string: `2.5.0` (reported by the `ping`
 action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
-(`[GM_AI_Bridge] Relay script loaded (v2.4.0)`), not the save.
+(`[GM_AI_Bridge] Relay script loaded (v2.5.0)`), not the save.
 
 ---
 
@@ -159,7 +159,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `sendPing` | send_ping | maps | "look here" / pull player view to a spot |
 | `spawnFx` / `spawnFxBetweenPoints` | spawn_fx, spawn_fx_between_points | maps | explosions, beams, spell nova |
 | `toFront` / `toBack` | to_front, to_back | maps | z-order |
-| `ping` | (health check) | — | reports relay version (2.4.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
+| `ping` | (health check) | — | reports relay version (2.5.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
 | **event** `chat:message` | (passive) | — | buffers chat, parses `!dm`. Player `!`-commands are **forwarded, not answered** — `forwardChat` broadcasts them as an SSE `chat-message`; the gem decides what to do. |
 | **event** `change:campaign:turnorder` | (passive) | — | turn/round announcements |
 | **event** `add:graphic` | (passive) | — | auto-rolls initiative for NPC tokens dropped during combat |

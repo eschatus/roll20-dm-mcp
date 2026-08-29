@@ -35,6 +35,30 @@ export function parseAibridge(text: string): { nonce: number; data?: unknown; er
   return null;
 }
 
+// Roll20 rolltemplate content carries roll RESULTS as pointers rather than values: "{{r1=$[[0]]}}"
+// means "the total of inlinerolls[0]", and the number itself appears nowhere in the string. Left
+// alone, eight Fire Giant rock attacks that came up 16/13/21/21/13/20/13/20 are byte-identical
+// `content` strings and a caller cannot tell which one landed (#187). The join is possible, but
+// every consumer would have to implement it, and get_recent_chat reads as though it already had.
+//
+// Substitute in place so `content` stands on its own. The caller still returns `inlinerolls`
+// alongside, because `expression` ("1d20 +10") carries what the substitution does not.
+//
+// A pointer whose total is missing — index out of range, or a roll with no result — is left
+// VERBATIM. An unresolved "$[[2]]" is visibly unreadable; a fabricated 0 is not, and the whole
+// point of this tool is that an agent doesn't proceed on an invented number.
+//
+// Call this BEFORE cleanChat: its 240-char cap would otherwise truncate a pointer late in a long
+// template out of reach (and resolving shortens the string, so more of it survives the cap).
+export function resolveInlineRolls(raw: unknown, rolls: { total: number | null }[] = []): string {
+  const s = String(raw == null ? "" : raw);
+  if (!s.includes("$[[")) return s;
+  return s.replace(/\$\[\[(\d+)\]\]/g, (whole, idx: string) => {
+    const total = rolls[Number(idx)]?.total;
+    return typeof total === "number" ? String(total) : whole;
+  });
+}
+
 // Strip rolltemplate HTML / URLs to dense text (roll totals are kept separately in inlinerolls, so
 // this can be aggressive). Mirrors the Mod's cleanChat — keep byte-compatible.
 export function cleanChat(raw: unknown): string {

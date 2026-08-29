@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.4.0";
+var AI_RELAY_VERSION = "2.5.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -164,6 +164,24 @@ function tokenRich(t) {
     s[p[0]] = v;
   });
   return s;
+}
+
+// Substitute "$[[n]]" roll pointers in rolltemplate content with inlinerolls[n].total (#187).
+// Without it, eight rock attacks that came up 16/13/21/21/13/20/13/20 are byte-identical
+// `content` strings, because the numbers live only in the sibling array. A pointer with no total
+// (out of range, or a roll with no result) is left VERBATIM — never filled with a fabricated 0.
+// Must run BEFORE cleanChat, whose 240-char cap can otherwise truncate a late pointer.
+//
+// HAND-SYNCED COPY of resolveInlineRolls in src/bridge/rt-helpers.ts (the Mod sandbox cannot
+// import TS). Same `{ total }` input shape, same verbatim-on-miss rule — edit both together.
+function resolveInlineRolls(raw, rolls) {
+  let s = String(raw == null ? "" : raw);
+  if (s.indexOf("$[[") === -1) return s;
+  return s.replace(/\$\[\[(\d+)\]\]/g, function(whole, idx) {
+    let r = (rolls || [])[Number(idx)];
+    let total = r ? r.total : null;
+    return typeof total === "number" ? String(total) : whole;
+  });
 }
 
 // Strip rolltemplate HTML / URLs down to text. The dice signal is preserved separately in
@@ -354,13 +372,16 @@ function setDefaultTokenForChar(t, args) {
 
 // --- Helpers ---
 
-// Epithet word banks for disambiguating duplicate-named tokens at initiative roll time.
+// Per-monster epithet banks for disambiguating duplicate-named tokens at initiative roll time.
 // Matched by substring against the token name (case-insensitive), in declaration order,
 // so MORE SPECIFIC keys must come BEFORE the generic ones they contain
-// (e.g. "direwolf"/"werewolf"/"d/wolf"/"wolf"; "hobgoblin"/"goblin"). nextEpithetName()
-// guarantees uniqueness even when a group is larger than its bank, so banks no longer
-// need to be sized to the worst-case mob count — but wider banks give nicer single-word
-// names before the two-adjective / numeric fallbacks kick in.
+// (e.g. "direwolf"/"werewolf"/"d/wolf"/"wolf"; "hobgoblin"/"goblin").
+//
+// These are the FLAVOUR layer and are deliberately NOT sized to worst-case mob counts: a bank
+// holds the words that are apt for that one monster and stops. Breadth comes from
+// GENERIC_EPITHETS below, which nextEpithetName() falls back to and then combines with, so a
+// 28-token stack still stays on single adjectives against an 8-word bank (issue #185). Adding
+// words here is a flavour improvement, never a capacity fix — don't pad a bank to fit a mob.
 const MONSTER_EPITHETS = {
   // --- humanoids ---
   hobgoblin: ["Scarred","Disciplined","Ruthless","Iron-Fisted","Veteran","Grim","Banner-Bearing","Cruel","Stern","Watchful","Helmed","Drilled"],
@@ -411,13 +432,36 @@ const MONSTER_EPITHETS = {
   harpy:     ["Shrieking","Foul","Beguiling","Filth-Feathered","Sharp-Taloned","Wailing"],
   hag:       ["Cackling","Crook-Backed","Warty","Spiteful","Hungry","Yellow-Toothed","Whispering"],
 };
+// The fallback pool, for any monster with no bank of its own. Unlike a per-monster bank it has
+// to read right on ANYTHING — a rat, a fire giant, a skeleton, an elemental, a golem, a swarm —
+// so the curation rule is narrow: every word reads as plainly HOSTILE, and nothing else. Words
+// that describe what a thing looks like belong in a per-monster bank, not here.
+//
+// That rules out three kinds of word this pool used to carry. Don't re-add them:
+//   - anatomy      ("Hollow-Eyed", "Slavering", "Howling") — an elemental has no eyes or mouth
+//   - size/build   ("Gaunt", "Lean", "Withered")           — a golem is not gaunt, a rat is not hoary
+//   - vermin-scale ("Skulking", "Furtive", "Limping")      — apt on a rat, absurd on a fire giant
+// Also gone: "Wretched"/"Desperate"/"Wary", which read pitiable or cautious rather than hostile,
+// and "Bloodied", which collides with the bloodied/wounded pseudo-marker and so reads as a
+// mechanical state rather than as a name.
+//
+// Grouped by REGISTER of hostility rather than being 49 synonyms for "angry": a big stack drawn
+// from one register blurs together by ear, which is the failure this pool exists to avoid.
 const GENERIC_EPITHETS = [
-  "Wrathful","Skulking","Wretched","Ravenous","Frenzied","Ancient","Withered",
-  "Relentless","Cunning","Desperate","Scarred","Hungry","Pale","Lurking","Maddened",
-  "Bloodied","Howling","Silent","Swift","Hollow-Eyed","Twisted","Gaunt",
-  "Snarling","Vicious","Grim","Foul","Reeking","Savage","Lean","Crooked",
-  "Wild-Eyed","Slavering","Limping","Battered","Restless","Seething","Brazen",
-  "Furtive","Ragged","Stinking","Grasping","Feral","Wary","Sullen","Spiteful",
+  // rage
+  "Wrathful","Furious","Raging","Seething","Frenzied","Berserk","Maddened","Rampaging",
+  // ferocity
+  "Savage","Vicious","Brutal","Fierce","Ferocious","Rending","Warlike",
+  // cruelty
+  "Cruel","Wicked","Spiteful","Hateful","Merciless","Ruthless","Pitiless","Remorseless","Punishing",
+  // malice
+  "Baleful","Sinister","Malign","Vengeful","Vile","Murderous",
+  // dread
+  "Grim","Dire","Fell","Dreadful","Fearsome","Terrible","Menacing","Deadly",
+  // implacability
+  "Relentless","Implacable","Tireless","Unyielding","Harrying","Hell-Bent",
+  // predation
+  "Ravenous","Ravening","Predatory","Stalking","Hunting",
 ];
 
 // Draw a circle as a 36-point polygon path. Returns Roll20 path string.
@@ -465,45 +509,79 @@ function withZoneAlpha(color) {
   return "#" + hex[1] + ZONE_FILL_ALPHA_HEX;
 }
 
+// The per-monster bank for a token name, or [] when no key matches. An empty bank is not an
+// error case — nextEpithetName() just runs on GENERIC_EPITHETS alone, which is what every
+// unbanked monster used to get anyway.
 function getMonsterEpithets(tokenName) {
   let lower = tokenName.toLowerCase();
   let keys = Object.keys(MONSTER_EPITHETS);
   for (let i = 0; i < keys.length; i++) {
     if (lower.indexOf(keys[i]) !== -1) return MONSTER_EPITHETS[keys[i]];
   }
-  return GENERIC_EPITHETS;
+  return [];
 }
 
-// Produce a name "<baseName> the <Epithet>" that is GUARANTEED unique within `used`
-// (a map of full-name -> true that the caller threads across the whole group), no matter
-// how large the group is relative to the epithet bank. Escalation, cheapest first:
-//   1) a single unused adjective                      -> "Direwolf the Hungry"
-//   2) two distinct adjectives                        -> "Direwolf the Hungry Gaunt"
-//   3) numeric suffix (last-resort, always succeeds)  -> "Direwolf the Hungry #2"
+// Produce a name "<baseName> the <Epithet>" that is GUARANTEED unique within `used` (a map of
+// full-name -> true that the caller threads across the whole group), no matter how large the
+// group is relative to the banks. Escalation, best-reading first:
+//   1) an unused word from the monster's own bank    -> "Fire Giant the Towering"
+//   2) an unused word from the common hostile pool   -> "Fire Giant the Relentless"
+//   3) a common word prepended to a bank word        -> "Fire Giant the Relentless Towering"
+//   4) numeric suffix (last resort, always succeeds) -> "Fire Giant the Towering #2"
+//
+// Rungs 1 and 2 are BOTH single adjectives, which is the point: an 8-word bank plus the 49-word
+// common pool carries 57 tokens before any name grows a second word (less any word the two share
+// — "Furious" is in both the giant bank and the pool, so a giant stack gets 56). Issue #185 was
+// a 28-giant stack hitting the pair fallback at token 9 against that same 8-word bank.
+//
+// Rung 3 prepends common-to-bank instead of pairing two bank words, for two reasons. It
+// MULTIPLIES (49 x bank) where pairing only permutes a bank against itself, so it is what makes
+// bank width stop mattering. And disposition-before-physical is the order English stacks
+// adjectives in: "the Relentless Towering" reads as a name, "the Towering Furious" (two bank
+// words, size before opinion) reads as two tags stapled together. A monster with no bank of its
+// own has nothing to prepend to, so it pairs two common words — its old rung-2 behaviour.
+//
 // `used` is mutated to reserve the returned name.
-function nextEpithetName(baseName, pool, used) {
-  // 1) single adjective, randomized
-  let singles = _.shuffle(pool);
+function nextEpithetName(baseName, racial, used) {
+  let bank = racial && racial.length ? racial : [];
+  // Reserve-and-return, or null if that name is already taken by this group.
+  let take = function(epithet) {
+    let cand = baseName + " the " + epithet;
+    if (used[cand]) return null;
+    used[cand] = true;
+    return cand;
+  };
+
+  // 1) single adjective from the monster's own bank, randomized
+  let singles = _.shuffle(bank);
   for (let i = 0; i < singles.length; i++) {
-    let cand = baseName + " the " + singles[i];
-    if (!used[cand]) { used[cand] = true; return cand; }
+    let hit = take(singles[i]);
+    if (hit) return hit;
   }
-  // 2) two distinct adjectives, randomized pairing
-  let firsts = _.shuffle(pool);
+  // 2) single adjective from the common hostile pool. Words shared with the bank were already
+  //    reserved by rung 1, so `used` skips them without needing an explicit dedup.
+  let commons = _.shuffle(GENERIC_EPITHETS);
+  for (let i = 0; i < commons.length; i++) {
+    let hit = take(commons[i]);
+    if (hit) return hit;
+  }
+  // 3) common word prepended to a bank word (to a second common word if there is no bank)
+  let tails = bank.length ? bank : GENERIC_EPITHETS;
+  let firsts = _.shuffle(GENERIC_EPITHETS);
   for (let a = 0; a < firsts.length; a++) {
-    let seconds = _.shuffle(pool);
+    let seconds = _.shuffle(tails);
     for (let b = 0; b < seconds.length; b++) {
-      if (seconds[b] === firsts[a]) continue;
-      let cand = baseName + " the " + firsts[a] + " " + seconds[b];
-      if (!used[cand]) { used[cand] = true; return cand; }
+      if (seconds[b] === firsts[a]) continue; // no "the Savage Savage"
+      let hit = take(firsts[a] + " " + seconds[b]);
+      if (hit) return hit;
     }
   }
-  // 3) numeric suffix — cannot collide, terminates the loop in all cases
-  let stem = baseName + " the " + (pool[0] || "Nameless");
+  // 4) numeric suffix — cannot collide, terminates the loop in all cases
+  let stem = bank[0] || GENERIC_EPITHETS[0];
   let n = 2;
   while (true) {
-    let cand = stem + " #" + n;
-    if (!used[cand]) { used[cand] = true; return cand; }
+    let hit = take(stem + " #" + n);
+    if (hit) return hit;
     n++;
   }
 }
@@ -1644,18 +1722,18 @@ ACTIONS["rollInitiativeForTokens"] = function (args, msg, nonce, senderPlayerId)
           nameCounts[n] = (nameCounts[n] || 0) + 1;
         });
 
-        // Pass 2: rename duplicates with epithets drawn from monster-type word banks.
-        // nextEpithetName() threads `usedNames` across the whole batch and guarantees a
-        // unique final name even for large groups (e.g. 30 direwolves), escalating from a
-        // single adjective to a two-adjective combo to a numeric suffix as needed.
+        // Pass 2: rename duplicates with epithets drawn from the monster-type word bank, then
+        // the common hostile pool. nextEpithetName() threads `usedNames` across the whole batch
+        // and guarantees a unique final name even for large groups (e.g. 30 direwolves),
+        // escalating bank word -> common word -> common+bank pair -> numeric suffix as needed.
         let usedNames = {};
         (args.tokenIds || []).forEach(function(tokenId) {
           let token = getObj("graphic", tokenId);
           if (!token) return;
           let baseName = token.get("name");
           if ((nameCounts[baseName] || 0) <= 1) return;
-          let pool = getMonsterEpithets(baseName);
-          let newName = nextEpithetName(baseName, pool, usedNames);
+          let racial = getMonsterEpithets(baseName);
+          let newName = nextEpithetName(baseName, racial, usedNames);
           setSafe(token, { name: newName, tooltip: newName, showname: true, showplayers_name: true });
         });
 
@@ -2605,13 +2683,15 @@ on("chat:message", function (msg) {
   if (msg.content && typeof msg.content === "string"
       && !msg.content.startsWith("!ai-relay")
       && msg.playerid !== "API") {
+    let rolls = (msg.inlinerolls || []).map(function(r) {
+      return { expression: r.expression, total: r.results ? r.results.total : null };
+    });
     CHAT_BUFFER.push({
       who: msg.who || "",
       type: msg.type || "",
-      content: cleanChat(msg.content),
-      inlinerolls: (msg.inlinerolls || []).map(function(r) {
-        return { expression: r.expression, total: r.results ? r.results.total : null };
-      }),
+      // Resolve $[[n]] pointers before cleanChat's cap (#187) — same order as the TS copy.
+      content: cleanChat(resolveInlineRolls(msg.content, rolls)),
+      inlinerolls: rolls,
       timestamp: Date.now(),
     });
     if (CHAT_BUFFER.length > CHAT_BUFFER_MAX) CHAT_BUFFER.shift();

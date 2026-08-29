@@ -29,7 +29,7 @@ import { recordSuccess, recordFailure } from "./transport-health.js";
 import { resolveMarkerForState, computeHpThresholds, WOUNDED_MARKER, DEAD_MARKER } from "./markers.js";
 import { trackCustomState, getCustomStates as getCustomStatesStore } from "./relayState.js";
 import {
-  AIBRIDGE_MARKER as MARKER, parseAibridge, cleanChat,
+  AIBRIDGE_MARKER as MARKER, parseAibridge, cleanChat, resolveInlineRolls,
   parsePcHpBlock, writePcHpBlock, type PcHpEntry,
   mapToken, parseTurnorder, stripUndefWrite,
   parseBroadcastPing, type MapPing,
@@ -187,16 +187,19 @@ function parseTableChat(val: unknown): { who: string; playerid: string; type: st
   if (content.startsWith("!ai-relay")) return null;     // our own commands
   if (m.playerid === "API") return null;                // bridge/Mod output (incl. AIBRIDGE whispers)
   const rolls = Array.isArray(m.inlinerolls) ? m.inlinerolls : [];
+  const inlinerolls = rolls.map((r) => {
+    const rr = r as { expression?: string; results?: { total?: number } };
+    return { expression: String(rr?.expression ?? ""), total: rr?.results?.total ?? null };
+  });
   return {
     who: String(m.who || ""),
     playerid: String(m.playerid || ""),
     type: String(m.type || ""),
-    content: cleanChat(content),
+    // Resolve $[[n]] roll pointers against inlinerolls BEFORE cleanChat truncates (#187), so
+    // `content` carries the actual totals instead of indices into a sibling array.
+    content: cleanChat(resolveInlineRolls(content, inlinerolls)),
     contentRaw: content,
-    inlinerolls: rolls.map((r) => {
-      const rr = r as { expression?: string; results?: { total?: number } };
-      return { expression: String(rr?.expression ?? ""), total: rr?.results?.total ?? null };
-    }),
+    inlinerolls,
   };
 }
 
@@ -415,10 +418,28 @@ const NOT_HANDLED = Symbol("not-handled");
 // PC HP carrier: a %%PCHP={...}%% block in the token's GM-only gmnotes (never shown to players).
 // Single source of truth read/written by BOTH this client (direct) and the Mod (batchExec +
 // turn-hook narration) — verified to round-trip raw in both directions. Existing gmnotes preserved.
+// Reads answered wholly from in-memory state — the live chat buffer, the custom-states store —
+// instead of from RTDB. Because they touch no socket, nothing in them can surface a dead
+// credential: they hand back a confident EMPTY answer at the same moment every other read is
+// erroring on the expired token (#186). A caller then cannot tell "quiet table" from "not
+// connected", which is worst exactly where get_recent_chat earns its keep — reading Beyond20
+// save-DC and attack cards. An agent sees [], concludes nothing was rolled, and invents a number.
+//
+// So gate them on the connection first. That is sufficient on its own, and no separate
+// subscription-liveness flag is needed, because connect() is what installs the /chat
+// onChildAdded listener that fills the buffer: if getConn() resolves, the buffer is being fed,
+// and an empty result afterwards is a real answer ("connected, nothing there") rather than a
+// failure wearing the same clothes.
+const MEMORY_SERVED_READS = new Set(["getRecentChat", "getCustomStates"]);
+
 async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | typeof NOT_HANDLED> {
   const action = cmd.action as string;
   if (cmd.__forceMod) return NOT_HANDLED; // debug/escape hatch: force the Mod path
   try {
+    // Liveness gate for the in-memory reads above. A dead credential throws here, falls through
+    // to the Mod path, and surfaces as the same RtPreSendError every other read gives — one
+    // error for one broken thing, instead of two reads disagreeing about whether we're connected.
+    if (MEMORY_SERVED_READS.has(action)) await getConn();
     switch (action) {
       case "getRecentChat": {
         const n = Math.min(Number(cmd.limit) || 50, chatBuffer.length);

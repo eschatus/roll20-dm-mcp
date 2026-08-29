@@ -58,6 +58,28 @@ describe("SSE chat forwarding (#171)", () => {
     expect(chatEvents()[0]?.inlinerolls).toEqual([{ expression: "1d20+5", total: 19 }]);
   });
 
+  // #187: a rolltemplate's numbers are pointers into inlinerolls, so two attacks that hit for
+  // different amounts arrive as byte-identical `content`. Resolve them where parseTableChat is
+  // shared, so the SSE stream and the get_recent_chat buffer both carry the real total.
+  it("resolves $[[n]] roll pointers into content (Beyond20 / GM rolltemplates)", () => {
+    const rockAttack = (total: number) => ({
+      who: "Fire Giant Trooper", playerid: "p-gm", type: "general",
+      content: "{{charname=Fire Giant Trooper}} {{rname=Rock (Group Attack)}} {{mod=+10}} {{r1=$[[0]]}} {{attack=1}} {{dmg1=6}}",
+      inlinerolls: [{ expression: "1d20 +10", results: { total } }],
+    });
+    handleChatChild(nextKey(), rockAttack(16), true);
+    handleChatChild(nextKey(), rockAttack(13), true);
+
+    const contents = chatEvents().map((m) => m.content);
+    expect(contents[0]).toContain("{{r1=16}}");
+    expect(contents[1]).toContain("{{r1=13}}");
+    expect(contents[0]).not.toContain("$[[0]]");
+    // The two rolls used to be indistinguishable — that identity WAS the bug.
+    expect(contents[0]).not.toBe(contents[1]);
+    // inlinerolls still rides along: `expression` carries what the substitution does not.
+    expect(chatEvents()[0]?.inlinerolls).toEqual([{ expression: "1d20 +10", total: 16 }]);
+  });
+
   it("never forwards the bridge's own traffic", () => {
     handleChatChild(nextKey(), { who: "GM", playerid: "p-gm", content: '!ai-relay {"action":"getTokens"}' }, true);
     handleChatChild(nextKey(), { who: "GM-AI-Bridge", playerid: "API", content: "AIBRIDGE_RESULT:{\"nonce\":123}" }, true);
