@@ -166,6 +166,24 @@ function tokenRich(t) {
   return s;
 }
 
+// Substitute "$[[n]]" roll pointers in rolltemplate content with inlinerolls[n].total (#187).
+// Without it, eight rock attacks that came up 16/13/21/21/13/20/13/20 are byte-identical
+// `content` strings, because the numbers live only in the sibling array. A pointer with no total
+// (out of range, or a roll with no result) is left VERBATIM — never filled with a fabricated 0.
+// Must run BEFORE cleanChat, whose 240-char cap can otherwise truncate a late pointer.
+//
+// HAND-SYNCED COPY of resolveInlineRolls in src/bridge/rt-helpers.ts (the Mod sandbox cannot
+// import TS). Same `{ total }` input shape, same verbatim-on-miss rule — edit both together.
+function resolveInlineRolls(raw, rolls) {
+  let s = String(raw == null ? "" : raw);
+  if (s.indexOf("$[[") === -1) return s;
+  return s.replace(/\$\[\[(\d+)\]\]/g, function(whole, idx) {
+    let r = (rolls || [])[Number(idx)];
+    let total = r ? r.total : null;
+    return typeof total === "number" ? String(total) : whole;
+  });
+}
+
 // Strip rolltemplate HTML / URLs down to text. The dice signal is preserved separately in
 // inlinerolls, so this can be aggressive without ever losing a roll total.
 function cleanChat(raw) {
@@ -2665,13 +2683,15 @@ on("chat:message", function (msg) {
   if (msg.content && typeof msg.content === "string"
       && !msg.content.startsWith("!ai-relay")
       && msg.playerid !== "API") {
+    let rolls = (msg.inlinerolls || []).map(function(r) {
+      return { expression: r.expression, total: r.results ? r.results.total : null };
+    });
     CHAT_BUFFER.push({
       who: msg.who || "",
       type: msg.type || "",
-      content: cleanChat(msg.content),
-      inlinerolls: (msg.inlinerolls || []).map(function(r) {
-        return { expression: r.expression, total: r.results ? r.results.total : null };
-      }),
+      // Resolve $[[n]] pointers before cleanChat's cap (#187) — same order as the TS copy.
+      content: cleanChat(resolveInlineRolls(msg.content, rolls)),
+      inlinerolls: rolls,
       timestamp: Date.now(),
     });
     if (CHAT_BUFFER.length > CHAT_BUFFER_MAX) CHAT_BUFFER.shift();
