@@ -183,3 +183,39 @@ describe("epithet disambiguation scales to large groups", () => {
     expect(new Set(names).size).toBe(30);
   });
 });
+
+// Regression for #185: a stack larger than its per-monster bank must stay on SINGLE-word
+// epithets, escalating into the common hostile pool rather than into two-adjective names.
+// "Fire Giant Trooper" matches the narrowest kind of bank in the file (giant, 8 words), and
+// 28 is the size of the board that raised the issue — it used to go two-word at token 9.
+describe("epithet escalation stays single-word past the bank (#185)", () => {
+  let hh: Harness;
+
+  beforeAll(() => {
+    hh = setupHarness({ seed: 11 });
+    const pageId = hh.emu.createPage("Giant Steading");
+    hh.emu.setPlayerPage(pageId);
+    for (let i = 0; i < 28; i++) {
+      const charId = hh.emu.createCharacter("Fire Giant Trooper", {}, "");
+      const tok = hh.emu.createToken({
+        pageid: pageId, name: "Fire Giant Trooper", represents: charId, controlledby: "",
+        bar1_value: 162, bar1_max: 162, left: 70 + i * 10, top: 70,
+      });
+      characters.register("Fire Giant Trooper", tok.id, 0);
+    }
+  });
+  afterAll(() => hh.teardown());
+
+  it("gives 28 fire giants distinct one-word epithets", async () => {
+    const { json } = await hh.callTool("roll_initiative", { npcOnly: true, clearFirst: true, publicRoll: false });
+    const res = json as { rolledFor: number; turnOrder: Array<{ id: string; pr: string }> };
+    expect(res.rolledFor).toBe(28);
+
+    const names = res.turnOrder.map((e) => hh.emu.tokenProps(e.id).name as string);
+    expect(new Set(names).size).toBe(28);
+
+    const epithets = names.map((n) => n.slice(n.lastIndexOf(" the ") + 5));
+    expect(epithets.every((e) => !e.includes(" "))).toBe(true); // no pair fallback
+    expect(epithets.every((e) => !e.includes("#"))).toBe(true); // no numeric fallback
+  });
+});
