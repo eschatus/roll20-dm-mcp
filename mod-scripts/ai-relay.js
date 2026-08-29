@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.4.0";
+var AI_RELAY_VERSION = "2.5.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
