@@ -10,7 +10,7 @@ import {
 import { getLastPing, publishMobPlan } from "../bridge/roll20-rt.js";
 import {
   type TurnEntry, type BatchResult,
-  text, json, num, indexBatchResults, coerceStringArray, coerceBoolean, coerceObjectArray,
+  text, fail, json, num, indexBatchResults, coerceStringArray, coerceBoolean, coerceObjectArray,
   tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId, renderRollCard,
   renderMobPlanCard,
 } from "./combatHelpers.js";
@@ -491,7 +491,11 @@ export function registerCombatTools(server: McpServer): void {
             radiusFeet: nearPcsFeet,
             pageId: activePage,
             layerFilter: "objects",
-          }).catch(() => [] as { id: string }[]);
+          });
+          // No .catch here (#192): swallowing a failed range read dropped that PC's
+          // neighbours and returned a SHORTER board with no cue anything went wrong.
+          // Under-reporting a combatant is worse than erroring — a short board reads
+          // as "these are the tokens near the party" and the DM has nothing to re-ask.
           for (const n of nearby ?? []) nearIds.add(n.id);
         }
       }
@@ -683,7 +687,7 @@ export function registerCombatTools(server: McpServer): void {
       const result = await roll20.relayCommand<{ ok: boolean; current?: { id: string; pr: number; name: string }; note?: string }>({
         action: "advanceTurn",
       });
-      if (!result.ok) return text(result.note ?? "Turn order is empty.");
+      if (!result.ok) return fail(result.note ?? "Turn order is empty.");
       return text(`Now up: **${result.current!.name}** (initiative ${result.current!.pr})`);
     }
   );
@@ -811,7 +815,7 @@ export function registerCombatTools(server: McpServer): void {
         // NPC: the token bar IS the source of truth. Guard a missing bar (writing to it
         // silently no-ops); setHp is allowed — it establishes a value.
         if (setHp === undefined && !hasHpBar(token)) {
-          return text(`${token.name}: no HP bar set (bar1_max is empty) — ${damage !== undefined ? "damage" : "healing"} not applied. Roll initiative to auto-init NPC HP from DDB, set the bar in Roll20, or use setHp to establish one.`);
+          return fail(`${token.name}: no HP bar set (bar1_max is empty) — ${damage !== undefined ? "damage" : "healing"} not applied. Roll initiative to auto-init NPC HP from DDB, set the bar in Roll20, or use setHp to establish one.`);
         }
         maxHp = Number(token.bar1_max) || 0;
         const currentHp = Number(token.bar1_value) || 0;
@@ -894,7 +898,7 @@ export function registerCombatTools(server: McpServer): void {
       const noBar = npcs.filter((t) => !hasHpBar(t));
       const npcTargets = npcs.filter((t) => hasHpBar(t));
       if (!pcs.length && !npcTargets.length) {
-        return text(`${damage !== undefined ? "−" + damage : "+" + heal} applied to 0/${noBar.length}: no HP bar — ${noBar.map((t) => (t.name || "").split("\n")[0].trim()).join(", ")} (roll initiative to auto-init NPC HP, or set bar1 in Roll20).`);
+        return fail(`${damage !== undefined ? "−" + damage : "+" + heal} applied to 0/${noBar.length}: no HP bar — ${noBar.map((t) => (t.name || "").split("\n")[0].trim()).join(", ")} (roll initiative to auto-init NPC HP, or set bar1 in Roll20).`);
       }
 
       // Tag each op with the target token id so the per-op batch result can be
@@ -1254,7 +1258,13 @@ export function registerCombatTools(server: McpServer): void {
           if (charId && !bonusByChar.has(charId)) {
             const attrs = await roll20.relayCommand<Record<string, { current: unknown }>>({
               action: "getCharacterAttributes", charId, names: saveAttrNames(args.saveAbility),
-            }).catch(() => null);
+            }).catch((e: Error) => {
+              // A failed read must NOT become +0 (#191): resolveSaveBonus(null) used to be
+              // byte-identical to "this sheet has no save for that ability", so a transport
+              // blip rolled a +7 CON save blind and this same call applied the damage for
+              // real. No write has happened yet here — fail now and nothing is half-applied.
+              throw new Error(`${npc.name}: could not read save bonuses from character ${charId} (${e.message}). No damage applied — re-run resolve_aoe.`);
+            });
             bonusByChar.set(charId, resolveSaveBonus(attrs, args.saveAbility));
           }
           const b = charId ? bonusByChar.get(charId)! : { bonus: 0, source: "none" };
@@ -1318,7 +1328,11 @@ export function registerCombatTools(server: McpServer): void {
         const cur = Number(r.token.bar1_value) || 0;
         const max = Number(r.token.bar1_max) || 0;
         const newHp = Math.max(0, cur - r.applied);
-        const save = r.total !== undefined ? `save ${r.total} vs DC ${args.saveDc} ${r.saved ? "✓" : "✗"}` : "no save";
+        // Mark a save rolled on a flat d20 because the sheet carried no bonus for that
+        // ability: without it a blind +0 is indistinguishable in the report from a real
+        // one, and nobody ever learns which saves were rolled without a stat (#191).
+        const flat = r.source === "none" ? " [flat d20 — no save bonus on sheet]" : "";
+        const save = r.total !== undefined ? `save ${r.total} vs DC ${args.saveDc} ${r.saved ? "✓" : "✗"}${flat}` : "no save";
         const hpErr = errOf(`hp:${r.token.id}`);
         const condErr = errOf(`cond:${r.token.id}`);
         const condNote = !r.saved && args.onFailCondition ? (condErr ? ` cond FAILED(${condErr})` : ` +${args.onFailCondition}`) : "";
@@ -1431,7 +1445,12 @@ export function registerCombatTools(server: McpServer): void {
     async () => {
       // Read the ids first so the HUD can be told which cards to drop — clearMobPlans
       // itself returns only {ok}, and a HUD that isn't told keeps rendering them.
-      const plans = await roll20.relayCommand<Record<string, unknown>>({ action: "getMobPlans" }).catch(() => ({}));
+      // Not .catch(() => ({})) (#192): a swallowed read reported "Cleared 0 plan(s)" while
+      // clearMobPlans really ran, so the plans were gone from the relay and still on the
+      // HUD — precisely the failure the comment above says this read exists to prevent.
+      // Failing here instead leaves nothing half-done: the plans are still stored and the
+      // DM can re-run.
+      const plans = await roll20.relayCommand<Record<string, unknown>>({ action: "getMobPlans" });
       const ids = Object.keys(plans ?? {});
       await roll20.relayCommand({ action: "clearMobPlans" });
       for (const id of ids) publishMobPlan(id, null);

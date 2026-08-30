@@ -23,7 +23,7 @@ import { registerCombatTools } from "../src/tools/combat.js";
 import { registerZoneTools } from "../src/tools/zones.js";
 
 // ── Fake MCP server ───────────────────────────────────────────────────────────
-type ToolResult = { content: Array<{ type: string; text: string }> };
+type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
 
 export class FakeMcpServer {
@@ -42,7 +42,14 @@ export class FakeMcpServer {
 export interface Harness {
   emu: Roll20Emulator;
   server: FakeMcpServer;
-  callTool(name: string, args?: Record<string, unknown>): Promise<{ text: string; json: unknown }>;
+  callTool(name: string, args?: Record<string, unknown>): Promise<{ text: string; json: unknown; isError: boolean }>;
+  /**
+   * Make one relay action reject, so a test can prove a failure is SURFACED rather than
+   * swallowed into a plausible empty/zero answer (#190/#191/#192). Persists until
+   * clearRelayFailures().
+   */
+  failRelayAction(action: string, message?: string): void;
+  clearRelayFailures(): void;
   teardown(): void;
 }
 
@@ -59,8 +66,16 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
   const emu = new Roll20Emulator({ seed: opts.seed });
   emu.load();
 
+  // Failure injection for the swallowed-failure regressions: an action named here rejects
+  // instead of reaching the emulator, standing in for a transport blip / auth expiry.
+  const failingActions = new Map<string, string>();
+
   roll20.__setBridgeTestTransport({
-    relay: <T>(cmd: Record<string, unknown>) => Promise.resolve(emu.relay<T>(cmd)),
+    relay: <T>(cmd: Record<string, unknown>) => {
+      const injected = failingActions.get(String(cmd.action));
+      if (injected) return Promise.reject(new Error(injected));
+      return Promise.resolve(emu.relay<T>(cmd));
+    },
     evaluate: <T>(fn: (args?: unknown) => T, args?: unknown) => {
       // The page-eval closures used by the bridge read window.Campaign.* — point
       // window at the emulator's Campaign model and run them in Node.
@@ -81,11 +96,14 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
     const text = res?.content?.[0]?.text ?? "";
     let json: unknown;
     try { json = JSON.parse(text); } catch { /* not JSON */ }
-    return { text, json };
+    return { text, json, isError: res?.isError === true };
   }
 
   return {
     emu, server, callTool,
+    failRelayAction: (action: string, message?: string) =>
+      void failingActions.set(action, message ?? `injected relay failure: ${action}`),
+    clearRelayFailures: () => failingActions.clear(),
     teardown: () => {
       roll20.__setBridgeTestTransport(null);
       if (_prevTransport === undefined) delete process.env.ROLL20_TRANSPORT;

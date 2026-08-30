@@ -30,17 +30,29 @@ export function saveAttrNames(ability: SaveAbility): string[] {
 // directly; score attrs become floor((score-10)/2). Empty/absent → next in
 // cascade; nothing usable → +0 flat d20.
 export function resolveSaveBonus(
-  attrs: Record<string, { current: unknown }> | null | undefined,
+  attrs: Record<string, { current: unknown; max?: unknown } | string | number | null> | null | undefined,
   ability: SaveAbility,
 ): { bonus: number; source: string } {
+  // A null/undefined map means the read never landed — NOT "this sheet has no save for
+  // that ability". Returning "none" for both made a failed read indistinguishable from a
+  // legitimate +0 (#191). Callers should fail before ever passing null (resolve_aoe now
+  // does); this keeps the two answers distinguishable for any caller that doesn't.
+  if (attrs === null || attrs === undefined) return { bonus: 0, source: "unreachable" };
   const names = saveAttrNames(ability);
   const numeric = (v: unknown): number | null => {
     if (v === undefined || v === null || String(v).trim() === "") return null;
     const n = Number(v);
     return isFinite(n) ? n : null;
   };
+  // The relay's attr-collapse compaction returns a FLAT value (not {current,max}) when the
+  // attribute's max is empty — which is the COMMON case for NPC save attributes. Reading
+  // only .current resolved every such sheet to source:"none" and rolled the save on a flat
+  // d20, so a monster with a +7 CON save silently saved at +0. get_character_attribute has
+  // always handled both shapes; this did not (found via #191's flat-d20 reporting).
+  const currentOf = (v: unknown): unknown =>
+    v !== null && typeof v === "object" ? (v as { current?: unknown }).current : v;
   for (let i = 0; i < names.length; i++) {
-    const n = numeric(attrs?.[names[i]]?.current);
+    const n = numeric(currentOf(attrs?.[names[i]]));
     if (n === null) continue;
     const isScore = i >= 2;
     return isScore

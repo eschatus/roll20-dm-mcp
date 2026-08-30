@@ -520,9 +520,12 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
             color: o.color, isOpen: o.isOpen, isLocked: o.isLocked, isSecret: o.isSecret,
           };
         };
-        const empty: Record<string, Record<string, unknown>> = {};
-        const doors = await rtGet<Record<string, Record<string, unknown>>>(`doors/page/${cmd.pageId}`).catch(() => empty);
-        const windows = await rtGet<Record<string, Record<string, unknown>>>(`windows/page/${cmd.pageId}`).catch(() => empty);
+        // No .catch (#192): rtGet returns snap.val(), which is null for a MISSING node — it
+        // does not throw — and the Object.values(x || {}) below already covers that. A catch
+        // here could therefore only mask a REAL failure (auth expiry, permission denied,
+        // transport down) and report "no doors on this page" for a read that never landed.
+        const doors = await rtGet<Record<string, Record<string, unknown>>>(`doors/page/${cmd.pageId}`);
+        const windows = await rtGet<Record<string, Record<string, unknown>>>(`windows/page/${cmd.pageId}`);
         return {
           doors: Object.values(doors || {}).map((d) => mapOpening(d, "door")),
           windows: Object.values(windows || {}).map((w) => mapOpening(w, "window")),
@@ -531,7 +534,10 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
       case "getPaths": {
         const layer = cmd.layer as string | undefined;
         const includePath = cmd.includePath === true;
-        const paths = await rtGet<Record<string, Record<string, unknown>>>(`paths/page/${cmd.pageId}`).catch(() => ({} as Record<string, Record<string, unknown>>));
+        // Same reasoning as getDoors (#192): a missing node is null, already handled below,
+        // so this catch could only hide a real failure — and an empty wall list reads as
+        // "no walls placed", which is exactly what a wall-placement QC pass checks for.
+        const paths = await rtGet<Record<string, Record<string, unknown>>>(`paths/page/${cmd.pageId}`);
         let list: Record<string, unknown>[] = Object.values(paths || {});
         if (layer) list = list.filter((p) => p.layer === layer);
         const out = list.map((p) => {

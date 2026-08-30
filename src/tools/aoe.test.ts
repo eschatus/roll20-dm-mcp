@@ -30,6 +30,21 @@ describe("resolveSaveBonus", () => {
       .toEqual({ bonus: 5, source: "npc_dex_save" });
   });
 
+  // The relay collapses an attribute with an empty max to a FLAT value rather than
+  // {current,max} — the common case for NPC save attributes. Reading only .current made
+  // every such monster save on a flat d20; these fixtures are the real wire shape.
+  it("reads the relay's flat (collapsed) attribute shape, not just {current}", () => {
+    expect(resolveSaveBonus({ npc_con_save: 7 }, "constitution"))
+      .toEqual({ bonus: 7, source: "npc_con_save" });
+    expect(resolveSaveBonus({ npc_con_save: "7" }, "constitution"))
+      .toEqual({ bonus: 7, source: "npc_con_save" });
+    expect(resolveSaveBonus({ npc_constitution: 18 }, "constitution"))
+      .toEqual({ bonus: 4, source: "npc_constitution" });
+    // Mixed shapes in one payload (max present on one attr only) still resolve in order.
+    expect(resolveSaveBonus({ npc_con_save: { current: 3, max: "" }, npc_constitution: 20 }, "constitution"))
+      .toEqual({ bonus: 3, source: "npc_con_save" });
+  });
+
   it("skips empty-string attrs and falls through the cascade", () => {
     expect(resolveSaveBonus(attrs({ npc_dex_save: "", npc_dexterity: "14" }), "dexterity"))
       .toEqual({ bonus: 2, source: "npc_dexterity" });
@@ -41,8 +56,17 @@ describe("resolveSaveBonus", () => {
   });
 
   it("defaults to +0 flat d20 with nothing usable", () => {
-    expect(resolveSaveBonus(null, "constitution")).toEqual({ bonus: 0, source: "none" });
     expect(resolveSaveBonus(attrs({ npc_con_save: "abc" }), "constitution")).toEqual({ bonus: 0, source: "none" });
+    expect(resolveSaveBonus(attrs({}), "constitution")).toEqual({ bonus: 0, source: "none" });
+  });
+
+  // #191: an unread attribute map is NOT the same answer as a sheet with no save on it.
+  // Both used to return source:"none", so a transport blip rolled the save at +0 and
+  // resolve_aoe applied the resulting damage as though it were a real result.
+  it("distinguishes an unread attribute map from a sheet with no save bonus", () => {
+    expect(resolveSaveBonus(null, "constitution")).toEqual({ bonus: 0, source: "unreachable" });
+    expect(resolveSaveBonus(undefined, "constitution")).toEqual({ bonus: 0, source: "unreachable" });
+    expect(resolveSaveBonus(attrs({}), "constitution").source).not.toBe("unreachable");
   });
 });
 
