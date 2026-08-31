@@ -5,6 +5,7 @@
 
 import * as registry from "../registry/characters.js";
 import * as roll20 from "../bridge/roll20.js";
+import { normalizeNameForMatch } from "./nameMatch.js";
 
 // ── MCP response builders ─────────────────────────────────────────────────────
 // Every tool returns { content: [{ type: "text", text }] }. These two trim the
@@ -184,14 +185,26 @@ export async function resolveToken(
       const pageId = await roll20.getCurrentPageId();
       return roll20.relayCommand<{ id: string; name: string }[]>({ action: "getTokens", pageId });
     })();
-    const want = name.trim().toLowerCase();
+    // norm(): display form (original case, first line, trimmed) — used only for
+    // "did you mean" candidates. normalizeNameForMatch(): comparison form,
+    // case- AND punctuation-folded (issue #195: "Bandit Captain, the Scarred"
+    // must match "Bandit Captain the Scarred") — used for every
+    // equality/substring test below. Folding punctuation only ever WIDENS a
+    // match versus the old case-only fold, so a name that was unambiguous
+    // stays unambiguous; a normalization that newly collides two tokens still
+    // falls through to the candidates path below rather than picking one.
     const norm = (t: { name?: string }) => (t.name || "").split("\n")[0].trim();
+    const want = normalizeNameForMatch(name);
 
-    const exact = tokens.find((t) => norm(t).toLowerCase() === want);
-    if (exact) return { id: exact.id };
+    // filter (not find): two DIFFERENT board names that fold to the same
+    // comparison form ("Iron, Golem" / "Iron Golem") must still surface as
+    // ambiguous, not silently resolve to whichever came first in the list.
+    const exactMatches = tokens.filter((t) => normalizeNameForMatch(norm(t)) === want);
+    if (exactMatches.length === 1) return { id: exactMatches[0].id };
+    if (exactMatches.length > 1) return { candidates: exactMatches.map(norm) };
 
     const subs = tokens.filter((t) => {
-      const n = norm(t).toLowerCase();
+      const n = normalizeNameForMatch(norm(t));
       return n && (n.includes(want) || want.includes(n));
     });
     if (subs.length === 1) return { id: subs[0].id };
@@ -201,7 +214,7 @@ export async function resolveToken(
     // → every "Mage the Twisted"-ish name) so the agent can clarify.
     const words = want.split(/\s+/).filter((w) => w.length > 2);
     const near = tokens.filter((t) => {
-      const n = norm(t).toLowerCase();
+      const n = normalizeNameForMatch(norm(t));
       return words.some((w) => n.includes(w));
     }).map(norm);
     return { candidates: Array.from(new Set(near)).slice(0, 8) };

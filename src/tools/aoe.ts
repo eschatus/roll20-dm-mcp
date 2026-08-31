@@ -1,6 +1,8 @@
 // Pure helpers for resolve_aoe (registered in combat.ts). Kept I/O-free so the
 // save-bonus cascade and damage math are unit-testable without a relay.
 
+import { normalizeNameForMatch } from "./nameMatch.js";
+
 export const SAVE_ABILITIES = [
   "strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma",
 ] as const;
@@ -85,7 +87,10 @@ function controlledByPlayer(t: AoeToken): boolean {
 }
 
 function tokenBaseName(t: AoeToken): string {
-  return (t.name || "").split("\n")[0].trim().toLowerCase();
+  // Issue #195: fold punctuation the same way resolveToken does, alongside the
+  // existing case fold, so an epithet spoken/transcribed with a comma
+  // ("Tua, the Bold") still matches the bare registry name.
+  return normalizeNameForMatch((t.name || "").split("\n")[0].trim());
 }
 
 // True iff the token's (pre-epithet) name matches an entry in the
@@ -96,7 +101,8 @@ export function isSidekickToken(t: AoeToken, sidekickNames: Set<string> | undefi
   if (!name) return false;
   for (const s of sidekickNames) {
     if (!s) continue;
-    if (name === s || name.includes(s) || s.includes(name)) return true;
+    const ns = normalizeNameForMatch(s);
+    if (name === ns || name.includes(ns) || ns.includes(name)) return true;
   }
   return false;
 }
@@ -151,11 +157,11 @@ export function resolveNamesToTokens(
   const matched: AoeToken[] = [];
   const missed: string[] = [];
   for (const want of names) {
-    const w = want.trim().toLowerCase();
+    const w = normalizeNameForMatch(want);
     if (!w) continue;
     const hit =
-      tokens.find((t) => (t.name || "").trim().toLowerCase() === w) ??
-      tokens.find((t) => (t.name || "").toLowerCase().includes(w));
+      tokens.find((t) => normalizeNameForMatch(t.name) === w) ??
+      tokens.find((t) => normalizeNameForMatch(t.name).includes(w));
     if (hit) {
       if (!matched.some((m) => m.id === hit.id)) matched.push(hit);
     } else {

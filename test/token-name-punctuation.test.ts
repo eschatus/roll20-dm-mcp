@@ -1,0 +1,136 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #195 — resolveToken is punctuation-sensitive.
+//
+// A spoken/transcribed name carries natural punctuation a board token's name
+// doesn't ("Bandit Captain, the Scarred" vs "Bandit Captain the Scarred").
+// Case was already folded; this proves punctuation now is too, at the shared
+// chokepoint (resolveToken/resolveTokenOrThrow in combatHelpers.ts) that every
+// by-name tool (update_token_hp, set_token_marker, kill_token, ...) routes
+// through — driving the REAL update_token_hp and set_token_marker MCP handlers
+// against the emulator, same pattern as hp-threshold-automation.test.ts.
+//
+// Safety property under test: normalization only WIDENS what matches. A
+// normalization that newly collides two distinct token names must still
+// degrade to the existing "did you mean" ambiguity refusal — never guess a
+// write.
+// ─────────────────────────────────────────────────────────────────────────────
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { setupHarness, type Harness } from "./harness.js";
+
+let h: Harness;
+let pageId: string;
+
+const bar = (id: string) => Number(h.emu.tokenProps(id).bar1_value);
+
+function tokenId(name: string): string {
+  const tokens = h.emu.relay<Array<{ id: string; name: string }>>({ action: "getTokens", pageId });
+  const tok = tokens.find((t) => t.name === name);
+  if (!tok) throw new Error(`Token not found in emulator: ${name}`);
+  return tok.id;
+}
+
+beforeAll(() => {
+  h = setupHarness({ seed: 195 });
+  pageId = h.emu.createPage("Punctuation Resolution Tests");
+  h.emu.setPlayerPage(pageId);
+
+  h.emu.createToken({ pageid: pageId, name: "Bandit Captain the Scarred", controlledby: "", bar1_value: 30, bar1_max: 30 });
+  h.emu.createToken({ pageid: pageId, name: "Ogre", controlledby: "", bar1_value: 40, bar1_max: 40 });
+  h.emu.createToken({ pageid: pageId, name: "Skeleton the Cursed", controlledby: "", bar1_value: 13, bar1_max: 13 });
+});
+
+afterAll(() => h.teardown());
+
+describe("update_token_hp — punctuation-insensitive name resolution (issue #195)", () => {
+  it("resolves the exact repro: a comma-separated epithet matches the unpunctuated board name", async () => {
+    const id = tokenId("Bandit Captain the Scarred");
+    const { text } = await h.callTool("update_token_hp", {
+      characterName: "Bandit Captain, The Scarred",
+      damage: 19,
+    });
+    expect(bar(id)).toBe(11);
+    expect(text).toMatch(/11\/30/);
+  });
+
+  it("still resolves the exact, unpunctuated name (no regression)", async () => {
+    const id = tokenId("Ogre");
+    await h.callTool("update_token_hp", { characterName: "Ogre", damage: 5 });
+    expect(bar(id)).toBe(35);
+  });
+
+  it("tolerates a period and collapsed/extra whitespace the same way", async () => {
+    const id = tokenId("Skeleton the Cursed");
+    await h.callTool("update_token_hp", { characterName: "Skeleton.  the   Cursed", damage: 3 });
+    expect(bar(id)).toBe(10);
+  });
+
+  it("tolerates a semicolon and a colon as the same class of difference as a comma", async () => {
+    const idA = tokenId("Bandit Captain the Scarred");
+    const before = bar(idA);
+    await h.callTool("update_token_hp", { characterName: "Bandit Captain; the Scarred", damage: 1 });
+    expect(bar(idA)).toBe(before - 1);
+
+    await h.callTool("update_token_hp", { characterName: "Bandit Captain: the Scarred", damage: 1 });
+    expect(bar(idA)).toBe(before - 2);
+  });
+});
+
+describe("update_token_hp — punctuation normalization only WIDENS matches, never guesses (issue #195)", () => {
+  it("a name that collides with two tokens ONLY after punctuation-folding still refuses as ambiguous", async () => {
+    // Two distinct board tokens that are punctuation-only variants of each
+    // other — case-and-punctuation-folded they are identical, so this MUST
+    // refuse (did-you-mean) rather than silently pick one and write to it.
+    h.emu.createToken({ pageid: pageId, name: "Iron, Golem", controlledby: "", bar1_value: 50, bar1_max: 50 });
+    h.emu.createToken({ pageid: pageId, name: "Iron Golem", controlledby: "", bar1_value: 50, bar1_max: 50 });
+
+    const idA = tokenId("Iron, Golem");
+    const idB = tokenId("Iron Golem");
+    const hpBefore = { a: bar(idA), b: bar(idB) };
+
+    await expect(h.callTool("update_token_hp", { characterName: "Iron Golem", damage: 10 }))
+      .rejects.toThrow(/Ambiguous target/i);
+
+    // Neither token was written — refusal, not a guess.
+    expect(bar(idA)).toBe(hpBefore.a);
+    expect(bar(idB)).toBe(hpBefore.b);
+  });
+
+  it("a genuinely ambiguous name (unrelated to punctuation) still refuses, as before", async () => {
+    h.emu.createToken({ pageid: pageId, name: "Guard A", controlledby: "", bar1_value: 11, bar1_max: 11 });
+    h.emu.createToken({ pageid: pageId, name: "Guard B", controlledby: "", bar1_value: 11, bar1_max: 11 });
+
+    await expect(h.callTool("update_token_hp", { characterName: "Guard", damage: 5 }))
+      .rejects.toThrow(/Ambiguous target/i);
+  });
+});
+
+describe("roll_initiative — entries[].match / names[] tolerate punctuation too (issue #195)", () => {
+  it("entries[].match with a comma-epithet still selects the token", async () => {
+    h.emu.createToken({ pageid: pageId, name: "Ghast the Ravenous", controlledby: "", bar1_value: 15, bar1_max: 15 });
+
+    const { json } = await h.callTool("roll_initiative", {
+      entries: [{ match: "Ghast, the Ravenous", bonus: 2 }],
+      npcOnly: true,
+      publicRoll: false,
+    });
+    const r = json as { results: string[]; entriesUnmatched?: string[] };
+    expect(r.entriesUnmatched).toBeUndefined();
+    expect(r.results.find((l) => l.startsWith("Ghast the Ravenous:"))).toMatch(/\+2 = /);
+  });
+});
+
+describe("set_token_marker — same chokepoint, same tolerance (issue #195)", () => {
+  it("resolves a comma-epithet name for a non-HP tool too (proves the shared chokepoint, not a local patch)", async () => {
+    const id = tokenId("Bandit Captain the Scarred");
+    const { text } = await h.callTool("set_token_marker", {
+      characterName: "Bandit Captain, the Scarred",
+      condition: "frightened",
+      active: true,
+    });
+    // "frightened" maps to the campaign's custom "Feared" marker tag (see
+    // CONDITION_MARKERS in combat.ts) — this asserts the write landed on the
+    // right token, not the exact marker label.
+    expect(String(h.emu.tokenProps(id).statusmarkers || "")).toMatch(/Feared/i);
+    expect(text).toBeTruthy();
+  });
+});

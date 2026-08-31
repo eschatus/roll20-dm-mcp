@@ -14,6 +14,7 @@ import {
   tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId, renderRollCard,
   renderMobPlanCard,
 } from "./combatHelpers.js";
+import { normalizeNameForMatch } from "./nameMatch.js";
 
 // ONE canonical condition table — Roll20 status marker tags for D&D 5e
 // conditions, keyed by natural-language / DDB condition name. The marker-tag→
@@ -497,16 +498,18 @@ export function registerCombatTools(server: McpServer): void {
       }
 
       const TOKEN_LAYERS = new Set(["tokens", "objects"]);
-      const needle = nameFilter?.toLowerCase();
+      const needle = nameFilter ? normalizeNameForMatch(nameFilter) : undefined;
       const entryList = entries ?? [];
       // Explicit name list: a token matches if a provided name is contained in (or
-      // equals) the token's name, or vice versa — case-insensitive. Tolerant of
-      // epithets ("Bugbear" ↔ "Bugbear the Heavy-Handed") and full names alike.
-      // entries[].match values join the selection (union with names); an entry's
-      // match may also be an exact token id.
+      // equals) the token's name, or vice versa — case- and punctuation-insensitive
+      // (issue #195). Tolerant of epithets ("Bugbear" ↔ "Bugbear the Heavy-Handed",
+      // "Bandit Captain, the Scarred" ↔ "Bandit Captain the Scarred") and full names
+      // alike. entries[].match values join the selection (union with names); an
+      // entry's match may also be an exact token id.
       const nameMatches = (w: string, name: string) => {
-        const tn = name.toLowerCase();
-        return tn.includes(w) || w.includes(tn);
+        const tn = normalizeNameForMatch(name);
+        const nw = normalizeNameForMatch(w);
+        return tn.includes(nw) || nw.includes(tn);
       };
       // An entry match that IS a token id must only match by id — fed into the
       // bidirectional name test it could sweep in an unrelated short-named token
@@ -524,7 +527,7 @@ export function registerCombatTools(server: McpServer): void {
         if (!TOKEN_LAYERS.has(t.layer)) return false;
         if (npcOnly && isPcToken(t, sidekickNames)) return false;
         if (hasSelection && !matchesWanted(t)) return false;
-        if (needle && !t.name.toLowerCase().includes(needle)) return false;
+        if (needle && !normalizeNameForMatch(t.name).includes(needle)) return false;
         if (nearIds && !nearIds.has(t.id)) return false;
         return true;
       });
@@ -870,17 +873,19 @@ export function registerCombatTools(server: McpServer): void {
       type Tk = { id: string; name: string; bar1_value: number; bar1_max: number; controlledby?: string };
       const tokens = await roll20.relayCommand<Tk[]>({ action: "getTokens", pageId });
 
-      let targets: Tk[] = [];
+      // names[] goes through the same resolveNamesToTokens matcher resolve_aoe
+      // uses (issue #195: normalized, so punctuation in a spoken/transcribed
+      // name doesn't block a hit) instead of a third inline copy of the same
+      // bidirectional-substring logic.
+      let targets: AoeToken[] = [];
       if (nameMatch) {
-        const m = nameMatch.trim().toLowerCase();
-        targets = tokens.filter((t) => (t.name || "").toLowerCase().includes(m));
+        const m = normalizeNameForMatch(nameMatch);
+        targets = tokens.filter((t) => normalizeNameForMatch(t.name).includes(m));
       }
       if (names?.length) {
-        for (const want of names) {
-          const w = want.trim().toLowerCase();
-          const hit = tokens.find((t) => (t.name || "").trim().toLowerCase() === w)
-                   ?? tokens.find((t) => (t.name || "").toLowerCase().includes(w));
-          if (hit && !targets.some((x) => x.id === hit.id)) targets.push(hit);
+        const { matched } = resolveNamesToTokens(names, tokens);
+        for (const hit of matched) {
+          if (!targets.some((x) => x.id === hit.id)) targets.push(hit);
         }
       }
       if (!targets.length) throw new Error(`No tokens matched ${nameMatch ? `'${nameMatch}'` : (names || []).join(", ")}`);

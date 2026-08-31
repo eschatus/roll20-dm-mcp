@@ -35,6 +35,19 @@ describe("resolveCharacterKey", () => {
   it("returns null against an empty registry", () => {
     expect(resolveCharacterKey("Eli", {})).toBeNull();
   });
+
+  // Issue #195: the registry short-circuit ahead of the token scan needs the
+  // same punctuation fold resolveToken got, or a registered PC addressed with
+  // natural spoken punctuation ("Rigan, Stormcrow") falls through to it
+  // instead of hitting the registry directly.
+  it("matches a punctuated query against an unpunctuated key (issue #195)", () => {
+    expect(resolveCharacterKey("Rigan, Stormcrow", reg)).toBe("rigan stormcrow");
+    expect(resolveCharacterKey("Winsome, the Bard", reg)).toBe("winsome");
+  });
+
+  it("still finds the raw case-only match first when both apply (no behavior change for the common case)", () => {
+    expect(resolveCharacterKey("Eli", reg)).toBe("eli");
+  });
 });
 
 // Issue #132: the sidekick override is a per-character field persisted to disk

@@ -115,6 +115,11 @@ describe("classifyToken / isSidekickToken (issue #132 sidekick routing)", () => 
     expect(isSidekickToken(pc("Tua"), sidekicksFull)).toBe(true);
   });
 
+  it("tolerates a comma in the epithet the same way (issue #195)", () => {
+    const sidekicks = new Set(["tua"]);
+    expect(isSidekickToken(pc("Tua, the Bold"), sidekicks)).toBe(true);
+  });
+
   it("isPcToken is false for a sidekick — it must NOT route to tracked PC state", () => {
     const sidekicks = new Set(["tua"]);
     expect(isPcToken(pc("Tua"), sidekicks)).toBe(false);
@@ -169,5 +174,13 @@ describe("resolveNamesToTokens", () => {
     const { matched, missed } = resolveNamesToTokens(["flameskull", "Flameskull the Gaunt", "ghost"], tokens);
     expect(matched.map((t) => t.id)).toEqual(["3"]);
     expect(missed).toEqual(["ghost"]);
+  });
+
+  // Issue #195: a comma-separated epithet — the natural spoken/transcribed
+  // form — must resolve the same as the unpunctuated name.
+  it("tolerates punctuation the token name doesn't have (issue #195)", () => {
+    const { matched, missed } = resolveNamesToTokens(["Flameskull, the Gaunt"], tokens);
+    expect(matched.map((t) => t.id)).toEqual(["3"]);
+    expect(missed).toEqual([]);
   });
 });

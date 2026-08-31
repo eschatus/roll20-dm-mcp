@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, renameSync } from "fs";
 import { dataPath } from "../dataDir.js";
 import { getActiveCampaign } from "./campaigns.js";
+import { normalizeNameForMatch } from "../tools/nameMatch.js";
 
 // Data dir resolved by ../dataDir (ROLL20_DATA_DIR override; default ./data).
 const REGISTRY_PATH = dataPath("characters.json");
@@ -80,7 +81,17 @@ export function resolveCharacterKey(
 ): string | null {
   const key = name.toLowerCase();
   if (reg[key]) return key;
-  return Object.keys(reg).find((k) => k.includes(key) || key.includes(k)) ?? null;
+  // Issue #195: fold punctuation the same way resolveToken does, alongside the
+  // raw case-only substring check above — this only WIDENS what matches (a
+  // spoken/transcribed "Bandit Captain, the Scarred" now finds a registry key
+  // stored as "bandit captain the scarred"), it never narrows the existing
+  // raw check.
+  const normKey = normalizeNameForMatch(key);
+  return Object.keys(reg).find((k) => {
+    if (k.includes(key) || key.includes(k)) return true;
+    const normK = normalizeNameForMatch(k);
+    return normK.includes(normKey) || normKey.includes(normK);
+  }) ?? null;
 }
 
 export function lookup(name: string): CharacterEntry | null {
