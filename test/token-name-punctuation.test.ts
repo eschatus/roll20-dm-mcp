@@ -119,6 +119,123 @@ describe("roll_initiative — entries[].match / names[] tolerate punctuation too
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #195 follow-up (DM comment on the issue) — the exact fixture and test
+// table the DM specified, verifying every row named there:
+//   Bandit Captain, The Scarred | Bandit Captain the Scarred | the Scarred |
+//   Scarred | Bandit Captain (ambiguous, 4) | Road-Worn (hyphen survives)
+//
+// The DM's comment also records two things pinned here rather than re-derived:
+//  - resolveToken's word-overlap fallback branch NEVER returns a single id —
+//    it is candidates-only by construction (see the comment at that branch in
+//    combatHelpers.ts). On this exact 4-epithet board, every token contains
+//    "bandit", so a query that reaches that branch surfaces ALL FOUR as
+//    "did you mean" candidates, not "no matching token".
+//  - a renaming scheme (`<Epithet> (<Base>)`) was considered and rejected: it
+//    still fails the comma case AND breaks "the Scarred", which resolves
+//    today. Not retested here (nothing to assert against — the alternative
+//    was never implemented) — recorded in the PR description instead.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("resolveToken — issue-specified fixture: Bandit Captain the {Scarred, Desperate, Road-Worn, Grim}", () => {
+  let epithetPageId: string;
+  let scarredId: string;
+
+  function idOn(name: string): string {
+    const tokens = h.emu.relay<Array<{ id: string; name: string }>>({ action: "getTokens", pageId: epithetPageId });
+    const tok = tokens.find((t) => t.name === name);
+    if (!tok) throw new Error(`Token not found in emulator: ${name}`);
+    return tok.id;
+  }
+
+  // Switching the active player page (resolveToken resolves against
+  // roll20.getCurrentPageId(), i.e. whatever setPlayerPage last set) leaks
+  // into every test that runs after this describe block in the same file
+  // unless restored — the later set_token_marker suite targets a token on
+  // the ORIGINAL pageId and would otherwise silently resolve against this
+  // fixture's page instead (both pages have a "Bandit Captain the Scarred").
+  let priorPlayerPageId: string;
+
+  beforeAll(() => {
+    priorPlayerPageId = h.emu.campaignModel.get("playerpageid") as string;
+    epithetPageId = h.emu.createPage("Epithet Roster Fixture (issue #195)");
+    h.emu.setPlayerPage(epithetPageId);
+    for (const epithet of ["Scarred", "Desperate", "Road-Worn", "Grim"]) {
+      h.emu.createToken({
+        pageid: epithetPageId, name: `Bandit Captain the ${epithet}`, controlledby: "",
+        bar1_value: 30, bar1_max: 30,
+      });
+    }
+    scarredId = idOn("Bandit Captain the Scarred");
+  });
+
+  afterAll(() => {
+    h.emu.setPlayerPage(priorPlayerPageId);
+  });
+
+  it("'Bandit Captain, The Scarred' (comma) resolves to the Scarred", async () => {
+    const before = bar(scarredId);
+    await h.callTool("update_token_hp", { characterName: "Bandit Captain, The Scarred", damage: 1 });
+    expect(bar(scarredId)).toBe(before - 1);
+  });
+
+  it("'Bandit Captain the Scarred' (exact, unpunctuated) resolves to the Scarred", async () => {
+    const before = bar(scarredId);
+    await h.callTool("update_token_hp", { characterName: "Bandit Captain the Scarred", damage: 1 });
+    expect(bar(scarredId)).toBe(before - 1);
+  });
+
+  it("'the Scarred' (short form) resolves to the Scarred", async () => {
+    const before = bar(scarredId);
+    await h.callTool("update_token_hp", { characterName: "the Scarred", damage: 1 });
+    expect(bar(scarredId)).toBe(before - 1);
+  });
+
+  it("'Scarred' (bare epithet) resolves to the Scarred", async () => {
+    const before = bar(scarredId);
+    await h.callTool("update_token_hp", { characterName: "Scarred", damage: 1 });
+    expect(bar(scarredId)).toBe(before - 1);
+  });
+
+  it("'Bandit Captain' alone is ambiguous across all 4 epithets (word-overlap branch, candidates-only by construction)", async () => {
+    const before = bar(scarredId);
+    let caught: Error | undefined;
+    try {
+      await h.callTool("update_token_hp", { characterName: "Bandit Captain", damage: 1 });
+    } catch (e) {
+      caught = e as Error;
+    }
+    expect(caught, "expected update_token_hp to reject").toBeDefined();
+    expect(caught!.message).toMatch(/Ambiguous target/i);
+    // All four epithets — not "no matching token" — because every one of
+    // them contains "bandit" and the word-overlap fallback returns every
+    // token it overlaps with, never a single best guess.
+    for (const epithet of ["Scarred", "Desperate", "Road-Worn", "Grim"]) {
+      expect(caught!.message).toContain(`Bandit Captain the ${epithet}`);
+    }
+    // Refusal, not a guess — nothing was written.
+    expect(bar(scarredId)).toBe(before);
+  });
+
+  it("'Road-Worn' (hyphenated epithet) resolves — the hyphen is not stripped", async () => {
+    const roadWornId = idOn("Bandit Captain the Road-Worn");
+    const before = bar(roadWornId);
+    await h.callTool("update_token_hp", { characterName: "Road-Worn", damage: 1 });
+    expect(bar(roadWornId)).toBe(before - 1);
+    // Note: this row alone does NOT prove the hyphen survives normalization —
+    // normalizeNameForMatch runs on both the query and the token name, so
+    // even a mutation that strips hyphens would strip them symmetrically and
+    // this assertion would still pass (verified: adding "-" to PUNCT_RE does
+    // not break this specific resolution, because "Road-Worn" doesn't collide
+    // with "Scarred"/"Desperate"/"Grim" either way). The actual guard rail —
+    // the test that WOULD fail if "-" were added to PUNCT_RE — is the literal
+    // string assertion in src/tools/nameMatch.test.ts ("does NOT strip a
+    // hyphen"), which pins normalizeNameForMatch("Road-Worn") === "road-worn"
+    // directly. Keeping this row anyway because it's the resolution-level
+    // proof the DM's table asked for and documents that a spoken hyphenated
+    // epithet works end to end.
+  });
+});
+
 describe("set_token_marker — same chokepoint, same tolerance (issue #195)", () => {
   it("resolves a comma-epithet name for a non-HP tool too (proves the shared chokepoint, not a local patch)", async () => {
     const id = tokenId("Bandit Captain the Scarred");

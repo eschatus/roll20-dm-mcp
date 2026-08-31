@@ -37,4 +37,23 @@ describe("normalizeNameForMatch", () => {
     expect(normalizeNameForMatch(null)).toBe("");
     expect(normalizeNameForMatch("")).toBe("");
   });
+
+  // Issue #195 (DM follow-up comment): a hyphen JOINS a compound word/epithet
+  // ("Road-Worn") — it is not sentence punctuation that ends a run like
+  // ",.;:" — so it must NOT be in PUNCT_RE. This is the actual guard rail:
+  // it pins the literal normalized string, so it fails immediately if a
+  // hyphen is ever added to the stripped set (which would collapse
+  // "Road-Worn" to "roadworn", silently losing the token). Verified this is
+  // load-bearing: an integration test that only asserts "Road-Worn resolves"
+  // does NOT catch this regression on its own — normalizeNameForMatch runs on
+  // both the query and the token name, so stripping the hyphen symmetrically
+  // still leaves them equal to each other and resolution still succeeds; only
+  // a test that pins this exact output (this one), or one that puts a
+  // hyphenated and unhyphenated form of the same name into collision, would
+  // notice. See test/token-name-punctuation.test.ts for the resolution-level
+  // companion case (the "Bandit Captain the Road-Worn" fixture row).
+  it("does NOT strip a hyphen — it joins a compound word, sentence punctuation ends a run", () => {
+    expect(normalizeNameForMatch("Road-Worn")).toBe("road-worn");
+    expect(normalizeNameForMatch("Bandit Captain the Road-Worn")).toBe("bandit captain the road-worn");
+  });
 });

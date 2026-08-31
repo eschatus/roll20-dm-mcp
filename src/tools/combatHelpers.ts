@@ -211,7 +211,19 @@ export async function resolveToken(
     if (subs.length > 1) return { candidates: subs.map(norm) };
 
     // No substring hit — offer token-word overlap candidates (e.g. "the twisted"
-    // → every "Mage the Twisted"-ish name) so the agent can clarify.
+    // → every "Mage the Twisted"-ish name) so the agent can clarify. NOTE
+    // (issue #195 follow-up): this branch is candidates-only BY CONSTRUCTION —
+    // there is no `if (near.length === 1) return { id }`. Once the substring
+    // pass above misses, resolveTokenOrThrow is guaranteed to throw; the
+    // outcome was decided two branches earlier, not rescued here. On a board
+    // where every candidate shares a common word (e.g. four "Bandit Captain
+    // the <epithet>" tokens all containing "bandit"), this returns ALL of
+    // them and the caller sees "Ambiguous target … Did you mean: …?" even for
+    // a name that was never actually ambiguous — the normalization above
+    // (issue #195) is what keeps queries like "the Scarred"/"Scarred" out of
+    // this branch in the first place, by resolving them via the substring
+    // pass instead. Don't read a near-miss here as something the next line
+    // might still rescue.
     const words = want.split(/\s+/).filter((w) => w.length > 2);
     const near = tokens.filter((t) => {
       const n = normalizeNameForMatch(norm(t));
