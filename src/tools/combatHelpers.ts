@@ -7,12 +7,26 @@ import * as registry from "../registry/characters.js";
 import * as roll20 from "../bridge/roll20.js";
 
 // ── MCP response builders ─────────────────────────────────────────────────────
-// Every tool returns { content: [{ type: "text", text }] }. These two trim the
-// boilerplate: text() for a plain string, json() for a JSON.stringify'd value.
-type ToolResult = { content: { type: "text"; text: string }[] };
+// Every tool returns { content: [{ type: "text", text }] }. These three trim the
+// boilerplate: text() for a plain string, json() for a JSON.stringify'd value,
+// fail() for a string describing something that did NOT happen.
+//
+// isError is the field an MCP client reads to tell a failure from a success. A
+// handler that THROWS gets it for free (the SDK sets it), but one that RETURNS a
+// failure had no way to say so, so every non-throwing failure arrived as a success
+// carrying failure prose and clients had to pattern-match English to notice (#190).
+// fail() is the one way to express that — don't hand-roll the object.
+type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
 export function text(s: string): ToolResult {
   return { content: [{ type: "text", text: s }] };
+}
+
+// A failure the handler chose to RETURN rather than throw, because the prose is
+// more useful to the DM than a stack trace — but the caller must still be able to
+// tell it from a success. The operation described did NOT happen.
+export function fail(s: string): ToolResult {
+  return { content: [{ type: "text", text: s }], isError: true };
 }
 
 export function json(value: unknown, pretty = true): ToolResult {
