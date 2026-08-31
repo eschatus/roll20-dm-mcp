@@ -6,7 +6,7 @@ import {
   SAVE_ABILITIES, type SaveAbility, type AoeToken,
   saveAttrNames, resolveSaveBonus, damageOnSave,
   isPcToken, splitPcNpc, isDowned, resolveNamesToTokens, hasHpBar,
-  classifyTokenDisplay,
+  classifyToken,
 } from "./aoe.js";
 import { getLastPing, publishMobPlan } from "../bridge/roll20-rt.js";
 import {
@@ -205,16 +205,16 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "set_token_class",
-    "Mark a player-controlled token as a SIDEKICK or FAMILIAR (issues #132, #196) — a companion (Tua, Salros Eventide, Amri in the Firebirds campaign) whose HP nonetheless lives in Roll20 bar1 (never tracked/gmnotes state) and who dies like an NPC (kill_token: immediate dead marker + map layer — no PC-style dying/death-saves state). `controlledby` alone can't tell either apart from a true PC, so this is a persistent per-character override in the campaign's characters registry. Read wherever PC/NPC/sidekick routing is decided: update_token_hp, update_hp_many, resolve_aoe, roll_initiative — 'familiar' routes IDENTICALLY to 'sidekick' (same bar1 + NPC death semantics), it's an additive label for a wizard's familiar/a druid's companion/a summon that a client may want to distinguish from a true party sidekick. Use when the DM says a companion IS a sidekick, e.g. 'Tua is a sidekick' → {\"characterName\":\"Tua\",\"tokenClass\":\"sidekick\"}. Pass tokenClass:'pc' to clear the override (back to an ordinary Beyond20-tracked PC). list_tokens/get_token read the class back as `tokenClass`.",
+    "Mark a player-controlled token as a SIDEKICK (issue #132) — this covers ANY player-controlled NPC, not just a party companion in the strict sense: a sidekick, a familiar, an animal companion, a summon are all the same mechanical thing (issue #196 — they route identically, so there is no separate 'familiar' class; a wizard's familiar and Tua are marked the same way). HP nonetheless lives in Roll20 bar1 (never tracked/gmnotes state) and it dies like an NPC (kill_token: immediate dead marker + map layer — no PC-style dying/death-saves state). `controlledby` alone can't tell it from a true PC, so this is a persistent per-character override in the campaign's characters registry. Read wherever PC/NPC/sidekick routing is decided: update_token_hp, update_hp_many, resolve_aoe, roll_initiative. Use when the DM says a companion IS a sidekick/familiar/summon, e.g. 'Tua is a sidekick' → {\"characterName\":\"Tua\",\"tokenClass\":\"sidekick\"}. Pass tokenClass:'pc' to clear the override (back to an ordinary Beyond20-tracked PC). list_tokens/get_token read the class back as `tokenClass`.",
     {
       characterName: z.string().describe("Character/token name, e.g. 'Tua', 'Salros Eventide'. Fuzzy-resolved against the registry (exact, then substring both ways) — same tolerance as other character-name tools."),
-      tokenClass: z.enum(["sidekick", "familiar", "pc"]).describe("'sidekick' = player-controlled but bar1-managed with NPC death semantics. 'familiar' = same routing as sidekick, distinct label for a familiar/companion/summon. 'pc' clears the override, reverting to an ordinary Beyond20-tracked PC."),
+      tokenClass: z.enum(["sidekick", "pc"]).describe("'sidekick' = player-controlled but bar1-managed with NPC death semantics — covers a sidekick, familiar, animal companion, or summon alike. 'pc' clears the override, reverting to an ordinary Beyond20-tracked PC."),
     },
     async ({ characterName, tokenClass }) => {
-      const entry = registry.setTokenClass(characterName, tokenClass);
-      const note = tokenClass === "pc"
-        ? " — HP now tracks in relay state again (Beyond20 owns the visible bar)."
-        : " — HP now routes to bar1 (bloodied automation + NPC death semantics apply); use kill_token to end it, not a dying state.";
+      const entry = registry.setSidekick(characterName, tokenClass === "sidekick");
+      const note = tokenClass === "sidekick"
+        ? " — HP now routes to bar1 (bloodied automation + NPC death semantics apply); use kill_token to end it, not a dying state."
+        : " — HP now tracks in relay state again (Beyond20 owns the visible bar).";
       return text(`${characterName} set to ${tokenClass}${note}\nRegistry entry: ${JSON.stringify(entry)}`);
     }
   );
@@ -232,7 +232,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "list_tokens",
-    "List all tokens on the current (or specified) page with their name, layer, controlledby, represents, and tokenClass (\"pc\"|\"npc\"|\"sidekick\"|\"familiar\" — the same class HP/death routing uses internally, issue #196) fields. Useful for diagnosing which tokens are present before combat, and for building a roster that can tell a true PC apart from a sidekick/familiar.",
+    "List all tokens on the current (or specified) page with their name, layer, controlledby, represents, and tokenClass (\"pc\"|\"npc\"|\"sidekick\" — the same class HP/death routing uses internally, issue #196; \"sidekick\" covers any player-controlled NPC: a party sidekick, a familiar, an animal companion, a summon) fields. Useful for diagnosing which tokens are present before combat, and for building a roster that can tell a true PC apart from a player-controlled NPC.",
     {
       pageId: z.string().optional().describe("Page to inspect. Defaults to the current player page."),
     },
@@ -243,7 +243,6 @@ export function registerCombatTools(server: McpServer): void {
         pageId: activePage,
       });
       const sidekickNames = registry.listSidekickNames();
-      const familiarNames = registry.listFamiliarNames();
       return json(tokens.map((t) => {
         const hpMax = num(t.bar1_max);
         const hasBar = hpMax !== null && hpMax > 0;
@@ -253,7 +252,7 @@ export function registerCombatTools(server: McpServer): void {
           layer: t.layer,
           controlledby: t.controlledby,
           represents: t.represents,
-          tokenClass: classifyTokenDisplay(t, sidekickNames, familiarNames),
+          tokenClass: classifyToken(t, sidekickNames),
           // Real numbers, not "133/133" — see num() in combatHelpers.
           hp: hasBar ? num(t.bar1_value) : null,
           hpMax: hasBar ? hpMax : null,
@@ -965,13 +964,13 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "get_token",
-    "Read all properties of a single Roll20 token by ID — position, size, aura, statusmarkers, HP bars, layer, rotation, tokenClass (\"pc\"|\"npc\"|\"sidekick\"|\"familiar\", issue #196), etc. Errors (isError:true) if tokenId matches no token on the page — a miss is never reported as success.",
+    "Read all properties of a single Roll20 token by ID — position, size, aura, statusmarkers, HP bars, layer, rotation, tokenClass (\"pc\"|\"npc\"|\"sidekick\", issue #196 — \"sidekick\" covers any player-controlled NPC: a party sidekick, a familiar, an animal companion, a summon), etc. Errors (isError:true) if tokenId matches no token on the page — a miss is never reported as success.",
     { tokenId: z.string().describe("Roll20 token ID") },
     async ({ tokenId }) => {
       type TokenData = AoeToken & Record<string, unknown>;
       const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId });
       if (!token) return fail(`token not found: ${tokenId}`);
-      const tokenClass = classifyTokenDisplay(token, registry.listSidekickNames(), registry.listFamiliarNames());
+      const tokenClass = classifyToken(token, registry.listSidekickNames());
       return json({ ...token, tokenClass });
     }
   );
