@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.5.0";
+var AI_RELAY_VERSION = "2.6.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -445,8 +445,18 @@ const MONSTER_EPITHETS = {
 // and "Bloodied", which collides with the bloodied/wounded pseudo-marker and so reads as a
 // mechanical state rather than as a name.
 //
-// Grouped by REGISTER of hostility rather than being 49 synonyms for "angry": a big stack drawn
+// Grouped by REGISTER of hostility rather than being 48 synonyms for "angry": a big stack drawn
 // from one register blurs together by ear, which is the failure this pool exists to avoid.
+//
+// "Dire" is gone (issue #199): Dire Wolf/Bear/Rat are real 5e statblock names, so with the page
+// scanned for pool words (buildEpithetReservations, below), "Dire" is a word that a token's own
+// SPECIES name can carry with no epithet involved at all — no amount of making epithets unique
+// fixes that, the word has to leave the pool. The rest of this list was audited for the same
+// property (a real, unrelated monster whose name contains the word as a separate word) and
+// nothing else qualifies. "Grim" was the closest call, for "Grimlock" — but that's one fused
+// word with no space, so the whole-word match this file uses (see ALL_EPITHET_WORD_MATCHERS)
+// never fires inside it; "Grim" only flags when it appears as its own word, which is exactly the
+// case that's fine. "Fell" has no such collision in 5e core creature names and stays too.
 const GENERIC_EPITHETS = [
   // rage
   "Wrathful","Furious","Raging","Seething","Frenzied","Berserk","Maddened","Rampaging",
@@ -457,7 +467,7 @@ const GENERIC_EPITHETS = [
   // malice
   "Baleful","Sinister","Malign","Vengeful","Vile","Murderous",
   // dread
-  "Grim","Dire","Fell","Dreadful","Fearsome","Terrible","Menacing","Deadly",
+  "Grim","Fell","Dreadful","Fearsome","Terrible","Menacing","Deadly",
   // implacability
   "Relentless","Implacable","Tireless","Unyielding","Harrying","Hell-Bent",
   // predation
@@ -521,34 +531,96 @@ function getMonsterEpithets(tokenName) {
   return [];
 }
 
-// Produce a name "<baseName> the <Epithet>" that is GUARANTEED unique within `used` (a map of
-// full-name -> true that the caller threads across the whole group), no matter how large the
-// group is relative to the banks. Escalation, best-reading first:
+// Every word the epithet system can ever hand out — the common hostile pool plus every
+// per-monster bank word — each mapped to a whole-word, case-insensitive RegExp. Built once at
+// load time (not per call): the reservation scan below tests every token name against every one
+// of these, so precompiling keeps that O(tokens x words) scan cheap.
+//
+// `\b` anchors matter here: they're what lets "Grim" survive in GENERIC_EPITHETS even though
+// "Grimlock" is a real 5e creature — \bGrim\b has no boundary between the "m" and the "l" of
+// "Grimlock" (both word characters), so it never fires inside that fused word. It DOES fire on
+// "Dire" inside "Dire Wolf" (a space is a boundary), which is exactly why "Dire" had to leave the
+// pool instead of being savable this way — see the comment on GENERIC_EPITHETS.
+var ALL_EPITHET_WORD_MATCHERS = (function () {
+  var matchers = {};
+  var addWord = function (word) {
+    if (matchers[word]) return;
+    var escaped = word.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+    matchers[word] = new RegExp("\\b" + escaped + "\\b", "i");
+  };
+  GENERIC_EPITHETS.forEach(addWord);
+  Object.keys(MONSTER_EPITHETS).forEach(function (key) {
+    MONSTER_EPITHETS[key].forEach(addWord);
+  });
+  return matchers;
+})();
+
+// Derive the CURRENT epithet-reservation state from the live board (issue #199) rather than
+// persisting anything or parsing a name apart at " the " — for every token on the page, test
+// which known pool words already appear in its name. A hit reserves that word globally, for
+// every species, which is what makes a short form ("the Scarred") identify exactly one token no
+// matter how many species are on the board. It also self-heals: a token that's dead or removed
+// simply isn't scanned on the next call, so its epithet frees back up with no cleanup step.
+// Cost is trivial — tokens x pool words, tens of thousands of regex tests at worst.
+//
+// Returns { words: {lowercased word -> true}, names: {exact current token name -> true} }.
+// `names` exists only for nextEpithetName()'s rung 4 (numeric suffix), which deliberately
+// REUSES an already-reserved word and so needs a check keyed on the full candidate name instead.
+function buildEpithetReservations(pageTokens) {
+  var words = {};
+  var names = {};
+  var wordList = Object.keys(ALL_EPITHET_WORD_MATCHERS);
+  pageTokens.forEach(function (t) {
+    var name = t.get("name") || "";
+    names[name] = true;
+    for (var i = 0; i < wordList.length; i++) {
+      var word = wordList[i];
+      if (ALL_EPITHET_WORD_MATCHERS[word].test(name)) words[word.toLowerCase()] = true;
+    }
+  });
+  return { words: words, names: names };
+}
+
+// Produce a name "<baseName> the <Epithet>" that is GUARANTEED unique across the whole page —
+// `reservations` (from buildEpithetReservations, mutated in place as each name is handed out) is
+// shared across every species on the board, not per-call and not per-species (issue #199).
+// Escalation, best-reading first:
 //   1) an unused word from the monster's own bank    -> "Fire Giant the Towering"
 //   2) an unused word from the common hostile pool   -> "Fire Giant the Relentless"
 //   3) a common word prepended to a bank word        -> "Fire Giant the Relentless Towering"
 //   4) numeric suffix (last resort, always succeeds) -> "Fire Giant the Towering #2"
 //
-// Rungs 1 and 2 are BOTH single adjectives, which is the point: an 8-word bank plus the 49-word
-// common pool carries 57 tokens before any name grows a second word (less any word the two share
-// — "Furious" is in both the giant bank and the pool, so a giant stack gets 56). Issue #185 was
-// a 28-giant stack hitting the pair fallback at token 9 against that same 8-word bank.
+// Rungs 1 and 2 are BOTH single adjectives, which is the point: an 8-word bank plus the 48-word
+// common pool carries 55 tokens before any name grows a second word (less any word the two share
+// — "Furious" is in both the giant bank and the pool, so a giant stack gets 54). Issue #185 was
+// a 28-giant stack hitting the pair fallback at token 9 against that same 8-word bank; sharing one
+// pool across every species on the page (#199) only makes rungs 3 and 4 engage sooner on a mixed
+// board — they're written to carry real traffic, not just to exist as a theoretical fallback.
 //
 // Rung 3 prepends common-to-bank instead of pairing two bank words, for two reasons. It
-// MULTIPLIES (49 x bank) where pairing only permutes a bank against itself, so it is what makes
+// MULTIPLIES (48 x bank) where pairing only permutes a bank against itself, so it is what makes
 // bank width stop mattering. And disposition-before-physical is the order English stacks
 // adjectives in: "the Relentless Towering" reads as a name, "the Towering Furious" (two bank
 // words, size before opinion) reads as two tags stapled together. A monster with no bank of its
 // own has nothing to prepend to, so it pairs two common words — its old rung-2 behaviour.
 //
-// `used` is mutated to reserve the returned name.
-function nextEpithetName(baseName, racial, used) {
+// `reservations` is mutated to reserve whatever the returned name consumed.
+function nextEpithetName(baseName, racial, reservations) {
   let bank = racial && racial.length ? racial : [];
-  // Reserve-and-return, or null if that name is already taken by this group.
-  let take = function(epithet) {
+  let usedWords = reservations.words;
+  let usedNames = reservations.names;
+
+  // Reserve-and-return a single- or two-word epithet, or null if any of its words are already
+  // reserved anywhere on the page. Keyed on the WORD rather than the full name — the point of
+  // this whole rewrite — so two species can never independently end up sharing one epithet.
+  let take = function (epithet) {
+    let words = epithet.split(" ");
+    for (let w = 0; w < words.length; w++) {
+      if (usedWords[words[w].toLowerCase()]) return null;
+    }
     let cand = baseName + " the " + epithet;
-    if (used[cand]) return null;
-    used[cand] = true;
+    for (let w = 0; w < words.length; w++) usedWords[words[w].toLowerCase()] = true;
+    usedNames[cand] = true;
     return cand;
   };
 
@@ -559,7 +631,7 @@ function nextEpithetName(baseName, racial, used) {
     if (hit) return hit;
   }
   // 2) single adjective from the common hostile pool. Words shared with the bank were already
-  //    reserved by rung 1, so `used` skips them without needing an explicit dedup.
+  //    reserved by rung 1, so `usedWords` skips them without needing an explicit dedup.
   let commons = _.shuffle(GENERIC_EPITHETS);
   for (let i = 0; i < commons.length; i++) {
     let hit = take(commons[i]);
@@ -576,12 +648,15 @@ function nextEpithetName(baseName, racial, used) {
       if (hit) return hit;
     }
   }
-  // 4) numeric suffix — cannot collide, terminates the loop in all cases
+  // 4) numeric suffix — deliberately REUSES an already-exhausted word (that's why rungs 1-3 all
+  //    failed), so uniqueness here is checked against the full candidate NAME, not a word that's
+  //    already known to be taken. Cannot collide forever: `n` climbs until a free name is found,
+  //    which terminates the loop in all cases.
   let stem = bank[0] || GENERIC_EPITHETS[0];
   let n = 2;
   while (true) {
-    let hit = take(stem + " #" + n);
-    if (hit) return hit;
+    let cand = baseName + " the " + stem + " #" + n;
+    if (!usedNames[cand]) { usedNames[cand] = true; return cand; }
     n++;
   }
 }
@@ -1713,27 +1788,52 @@ ACTIONS["rollInitiativeForTokens"] = function (args, msg, nonce, senderPlayerId)
         let rollPublic = args.rollPublic !== false; // default true
         let bonusOverrides = args.bonusOverrides || {};
 
-        // Pass 1: count names to detect duplicates
-        let nameCounts = {};
-        (args.tokenIds || []).forEach(function(tokenId) {
-          let token = getObj("graphic", tokenId);
-          if (!token) return;
-          let n = token.get("name");
-          nameCounts[n] = (nameCounts[n] || 0) + 1;
+        // Determine the page these tokens live on (first one that resolves wins), so pass 1 and
+        // the epithet reservations below can see the WHOLE board, not just this batch — the
+        // fix for issue #199. Falls back to the campaign's active page, matching the convention
+        // findTokensInRange uses for the same lookup.
+        let initPageId = null;
+        (args.tokenIds || []).some(function(tokenId) {
+          let t = getObj("graphic", tokenId);
+          if (!t) return false;
+          initPageId = t.get("_pageid");
+          return true;
         });
+        if (!initPageId) initPageId = Campaign().get("playerpageid");
+        let pageTokens = initPageId ? findObjs({ _type: "graphic", _pageid: initPageId }) : [];
+
+        // Pass 1: for each incoming token's CURRENT name, count how many tokens anywhere on the
+        // page either share that exact name or already carry it as an epithet prefix
+        // ("Goblin the Savage" starts with "Goblin the "). The prefix check is what makes a lone
+        // reinforcement joining an already-renamed group get renamed too (issue #199) — it's a
+        // directed prefix test against a name we already have in hand, not a general parse of
+        // " the " out of an unknown string, so it doesn't reopen the base-name-contains-"the"
+        // ambiguity noted in #195. Scanning the whole page (not just this batch) is also what
+        // stops two separate roll_initiative calls from each leaving a lone duplicate bare name.
+        let speciesGroupSize = function (baseName) {
+          let prefix = baseName + " the ";
+          let n = 0;
+          pageTokens.forEach(function (t) {
+            let name = t.get("name") || "";
+            if (name === baseName || name.indexOf(prefix) === 0) n++;
+          });
+          return n;
+        };
 
         // Pass 2: rename duplicates with epithets drawn from the monster-type word bank, then
-        // the common hostile pool. nextEpithetName() threads `usedNames` across the whole batch
-        // and guarantees a unique final name even for large groups (e.g. 30 direwolves),
-        // escalating bank word -> common word -> common+bank pair -> numeric suffix as needed.
-        let usedNames = {};
+        // the common hostile pool. `reservations` is built from the live board (issue #199 — one
+        // pool, drawn down globally, keyed on the epithet word rather than the full name) and
+        // nextEpithetName() mutates it in place across the whole batch, guaranteeing a unique
+        // final name even for large groups (e.g. 30 direwolves), escalating bank word -> common
+        // word -> common+bank pair -> numeric suffix as needed.
+        let reservations = buildEpithetReservations(pageTokens);
         (args.tokenIds || []).forEach(function(tokenId) {
           let token = getObj("graphic", tokenId);
           if (!token) return;
           let baseName = token.get("name");
-          if ((nameCounts[baseName] || 0) <= 1) return;
+          if (speciesGroupSize(baseName) <= 1) return;
           let racial = getMonsterEpithets(baseName);
-          let newName = nextEpithetName(baseName, racial, usedNames);
+          let newName = nextEpithetName(baseName, racial, reservations);
           setSafe(token, { name: newName, tooltip: newName, showname: true, showplayers_name: true });
         });
 
