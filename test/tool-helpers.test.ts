@@ -2,9 +2,11 @@
 // browser-bound integration that can't be unit-tested, but two exported helpers are
 // pure AND high-value: the DL-wall geometry pipeline and the asset-path confinement
 // guard (the path-traversal boundary from security.md §5).
-import { describe, it, expect } from "vitest";
-import { processWalls } from "../src/tools/vision.js";
-import { resolveConfinedImage } from "../src/tools/maps.js";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import * as fs from "fs";
+import * as path from "path";
+import { processWalls, prepareImage } from "../src/tools/vision.js";
+import { resolveConfinedImage, ASSET_BASE } from "../src/tools/maps.js";
 
 type Pt = [number, number];
 const wall = (from: Pt, to: Pt) => ({ from, to });
@@ -62,5 +64,55 @@ describe("resolveConfinedImage — asset-path confinement (security boundary)", 
 
   it("reports a clean not-found for a valid-but-missing image", () => {
     expect(() => resolveConfinedImage("does-not-exist.png")).toThrow(/file not found/i);
+  });
+});
+
+// #180: prepareImage (analyze_battlemap's image loader) used to do a bare readFileSync on a
+// caller-supplied path — any local file was readable and would get base64'd to the Anthropic
+// API. It now goes through the same resolveConfinedImage boundary as every other image-reading
+// tool (upload_image, import_map_file, upload_and_place_map_image).
+describe("prepareImage — analyze_battlemap confinement (#180)", () => {
+  it("refuses a parent-traversal path before touching the filesystem for real", async () => {
+    await expect(prepareImage("../../../etc/passwd", 1000)).rejects.toThrow(/escapes the asset directory/i);
+  });
+
+  it("refuses an absolute path outside the asset dir", async () => {
+    const abs = process.platform === "win32" ? "C:\\Windows\\system32\\drivers\\etc\\hosts" : "/etc/passwd";
+    await expect(prepareImage(abs, 1000)).rejects.toThrow(/escapes the asset directory/i);
+  });
+
+  it("refuses a non-image extension inside the asset dir", async () => {
+    await expect(prepareImage("notes.txt", 1000)).rejects.toThrow(/unsupported image type/i);
+  });
+
+  it("refuses a valid-looking but missing image", async () => {
+    await expect(prepareImage("does-not-exist.png", 1000)).rejects.toThrow(/file not found/i);
+  });
+
+  // Regression: prove the confinement swap didn't break the legitimate path — a real image
+  // actually inside the asset dir must still load.
+  describe("with a real fixture inside the asset dir", () => {
+    const fixtureName = "__tool-helpers-fixture.png";
+    const fixturePath = path.join(ASSET_BASE, fixtureName);
+    // 1x1 transparent PNG.
+    const onePixelPng = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    );
+
+    beforeAll(() => {
+      fs.mkdirSync(ASSET_BASE, { recursive: true });
+      fs.writeFileSync(fixturePath, onePixelPng);
+    });
+    afterAll(() => {
+      fs.rmSync(fixturePath, { force: true });
+    });
+
+    it("still loads a real image that's actually inside the asset dir", async () => {
+      const info = await prepareImage(fixtureName, 1000);
+      expect(info.mediaType).toBe("image/png");
+      expect(info.widthPx).toBe(1);
+      expect(info.heightPx).toBe(1);
+    });
   });
 });

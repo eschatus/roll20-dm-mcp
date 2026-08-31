@@ -12,7 +12,8 @@
 //
 // The session cookie is harvested ONCE via the existing browser bridge (which keeps a persistent
 // logged-in profile), cached to disk, and only re-harvested on 401. The browser is NOT held open
-// during operation — all traffic is the socket. Enable with ROLL20_TRANSPORT=rt.
+// during operation — all traffic is the socket. RT is the only transport (#122/#179) — there is
+// no runtime switch for it.
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import path from "path";
@@ -59,13 +60,6 @@ const TOKEN_CACHE = dataPath("roll20-rt-token.json");
 // Firebase custom tokens are valid ~1h and re-exchangeable; cache below that so quick server
 // restarts skip the browser entirely. Only a cold start past the window touches Chromium.
 const TOKEN_MAX_AGE_MS = 50 * 60_000;
-
-// Browserless RTDB transport is the DEFAULT now — combat must not silently depend on a browser
-// (a packaged install ships none). Opt OUT to the legacy browser→chat relay with
-// ROLL20_TRANSPORT=browser (dev only). Mirrors DDB_TRANSPORT's default-rt/opt-out-browser shape.
-export function rtEnabled(): boolean {
-  return (process.env.ROLL20_TRANSPORT || "rt").toLowerCase() !== "browser";
-}
 
 // --- Firebase custom-token harvest (browser touched once at cold start, then cached) ---
 //

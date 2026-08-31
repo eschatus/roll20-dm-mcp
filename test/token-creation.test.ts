@@ -21,7 +21,6 @@ import { isPcToken } from "../src/tools/aoe.js";
 let emu: Roll20Emulator;
 let server: FakeMcpServer;
 let pageId: string;
-let prevTransport: string | undefined;
 
 async function callTool(name: string, args: Record<string, unknown> = {}) {
   const entry = server.handlers.get(name);
@@ -39,8 +38,6 @@ const idFrom = (t: string) => {
 };
 
 beforeAll(() => {
-  prevTransport = process.env.ROLL20_TRANSPORT;
-  process.env.ROLL20_TRANSPORT = "browser";
   emu = new Roll20Emulator({ seed: 171 });
   emu.load();
   roll20.__setBridgeTestTransport({
@@ -58,8 +55,6 @@ beforeAll(() => {
 
 afterAll(() => {
   roll20.__setBridgeTestTransport(null as never);
-  if (prevTransport === undefined) delete process.env.ROLL20_TRANSPORT;
-  else process.env.ROLL20_TRANSPORT = prevTransport;
 });
 
 describe("create_pc_token — caller-supplied stats", () => {

@@ -5,6 +5,7 @@ import * as path from "path";
 import sharp from "sharp";
 import Anthropic from "@anthropic-ai/sdk";
 import * as roll20 from "../bridge/roll20.js";
+import { resolveConfinedImage } from "./maps.js";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -137,8 +138,13 @@ export function processWalls(walls: Wall[], opts: { endpointInsetPx: number; cor
 // ─── Image helpers ────────────────────────────────────────────────────────────
 
 export async function prepareImage(imagePath: string, maxDimPx: number): Promise<ImageInfo> {
-  const raw = readFileSync(imagePath);
-  const ext = imagePath.split(".").pop()?.toLowerCase();
+  // Confine to the asset dir + image allowlist + size cap (same boundary as upload_image /
+  // import_map_file / upload_and_place_map_image) — this used to be a bare readFileSync on a
+  // caller-supplied path, letting an MCP client read + base64 any file on disk to the Anthropic
+  // API (#180).
+  const { abs } = resolveConfinedImage(imagePath);
+  const raw = readFileSync(abs);
+  const ext = abs.split(".").pop()?.toLowerCase();
   const mediaType: "image/png" | "image/jpeg" = ext === "png" ? "image/png" : "image/jpeg";
   const meta = await sharp(raw).metadata();
   const origW = meta.width ?? 0;

@@ -7,9 +7,10 @@ Two complete traces showing every hop a request makes from DM speech to final st
 > `AIBRIDGE_RESULT` is read back over an RTDB child listener — no browser anywhere (~49ms warm).
 > There is **no fallback**: on an RT failure (auth, timeout, disconnect, or an open circuit breaker)
 > `relayCommand` throws, naming the fix ("reconnect Roll20 in the gem to re-harvest the token").
-> The legacy Playwright chat-typing relay and `CLIENT_READS` were deleted in #122/#179, and
-> `ROLL20_TRANSPORT=browser` now selects nothing. Some reads are served without touching the Mod at
-> all, straight off the RTDB subtree (`rtGet`/`tryDirectRead` in `roll20-rt.ts`).
+> The legacy Playwright chat-typing relay and `CLIENT_READS` were deleted in #122/#179, and the
+> `ROLL20_TRANSPORT` switch itself (and `rtEnabled()`) was removed in #180 — there is no env var
+> that selects a transport any more. Some reads are served without touching the Mod at all,
+> straight off the RTDB subtree (`rtGet`/`tryDirectRead` in `roll20-rt.ts`).
 
 ---
 

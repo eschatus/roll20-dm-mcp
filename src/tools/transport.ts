@@ -1,6 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getStats } from "../bridge/transport-health.js";
-import { rtEnabled } from "../bridge/roll20-rt.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
 import { EXPECTED_RELAY_VERSION } from "../bridge/relay-version.js";
 import { getRelayVersionMismatch } from "../bridge/relay-version-check.js";
@@ -9,7 +8,7 @@ import { BUILD_VERSION } from "../build-version.js";
 export function registerTransportTools(server: McpServer): void {
   server.tool(
     "transport_status",
-    "Show this server's build version, health of RT and browser transports, circuit-breaker state, counters, active campaign, and the deployed Mod relay's version handshake",
+    "Show this server's build version, RT transport health, circuit-breaker state, counters, active campaign, and the deployed Mod relay's version handshake",
     {},
     async () => {
       let activeCampaign = "(none)";
@@ -22,7 +21,8 @@ export function registerTransportTools(server: McpServer): void {
             ...getStats(),
             // This server's own build, the same value announced to MCP callers in serverInfo.
             serverVersion: BUILD_VERSION,
-            rtEnabled: rtEnabled(),
+            // RT is the only transport (#122/#179) — there is no ROLL20_TRANSPORT switch to
+            // report any more (#180). getStats() already carries RT's own health/circuit state.
             activeCampaign,
             relayVersion: {
               expected: EXPECTED_RELAY_VERSION,

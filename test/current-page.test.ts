@@ -3,17 +3,12 @@
 // player page is set; previously that value escaped and silently mis-targeted every
 // relay call that defaults to `args.pageId ?? getCurrentPageId()`. It must throw
 // an actionable error instead, and return the real id once a player page exists.
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { setupHarness, type Harness } from "./harness.js";
 import * as roll20 from "../src/bridge/roll20.js";
 
 let h: Harness | undefined;
 
-beforeEach(() => {
-  // Force the browser/evaluate path (not the rt branch) so this exercises the guard.
-  // RT is the default now, so set browser explicitly (deleting it would select RT).
-  process.env.ROLL20_TRANSPORT = "browser";
-});
 afterEach(() => h?.teardown());
 
 describe("getCurrentPageId falsy guard", () => {

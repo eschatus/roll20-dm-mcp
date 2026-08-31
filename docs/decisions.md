@@ -167,6 +167,14 @@ This file records every non-obvious architectural choice made in this project. E
 > retries and the Mod's `PROCESSED_NONCES` LRU. The circuit breaker (3 consecutive failures, 30s
 > reset/probe) is unchanged and is what `transport_status` reports. The reasoning below is why the
 > browser went away rather than staying as a fallback, so it is worth keeping intact.
+>
+> **UPDATED further, 2026-08-31 (#180):** the `ROLL20_TRANSPORT` env var and `rtEnabled()` are now
+> gone from the source entirely, not just inert — a switch that "selects nothing" was still a lie
+> worth telling (it looked configurable and silently disabled the sandbox watchdog under
+> `=browser`). The test suite's emulator seam (`__setBridgeTestTransport` in `src/bridge/roll20.ts`)
+> never depended on the env var to begin with — `getCurrentPageId` and `relayCommand` both branch on
+> whether a test transport is installed, not on `ROLL20_TRANSPORT` — so removing it needed no
+> replacement seam.
 
 **Choice:** Use a browserless Firebase Realtime Database transport as the **default**. `rtEnabled()` is true unless `ROLL20_TRANSPORT=browser` (i.e. unset → RT). The MCP server harvests Roll20's per-campaign Firebase custom token (intercepted from the browser's `signInWithCustomToken` request, cached in `data/roll20-rt-token.json`, TTL ~50 min), then pushes `!ai-relay {JSON}` commands into the campaign's RTDB chat node and reads `AIBRIDGE_RESULT` back over an RTDB child listener. The legacy Playwright browser→chat relay is now a dev opt-out reachable only under `ROLL20_TRANSPORT=browser`.
 

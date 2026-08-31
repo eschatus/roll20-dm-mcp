@@ -125,17 +125,20 @@ If you see a red error instead, the paste was incomplete — clear the box and p
 
 > **Note:** The script only obeys GMs. Players typing in chat cannot trigger it.
 
-### Step 5 — Create the `.mcp.json` config file
+### Step 5 — The `.mcp.json` config file
 
-This file is how Claude finds the server. **It is not in the repository — you have to create it**, in the
-`roll20-dm-mcp` folder, named exactly `.mcp.json`:
+This file is how Claude finds the server. **You don't have to create it** — the first `npm run serve` in Step 6
+creates it for you, in the `roll20-dm-mcp` folder, named exactly `.mcp.json` (it's gitignored, since it ends up
+carrying your access token, so a fresh clone has none until that first run makes one). This is what it looks
+like afterward:
 
 ```json
 {
   "mcpServers": {
     "roll20-dm": {
       "type": "http",
-      "url": "http://127.0.0.1:39200/mcp"
+      "url": "http://127.0.0.1:39200/mcp",
+      "headers": { "Authorization": "Bearer <your generated token>" }
     },
     "roll20-dm-maps": {
       "type": "stdio",
@@ -147,9 +150,6 @@ This file is how Claude finds the server. **It is not in the repository — you 
 }
 ```
 
-Replace both `/ABSOLUTE/PATH/TO/roll20-dm-mcp` with the real folder path — `/Users/you/roll20-dm-mcp` on macOS,
-or on Windows `C:\\Users\\you\\roll20-dm-mcp` (**doubled backslashes**, because it's JSON).
-
 The two entries are the two servers:
 
 - **`roll20-dm`** — live combat: HP, conditions, initiative, dice, narration, zones. Runs over HTTP on port
@@ -158,7 +158,9 @@ The two entries are the two servers:
   tokens. Claude starts it on demand, so there's no terminal to keep open — but it runs the compiled code, so
   re-run `npm run build` after any update.
 
-If you only ever run live combat, you can leave the `roll20-dm-maps` block out.
+If you'd rather hand-edit this file first (a different port, dropping `roll20-dm-maps` if you only ever run
+live combat, adding other MCP servers), go ahead — Step 6 only fills in whichever of the two entries above are
+missing and refreshes the `roll20-dm` bearer header; it won't stomp on anything else you add.
 
 ### Step 6 — First run
 
@@ -166,10 +168,10 @@ If you only ever run live combat, you can leave the `roll20-dm-maps` block out.
 npm run serve
 ```
 
-On first launch this generates a private access token, saves it to a local `.env` file, and **writes it into the
-`.mcp.json` you just made** as an `Authorization` header. **Leave this running** in its terminal window — it's
-the server. To stop it later, press `Ctrl+C` (same on macOS and Windows); to start it again, just `npm run serve`
-from the same folder.
+On first launch this generates a private access token, saves it to a local `.env` file, and **creates or updates
+`.mcp.json`** (Step 5) with that token in the `roll20-dm` block's `Authorization` header. **Leave this running**
+in its terminal window — it's the server. To stop it later, press `Ctrl+C` (same on macOS and Windows); to start
+it again, just `npm run serve` from the same folder.
 
 > **Note:** The access token is unique to your machine. Nobody shares these — that's why each person does their
 > own install instead of copying files around.
@@ -327,9 +329,10 @@ or pin it to the taskbar.
 ## Troubleshooting
 
 **Claude doesn't see any roll20 tools.**
-The `.mcp.json` wasn't picked up. Make sure you actually created it (Step 5 — it isn't in the repo), that the
-server (Step 6) is running, that the `roll20-dm-mcp` folder is the open project folder, and that you **restarted
-Claude after** the file was written. This restart-after step is the single most common thing people miss.
+The `.mcp.json` wasn't picked up. Make sure the server ran at least once (Step 6 — that's what creates the file,
+Step 5), that the server is running now, that the `roll20-dm-mcp` folder is the open project folder, and that
+you **restarted Claude after** the file was written. This restart-after step is the single most common thing
+people miss.
 
 **"No usable Roll20 realtime token…"**
 Exactly what it says: the token file from Step 7 is missing, older than about 50 minutes, or belongs to a
