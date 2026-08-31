@@ -100,24 +100,54 @@ function tokenBaseName(t: AoeToken): string {
   return (t.name || "").split("\n")[0].trim().toLowerCase();
 }
 
-// True iff the token's (pre-epithet) name matches an entry in the
-// sidekick-name set.
-export function isSidekickToken(t: AoeToken, sidekickNames: Set<string> | undefined): boolean {
-  if (!sidekickNames || sidekickNames.size === 0) return false;
+// True iff the token's (pre-epithet) name matches an entry in `names` —
+// case-insensitive, bidirectional substring (epithets tolerated).
+function nameInSet(t: AoeToken, names: Set<string> | undefined): boolean {
+  if (!names || names.size === 0) return false;
   const name = tokenBaseName(t);
   if (!name) return false;
-  for (const s of sidekickNames) {
+  for (const s of names) {
     if (!s) continue;
     if (name === s || name.includes(s) || s.includes(name)) return true;
   }
   return false;
 }
 
+// True iff the token's (pre-epithet) name matches an entry in the
+// sidekick-name set.
+export function isSidekickToken(t: AoeToken, sidekickNames: Set<string> | undefined): boolean {
+  return nameInSet(t, sidekickNames);
+}
+
+// True iff the token's (pre-epithet) name matches an entry in the
+// familiar-name set (issue #196 — a strict subset of sidekickNames, display only).
+export function isFamiliarToken(t: AoeToken, familiarNames: Set<string> | undefined): boolean {
+  return nameInSet(t, familiarNames);
+}
+
 // Full three-way classification. sidekickNames omitted → no sidekick override
 // applies (every player-controlled token classes as "pc" — pre-#132 behavior).
+// This is the ROUTING class (HP/death) — kept exactly three-way on purpose;
+// see classifyTokenDisplay for the read-only four-way label.
 export function classifyToken(t: AoeToken, sidekickNames?: Set<string>): TokenClass {
   if (!controlledByPlayer(t)) return "npc";
   return isSidekickToken(t, sidekickNames) ? "sidekick" : "pc";
+}
+
+// Read-only four-way label for reporting a token's class back to a client
+// (issue #196: list_tokens / get_token). A familiar is a strict subset of
+// sidekick for ROUTING purposes — it always classifies (and routes) as
+// "sidekick" via classifyToken/isPcToken/splitPcNpc above, which this never
+// touches. This function only refines the label a client sees; it must never
+// become a second source of truth for HP/death routing.
+export type DisplayTokenClass = TokenClass | "familiar";
+export function classifyTokenDisplay(
+  t: AoeToken,
+  sidekickNames?: Set<string>,
+  familiarNames?: Set<string>,
+): DisplayTokenClass {
+  const base = classifyToken(t, sidekickNames);
+  return base === "sidekick" && isFamiliarToken(t, familiarNames) ? "familiar" : base;
 }
 
 // PC = controlled by an actual player id ("all" is scenery, not a PC) AND not
