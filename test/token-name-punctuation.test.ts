@@ -102,6 +102,47 @@ describe("update_token_hp — punctuation normalization only WIDENS matches, nev
     await expect(h.callTool("update_token_hp", { characterName: "Guard", damage: 5 }))
       .rejects.toThrow(/Ambiguous target/i);
   });
+
+  // DM-approved behaviour change surfaced by this PR (not just a punctuation
+  // fix): resolveToken's exact-match branch used to be Array.find(), which
+  // silently returned whichever of several IDENTICALLY-named tokens came
+  // first. #199 (relay epithet renamer has no cross-call memory) means a
+  // second roll_initiative can re-issue an epithet already on the board and
+  // produce two truly duplicate-named tokens — this is a real, not merely
+  // theoretical, way to hit it. Writing damage to an arbitrary one of two
+  // identically-named tokens is a silent wrong write; refusing is correct,
+  // same "only widen, never guess" principle the issue itself states,
+  // applied to a case #195 didn't name.
+  it("two unregistered tokens with the EXACT SAME name (no punctuation at all) refuse rather than silently resolving to whichever came first", async () => {
+    // Deliberately NOT registered via characters.register()/setSidekick() —
+    // resolveToken checks registry.lookup(name) BEFORE the token scan, and a
+    // registered name would return the registered id without ever reaching
+    // the exact-match filter() this test targets (seedWarband's two
+    // identically-named "Goblin Cutter" tokens hit exactly this short-circuit
+    // and don't exercise the fix, which is why this needs its own token
+    // names, unregistered).
+    const dupeName = "Goblin Skirmisher";
+    const tokA = h.emu.createToken({ pageid: pageId, name: dupeName, controlledby: "", bar1_value: 7, bar1_max: 7 });
+    const tokB = h.emu.createToken({ pageid: pageId, name: dupeName, controlledby: "", bar1_value: 7, bar1_max: 7 });
+    const before = { a: bar(tokA.id), b: bar(tokB.id) };
+
+    let caught: Error | undefined;
+    try {
+      await h.callTool("update_token_hp", { characterName: dupeName, damage: 3 });
+    } catch (e) {
+      caught = e as Error;
+    }
+    expect(caught, "expected update_token_hp to reject — a duplicate exact name must refuse, not silently pick one").toBeDefined();
+    expect(caught!.message).toMatch(/Ambiguous target/i);
+    // Both candidates named (the duplicate name appears twice in the
+    // did-you-mean list) — proves the exact-match branch surfaced BOTH
+    // tokens (filter) rather than collapsing to a single first hit (find).
+    expect(caught!.message).toMatch(/Did you mean: Goblin Skirmisher, Goblin Skirmisher\?/);
+
+    // Refusal, not a guess — neither token was written.
+    expect(bar(tokA.id)).toBe(before.a);
+    expect(bar(tokB.id)).toBe(before.b);
+  });
 });
 
 describe("roll_initiative — entries[].match / names[] tolerate punctuation too (issue #195)", () => {

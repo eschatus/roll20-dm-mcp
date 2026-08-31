@@ -199,6 +199,13 @@ export async function resolveToken(
     // filter (not find): two DIFFERENT board names that fold to the same
     // comparison form ("Iron, Golem" / "Iron Golem") must still surface as
     // ambiguous, not silently resolve to whichever came first in the list.
+    // Also covers two GENUINELY IDENTICAL names (no punctuation involved at
+    // all, e.g. two hand-placed "Goblin" tokens, or #199's epithet renamer
+    // re-issuing an epithet already on the board) — writing damage to
+    // whichever came first is a silent wrong write; refusing with both named
+    // as candidates is correct. Same "only widen, never guess" principle the
+    // issue itself states for punctuation, applied here to a case #195
+    // didn't name but the DM confirmed should behave the same way.
     const exactMatches = tokens.filter((t) => normalizeNameForMatch(norm(t)) === want);
     if (exactMatches.length === 1) return { id: exactMatches[0].id };
     if (exactMatches.length > 1) return { candidates: exactMatches.map(norm) };
