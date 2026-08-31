@@ -51,11 +51,12 @@ export interface HarnessOptions {
 }
 
 export function setupHarness(opts: HarnessOptions = {}): Harness {
-  // RT is now the default transport, but the harness only mocks the browser/relay seam
-  // (__setBridgeTestTransport) — NOT the direct-RTDB read paths (getCurrentPageId etc. branch on
-  // rtEnabled()). Force browser mode so those reads go through the emulator, not real Firebase.
-  const _prevTransport = process.env.ROLL20_TRANSPORT;
-  process.env.ROLL20_TRANSPORT = "browser";
+  // The test seam is __setBridgeTestTransport (below), not an env var: relayCommand and
+  // getCurrentPageId (src/bridge/roll20.ts) both check whether a test transport is installed
+  // and, if so, route reads/writes through it instead of real RTDB/Firebase. There used to be a
+  // ROLL20_TRANSPORT=browser env-var seam too, but it was already dead by the time it was
+  // removed in #180 — the read paths it once gated (getCurrentPageId) had moved onto this same
+  // _testTransport check, so setting it here was a no-op that nothing exercised.
   const emu = new Roll20Emulator({ seed: opts.seed });
   emu.load();
 
@@ -88,8 +89,6 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
     emu, server, callTool,
     teardown: () => {
       roll20.__setBridgeTestTransport(null);
-      if (_prevTransport === undefined) delete process.env.ROLL20_TRANSPORT;
-      else process.env.ROLL20_TRANSPORT = _prevTransport;
     },
   };
 }

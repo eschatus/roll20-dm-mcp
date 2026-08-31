@@ -103,14 +103,15 @@ The current version is **2.5.0**, and it must match `EXPECTED_RELAY_VERSION` in 
 npm run serve
 ```
 
-On first run it generates an auth token and writes it to `.env`. If a `.mcp.json` already exists in the project root with a `roll20-dm` entry, it also injects the bearer header there so Claude Code can find the server — but **it does not create `.mcp.json`**, and that file is gitignored, so a fresh clone has none. Write it yourself first:
+On first run it generates an auth token, writes it to `.env`, and **creates `.mcp.json`** (that file is gitignored, so a fresh clone has none) with a `roll20-dm` and a `roll20-dm-maps` entry, injecting the bearer header into the `roll20-dm` block:
 
 ```json
 {
   "mcpServers": {
     "roll20-dm": {
       "type": "http",
-      "url": "http://127.0.0.1:39200/mcp"
+      "url": "http://127.0.0.1:39200/mcp",
+      "headers": { "Authorization": "Bearer <generated token>" }
     },
     "roll20-dm-maps": {
       "type": "stdio",
@@ -122,9 +123,7 @@ On first run it generates an auth token and writes it to `.env`. If a `.mcp.json
 }
 ```
 
-(On Windows, escape the backslashes: `C:\\Users\\you\\roll20-dm-mcp\\dist\\index-maps.js`.)
-
-Then run `npm run serve` — the `Authorization` header appears in the `roll20-dm` block — and restart Claude Code.
+If `.mcp.json` already exists (e.g. you hand-wrote one, or it's a re-run), it only fills in whichever of the `roll20-dm` / `roll20-dm-maps` entries are missing and refreshes the `roll20-dm` bearer header — any other servers you've added stay untouched. You don't need to write this file yourself; just restart Claude Code after the first `npm run serve` to pick it up.
 
 The server runs as long as the terminal stays open. Keep it running during play. Besides `/mcp` it serves `/events`, a bearer-authenticated SSE stream carrying `combat-update`, `mob-plan`, `inbox-item`, `sandbox-status`, `map-ping`, and `chat-message` events; that's how the Gem's HUD and its player-command handling stay in sync.
 

@@ -1,6 +1,6 @@
 import http, { IncomingMessage } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import "dotenv/config";
@@ -11,7 +11,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 import { buildCombatServer } from "./server-combat.js";
-import { onRtdbEvent, startRtdbSubscriptions, rtEnabled } from "./bridge/roll20-rt.js";
+import { onRtdbEvent, startRtdbSubscriptions } from "./bridge/roll20-rt.js";
 import { startWatchdog } from "./bridge/sandbox-watchdog.js";
 
 // Long-running HTTP MCP server. One process owns the shared Playwright browser
@@ -38,15 +38,36 @@ function bootstrapToken(): string {
     if (envContent && !envContent.endsWith("\n")) envContent += "\n";
     writeFileSync(envPath, envContent + `ROLL20_MCP_TOKEN=${token}\n`, "utf-8");
   }
-  // Inject the bearer header into .mcp.json so Claude Code picks it up on next restart.
+  // Create (or update) .mcp.json so Claude Code picks up the bearer header on next restart.
+  // .mcp.json is gitignored (it ends up carrying this per-machine token), so a fresh clone has
+  // none — this used to only ever PATCH an existing file, silently no-op'ing when it was
+  // missing, which left first-time users with a running server, a first-run message claiming
+  // success, and no registered tools (#180). Write the documented default template
+  // (docs/setup-guide.md, docs/mcp-setup-for-dms.md) when the file — or just the roll20-dm /
+  // roll20-dm-maps entry — is missing, instead of silently doing nothing.
   const mcpJsonPath = resolve(ROOT, ".mcp.json");
-  try {
-    const mcpJson = JSON.parse(readFileSync(mcpJsonPath, "utf-8"));
-    if (mcpJson?.mcpServers?.["roll20-dm"]) {
-      mcpJson.mcpServers["roll20-dm"].headers = { Authorization: `Bearer ${token}` };
-      writeFileSync(mcpJsonPath, JSON.stringify(mcpJson, null, 2) + "\n", "utf-8");
+  let mcpJson: { mcpServers?: Record<string, Record<string, unknown>> } = {};
+  if (existsSync(mcpJsonPath)) {
+    try {
+      mcpJson = JSON.parse(readFileSync(mcpJsonPath, "utf-8"));
+    } catch (e) {
+      // A malformed existing file is a real problem the old code hid inside a blanket
+      // try/catch — surface it instead of silently leaving the token uninjected.
+      throw new Error(
+        `${mcpJsonPath} exists but is not valid JSON — fix or delete it, then restart: ${(e as Error).message}`,
+      );
     }
-  } catch {}
+  }
+  mcpJson.mcpServers ??= {};
+  mcpJson.mcpServers["roll20-dm"] ??= { type: "http", url: `http://${HOST}:${PORT}/mcp` };
+  mcpJson.mcpServers["roll20-dm-maps"] ??= {
+    type: "stdio",
+    command: "node",
+    args: [resolve(ROOT, "dist", "index-maps.js")],
+    cwd: ROOT,
+  };
+  mcpJson.mcpServers["roll20-dm"].headers = { Authorization: `Bearer ${token}` };
+  writeFileSync(mcpJsonPath, JSON.stringify(mcpJson, null, 2) + "\n", "utf-8");
   console.error(
     "\n[roll20-dm] First-time setup: ROLL20_MCP_TOKEN generated and saved to .env and .mcp.json.\n" +
     "[roll20-dm] Restart Claude Code to pick up the new header.\n",
@@ -136,8 +157,7 @@ const httpServer = http.createServer(async (req, res) => {
       clearInterval(keepaliveInterval);
     });
 
-    // Start RTDB subscriptions unconditionally — combat-update/plan/inbox events
-    // are independent of the relay transport. rtEnabled() only gates the relay path.
+    // Start RTDB subscriptions unconditionally — RT is the only transport (#122/#179).
     startRtdbSubscriptions().catch((e) =>
       sendEvent("error", { message: (e as Error).message })
     );
@@ -233,7 +253,7 @@ const httpServer = http.createServer(async (req, res) => {
 httpServer.listen(PORT, HOST, () => {
   // stderr so it never pollutes any stdio JSON-RPC consumer.
   console.error(`[roll20-dm http] MCP server listening on http://${HOST}:${PORT}/mcp`);
-  if (rtEnabled()) startWatchdog();
+  startWatchdog();
   // Player chat commands (!tactics, !recall, …) are ANSWERED BY THE GEM now (#171): this
   // server forwards every live table message as a `chat-message` SSE event and the gem's
   // player-command handling subscribes to it. The RTDB chat subscription is what produces
