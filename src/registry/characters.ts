@@ -12,9 +12,15 @@ export interface CharacterEntry {
   // Per-token override (issue #132): true for a player-controlled token whose
   // HP nonetheless lives in Roll20 bar1 and who dies like an NPC (Tua, Salros
   // Eventide, Amri in the Firebirds campaign) — `controlledby` alone can't
-  // tell a sidekick from a true PC. Settable via set_token_class (voice: "Tua
-  // is a sidekick"); read by isPcToken/splitPcNpc wherever HP/death routing
-  // decides (update_token_hp, update_hp_many, resolve_aoe, roll_initiative).
+  // tell it from a true PC. This covers ANY player-controlled NPC, not just
+  // the "sidekick" companion case the name comes from: a familiar, an animal
+  // companion, a summon — mechanically identical, all bar1 + NPC death
+  // semantics, no separate class needed (issue #196 — a per-flavor enum was
+  // considered and rejected; they don't route differently, so a `familiar`
+  // value would have been surface without behavior). Settable via
+  // set_token_class (voice: "Tua is a sidekick"); read by isPcToken/
+  // splitPcNpc wherever HP/death routing decides (update_token_hp,
+  // update_hp_many, resolve_aoe, roll_initiative).
   sidekick?: boolean;
 }
 
@@ -108,9 +114,11 @@ export function remove(name: string): boolean {
 }
 
 /**
- * Set (or clear) the sidekick override for a character/token name. Upserts a
- * minimal registry entry when the name isn't registered yet — a sidekick can
- * be flagged by voice ("Tua is a sidekick") before any DDB/token registration
+ * Set (or clear) the player-controlled-NPC override for a character/token
+ * name — covers a sidekick, a familiar, an animal companion, or a summon
+ * alike (they route identically; see the `sidekick` field comment). Upserts
+ * a minimal registry entry when the name isn't registered yet — this can be
+ * flagged by voice ("Tua is a sidekick") before any DDB/token registration
  * exists. Resolves against existing keys fuzzily (resolveCharacterKey) first
  * so this doesn't create a duplicate entry for an already-registered name.
  */
@@ -133,9 +141,11 @@ export function isSidekick(name: string): boolean {
 }
 
 /**
- * The active campaign's sidekick names (registry keys, already lowercased) —
- * the set aoe.ts's classifyToken/isPcToken/splitPcNpc need to route a
- * player-controlled token as a sidekick instead of a PC.
+ * The active campaign's player-controlled-NPC names (registry keys, already
+ * lowercased) — the set aoe.ts's classifyToken/isPcToken/splitPcNpc need to
+ * route a player-controlled token as one instead of a true PC. Covers
+ * sidekicks, familiars, animal companions, and summons alike — see the
+ * `sidekick` field comment on CharacterEntry.
  */
 export function listSidekickNames(): Set<string> {
   const full = load();

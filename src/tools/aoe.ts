@@ -80,15 +80,19 @@ export interface AoeToken {
 }
 
 // Token classing is THREE-way (issue #132): PC (Beyond20-owned bar, tracked
-// shadow HP), NPC (bar1), and SIDEKICK — a player-controlled token (Tua,
-// Salros Eventide, Amri in the Firebirds campaign) whose HP nonetheless lives
-// in bar1 and who dies like an NPC (no dying state). `controlledby` alone
-// cannot tell PC from sidekick apart — both are player-controlled — so
-// callers pass a `sidekickNames` set (built from the characters registry's
-// `sidekick: true` entries, see registry/characters.ts `listSidekickNames`)
-// to disambiguate. Matching is case-insensitive and bidirectional-substring,
-// same tolerance as resolveNamesToTokens, so epithets ("Tua the Bold") still
-// match the bare registry name ("tua").
+// shadow HP), NPC (bar1), and SIDEKICK — a player-controlled NPC (Tua, Salros
+// Eventide, Amri in the Firebirds campaign) whose HP nonetheless lives in
+// bar1 and who dies like an NPC (no dying state). This covers ANY
+// player-controlled NPC, not just the "companion" case the name comes from —
+// a familiar, an animal companion, a summon are all mechanically identical
+// (issue #196: a per-flavor class was considered and rejected, since none of
+// them route any differently). `controlledby` alone cannot tell PC from
+// sidekick apart — both are player-controlled — so callers pass a
+// `sidekickNames` set (built from the characters registry's `sidekick: true`
+// entries, see registry/characters.ts `listSidekickNames`) to disambiguate.
+// Matching is case-insensitive and bidirectional-substring, same tolerance as
+// resolveNamesToTokens, so epithets ("Tua the Bold") still match the bare
+// registry name ("tua").
 export type TokenClass = "pc" | "npc" | "sidekick";
 
 function controlledByPlayer(t: AoeToken): boolean {
