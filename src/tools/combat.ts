@@ -1236,6 +1236,32 @@ export function registerCombatTools(server: McpServer): void {
         return json({ wouldAffect: { npcs: npcs.map((n) => n.name), pcs: pcs.map((p) => p.name), skippedDown }, drawNote: drawNote || undefined });
       }
 
+      // ── Save bonuses are read BEFORE the public damage roll ──
+      // This read can fail, and resolve_aoe fails with it rather than rolling saves
+      // blind (#191). Doing it HERE means the failure lands before Roll20's public
+      // roller has posted a damage total the whole table can see — otherwise a retry
+      // posts a SECOND total for the same effect and the DM has to adjudicate which
+      // one counted. A zone/aura drawn earlier still stands: ping-centered mode has to
+      // draw the zone before it can ask which tokens are inside, so that side effect
+      // genuinely cannot be hoisted. The error names it instead, so a retry doesn't
+      // silently leave two.
+      const bonusByChar = new Map<string, { bonus: number; source: string }>();
+      if (args.saveAbility && npcs.length) {
+        for (const npc of npcs) {
+          const charId = npc.represents || "";
+          if (!charId || bonusByChar.has(charId)) continue;
+          const attrs = await roll20.relayCommand<Record<string, { current: unknown }>>({
+            action: "getCharacterAttributes", charId, names: saveAttrNames(args.saveAbility),
+          }).catch((e: Error) => {
+            throw new Error(
+              `${npc.name}: could not read save bonuses from character ${charId} (${e.message}). ` +
+              `No damage rolled and nothing applied.${drawNote ? ` NOTE: ${drawNote}` : ""} Re-run resolve_aoe.`
+            );
+          });
+          bonusByChar.set(charId, resolveSaveBonus(attrs, args.saveAbility));
+        }
+      }
+
       // ── Damage: one public roll for the whole effect ──
       let dmg = args.damage ?? 0;
       if (args.damageFormula) {
@@ -1252,21 +1278,9 @@ export function registerCombatTools(server: McpServer): void {
       type NpcResult = { token: AoeToken; bonus: number; source: string; total?: number; saved: boolean; applied: number; noBar?: boolean };
       const npcResults: NpcResult[] = [];
       if (args.saveAbility && npcs.length) {
-        const bonusByChar = new Map<string, { bonus: number; source: string }>();
         for (const npc of npcs) {
           const charId = npc.represents || "";
-          if (charId && !bonusByChar.has(charId)) {
-            const attrs = await roll20.relayCommand<Record<string, { current: unknown }>>({
-              action: "getCharacterAttributes", charId, names: saveAttrNames(args.saveAbility),
-            }).catch((e: Error) => {
-              // A failed read must NOT become +0 (#191): resolveSaveBonus(null) used to be
-              // byte-identical to "this sheet has no save for that ability", so a transport
-              // blip rolled a +7 CON save blind and this same call applied the damage for
-              // real. No write has happened yet here — fail now and nothing is half-applied.
-              throw new Error(`${npc.name}: could not read save bonuses from character ${charId} (${e.message}). No damage applied — re-run resolve_aoe.`);
-            });
-            bonusByChar.set(charId, resolveSaveBonus(attrs, args.saveAbility));
-          }
+          // Bonuses were resolved above, before the public roll — see that block for why.
           const b = charId ? bonusByChar.get(charId)! : { bonus: 0, source: "none" };
           npcResults.push({ token: npc, ...b, saved: false, applied: 0 });
         }

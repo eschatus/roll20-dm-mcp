@@ -50,6 +50,9 @@ export interface Harness {
    */
   failRelayAction(action: string, message?: string): void;
   clearRelayFailures(): void;
+  /** Every relay action ATTEMPTED, in order — lets a test prove a side effect never ran. */
+  readonly relayLog: string[];
+  clearRelayLog(): void;
   teardown(): void;
 }
 
@@ -69,9 +72,11 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
   // Failure injection for the swallowed-failure regressions: an action named here rejects
   // instead of reaching the emulator, standing in for a transport blip / auth expiry.
   const failingActions = new Map<string, string>();
+  const relayLog: string[] = [];
 
   roll20.__setBridgeTestTransport({
     relay: <T>(cmd: Record<string, unknown>) => {
+      relayLog.push(String(cmd.action));
       const injected = failingActions.get(String(cmd.action));
       if (injected) return Promise.reject(new Error(injected));
       return Promise.resolve(emu.relay<T>(cmd));
@@ -104,6 +109,8 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
     failRelayAction: (action: string, message?: string) =>
       void failingActions.set(action, message ?? `injected relay failure: ${action}`),
     clearRelayFailures: () => failingActions.clear(),
+    relayLog,
+    clearRelayLog: () => { relayLog.length = 0; },
     teardown: () => {
       roll20.__setBridgeTestTransport(null);
       if (_prevTransport === undefined) delete process.env.ROLL20_TRANSPORT;

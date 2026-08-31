@@ -118,6 +118,32 @@ describe("#191 resolve_aoe save bonuses", () => {
     expect(hp(nobodyId)).toBe(before.nobody);
   });
 
+  // Devin review on PR #193: failing AFTER the public damage roll meant a retry posted a
+  // SECOND damage total for the same effect, and the table had already seen the first.
+  it("fails before the public damage roll, so a retry cannot post a second total", async () => {
+    h.clearRelayLog();
+    h.failRelayAction("getCharacterAttributes", "RTDB auth expired");
+
+    await expect(h.callTool("resolve_aoe", burst)).rejects.toThrow(/could not read save bonuses/i);
+
+    // rollFormulas is Roll20's PUBLIC roller — players see it. It must never have run.
+    expect(h.relayLog).not.toContain("rollFormulas");
+    expect(h.relayLog).toContain("getCharacterAttributes");
+  });
+
+  // The happy-path half of the same guard: even when nothing fails, the sheet reads must
+  // still come first. Pinned by index so moving the read back below the roll fails here
+  // too, not only in the injected-failure test above.
+  it("reads save bonuses before it touches the public roller", async () => {
+    h.clearRelayLog();
+    await h.callTool("resolve_aoe", burst);
+    const read = h.relayLog.indexOf("getCharacterAttributes");
+    const roll = h.relayLog.indexOf("rollFormulas");
+    expect(read).toBeGreaterThanOrEqual(0);
+    expect(roll).toBeGreaterThanOrEqual(0);
+    expect(read).toBeLessThan(roll);
+  });
+
   it("marks a save rolled on a flat d20, and leaves a real bonus unmarked", async () => {
     const { text } = await h.callTool("resolve_aoe", burst);
     const line = (name: string) => text.split("\n").find((l) => l.startsWith(`${name}:`)) ?? "";
