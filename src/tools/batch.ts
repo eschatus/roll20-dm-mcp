@@ -97,10 +97,13 @@ export function registerBatchTools(server: McpServer): void {
       let existingPages: { id: string; name: string }[] = [];
       let existingPageNames = new Set<string>();
       if ((skipExisting || reuseExisting) && !dryRun) {
-        try {
-          existingPages = await roll20.relayCommand<{ id: string; name: string }[]>({ action: "listPages" });
-          existingPageNames = new Set(existingPages.map(p => p.name.toLowerCase()));
-        } catch { /* non-fatal */ }
+        // Was try/catch { non-fatal } (#192) — but it is only non-fatal in the branch this
+        // code does NOT run in. A swallowed listPages left existingPageNames empty, so
+        // skipExisting/reuseExisting silently degraded to "nothing exists" and the import
+        // re-created pages that were already there: a swallowed READ with a WRITE
+        // consequence, against a caller who asked for the opposite by passing the flag.
+        existingPages = await roll20.relayCommand<{ id: string; name: string }[]>({ action: "listPages" });
+        existingPageNames = new Set(existingPages.map(p => p.name.toLowerCase()));
       }
 
       const results: object[] = [];

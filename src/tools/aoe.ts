@@ -1,6 +1,8 @@
 // Pure helpers for resolve_aoe (registered in combat.ts). Kept I/O-free so the
 // save-bonus cascade and damage math are unit-testable without a relay.
 
+import { normalizeNameForMatch } from "./nameMatch.js";
+
 export const SAVE_ABILITIES = [
   "strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma",
 ] as const;
@@ -30,17 +32,29 @@ export function saveAttrNames(ability: SaveAbility): string[] {
 // directly; score attrs become floor((score-10)/2). Empty/absent → next in
 // cascade; nothing usable → +0 flat d20.
 export function resolveSaveBonus(
-  attrs: Record<string, { current: unknown }> | null | undefined,
+  attrs: Record<string, { current: unknown; max?: unknown } | string | number | null> | null | undefined,
   ability: SaveAbility,
 ): { bonus: number; source: string } {
+  // A null/undefined map means the read never landed — NOT "this sheet has no save for
+  // that ability". Returning "none" for both made a failed read indistinguishable from a
+  // legitimate +0 (#191). Callers should fail before ever passing null (resolve_aoe now
+  // does); this keeps the two answers distinguishable for any caller that doesn't.
+  if (attrs === null || attrs === undefined) return { bonus: 0, source: "unreachable" };
   const names = saveAttrNames(ability);
   const numeric = (v: unknown): number | null => {
     if (v === undefined || v === null || String(v).trim() === "") return null;
     const n = Number(v);
     return isFinite(n) ? n : null;
   };
+  // The relay's attr-collapse compaction returns a FLAT value (not {current,max}) when the
+  // attribute's max is empty — which is the COMMON case for NPC save attributes. Reading
+  // only .current resolved every such sheet to source:"none" and rolled the save on a flat
+  // d20, so a monster with a +7 CON save silently saved at +0. get_character_attribute has
+  // always handled both shapes; this did not (found via #191's flat-d20 reporting).
+  const currentOf = (v: unknown): unknown =>
+    v !== null && typeof v === "object" ? (v as { current?: unknown }).current : v;
   for (let i = 0; i < names.length; i++) {
-    const n = numeric(attrs?.[names[i]]?.current);
+    const n = numeric(currentOf(attrs?.[names[i]]));
     if (n === null) continue;
     const isScore = i >= 2;
     return isScore
@@ -68,15 +82,19 @@ export interface AoeToken {
 }
 
 // Token classing is THREE-way (issue #132): PC (Beyond20-owned bar, tracked
-// shadow HP), NPC (bar1), and SIDEKICK — a player-controlled token (Tua,
-// Salros Eventide, Amri in the Firebirds campaign) whose HP nonetheless lives
-// in bar1 and who dies like an NPC (no dying state). `controlledby` alone
-// cannot tell PC from sidekick apart — both are player-controlled — so
-// callers pass a `sidekickNames` set (built from the characters registry's
-// `sidekick: true` entries, see registry/characters.ts `listSidekickNames`)
-// to disambiguate. Matching is case-insensitive and bidirectional-substring,
-// same tolerance as resolveNamesToTokens, so epithets ("Tua the Bold") still
-// match the bare registry name ("tua").
+// shadow HP), NPC (bar1), and SIDEKICK — a player-controlled NPC (Tua, Salros
+// Eventide, Amri in the Firebirds campaign) whose HP nonetheless lives in
+// bar1 and who dies like an NPC (no dying state). This covers ANY
+// player-controlled NPC, not just the "companion" case the name comes from —
+// a familiar, an animal companion, a summon are all mechanically identical
+// (issue #196: a per-flavor class was considered and rejected, since none of
+// them route any differently). `controlledby` alone cannot tell PC from
+// sidekick apart — both are player-controlled — so callers pass a
+// `sidekickNames` set (built from the characters registry's `sidekick: true`
+// entries, see registry/characters.ts `listSidekickNames`) to disambiguate.
+// Matching is case-insensitive and bidirectional-substring, same tolerance as
+// resolveNamesToTokens, so epithets ("Tua the Bold") still match the bare
+// registry name ("tua").
 export type TokenClass = "pc" | "npc" | "sidekick";
 
 function controlledByPlayer(t: AoeToken): boolean {
@@ -85,7 +103,10 @@ function controlledByPlayer(t: AoeToken): boolean {
 }
 
 function tokenBaseName(t: AoeToken): string {
-  return (t.name || "").split("\n")[0].trim().toLowerCase();
+  // Issue #195: fold punctuation the same way resolveToken does, alongside the
+  // existing case fold, so an epithet spoken/transcribed with a comma
+  // ("Tua, the Bold") still matches the bare registry name.
+  return normalizeNameForMatch((t.name || "").split("\n")[0].trim());
 }
 
 // True iff the token's (pre-epithet) name matches an entry in the
@@ -96,7 +117,13 @@ export function isSidekickToken(t: AoeToken, sidekickNames: Set<string> | undefi
   if (!name) return false;
   for (const s of sidekickNames) {
     if (!s) continue;
-    if (name === s || name.includes(s) || s.includes(name)) return true;
+    const ns = normalizeNameForMatch(s);
+    // PR #198 review (Devin, finding 1): a punctuation-only registry key
+    // would fold to "" and wildcard-match every token via name.includes("").
+    // Registry keys realistically won't be punctuation-only, but this is the
+    // same guard every other by-name matcher touched by #195 needs.
+    if (!ns) continue;
+    if (name === ns || name.includes(ns) || ns.includes(name)) return true;
   }
   return false;
 }
@@ -144,6 +171,25 @@ export function hasHpBar(t: { bar1_max?: number | string }): boolean {
 
 // Resolve target names against the page token list: exact (case-insensitive)
 // first, then substring. Returns misses so the caller can report them.
+//
+// PR #198 review (Devin) fixed two gaps on top of the original #195 fix:
+//  - finding 1 (wildcard): a punctuation-only `want` ("," / "...") folds to
+//    "" via normalizeNameForMatch, and every non-empty token name
+//    ".includes("")" — an unguarded lookup would "match" the entire board.
+//    The pre-existing `if (!w) continue` guard already prevented a wildcard
+//    here, but it silently DROPPED the name without reporting it; changed
+//    to report it via `missed` instead (loud, not a silent no-op — the
+//    project's stated preference).
+//  - finding 2 (collision consistency): both the exact and substring passes
+//    used to be `tokens.find(...)`, silently picking the FIRST token that
+//    collided when two DIFFERENT names folded to the same comparison form
+//    ("Iron, Golem" / "Iron Golem") — resolveToken already refuses that case
+//    via candidates; this now does too, via `missed` (every existing caller
+//    — resolve_aoe's targetNames/centerTokenName, update_hp_many's names[] —
+//    already treats a missed name as "don't guess": resolve_aoe throws on
+//    any non-empty `missed`, update_hp_many drops that one name from the
+//    batch rather than writing to an arbitrary match, same as it already
+//    does for a genuinely not-found name).
 export function resolveNamesToTokens(
   names: string[],
   tokens: AoeToken[],
@@ -151,14 +197,16 @@ export function resolveNamesToTokens(
   const matched: AoeToken[] = [];
   const missed: string[] = [];
   for (const want of names) {
-    const w = want.trim().toLowerCase();
-    if (!w) continue;
-    const hit =
-      tokens.find((t) => (t.name || "").trim().toLowerCase() === w) ??
-      tokens.find((t) => (t.name || "").toLowerCase().includes(w));
-    if (hit) {
+    const w = normalizeNameForMatch(want);
+    if (!w) { missed.push(want); continue; }
+    const exact = tokens.filter((t) => normalizeNameForMatch(t.name) === w);
+    const hits = exact.length > 0 ? exact : tokens.filter((t) => normalizeNameForMatch(t.name).includes(w));
+    if (hits.length === 1) {
+      const hit = hits[0];
       if (!matched.some((m) => m.id === hit.id)) matched.push(hit);
     } else {
+      // 0 hits (genuinely not found) or 2+ hits (ambiguous collision) both
+      // refuse to guess — reported identically via `missed`.
       missed.push(want);
     }
   }

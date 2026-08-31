@@ -1,8 +1,10 @@
 NOTICE — roll20-dm-mcp
 ======================
 
-This project is and remains **open source under the MIT License**. It is the MCP server,
-Roll20 Mod relay and D&D Beyond read bridge for AI-assisted D&D 5e session management.
+This project is and remains **open source under the MIT License**. It is the MCP server and
+Roll20 Mod relay for AI-assisted D&D 5e session management — Roll20 primitives only. D&D
+Beyond reads live in the separate `beyond-mcp` project (https://github.com/eschatus/beyond-mcp);
+this repository holds no D&D Beyond credential.
 
 The gem moved out; the server did not
 ------------------------------------
@@ -54,20 +56,24 @@ Third-party and interoperation
 
   * Beyond20 (GPL-3.0) is interoperated with through its documented interface and is never
     vendored.
-  * Roll20 and D&D Beyond are third-party services accessed as a logged-in user. No D&D
-    Beyond content is redistributed.
+  * Roll20 is a third-party service accessed as a logged-in user (RT credentials furnished,
+    never harvested here). No D&D Beyond content is accessed or redistributed by this
+    repository.
   * `data/` is gitignored and holds live credentials and derived local data. It is not part
     of the distribution.
 
-Not covered by this licence
----------------------------
+Not covered by this licence (historical)
+-----------------------------------------
 
-`data/tactics/monster-tactics-index.json` is a local, gitignored artifact containing roughly
-190,000 words of verbatim prose from Keith Ammann's "The Monsters Know What They're Doing",
-a commercial book — 149 unique passages published under 280 alias keys. It is the author's
-text, not a summary of it. It has never been committed to this repository, is not covered by
-the MIT licence above, and is not redistributable.
+While this repository still held the in-server tactics feature (removed in the v2.0.0 shrink,
+#171 — see "Tactics live in the gem now" in CLAUDE.md), a local, gitignored
+`data/tactics/monster-tactics-index.json` could hold roughly 190,000 words of verbatim prose
+from Keith Ammann's "The Monsters Know What They're Doing", a commercial book — 149 unique
+passages published under 280 alias keys. That was the author's text, not a summary of it. It
+was never committed to this repository, was never covered by the MIT licence above, and was
+never redistributable — nor was the 16 MB source PDF or the `build_index.py` that extracted
+it, which sat beside it under the same gitignored `data/`.
 
-The 16 MB source PDF and the `build_index.py` that extracted it sit beside it under `data/`,
-which is gitignored in its entirety. Anyone cloning this repository gets neither. The tactics
-feature degrades to its Int/Wis tier system when the index is absent.
+The tactics feature — and with it, any local use of that text — moved to DM Whisper with the
+#171 split. This repository's source no longer reads or produces any such index; `data/`
+holds only live credentials and derived local data (see the bullet above).

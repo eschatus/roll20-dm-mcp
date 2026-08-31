@@ -30,6 +30,21 @@ describe("resolveSaveBonus", () => {
       .toEqual({ bonus: 5, source: "npc_dex_save" });
   });
 
+  // The relay collapses an attribute with an empty max to a FLAT value rather than
+  // {current,max} — the common case for NPC save attributes. Reading only .current made
+  // every such monster save on a flat d20; these fixtures are the real wire shape.
+  it("reads the relay's flat (collapsed) attribute shape, not just {current}", () => {
+    expect(resolveSaveBonus({ npc_con_save: 7 }, "constitution"))
+      .toEqual({ bonus: 7, source: "npc_con_save" });
+    expect(resolveSaveBonus({ npc_con_save: "7" }, "constitution"))
+      .toEqual({ bonus: 7, source: "npc_con_save" });
+    expect(resolveSaveBonus({ npc_constitution: 18 }, "constitution"))
+      .toEqual({ bonus: 4, source: "npc_constitution" });
+    // Mixed shapes in one payload (max present on one attr only) still resolve in order.
+    expect(resolveSaveBonus({ npc_con_save: { current: 3, max: "" }, npc_constitution: 20 }, "constitution"))
+      .toEqual({ bonus: 3, source: "npc_con_save" });
+  });
+
   it("skips empty-string attrs and falls through the cascade", () => {
     expect(resolveSaveBonus(attrs({ npc_dex_save: "", npc_dexterity: "14" }), "dexterity"))
       .toEqual({ bonus: 2, source: "npc_dexterity" });
@@ -41,8 +56,17 @@ describe("resolveSaveBonus", () => {
   });
 
   it("defaults to +0 flat d20 with nothing usable", () => {
-    expect(resolveSaveBonus(null, "constitution")).toEqual({ bonus: 0, source: "none" });
     expect(resolveSaveBonus(attrs({ npc_con_save: "abc" }), "constitution")).toEqual({ bonus: 0, source: "none" });
+    expect(resolveSaveBonus(attrs({}), "constitution")).toEqual({ bonus: 0, source: "none" });
+  });
+
+  // #191: an unread attribute map is NOT the same answer as a sheet with no save on it.
+  // Both used to return source:"none", so a transport blip rolled the save at +0 and
+  // resolve_aoe applied the resulting damage as though it were a real result.
+  it("distinguishes an unread attribute map from a sheet with no save bonus", () => {
+    expect(resolveSaveBonus(null, "constitution")).toEqual({ bonus: 0, source: "unreachable" });
+    expect(resolveSaveBonus(undefined, "constitution")).toEqual({ bonus: 0, source: "unreachable" });
+    expect(resolveSaveBonus(attrs({}), "constitution").source).not.toBe("unreachable");
   });
 });
 
@@ -115,6 +139,22 @@ describe("classifyToken / isSidekickToken (issue #132 sidekick routing)", () => 
     expect(isSidekickToken(pc("Tua"), sidekicksFull)).toBe(true);
   });
 
+  it("tolerates a comma in the epithet the same way (issue #195)", () => {
+    const sidekicks = new Set(["tua"]);
+    expect(isSidekickToken(pc("Tua, the Bold"), sidekicks)).toBe(true);
+  });
+
+  // PR #198 review, finding 1 (Devin): a punctuation-only registry entry in
+  // sidekickNames folds to "", and name.includes("") is true for every
+  // token — an unguarded set would classify EVERY player-controlled token as
+  // a sidekick. Defensive (registry keys realistically won't be
+  // punctuation-only), but pinned per the audit request.
+  it("a punctuation-only entry in sidekickNames does not wildcard-match every token (PR #198 finding 1)", () => {
+    const sidekicks = new Set([","]);
+    expect(isSidekickToken(pc("Glint"), sidekicks)).toBe(false);
+    expect(isSidekickToken(pc("Winsome"), sidekicks)).toBe(false);
+  });
+
   it("isPcToken is false for a sidekick — it must NOT route to tracked PC state", () => {
     const sidekicks = new Set(["tua"]);
     expect(isPcToken(pc("Tua"), sidekicks)).toBe(false);
@@ -169,5 +209,49 @@ describe("resolveNamesToTokens", () => {
     const { matched, missed } = resolveNamesToTokens(["flameskull", "Flameskull the Gaunt", "ghost"], tokens);
     expect(matched.map((t) => t.id)).toEqual(["3"]);
     expect(missed).toEqual(["ghost"]);
+  });
+
+  // Issue #195: a comma-separated epithet — the natural spoken/transcribed
+  // form — must resolve the same as the unpunctuated name.
+  it("tolerates punctuation the token name doesn't have (issue #195)", () => {
+    const { matched, missed } = resolveNamesToTokens(["Flameskull, the Gaunt"], tokens);
+    expect(matched.map((t) => t.id)).toEqual(["3"]);
+    expect(missed).toEqual([]);
+  });
+
+  // PR #198 review, finding 3 (Devin): adjacent (no-space) punctuation used
+  // to fuse the words together and could never match.
+  it("matches adjacent (no-space) punctuation the same way (PR #198 finding 3)", () => {
+    const { matched, missed } = resolveNamesToTokens(["Flameskull,the Gaunt"], tokens);
+    expect(matched.map((t) => t.id)).toEqual(["3"]);
+    expect(missed).toEqual([]);
+  });
+
+  // PR #198 review, finding 1 (Devin) — the wildcard bug: a punctuation-only
+  // name folds to "", and String.includes("") is true for every token name.
+  // Must be reported as missed, never as a match against every token.
+  it("a punctuation-only name does not wildcard-match every token (PR #198 finding 1)", () => {
+    const { matched, missed } = resolveNamesToTokens([","], tokens);
+    expect(matched).toEqual([]);
+    expect(missed).toEqual([","]);
+  });
+
+  it("a punctuation-only name mixed with valid names only drops the bad one — batch semantics preserved", () => {
+    const { matched, missed } = resolveNamesToTokens(["...", "Zombie 1"], tokens);
+    expect(matched.map((t) => t.id)).toEqual(["1"]);
+    expect(missed).toEqual(["..."]);
+  });
+
+  // PR #198 review, finding 2 (Devin) — collision consistency: two DIFFERENT
+  // token names that fold to the same comparison form must refuse (report as
+  // missed), not silently resolve to whichever the relay listed first.
+  it("refuses (reports as missed) rather than guessing when two DIFFERENT token names fold to the same comparison form (PR #198 finding 2)", () => {
+    const collidingTokens: AoeToken[] = [
+      { id: "a", name: "Iron, Golem" },
+      { id: "b", name: "Iron Golem" },
+    ];
+    const { matched, missed } = resolveNamesToTokens(["Iron Golem"], collidingTokens);
+    expect(matched).toEqual([]);
+    expect(missed).toEqual(["Iron Golem"]);
   });
 });
