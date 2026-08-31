@@ -16,6 +16,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { setupHarness, type Harness } from "./harness.js";
+import * as characters from "../src/registry/characters.js";
 
 let h: Harness;
 let pageId: string;
@@ -290,5 +291,105 @@ describe("set_token_marker — same chokepoint, same tolerance (issue #195)", ()
     // right token, not the exact marker label.
     expect(String(h.emu.tokenProps(id).statusmarkers || "")).toMatch(/Feared/i);
     expect(text).toBeTruthy();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PR #198 review (Devin's automated review, three findings assessed VALID):
+//   1. Punctuation-only selectors ("," / "...") normalize to "" and
+//      String.includes("") is true for every name — an unguarded matcher
+//      would treat that as a WILDCARD, e.g. update_hp_many applying damage
+//      to the whole board. Most serious finding — fixed with a loud refusal
+//      at every top-level selector param (nameMatch, nameFilter, names[]).
+//   2. Collision handling was inconsistent — resolveNamesToTokens (aoe.ts)
+//      and the registry short-circuit (resolveCharacterKey) still picked a
+//      first match silently instead of refusing like resolveToken's own
+//      exact-match branch already does. Fixed for consistency.
+//   3. Adjacent punctuation ("Rigan,Stormcrow") used to fuse words together
+//      by stripping to nothing instead of a space — covered at the pure
+//      normalizeNameForMatch level (nameMatch.test.ts) and the registry
+//      level (characters.test.ts); not re-tested at the tool level here.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("update_hp_many — punctuation-only selectors must never wildcard the whole board (PR #198 finding 1)", () => {
+  it("nameMatch of pure punctuation refuses loudly instead of applying damage to every token", async () => {
+    const ogreId = tokenId("Ogre");
+    const scarredId = tokenId("Bandit Captain the Scarred");
+    const before = { ogre: bar(ogreId), scarred: bar(scarredId) };
+
+    await expect(h.callTool("update_hp_many", { nameMatch: ",", damage: 5 }))
+      .rejects.toThrow(/punctuation-only/i);
+
+    // Nothing on the board was touched — refusal, not a wildcard write.
+    expect(bar(ogreId)).toBe(before.ogre);
+    expect(bar(scarredId)).toBe(before.scarred);
+  });
+
+  it("names[] containing only punctuation-only entries refuses (no tokens matched), never wildcards", async () => {
+    const ogreId = tokenId("Ogre");
+    const before = bar(ogreId);
+
+    await expect(h.callTool("update_hp_many", { names: [",", "..."], damage: 5 }))
+      .rejects.toThrow(/No tokens matched/i);
+
+    expect(bar(ogreId)).toBe(before);
+  });
+
+  it("a punctuation-only entry mixed into a valid names[] list is dropped, not wildcarded — the valid name still resolves (batch semantics preserved)", async () => {
+    const skeletonId = tokenId("Skeleton the Cursed");
+    const ogreId = tokenId("Ogre");
+    const before = { skeleton: bar(skeletonId), ogre: bar(ogreId) };
+
+    await h.callTool("update_hp_many", { names: [",", "Skeleton the Cursed"], damage: 2 });
+
+    expect(bar(skeletonId)).toBe(before.skeleton - 2); // the valid name still worked
+    expect(bar(ogreId)).toBe(before.ogre);             // NOT wildcarded to the rest of the board
+  });
+});
+
+describe("roll_initiative — punctuation-only selectors must never wildcard the whole board (PR #198 finding 1)", () => {
+  it("nameFilter of pure punctuation refuses loudly instead of rolling initiative for every token", async () => {
+    await expect(h.callTool("roll_initiative", { nameFilter: "...", publicRoll: false }))
+      .rejects.toThrow(/punctuation-only/i);
+  });
+
+  it("names[] of pure punctuation refuses loudly instead of selecting every token", async () => {
+    await expect(h.callTool("roll_initiative", { names: [","], publicRoll: false }))
+      .rejects.toThrow(/punctuation-only/i);
+  });
+
+  it("entries[].match of pure punctuation refuses loudly instead of selecting every token", async () => {
+    await expect(h.callTool("roll_initiative", { entries: [{ match: ";" }], publicRoll: false }))
+      .rejects.toThrow(/punctuation-only/i);
+  });
+});
+
+describe("resolveToken — a punctuation-only characterName refuses rather than resolving to an arbitrary token (PR #198 finding 1)", () => {
+  it("update_token_hp with a punctuation-only characterName refuses; nothing on the board is written", async () => {
+    const ogreId = tokenId("Ogre");
+    const before = bar(ogreId);
+
+    await expect(h.callTool("update_token_hp", { characterName: "...", damage: 5 }))
+      .rejects.toThrow(/Ambiguous target/i);
+
+    expect(bar(ogreId)).toBe(before);
+  });
+});
+
+describe("resolveToken — the registry short-circuit does not bypass the ambiguity refusal (PR #198 finding 2)", () => {
+  it("two registered characters whose names collide only after punctuation-folding refuse rather than silently resolving to whichever was registered first", async () => {
+    // Neither raw key equals the query ("rook the bound"), so this exercises
+    // the fold-collision path inside resolveCharacterKey specifically, not
+    // the raw-exact-match fast path. Fake token ids: nothing here should
+    // ever reach a relay write.
+    characters.register("Rook, The Bound", "-fake-tok-registry-collision-a", 0);
+    characters.register("Rook The Bound.", "-fake-tok-registry-collision-b", 0);
+
+    // Neither registry entry AND no matching board token exist for this
+    // exact phrase, so this refuses end to end — the point is that it does
+    // NOT silently resolve to "-fake-tok-registry-collision-a" (whichever
+    // register() call happened to run first) via the registry short-circuit
+    // in resolveToken/combatHelpers.ts.
+    await expect(h.callTool("update_token_hp", { characterName: "Rook The Bound", damage: 1 }))
+      .rejects.toThrow(/Ambiguous target|No matching token/i);
   });
 });

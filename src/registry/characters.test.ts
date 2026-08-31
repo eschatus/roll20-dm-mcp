@@ -48,6 +48,43 @@ describe("resolveCharacterKey", () => {
   it("still finds the raw case-only match first when both apply (no behavior change for the common case)", () => {
     expect(resolveCharacterKey("Eli", reg)).toBe("eli");
   });
+
+  // PR #198 review, finding 3 (Devin): adjacent punctuation with no space
+  // ("Rigan,Stormcrow") used to fold to "riganstormcrow" (words fused
+  // together), which could never match the stored key "rigan stormcrow".
+  it("matches adjacent (no-space) punctuation the same way (PR #198 finding 3)", () => {
+    expect(resolveCharacterKey("Rigan,Stormcrow", reg)).toBe("rigan stormcrow");
+  });
+
+  // PR #198 review, finding 1 (Devin) — the wildcard bug: a punctuation-only
+  // query folds to "", and an unguarded fuzzy check ("".includes("")) would
+  // treat that as matching every key. Must return null, not the first key.
+  it("a punctuation-only query does not wildcard-match every registered key (PR #198 finding 1)", () => {
+    expect(resolveCharacterKey(",", reg)).toBeNull();
+    expect(resolveCharacterKey("...", reg)).toBeNull();
+    expect(resolveCharacterKey(" ; : ", reg)).toBeNull();
+  });
+
+  // PR #198 review, finding 2 (Devin) — collision consistency: two DIFFERENT
+  // registered keys that fold to the same comparison form must refuse
+  // (return null), not silently resolve to whichever Object.keys() lists
+  // first. Neither registered key literally equals the query, so this
+  // exercises the fold-collision path, not the raw-exact-match fast path.
+  it("refuses (returns null) rather than guessing when two DIFFERENT keys fold to the same comparison form (PR #198 finding 2)", () => {
+    const collidingReg: Record<string, CharacterEntry> = {
+      "iron, golem": entry(),
+      "iron golem.": entry(),
+    };
+    expect(resolveCharacterKey("Iron Golem", collidingReg)).toBeNull();
+  });
+
+  it("a single fold-collision match still resolves normally (only ambiguity refuses, not every fuzzy match)", () => {
+    const oneMatch: Record<string, CharacterEntry> = {
+      "iron, golem": entry(),
+      winsome: entry(),
+    };
+    expect(resolveCharacterKey("Iron Golem", oneMatch)).toBe("iron, golem");
+  });
 });
 
 // Issue #132: the sidekick override is a per-character field persisted to disk

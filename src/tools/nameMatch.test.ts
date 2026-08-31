@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeNameForMatch } from "./nameMatch.js";
+import { normalizeNameForMatch, isPunctuationOnlyInput } from "./nameMatch.js";
 
 // Issue #195: strip ",.;:" and collapse whitespace, on top of the existing
 // case fold every by-name lookup already does.
@@ -55,5 +55,59 @@ describe("normalizeNameForMatch", () => {
   it("does NOT strip a hyphen — it joins a compound word, sentence punctuation ends a run", () => {
     expect(normalizeNameForMatch("Road-Worn")).toBe("road-worn");
     expect(normalizeNameForMatch("Bandit Captain the Road-Worn")).toBe("bandit captain the road-worn");
+  });
+
+  // PR #198 review, finding 3 (Devin): stripping punctuation to NOTHING
+  // collapses adjacent words across the stripped separator ("Rigan,Stormcrow"
+  // -> "riganstormcrow"), which can then never match "Rigan Stormcrow" even
+  // though punctuation-insensitive lookup is the whole point. Replacing with
+  // a space (then collapsing whitespace runs, as already happened) fixes
+  // this without disturbing any #195 case: a real space-separated phrase
+  // just gets a redundant space that the collapse removes, and a hyphen
+  // (untouched, see above) is unaffected either way.
+  it("replaces punctuation with a space (not nothing) so adjacent words don't fuse together", () => {
+    expect(normalizeNameForMatch("Rigan,Stormcrow")).toBe("rigan stormcrow");
+    expect(normalizeNameForMatch("Rigan,Stormcrow")).toBe(normalizeNameForMatch("Rigan Stormcrow"));
+  });
+
+  it("still folds the original #195 comma-before-epithet case the same way after the space fix", () => {
+    expect(normalizeNameForMatch("Bandit Captain, The Scarred")).toBe("bandit captain the scarred");
+  });
+});
+
+// PR #198 review, finding 1 (Devin) — the most serious of the three: every
+// by-name matcher touched by #195 feeds a normalized value into
+// String.prototype.includes() as a substring "needle". normalizeNameForMatch(",")
+// is "" (comma -> space -> trimmed away), and "".includes("") plus
+// anyName.includes("") are BOTH true — so an unguarded caller treats a
+// punctuation-only selector as a wildcard that matches every name on the
+// board. isPunctuationOnlyInput is the shared guard every touched matcher
+// (resolveToken, resolveCharacterKey, resolveNamesToTokens, isSidekickToken,
+// update_hp_many's nameMatch, roll_initiative's nameFilter/nameMatches) now
+// checks before treating a normalized value as a real search term.
+describe("isPunctuationOnlyInput", () => {
+  it("is true for input made entirely of the stripped punctuation marks", () => {
+    expect(isPunctuationOnlyInput(",")).toBe(true);
+    expect(isPunctuationOnlyInput("...")).toBe(true);
+    expect(isPunctuationOnlyInput(";;")).toBe(true);
+    expect(isPunctuationOnlyInput(" , . ; : ")).toBe(true); // punctuation + whitespace only
+  });
+
+  it("is false for a genuinely empty/whitespace-only/undefined input — that legitimately means 'no selector', not a wildcard", () => {
+    expect(isPunctuationOnlyInput("")).toBe(false);
+    expect(isPunctuationOnlyInput("   ")).toBe(false);
+    expect(isPunctuationOnlyInput(undefined)).toBe(false);
+    expect(isPunctuationOnlyInput(null)).toBe(false);
+  });
+
+  it("is false for real content, punctuated or not", () => {
+    expect(isPunctuationOnlyInput("Ogre")).toBe(false);
+    expect(isPunctuationOnlyInput("Bandit Captain, the Scarred")).toBe(false);
+    expect(isPunctuationOnlyInput("Road-Worn")).toBe(false); // hyphen alone is real content (not stripped)
+  });
+
+  it("a hyphen-only input is NOT punctuation-only (a hyphen is not in PUNCT_RE)", () => {
+    expect(isPunctuationOnlyInput("-")).toBe(false);
+    expect(normalizeNameForMatch("-")).toBe("-");
   });
 });

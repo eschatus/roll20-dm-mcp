@@ -177,6 +177,19 @@ export async function resolveToken(
   name: string,
   tokenList?: { id: string; name: string }[],
 ): Promise<{ id?: string; candidates?: string[] }> {
+  // PR #198 review (Devin, finding 1): a punctuation-only name ("," / "...")
+  // — or, for this required-string param, an outright empty/whitespace-only
+  // one — normalizes to "". String.prototype.includes("") is true for every
+  // string, so letting this flow into the exact/substring/word-overlap
+  // passes below (or into the registry lookup, which has the same risk)
+  // would silently match or resolve EVERY token on the page. Refuse up
+  // front — returning {} (no id, no candidates) rather than throwing keeps
+  // this consistent with every other "couldn't resolve" outcome resolveToken
+  // already produces: resolveTokenOrThrow turns it into the same loud
+  // "Ambiguous target … No matching token on the page" error, and callers
+  // that loop over many selectors (batch_exec's per-op resolution) report it
+  // as a normal per-op failure instead of aborting the whole batch.
+  if (!normalizeNameForMatch(name)) return {};
   const entry = registry.lookup(name);
   if (entry?.roll20TokenId) return { id: entry.roll20TokenId };
   try {

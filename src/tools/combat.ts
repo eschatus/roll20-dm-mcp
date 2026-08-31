@@ -14,7 +14,7 @@ import {
   tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId, renderRollCard,
   renderMobPlanCard,
 } from "./combatHelpers.js";
-import { normalizeNameForMatch } from "./nameMatch.js";
+import { normalizeNameForMatch, isPunctuationOnlyInput } from "./nameMatch.js";
 
 // ONE canonical condition table — Roll20 status marker tags for D&D 5e
 // conditions, keyed by natural-language / DDB condition name. The marker-tag→
@@ -497,6 +497,14 @@ export function registerCombatTools(server: McpServer): void {
         }
       }
 
+      // PR #198 review (Devin, finding 1): a punctuation-only nameFilter
+      // ("," / "...") normalizes to "" — every token name ".includes("")" —
+      // so an unguarded filter would silently select the WHOLE board. This
+      // is a single top-level param (not a shared per-op batch loop), so
+      // refuse the whole call loudly rather than skip/wildcard.
+      if (nameFilter && isPunctuationOnlyInput(nameFilter)) {
+        throw new Error(`nameFilter "${nameFilter}" is punctuation-only after normalization and would match every token — refusing rather than selecting the whole board.`);
+      }
       const TOKEN_LAYERS = new Set(["tokens", "objects"]);
       const needle = nameFilter ? normalizeNameForMatch(nameFilter) : undefined;
       const entryList = entries ?? [];
@@ -517,6 +525,19 @@ export function registerCombatTools(server: McpServer): void {
       const allTokenIds = new Set(tokens.map((t) => t.id));
       const selectors = [...(names ?? []), ...entryList.map((e) => e.match).filter((m) => !allTokenIds.has(m))]
         .map((n) => n.toLowerCase().trim()).filter(Boolean);
+      // PR #198 review (Devin, finding 1): same wildcard risk as nameFilter
+      // above, for names[] / entries[].match — a punctuation-only selector
+      // folds to "" and nameMatches("", tokenName) is true for EVERY token
+      // via the empty-substring test. roll_initiative is a single top-level
+      // call (not batch_exec's per-op loop), so refuse the whole call loudly
+      // and name the offending selector, rather than silently drop just that
+      // one selector (which would look like it worked while quietly rolling
+      // initiative for nobody the DM asked for, or — worse — for everyone).
+      for (const w of selectors) {
+        if (isPunctuationOnlyInput(w)) {
+          throw new Error(`Selector "${w}" is punctuation-only after normalization and would match every token — refusing rather than selecting the whole board.`);
+        }
+      }
       // Selection is active whenever names/entries were given — even if every
       // selector is an id-form match (selectors then empty, entryIds carries it).
       const hasSelection = Boolean(names?.length || entryList.length);
@@ -879,6 +900,14 @@ export function registerCombatTools(server: McpServer): void {
       // bidirectional-substring logic.
       let targets: AoeToken[] = [];
       if (nameMatch) {
+        // PR #198 review (Devin, finding 1) — the headline bug: a
+        // punctuation-only nameMatch ("," / "...") normalizes to "", and
+        // every token name ".includes("")" — unguarded, this would apply
+        // damage/healing to the WHOLE BOARD in one call. nameMatch is a
+        // single top-level param, so refuse the whole call loudly.
+        if (isPunctuationOnlyInput(nameMatch)) {
+          throw new Error(`nameMatch "${nameMatch}" is punctuation-only after normalization and would match every token — refusing rather than applying ${damage !== undefined ? "damage" : "healing"} to the whole board.`);
+        }
         const m = normalizeNameForMatch(nameMatch);
         targets = tokens.filter((t) => normalizeNameForMatch(t.name).includes(m));
       }
