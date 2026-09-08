@@ -105,6 +105,14 @@ moved to beyond-mcp with the code.)
   #162, #164). Zone metadata therefore lives in **`state.GM_AI_Bridge.zones`**, not on the path
   object; zone tint is baked into the fill color instead of an opacity prop. Anything keyed off
   path-object metadata is dead by construction — go through the zones state.
+- **Two sandboxes now: v1.0 and v1.5, and v1.5 became the DEFAULT on 2026-09-02** for any campaign
+  that never explicitly picked one. Per-campaign, like a relay deploy. `ping` echoes
+  `Campaign().sandboxVersion`/`nodeVersion`/`sheetName` plus a `beacon` flag (relay ≥ 2.6.0) and
+  `transport_status` shows them under `sandbox`. The fork that bites: a **Beacon** ("advanced")
+  character sheet keeps data in *computed properties*, not `attribute` objects — `findObjs` can't
+  see it and `createObj("attribute")` can't reach it, so an attribute write there is created,
+  unread, and looks successful. `setCharacterAttributes` now refuses it and returns a reason;
+  `setComputed`/`setSheetItem` are the real carriers and aren't wired yet (#205).
 - **The Mod sandbox cannot import TS.** Tables that must agree are kept in **hand-synced copies** —
   most importantly the condition→marker map lives in three places (`src/tools/combat.ts` array,
   `src/bridge/markers.ts` Record, `mod-scripts/ai-relay.js`) and they are **not identical**
@@ -227,6 +235,13 @@ registry override (`sidekick: true`, `src/registry/characters.ts`) is needed to 
   (npcOnly / `entries[].hp` seeding) all read the same `sidekickNames` set
   (`registry.listSidekickNames()`) so a sidekick routes as an NPC everywhere HP/death routing is
   decided. See issue #132.
+
+**Auras (emanations):** `set_token_aura` is the one-call primitive — radius in feet, `0` clears,
+slot 1 or 2, player-visible by default. Shape goes to `aura{n}_options` (the authoritative field;
+Roll20 keeps the legacy `aura{n}_square` boolean in sync with it, so never write both). Roll20
+documents `"circle"`/`"square"`; the 2026-09-01 release added hex and outline-only variants whose
+property strings Roll20 hasn't published, so the schema takes a free string rather than a guessed
+enum. Emanations that move with a creature use an aura; fixed areas use `create_zone`.
 
 **Conditions/markers:** `set_token_marker` → `toggleCondition` → three-tier `resolveMarkerForState`
 (CONDITION → PSEUDO → hashed ad-hoc). Custom campaign marker set, IDs 4444311–4444352; default

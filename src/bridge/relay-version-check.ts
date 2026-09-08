@@ -7,14 +7,48 @@ export interface RelayVersionMismatch { expected: string; found: string }
 let _mismatch: RelayVersionMismatch | null = null;
 let _probeStarted = false;
 
+// Which Roll20 Mod Script Sandbox the campaign runs on, as reported by ACTIONS["ping"]. Roll20
+// flipped the default from v1.0 to v1.5 on 2026-09-02 for any game that never explicitly picked
+// one, and the two are a behavioral fork (Beacon character sheets above all). Like the relay
+// version, this is PER-CAMPAIGN drift a DM cannot see from inside the gem, so transport_status
+// carries it. `null` while unprobed; `sandbox: null` inside means the deployed relay predates the
+// echo (relay < 2.6.0) — an old relay, not an old sandbox.
+export interface RelaySandboxInfo {
+  sandbox: string | null;
+  node: string | null;
+  sheetName: string | null;
+  beacon: boolean;
+}
+let _sandbox: RelaySandboxInfo | null = null;
+
 export function getRelayVersionMismatch(): RelayVersionMismatch | null {
   return _mismatch;
+}
+
+export function getRelaySandboxInfo(): RelaySandboxInfo | null {
+  return _sandbox;
 }
 
 // Test-only reset (same shape as transport-health.ts's resetHealth/_resetForTest).
 export function _resetRelayVersionCheckForTest(): void {
   _mismatch = null;
+  _sandbox = null;
   _probeStarted = false;
+}
+
+// Records what the relay said about its sandbox. Purely informational — unlike the relay-version
+// handshake there is nothing to be "out of date" against, so this never warns; it exists so a
+// diagnosis has the number instead of a guess.
+export function reportRelaySandbox(res: {
+  sandbox?: string | null; node?: string | null; sheetName?: string | null; beacon?: boolean;
+} | null | undefined): void {
+  if (!res) return;
+  _sandbox = {
+    sandbox: res.sandbox ?? null,
+    node: res.node ?? null,
+    sheetName: res.sheetName ?? null,
+    beacon: res.beacon === true,
+  };
 }
 
 // Compares a version the relay actually reported (from ACTIONS["ping"]'s `version` field) against
@@ -49,8 +83,11 @@ export function ensureRelayVersionChecked(): void {
   _probeStarted = true;
   import("./roll20-rt.js")
     .then(({ rtRelayCommand }) =>
-      rtRelayCommand<{ pong?: boolean; version?: string }>({ action: "ping" }, { probe: true, timeoutOverrideMs: 6_000 }),
+      rtRelayCommand<{
+        pong?: boolean; version?: string;
+        sandbox?: string | null; node?: string | null; sheetName?: string | null; beacon?: boolean;
+      }>({ action: "ping" }, { probe: true, timeoutOverrideMs: 6_000 }),
     )
-    .then((res) => reportRelayVersion(res?.version))
+    .then((res) => { reportRelayVersion(res?.version); reportRelaySandbox(res); })
     .catch(() => { /* transport failure — not this check's concern, see comment above */ });
 }

@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.5.0";
+var AI_RELAY_VERSION = "2.6.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -51,6 +51,34 @@ function esc(s) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+// Which Mod Script Sandbox this campaign is running, and what it implies for character data.
+//
+// Roll20 flipped the DEFAULT sandbox from v1.0 to v1.5 on 2026-09-02 for every game that had never
+// explicitly picked one, and the two are a documented behavioral fork (Beacon sheets, toAbove/
+// toBelow, currentSide, the spawnFxBetweenPoints angle fix). The version is PER-CAMPAIGN, exactly
+// like a relay deploy is, so the TS side has to be able to see which one it is talking to —
+// ACTIONS["ping"] echoes this alongside AI_RELAY_VERSION.
+//
+// These four live DIRECTLY on the object Campaign() returns, not behind .get(). A sandbox that
+// predates them yields undefined, which is why nothing here probes or throws.
+function sheetContext() {
+  var c = Campaign();
+  var summary = c.computedSummary;
+  var computed = [];
+  if (Array.isArray(summary)) computed = summary;
+  else if (summary && typeof summary === "object") computed = Object.keys(summary);
+  return {
+    sandbox: c.sandboxVersion || null,
+    node: c.nodeVersion || null,
+    sheetName: c.sheetName || null,
+    // A Beacon ("advanced") character sheet keeps its data in computed properties rather than
+    // `attribute` objects, so the attribute-object read/write path in this script cannot see or
+    // reach any of it. setCharacterAttributes uses this to refuse a write it cannot land.
+    beacon: computed.length > 0,
+    computed: computed,
+  };
 }
 
 // True iff the message sender is a GM. Uses playerIsGM when present (it is in the
@@ -142,8 +170,11 @@ function tokenRich(t) {
     ["aura1_radius",     t.get("aura1_radius")],
     ["aura1_color",      t.get("aura1_color")],
     ["aura1_square",     t.get("aura1_square")],
+    ["aura1_options",    t.get("aura1_options")],
     ["aura2_radius",     t.get("aura2_radius")],
     ["aura2_color",      t.get("aura2_color")],
+    ["aura2_square",     t.get("aura2_square")],
+    ["aura2_options",    t.get("aura2_options")],
     ["light_radius",     t.get("light_radius")],
     ["light_dimradius",  t.get("light_dimradius")],
     ["tint_color",       t.get("tint_color")],
@@ -156,8 +187,8 @@ function tokenRich(t) {
     var v = p[1];
     if (v === null || v === undefined || v === "" || v === false) return;
     // Skip aura colors/shape when no aura radius is set
-    if ((p[0] === "aura1_color" || p[0] === "aura1_square") && (!aura1r || aura1r === "")) return;
-    if ((p[0] === "aura2_color" || p[0] === "aura2_square") && (!aura2r || aura2r === "")) return;
+    if ((p[0] === "aura1_color" || p[0] === "aura1_square" || p[0] === "aura1_options") && (!aura1r || aura1r === "")) return;
+    if ((p[0] === "aura2_color" || p[0] === "aura2_square" || p[0] === "aura2_options") && (!aura2r || aura2r === "")) return;
     // Skip transparent tint and zero rotation (defaults, carry no information)
     if (p[0] === "tint_color" && v === "transparent") return;
     if (p[0] === "rotation" && v === 0) return;
@@ -355,8 +386,8 @@ function setDefaultTokenForChar(t, args) {
     "bar1_link", "bar2_link", "bar3_link",
     "bar1_value", "bar1_max", "bar2_value", "bar2_max", "bar3_value", "bar3_max",
     "width", "height", "rotation", "statusmarkers", "tint_color",
-    "aura1_radius", "aura1_color", "aura1_square", "showplayers_aura1",
-    "aura2_radius", "aura2_color", "aura2_square", "showplayers_aura2",
+    "aura1_radius", "aura1_color", "aura1_square", "aura1_options", "showplayers_aura1",
+    "aura2_radius", "aura2_color", "aura2_square", "aura2_options", "showplayers_aura2",
     "showname", "showplayers_name", "showplayers_bar1", "showplayers_bar2", "showplayers_bar3",
     "light_radius", "light_dimradius", "light_otherplayers", "light_hassight",
     "light_angle", "light_losangle", "sides", "currentside",
@@ -1992,6 +2023,9 @@ ACTIONS["setCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) 
         let charId = args.charId;
         let attributes = args.attributes || {};
         let updated = [], created = [], failed = [];
+        // Reasons keyed by attribute name, for anything that lands in `failed`.
+        let reasons = {};
+        let ctx = sheetContext();
         Object.keys(attributes).forEach(function(attrName) {
           let val = attributes[attrName];
           let isObj = typeof val === "object" && val !== null;
@@ -2004,15 +2038,30 @@ ACTIONS["setCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) 
             if (maxVal !== undefined) updates.max = maxVal;
             setSafe(existing[0], updates);
             updated.push(attrName);
+          } else if (ctx.computed.indexOf(attrName) !== -1) {
+            // Beacon sheet (Mod Script Sandbox v1.5): this name is a COMPUTED property, not an
+            // `attribute` object. createObj("attribute") would return a perfectly good object and
+            // this action would report it under `created` — but the sheet never reads that object,
+            // so the write silently does nothing. Reporting success for a write we did not land is
+            // the one outcome worse than failing, so fail loudly and name the carrier that would
+            // work. setComputed/setSheetItem are the real ones; both are async, so wiring them is
+            // issue #205 rather than a change smuggled in here.
+            failed.push(attrName);
+            reasons[attrName] = "Beacon computed property (sandbox " + (ctx.sandbox || "?") +
+              ", sheet " + (ctx.sheetName || "?") + ") — an attribute object cannot reach it; " +
+              "needs setComputed/setSheetItem";
           } else {
             let createArgs = { characterid: charId, name: attrName };
             if (currentVal !== undefined) createArgs.current = currentVal;
             if (maxVal !== undefined) createArgs.max = maxVal;
             let obj = createObj("attribute", createArgs);
-            if (obj) { created.push(attrName); } else { failed.push(attrName); }
+            if (obj) { created.push(attrName); } else { failed.push(attrName); reasons[attrName] = "createObj('attribute') returned undefined"; }
           }
         });
-        writeResult(nonce, { updated: updated, created: created, failed: failed });
+        writeResult(nonce, {
+          updated: updated, created: created, failed: failed, reasons: reasons,
+          sheet: { sandbox: ctx.sandbox, sheetName: ctx.sheetName, beacon: ctx.beacon },
+        });
         return;
       }
       };
@@ -2281,7 +2330,18 @@ ACTIONS["batchExec"] = function (args, msg, nonce, senderPlayerId) {
       };
 ACTIONS["ping"] = function (args, msg, nonce, senderPlayerId) {
         {
-        writeResult(nonce, { pong: true, version: AI_RELAY_VERSION });
+        // Two independent version handshakes ride on this one cheap action: `version` is THIS
+        // script's (hand-synced with src/bridge/relay-version.ts), and `sandbox` is the Roll20
+        // sandbox the campaign runs on — see sheetContext(). Both are per-campaign drift.
+        let ctx = sheetContext();
+        writeResult(nonce, {
+          pong: true,
+          version: AI_RELAY_VERSION,
+          sandbox: ctx.sandbox,
+          node: ctx.node,
+          sheetName: ctx.sheetName,
+          beacon: ctx.beacon,
+        });
         return;
       }
       };
