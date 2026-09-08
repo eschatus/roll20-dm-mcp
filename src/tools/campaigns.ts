@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as campaigns from "../registry/campaigns.js";
+import { resetRelayProbeForCampaignSwitch } from "../bridge/relay-version-check.js";
 
 export function registerCampaignTools(server: McpServer): void {
   server.tool(
@@ -66,6 +67,10 @@ export function registerCampaignTools(server: McpServer): void {
     },
     async ({ slugOrName }) => {
       const entry = campaigns.setActiveCampaign(slugOrName);
+      // The relay version and the Mod Script Sandbox are BOTH per-campaign. Drop what we learned
+      // about the campaign we just left so the next command re-probes, instead of transport_status
+      // reporting the previous campaign's numbers as this one's.
+      resetRelayProbeForCampaignSwitch();
       return {
         content: [
           {

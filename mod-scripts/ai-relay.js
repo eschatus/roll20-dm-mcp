@@ -66,9 +66,21 @@ function esc(s) {
 function sheetContext() {
   var c = Campaign();
   var summary = c.computedSummary;
+  // Roll20 documents computedSummary only as "available Beacon computed property names" and does
+  // NOT specify the element shape, so handle the plausible ones. Getting this wrong is not
+  // cosmetic: a list that matches nothing would put the silent false success back while cheerfully
+  // reporting beacon:true, so an unreadable-but-present summary is tracked separately below.
+  var raw = Array.isArray(summary) ? summary
+    : (summary && typeof summary === "object") ? Object.keys(summary)
+    : [];
   var computed = [];
-  if (Array.isArray(summary)) computed = summary;
-  else if (summary && typeof summary === "object") computed = Object.keys(summary);
+  raw.forEach(function (entry) {
+    if (typeof entry === "string") { computed.push(entry); return; }
+    if (entry && typeof entry === "object") {
+      var n = entry.name || entry.property || entry.key;
+      if (typeof n === "string") computed.push(n);
+    }
+  });
   return {
     sandbox: c.sandboxVersion || null,
     node: c.nodeVersion || null,
@@ -76,8 +88,11 @@ function sheetContext() {
     // A Beacon ("advanced") character sheet keeps its data in computed properties rather than
     // `attribute` objects, so the attribute-object read/write path in this script cannot see or
     // reach any of it. setCharacterAttributes uses this to refuse a write it cannot land.
-    beacon: computed.length > 0,
+    beacon: raw.length > 0,
     computed: computed,
+    // A Beacon sheet whose property names we could not extract: we know attribute writes are
+    // unreliable here but not which ones, so every create is refused rather than guessed at.
+    computedUnreadable: raw.length > 0 && computed.length === 0,
   };
 }
 
@@ -2031,6 +2046,28 @@ ACTIONS["setCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) 
           let isObj = typeof val === "object" && val !== null;
           let currentVal = isObj ? val.current : val;
           let maxVal = isObj ? val.max : undefined;
+          // The Beacon check comes FIRST, before the exists/create split. It deliberately covers
+          // the update branch too: on a Beacon sheet the sheet does not read `attribute` objects
+          // for a computed property, so writing one that already exists is just as much of a
+          // no-op as creating one. Campaigns that ran relay <= 2.5.0 against a Beacon sheet are
+          // exactly the ones carrying orphan attributes now, and a guard that only covered the
+          // create branch would be inert for every one of them.
+          if (ctx.computed.indexOf(attrName) !== -1) {
+            failed.push(attrName);
+            reasons[attrName] = "Beacon computed property (sandbox " + (ctx.sandbox || "?") +
+              ", sheet " + (ctx.sheetName || "?") + ") — the sheet does not read `attribute` " +
+              "objects for this name, so neither creating nor updating one reaches it; " +
+              "needs setComputed/setSheetItem";
+            return;
+          }
+          if (ctx.computedUnreadable) {
+            failed.push(attrName);
+            reasons[attrName] = "Beacon sheet (sandbox " + (ctx.sandbox || "?") + ", sheet " +
+              (ctx.sheetName || "?") + ") whose computed-property names could not be read from " +
+              "Campaign().computedSummary — cannot tell whether an attribute write would land, " +
+              "so refusing rather than reporting a success that may be a no-op";
+            return;
+          }
           let existing = findObjs({ _type: "attribute", _characterid: charId, name: attrName });
           if (existing.length > 0) {
             let updates = {};
@@ -2038,18 +2075,6 @@ ACTIONS["setCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) 
             if (maxVal !== undefined) updates.max = maxVal;
             setSafe(existing[0], updates);
             updated.push(attrName);
-          } else if (ctx.computed.indexOf(attrName) !== -1) {
-            // Beacon sheet (Mod Script Sandbox v1.5): this name is a COMPUTED property, not an
-            // `attribute` object. createObj("attribute") would return a perfectly good object and
-            // this action would report it under `created` — but the sheet never reads that object,
-            // so the write silently does nothing. Reporting success for a write we did not land is
-            // the one outcome worse than failing, so fail loudly and name the carrier that would
-            // work. setComputed/setSheetItem are the real ones; both are async, so wiring them is
-            // issue #205 rather than a change smuggled in here.
-            failed.push(attrName);
-            reasons[attrName] = "Beacon computed property (sandbox " + (ctx.sandbox || "?") +
-              ", sheet " + (ctx.sheetName || "?") + ") — an attribute object cannot reach it; " +
-              "needs setComputed/setSheetItem";
           } else {
             let createArgs = { characterid: charId, name: attrName };
             if (currentVal !== undefined) createArgs.current = currentVal;

@@ -94,7 +94,7 @@ live campaign via browser automation is not a capability an MCP server should ha
   `[GM_AI_Bridge] Relay script loaded (vX.Y.Z)` with the expected version, or that a `ping` returns it.
   A saved-but-crashed script is indistinguishable from a working one if you only check the save.
 - The `AI_RELAY_VERSION` / `EXPECTED_RELAY_VERSION` handshake surfaces a stale deploy through
-  `transport_status` (warns once, never throws). Current relay: **2.5.0**.
+  `transport_status` (warns once, never throws). Current relay: **2.6.0**.
 
 ---
 

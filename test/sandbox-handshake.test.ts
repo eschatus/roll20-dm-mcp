@@ -20,6 +20,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { describe, it, expect, beforeEach } from "vitest";
 import { Roll20Emulator } from "./roll20-emulator.js";
+import {
+  reportRelaySandbox, getRelaySandboxInfo, resetRelayProbeForCampaignSwitch,
+  _resetRelayVersionCheckForTest,
+} from "../src/bridge/relay-version-check.js";
 
 let emu: Roll20Emulator;
 let charId: string;
@@ -104,15 +108,45 @@ describe("setCharacterAttributes — Beacon computed properties are not silently
     expect(r.failed).toEqual([]);
   });
 
-  it("still updates an existing attribute even when its name is a computed property", () => {
-    // If the attribute object genuinely exists, writing it is the right call — the guard
-    // only covers the create branch, where the object would be new and unread.
+  it("refuses even when an attribute object with that name ALREADY EXISTS", () => {
+    // The orphan-attribute case. A campaign that ran relay <= 2.5.0 against a Beacon sheet is
+    // carrying attribute objects that the sheet never reads; taking the update branch for those
+    // would report `updated` for a write that still lands nowhere, leaving the guard inert for
+    // precisely the campaigns that hit the original bug.
     asSandbox(emu, { sandboxVersion: "1.5", computedSummary: ["strength"] });
-    const r = emu.relay<{ updated: string[]; failed: string[] }>({
+    const r = emu.relay<{ updated: string[]; failed: string[]; reasons: Record<string, string> }>({
       action: "setCharacterAttributes", charId, attributes: { strength: 18 },
     });
-    expect(r.updated).toEqual(["strength"]);
-    expect(r.failed).toEqual([]);
+    expect(r.updated).toEqual([]);
+    expect(r.failed).toEqual(["strength"]);
+    expect(r.reasons.strength).toMatch(/neither creating nor updating/);
+
+    // And the stale value is left exactly as it was, not half-written.
+    const attrs = emu.relay<Record<string, unknown>>({ action: "getCharacterAttributes", charId });
+    expect(String(attrs.strength)).toBe("14");
+  });
+
+  it("extracts names from a computedSummary of descriptor objects", () => {
+    // Roll20 documents computedSummary as "available Beacon computed property names" without
+    // pinning the element shape, so the obvious object forms have to resolve to names too.
+    asSandbox(emu, { sandboxVersion: "1.5", computedSummary: [{ name: "ac" }, { name: "hp" }] });
+    const r = emu.relay<{ failed: string[] }>({
+      action: "setCharacterAttributes", charId, attributes: { ac: 17 },
+    });
+    expect(r.failed).toEqual(["ac"]);
+  });
+
+  it("refuses every write when a Beacon summary is present but its names are unreadable", () => {
+    // The dangerous middle state: we can tell it is a Beacon sheet but not which properties are
+    // computed. Guessing would put the silent false success back while reporting beacon:true, so
+    // the write fails and says exactly why.
+    asSandbox(emu, { sandboxVersion: "1.5", computedSummary: [42, true] });
+    const r = emu.relay<{ created: string[]; failed: string[]; reasons: Record<string, string> }>({
+      action: "setCharacterAttributes", charId, attributes: { npc_senses: "darkvision 60 ft." },
+    });
+    expect(r.created).toEqual([]);
+    expect(r.failed).toEqual(["npc_senses"]);
+    expect(r.reasons.npc_senses).toMatch(/could not be read/);
   });
 
   it("is inert on a v1.0 sandbox — every write takes the attribute path", () => {
@@ -122,6 +156,27 @@ describe("setCharacterAttributes — Beacon computed properties are not silently
     expect(r.created).toEqual(["ac"]);
     expect(r.failed).toEqual([]);
     expect(r.sheet.beacon).toBe(false);
+  });
+});
+
+describe("sandbox info is per-campaign, not per-process", () => {
+  beforeEach(() => { _resetRelayVersionCheckForTest(); });
+
+  it("is dropped on a campaign switch so the next probe re-reads it", () => {
+    reportRelaySandbox({ sandbox: "1.5", node: "v20.11.1", sheetName: "Beacon 5E", beacon: true });
+    expect(getRelaySandboxInfo()).toMatchObject({ sandbox: "1.5", beacon: true });
+
+    // Without this, transport_status keeps reporting the campaign we just left.
+    resetRelayProbeForCampaignSwitch();
+    expect(getRelaySandboxInfo()).toBeNull();
+  });
+
+  it("reports beacon as null — not false — when the relay is too old to say", () => {
+    // A relay below 2.6.0 doesn't send the field. Reporting a confident "no Beacon sheet" for a
+    // relay that was never asked would be a worse answer than admitting we don't know.
+    reportRelaySandbox({ version: "2.5.0" } as never);
+    expect(getRelaySandboxInfo()?.beacon).toBeNull();
+    expect(getRelaySandboxInfo()?.sandbox).toBeNull();
   });
 });
 

@@ -57,7 +57,7 @@ applies damage (PC heals/HP route through relay state automatically). Use the ma
 below only for exploration or corner cases `resolve_aoe` doesn't cover:
 
 `find_tokens_in_range centerTokenId=<caster> radiusFeet=<r> layerFilter=tokens` →
-`set_token_props` aura on caster (emanations) **or** `create_zone` (fixed areas) →
+`set_token_aura` on the caster (emanations) **or** `create_zone` (fixed areas) →
 `get_recent_chat` for save results → apply per result. Zone colors: see dm-rules.md.
 
 ## End of combat — clean up
@@ -65,7 +65,7 @@ below only for exploration or corner cases `resolve_aoe` doesn't cover:
 1. `set_turn_hook enabled=false`
 2. `clear_turn_order`
 3. `list_zones` → `clear_zone` each active zone
-4. Clear auras: `set_token_props aura1_radius=0` on any tokens that had them
+4. Clear auras: `set_token_aura radiusFeet=0` on any tokens that had them
 5. **`clear_mob_plans`** — stored plans persist in relay state until wiped, so a leftover one
    resurfaces as a whisper part-way through the *next* fight.
 

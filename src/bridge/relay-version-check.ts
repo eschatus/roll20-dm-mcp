@@ -17,7 +17,7 @@ export interface RelaySandboxInfo {
   sandbox: string | null;
   node: string | null;
   sheetName: string | null;
-  beacon: boolean;
+  beacon: boolean | null;
 }
 let _sandbox: RelaySandboxInfo | null = null;
 
@@ -27,6 +27,18 @@ export function getRelayVersionMismatch(): RelayVersionMismatch | null {
 
 export function getRelaySandboxInfo(): RelaySandboxInfo | null {
   return _sandbox;
+}
+
+// Both handshakes this module holds — the relay version and the sandbox info — describe ONE
+// campaign, and both are latched for the life of the process behind _probeStarted. Switching the
+// active campaign therefore has to drop them, or transport_status keeps reporting the campaign we
+// just left: its relay version, its sandbox, its Beacon flag. (The relay-version half had this
+// staleness before the sandbox fields existed; it is fixed here for both.) The next relayCommand
+// re-arms the probe via ensureRelayVersionChecked.
+export function resetRelayProbeForCampaignSwitch(): void {
+  _mismatch = null;
+  _sandbox = null;
+  _probeStarted = false;
 }
 
 // Test-only reset (same shape as transport-health.ts's resetHealth/_resetForTest).
@@ -47,7 +59,10 @@ export function reportRelaySandbox(res: {
     sandbox: res.sandbox ?? null,
     node: res.node ?? null,
     sheetName: res.sheetName ?? null,
-    beacon: res.beacon === true,
+    // null, not false: a relay older than 2.6.0 doesn't send this field at all, and reporting a
+    // confident "no Beacon sheet here" for a relay that was never asked is worse than saying
+    // nothing. `sandbox: null` has the same meaning and the doc says so.
+    beacon: typeof res.beacon === "boolean" ? res.beacon : null,
   };
 }
 

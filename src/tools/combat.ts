@@ -1089,21 +1089,29 @@ export function registerCombatTools(server: McpServer): void {
       }
       const props: Record<string, unknown> = { [`aura${slot}_radius`]: radiusFeet };
       // Clearing is radius-only on purpose: colour and shape survive, so the next cast of the same
-      // effect on the same creature comes back looking the way the DM set it up. This matches the
-      // concentration teardown in break_concentration, which also zeroes the radius and nothing else.
+      // effect on the same creature comes back looking the way the DM set it up.
+      // NB break_concentration tears down aura slot 1 ONLY, so a concentration effect parked on
+      // slot 2 currently outlives its own teardown — issue #210.
       if (radiusFeet > 0) {
         if (color) props[`aura${slot}_color`] = color;
-        // aura{n}_options is the authoritative shape field — Roll20 keeps the legacy
-        // aura{n}_square boolean in sync with it, and options can express shapes the boolean
-        // cannot. Writing both would make two sources of truth for one property.
-        if (shape) props[`aura${slot}_options`] = shape;
+        if (shape) {
+          // aura{n}_options is the authoritative shape field and Roll20 documents the legacy
+          // aura{n}_square boolean as "kept in sync" with it. That sync is Roll20's claim, not
+          // something verified here, and a graphic silently DROPS a property it doesn't recognise
+          // (the #162/#164 class) — so for the two shapes the boolean can express, write it too.
+          // They mean the same thing, so this is belt-and-braces, not two sources of truth. Shapes
+          // the boolean cannot express (hex, the border-only variants) go through options alone.
+          props[`aura${slot}_options`] = shape;
+          if (shape === "square") props[`aura${slot}_square`] = true;
+          else if (shape === "circle") props[`aura${slot}_square`] = false;
+        }
         props[`showplayers_aura${slot}`] = visibleToPlayers;
       }
       await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props });
       const who = characterName ?? resolvedTokenId;
       return text(
         radiusFeet > 0
-          ? `Aura ${slot} on ${who}: ${radiusFeet} ft${shape ? `, ${shape}` : ""}${color ? `, ${color}` : ""}, ${visibleToPlayers ? "visible to players" : "GM-only"}. It moves with the token — clear it with radiusFeet 0 when the effect ends.`
+          ? `Aura ${slot} on ${who}: ${radiusFeet} ft${shape ? `, ${shape}` : ""}${color ? `, ${color}` : ""}, ${visibleToPlayers ? "visible to players" : "GM-only"}. It moves with the token — clear it with radiusFeet 0 when the effect ends.${slot === 2 ? " NOTE: break_concentration only tears down slot 1 (#210), so a concentration effect on slot 2 must be cleared by hand." : ""}`
           : `Aura ${slot} cleared on ${who}.`
       );
     }
