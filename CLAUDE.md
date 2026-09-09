@@ -151,8 +151,15 @@ moved to beyond-mcp with the code.)
   `name`/`description`/`npc_options-flag: 0`. Legendary actions live in a parallel
   `repeating_npcaction-l_` section with the same schema. **Never read a field containing literal
   `@{`/`[[` (e.g. `rollbase`) back through `getCharacterAttributes`/`read_character_attributes`**
-  — Roll20's chat pipeline live-evaluates it on echo and errors (the writeResult escape fix keeps
-  this from crashing the whole sandbox, but the read still fails). Verify writes instead by
+  — Roll20's chat pipeline live-evaluates it on echo. **The old writeResult entity-escape did NOT
+  prevent this**, whatever this file used to say: Roll20 decodes `&#91;` back to `[` before it
+  scans for inline rolls, so the escape was undone in transit and one such read disabled the whole
+  sandbox — seen live on relay 2.6.2 with every escape in place, three separate times. Relay
+  ≥ 2.7.0 percent-encodes the ENTIRE payload under an `AIBRIDGE_RESULT_ENC:` marker instead, which
+  is structurally incapable of carrying `[[`/`@{`/`%{`/`&{` (`encodeURIComponent` turns `{` into
+  `%7B`, `[` into `%5B`, `&` into `%26`); `parseAibridge` decodes it and still accepts the legacy
+  marker for a campaign that hasn't been re-pasted. Enumerating Roll20's trigger syntax was the
+  losing move — that list never included `&{`. Verify writes instead by
   reading `Campaign.characters.get(id).attribs` directly in the browser, which bypasses the
   chat-echo path entirely — see `scripts/dump-character-attrs.ts` and
   `scripts/find-character-by-name.ts`.
