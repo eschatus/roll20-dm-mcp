@@ -203,7 +203,7 @@ The Gem is an Electron overlay that floats on your screen. It shows a glowing fa
 
 What matters from *this* side of the relationship:
 
-- The Gem pins this repository as a dependency by tag (currently `#v2.0.3`) and builds it in the clone, so you do not need a separate checkout of roll20-dm-mcp for the Gem to run. Changes here reach the Gem only when it re-pins.
+- The Gem pins this repository as a dependency by tag (currently `#v2.0.4`) and builds it in the clone, so you do not need a separate checkout of roll20-dm-mcp for the Gem to run. Changes here reach the Gem only when it re-pins.
 - It bundles `skills/dm-rules.md` and `mod-scripts/ai-relay.js` from this repo into its installer.
 - It furnishes the two credential files from step 5, and it is the only supported harvester.
 - It consumes the `/events` SSE stream, and it owns the two responsibilities this server gave up: deciding tactical plans (storing them via `set_mob_plan`) and answering player `!`-commands (off `chat-message` events).
