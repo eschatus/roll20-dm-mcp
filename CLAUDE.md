@@ -113,6 +113,20 @@ moved to beyond-mcp with the code.)
   see it and `createObj("attribute")` can't reach it, so an attribute write there is created,
   unread, and looks successful. `setCharacterAttributes` now refuses it and returns a reason;
   `setComputed`/`setSheetItem` are the real carriers and aren't wired yet (#205).
+- **Nothing may reach `sendChat` carrying a live chat trigger.** Roll20 live-evaluates `[[`
+  (inline roll), `@{` (attribute ref) and `%{` (ability/macro call) in EVERY outgoing message; a
+  malformed one throws inside Roll20's own chat pipeline — asynchronously, uncatchable — and
+  **disables the whole Mod sandbox**. `writeResult` neutralized these from the start and nothing
+  else did, so the `!dm` handler echoed player-typed text straight back: `!dm [[grapple the ogre`
+  took the relay down for a live table, as would a player merely *named* `[[grim`. Two helpers now
+  own this: **`chatSafe(s)`** entity-encodes the three triggers for anything rendered as text
+  (idempotent, safe to layer), and **`chatSafeTarget(name)`** *strips* them from a whisper's
+  routing address, where an entity would misroute the whisper AND still fire. `esc()` composes
+  `chatSafe` — HTML-escape first, then neutralize, or the `&` in `&#64;` gets double-escaped —
+  so every `esc()` call site is covered. `esc()` is NOT idempotent; apply it once. Deliberate
+  exceptions, both server-composed and GM-only: `postChat` (must emit real roll-template syntax)
+  and the `[[1d20…]]` the initiative builders send — there, escape the *token name*, never the
+  whole message. Pinned by `test/chat-trigger-safety.test.ts`.
 - **The Mod sandbox cannot import TS.** Tables that must agree are kept in **hand-synced copies** —
   most importantly the condition→marker map lives in three places (`src/tools/combat.ts` array,
   `src/bridge/markers.ts` Record, `mod-scripts/ai-relay.js`) and they are **not identical**

@@ -86,10 +86,10 @@ The Mod script is the server's hands inside Roll20. It receives commands from th
 **Verify the load, not the save.** A saved script can still fail to start. Check the API Output Console for:
 
 ```
-[GM_AI_Bridge] Relay script loaded (v2.6.0)
+[GM_AI_Bridge] Relay script loaded (v2.6.1)
 ```
 
-The current version is **2.6.0**, and it must match `EXPECTED_RELAY_VERSION` in `src/bridge/relay-version.ts`. A mismatch warns once and shows up in `transport_status`; it never throws, so a stale deploy fails in confusing ways rather than loudly. Check the banner.
+The current version is **2.6.1**, and it must match `EXPECTED_RELAY_VERSION` in `src/bridge/relay-version.ts`. A mismatch warns once and shows up in `transport_status`; it never throws, so a stale deploy fails in confusing ways rather than loudly. Check the banner.
 
 **Deploys are per-campaign.** Each Roll20 game carries its own copy of the script, so one campaign can be running an older relay than another. Re-paste after every update to `ai-relay.js`, in every campaign you run.
 

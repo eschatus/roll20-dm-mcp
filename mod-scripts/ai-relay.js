@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.6.0";
+var AI_RELAY_VERSION = "2.6.1";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -28,10 +28,7 @@ function writeResult(nonce, data, error) {
   // HTML-entity-encode just the three trigger sequences (never plain "[" — that's normal JSON
   // array syntax) so they survive as inert text; Playwright's textContent decode on the read side
   // turns them back into literal "@{"/"%{"/"[[" with no unescaping needed on our end.
-  const safePayload = payload
-    .replace(/@\{/g, "&#64;{")
-    .replace(/%\{/g, "&#37;{")
-    .replace(/\[\[/g, "&#91;&#91;");
+  const safePayload = chatSafe(payload);
   // noarchive: won't appear in the persistent chat log.
   // display:none: hides any transient flash in the current session.
   // Playwright still reads textContent from hidden DOM elements.
@@ -42,15 +39,52 @@ function writeResult(nonce, data, error) {
   );
 }
 
-// HTML-escape any player-derived string before interpolating it into sendChat HTML.
-// Prevents player-authored who/content/intent text from injecting markup into our cards.
-function esc(s) {
+// Neutralize the THREE sequences Roll20 live-evaluates in every outgoing chat message:
+// "[[" (inline roll), "@{" (attribute ref) and "%{" (ability/macro call). A malformed one throws
+// inside Roll20's OWN chat pipeline — asynchronously, where no try/catch of ours can reach it —
+// and disables the WHOLE Mod sandbox, not just that message.
+//
+// writeResult has neutralized these since the stray-"@{pbd_safe}" incident, but it was the only
+// path that did. Every other sendChat interpolated free text raw, and one of those paths takes
+// text a PLAYER typed: `!dm [[grapple the ogre` is enough to kill the relay for the whole table.
+// esc() was never protection against this — it escapes HTML metacharacters and leaves all three
+// triggers perfectly intact.
+//
+// HTML entities, so the DM still reads the literal characters while the chat parser never sees a
+// trigger. Never encode a lone "[" — that is ordinary prose, and ordinary JSON.
+//
+// chatSafe itself IS idempotent (its output contains none of the three triggers), which is what
+// makes it safe to layer over a string whose parts were already esc()'d. esc() is NOT idempotent --
+// it escapes "&" -- so apply esc once, where a value is interpolated, and never again.
+function chatSafe(s) {
   return String(s == null ? "" : s)
+    .replace(/@\{/g, "&#64;{")
+    .replace(/%\{/g, "&#37;{")
+    .replace(/\[\[/g, "&#91;&#91;");
+}
+
+// Sanitize a WHISPER TARGET -- the "<name>" in "/w <name> ...", which Roll20 parses as a routing
+// address rather than rendering as text. Entity-encoding is WRONG here: "&#91;&#91;grim" becomes
+// part of the name Roll20 tries to match, so the whisper misroutes and, because the address is
+// re-scanned with the rest of the line, the trigger still fires. Strip the characters instead.
+//
+// A display name is player-controlled: the `!dm` acknowledgement whispers back to msg.who, so a
+// player NAMED "[[grim" killed the sandbox without typing anything at all. A whisper degraded to
+// an unmatched name is one lost message; an unsanitized one is an outage for the whole table.
+function chatSafeTarget(name) {
+  return String(name == null ? "" : name).replace(/[[\]@%{}]/g, "").trim();
+}
+
+// HTML-escape any player-derived string before interpolating it into sendChat HTML, AND neutralize
+// the chat-pipeline triggers. Order matters: HTML-escape first, or chatSafe's own "&#64;" would
+// have its ampersand escaped to "&amp;#64;" and render as literal text instead of "@".
+function esc(s) {
+  return chatSafe(String(s == null ? "" : s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+    .replace(/'/g, "&#39;"));
 }
 
 // Which Mod Script Sandbox this campaign is running, and what it implies for character data.
@@ -1813,7 +1847,8 @@ ACTIONS["rollInitiativeForTokens"] = function (args, msg, nonce, senderPlayerId)
         // Build one inline roll expression per token: "Name: [[1d20+bonus]]"
         let msgParts = validTokens.map(function(t) {
           let sign = t.initBonus >= 0 ? "+" : "";
-          return t.name + ": [[1d20" + (t.initBonus !== 0 ? sign + t.initBonus : "") + "]]";
+          // esc() the name, never the whole part: the "[[1d20…]]" here is a roll we MEAN to send.
+          return esc(t.name) + ": [[1d20" + (t.initBonus !== 0 ? sign + t.initBonus : "") + "]]";
         });
 
         sendChat("Initiative", msgParts.join(" | "), function(ops) {
@@ -1970,7 +2005,8 @@ ACTIONS["whisperPlayer"] = function (args, msg, nonce, senderPlayerId) {
         // whose output the campaign's bridge-suppression CSS hides. The AIBRIDGE_RESULT to the GM
         // (writeResult below) stays hidden as before.
         var whisperSpeaker = args.speakAs || "The DM";
-        sendChat(whisperSpeaker, "/w " + args.playerName + " " + args.message, null, { noarchive: false });
+        // As with the !dm ack: the body is encoded, the routing address is stripped.
+        sendChat(whisperSpeaker, "/w " + chatSafeTarget(args.playerName) + " " + chatSafe(args.message), null, { noarchive: false });
         writeResult(nonce, { ok: true });
         return;
       }
@@ -2313,7 +2349,7 @@ ACTIONS["sendNarration"] = function (args, msg, nonce, senderPlayerId) {
         };
         let styleStr = styles[narStyle] || styles.narration;
         let html = "<div style='" + styleStr + "'>" + narText + "</div>";
-        sendChat(narSpeaker, html, null, {});
+        sendChat(narSpeaker, chatSafe(html), null, {});
         writeResult(nonce, { ok: true });
         return;
       }
@@ -2325,6 +2361,9 @@ ACTIONS["sendNarration"] = function (args, msg, nonce, senderPlayerId) {
 // pump to mirror an orphaned character's real DDB dice into Roll20 as a native-looking
 // roll card. `message` carries pre-computed values only (no [[…]] inline rolls), so
 // Roll20 renders exactly what the player rolled on D&D Beyond rather than re-rolling.
+// DELIBERATELY NOT chatSafe()'d: this path exists to emit "&{template:…} @{…}" roll-template
+// syntax, and neutralizing the triggers would turn every card into literal text. It is a
+// GM-only relay action carrying server-composed values, not player-typed chat.
 ACTIONS["postChat"] = function (args, msg, nonce, senderPlayerId) {
         var speaker = String(args.speakAs || "D&D Beyond");
         var message = String(args.message || "");
@@ -2796,9 +2835,14 @@ on("chat:message", function (msg) {
         timestamp: Date.now(),
       });
       if (inbox.length > DM_INBOX_MAX) inbox.shift();
-      sendChat("Initiative", "/desc 🎲 **" + (msg.who || "Someone") + "** has set their mind to an action.");
+      sendChat("Initiative", "/desc 🎲 **" + esc(msg.who || "Someone") + "** has set their mind to an action.");
       let ackVerb = isQuery ? "Got your question — I'll answer shortly." : "Got it — I'll have this ready for your turn.";
-      sendChat("GM-AI-Bridge", "/w " + (msg.who || "gm") + " " + ackVerb + " (" + dmText + ")", null, { noarchive: true });
+      // Both halves are player-controlled and need DIFFERENT handling: the body is display text
+      // (encode), the target is a routing address (strip). See chatSafeTarget.
+      // dmText is PLAYER-TYPED and echoed straight back into chat — the sandbox-killing vector.
+      sendChat("GM-AI-Bridge",
+        "/w " + (chatSafeTarget(msg.who) || "gm") + " " + ackVerb + " (" + esc(dmText) + ")",
+        null, { noarchive: true });
     }
     return;
   }
@@ -2910,7 +2954,7 @@ on("change:campaign:turnorder", function(obj, prev) {
           return "<div style='color:#d4a0a0;font-family:\"Palatino Linotype\",Palatino,serif;font-size:0.9em;padding:1px 4px;'>" + r + "</div>";
         }).join("")
       + "</div>";
-    sendChat("GM-AI-Bridge", summaryHtml, null, { noarchive: false });
+    sendChat("GM-AI-Bridge", chatSafe(summaryHtml), null, { noarchive: false });
     bs.round++;
   }
 
@@ -2968,10 +3012,10 @@ on("change:campaign:turnorder", function(obj, prev) {
     + "<div style='color:#cc4444;font-family:\"Palatino Linotype\",Palatino,serif;font-size:1em;'>🩸 <b>" + esc(name) + "</b> — Round " + bs.round + "</div>"
     + hpLine + condLine + intentLine
     + "</div>";
-  sendChat("Initiative", html, null, { noarchive: false });
+  sendChat("Initiative", chatSafe(html), null, { noarchive: false });
 
   if (mobPlan) {
-    sendChat("GM-AI-Bridge", "/w gm " + mobPlan.html, null, { noarchive: true });
+    sendChat("GM-AI-Bridge", "/w gm " + chatSafe(mobPlan.html), null, { noarchive: true });
   }
 });
 

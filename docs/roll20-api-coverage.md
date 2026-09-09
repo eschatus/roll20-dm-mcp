@@ -33,14 +33,14 @@ is **out of scope here**, not "bridged with Playwright".
 "Experimental"/"Default" labels were renamed to 1.5/1.0 in the same release). The two are a
 documented behavioral fork, they are **per-campaign** exactly like a relay deploy, and a campaign
 can be moved back to 1.0 by hand. `ACTIONS["ping"]` echoes `Campaign().sandboxVersion` /
-`nodeVersion` / `sheetName` and a `beacon` flag as of relay **2.6.0**, and `transport_status`
+`nodeVersion` / `sheetName` and a `beacon` flag as of relay **2.6.1**, and `transport_status`
 surfaces them under `sandbox` — that is how you find out which one a campaign is on. A `sandbox` of
-`null` there means the *relay* is older than 2.6.0, not that the sandbox is old.
+`null` there means the *relay* is older than 2.6.1, not that the sandbox is old.
 
-Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.3). Relay version string: `2.6.0`
+Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.3). Relay version string: `2.6.1`
 (reported by the `ping` action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
-(`[GM_AI_Bridge] Relay script loaded (v2.6.0)`), not the save.
+(`[GM_AI_Bridge] Relay script loaded (v2.6.1)`), not the save.
 
 ---
 
@@ -140,7 +140,7 @@ Persistent storage: the global **`state`** object (survives sandbox restarts).
 **Beacon sheets are a live hazard for the attribute path.** A Beacon ("advanced") sheet keeps
 character data in computed properties, so `findObjs({_type:"attribute"})` cannot see it and
 `createObj("attribute")` cannot reach it — the object is created, and the sheet never reads it. As
-of relay 2.6.0 `setCharacterAttributes` refuses that write and reports it under `failed` with a
+of relay 2.6.1 `setCharacterAttributes` refuses that write and reports it under `failed` with a
 reason, rather than reporting `created` for a write that did nothing
 (`test/sandbox-handshake.test.ts`). Full read/write support via `setComputed`/`setSheetItem` is
 #205 — both are async, which the relay's action handlers have a pattern for (`rollDice`)
@@ -219,7 +219,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `sendPing` | send_ping | maps | "look here" / pull player view to a spot |
 | `spawnFx` / `spawnFxBetweenPoints` | spawn_fx, spawn_fx_between_points | maps | explosions, beams, spell nova |
 | `toFront` / `toBack` | to_front, to_back | maps | z-order |
-| `ping` | (health check) | — | reports relay version (2.6.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
+| `ping` | (health check) | — | reports relay version (2.6.1); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
 | **event** `chat:message` | (passive) | — | buffers chat, parses `!dm`. Player `!`-commands are **forwarded, not answered** — `forwardChat` broadcasts them as an SSE `chat-message`; the gem decides what to do. |
 | **event** `change:campaign:turnorder` | (passive) | — | turn/round announcements |
 | **event** `add:graphic` | (passive) | — | auto-rolls initiative for NPC tokens dropped during combat |

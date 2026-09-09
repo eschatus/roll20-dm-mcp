@@ -114,7 +114,7 @@ carries its own copy.
 Look at the **API Output Console** on that same page; you want to see:
 
 ```
-[GM_AI_Bridge] Relay script loaded (v2.6.0)
+[GM_AI_Bridge] Relay script loaded (v2.6.1)
 ```
 
 If you see a red error instead, the paste was incomplete — clear the box and paste again.
