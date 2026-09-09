@@ -185,6 +185,24 @@ export class Roll20Emulator {
     this.chatLog.push({ who: speaking, content: input, options });
 
     // Result whisper from writeResult() — capture for relay() to return.
+    // Relay >= 2.7.0 percent-encodes the whole payload under its own marker (the entity escape it
+    // replaced was decoded by Roll20 before inline-roll scanning, so it never actually protected
+    // anything). This mirrors parseAibridge in src/bridge/rt-helpers.ts — a hand-synced pair, like
+    // every other table the Mod sandbox cannot import.
+    const encPos = input.indexOf("AIBRIDGE_RESULT_ENC:");
+    if (encPos !== -1) {
+      const encoded = /^[A-Za-z0-9\-_.!~*'()%]+/.exec(input.slice(encPos + "AIBRIDGE_RESULT_ENC:".length));
+      if (encoded) {
+        try {
+          const parsed = JSON.parse(decodeURIComponent(encoded[0])) as { nonce: number; data?: unknown; error?: string };
+          this.resultByNonce.set(parsed.nonce, { data: parsed.data, error: parsed.error });
+        } catch {
+          /* ignore malformed */
+        }
+      }
+      return;
+    }
+
     const markerPos = input.indexOf("AIBRIDGE_RESULT:");
     if (markerPos !== -1) {
       const json = this.extractBalancedJson(input, markerPos + "AIBRIDGE_RESULT:".length);

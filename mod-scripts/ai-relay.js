@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.6.2";
+var AI_RELAY_VERSION = "2.7.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -19,21 +19,25 @@ function writeResult(nonce, data, error) {
   const payload = error
     ? JSON.stringify({ nonce, error: String(error) })
     : JSON.stringify({ nonce, data });
-  // Echoed data (e.g. a character's raw attribute text) can itself contain "@{...}" (attribute
-  // ref), "%{...}" (ability/macro call), or "[[...]]" (inline roll) — Roll20 scans EVERY outgoing
-  // chat message for all three and tries to live-evaluate them. A malformed one throws inside
-  // Roll20's own chat pipeline and disables the WHOLE sandbox (not just this message) — hit in
-  // practice via stray "@{pbd_safe}" / "%{Vampire|kingdom-culture-action}" text sitting in
-  // character attributes, crashing the Mod every time getCharacterAttributes read it back.
-  // HTML-entity-encode just the three trigger sequences (never plain "[" — that's normal JSON
-  // array syntax) so they survive as inert text; Playwright's textContent decode on the read side
-  // turns them back into literal "@{"/"%{"/"[[" with no unescaping needed on our end.
-  // Neutralization happens in chatSend now — one door, not a per-caller ritual.
+  // PERCENT-ENCODE the whole payload. This replaces the old HTML-entity escape of "@{"/"%{"/"[[",
+  // which did not work and could not work: Roll20 decodes "&#91;" back to "[" BEFORE it scans the
+  // message for inline rolls, so the escape was undone in transit and a single
+  // getCharacterAttributes over a sheet holding a rollbase-style value still disabled the entire
+  // Mod sandbox. Verified live on a Kingmaker campaign, relay 2.6.2, with every escape in place.
+  //
+  // Enumerating Roll20's trigger syntax is the losing move — that list was "@{", "%{", "[[" and
+  // never included "&{" (roll templates), and there is no reason to believe it is complete now.
+  // encodeURIComponent instead makes the payload STRUCTURALLY incapable of carrying any of them:
+  // it encodes "{" as %7B, "[" as %5B, "&" as %26 and "$" as %24, so no "@{", "%{", "&{", "[[" or
+  // "$[[" can survive no matter what a character sheet contains. The output alphabet has nothing
+  // Roll20's chat pipeline reacts to. The TS side (parseAibridge in src/bridge/rt-helpers.ts)
+  // decodes it; a NEW marker keeps that unambiguous, and the legacy marker still parses there so
+  // a campaign running an older relay keeps working until it is redeployed.
+  //
   // noarchive: won't appear in the persistent chat log.
   // display:none: hides any transient flash in the current session.
-  // Playwright still reads textContent from hidden DOM elements.
   chatSend("GM-AI-Bridge",
-    "/w gm <div style='display:none'>AIBRIDGE_RESULT:" + payload + "</div>",
+    "/w gm <div style='display:none'>AIBRIDGE_RESULT_ENC:" + encodeURIComponent(payload) + "</div>",
     null,
     { noarchive: true }
   );

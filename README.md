@@ -110,7 +110,7 @@ save. There is no deploy tool and no `release:mod` script; both drove a browser.
 Two things worth knowing:
 
 - **Verify the load, not the save.** The Mod console must print
-  `[GM_AI_Bridge] Relay script loaded (v2.6.2)`. A successful paste is not a running script.
+  `[GM_AI_Bridge] Relay script loaded (v2.7.0)`. A successful paste is not a running script.
 - **Deploys are per-campaign.** Each campaign carries its own copy, so one table can be running an
   older relay than another. A mismatch is reported through `transport_status`.
 

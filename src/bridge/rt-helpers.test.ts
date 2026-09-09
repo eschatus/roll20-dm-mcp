@@ -226,3 +226,48 @@ describe("stripUndefWrite", () => {
     expect(stripUndefWrite(src)).not.toBe(src);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Relay >= 2.7.0 payload encoding.
+//
+// The old scheme HTML-entity-escaped "@{", "%{" and "[[" inside raw JSON. It did not
+// work: Roll20 decodes "&#91;" back to "[" BEFORE scanning a message for inline rolls,
+// so the escape was undone in transit and one getCharacterAttributes over a sheet
+// holding rollbase-style text still disabled the whole Mod sandbox. Percent-encoding
+// the payload makes it structurally incapable of carrying a trigger.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("parseAibridge — percent-encoded payloads (relay >= 2.7.0)", () => {
+  const wrapEnc = (json: string) =>
+    `<div style='display:none'>AIBRIDGE_RESULT_ENC:${encodeURIComponent(json)}</div>`;
+
+  it("round-trips a plain result", () => {
+    expect(parseAibridge(wrapEnc(JSON.stringify({ nonce: 5, data: { ok: true } })))).toEqual({
+      nonce: 5, data: { ok: true },
+    });
+  });
+
+  it("carries the exact text that used to kill the sandbox", () => {
+    // A real 5e OGL rollbase value: every trigger Roll20 reacts to, in one string.
+    const rollbase =
+      "@{wtype}&{template:npcfullatk} {{attack=1}} {{r1=[[@{d20}+(@{attack_tohit}+0)]]}} " +
+      "%{Vampire|kingdom-culture-action} $[[0]]";
+    const wire = wrapEnc(JSON.stringify({ nonce: 7, data: { rollbase } }));
+
+    // Nothing Roll20's chat pipeline reacts to survives onto the wire...
+    const payload = wire.slice(wire.indexOf("ENC:") + 4, wire.indexOf("</div>"));
+    expect(payload).not.toMatch(/[[\]{}&$]/);
+
+    // ...and it still decodes back byte-for-byte.
+    expect(parseAibridge(wire)).toEqual({ nonce: 7, data: { rollbase } });
+  });
+
+  it("still parses the legacy entity-escaped marker from an older relay", () => {
+    // Deploys are per-campaign and manual, so both forms have to work during a rollout.
+    const legacy = `<div style='display:none'>AIBRIDGE_RESULT:{"nonce":9,"data":"&#64;{x} &#91;&#91;1d20]]"}</div>`;
+    expect(parseAibridge(legacy)).toEqual({ nonce: 9, data: "@{x} [[1d20]]" });
+  });
+
+  it("returns null on a truncated encoded payload rather than a partial object", () => {
+    expect(parseAibridge("AIBRIDGE_RESULT_ENC:%7B%22nonce%22%3A1")).toBeNull();
+  });
+});

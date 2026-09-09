@@ -88,7 +88,7 @@ into its installer.
 **The Mod script must be loaded, per campaign.** Roll20 only runs the helper script when your campaign is open,
 and each campaign carries its own copy — so one game can be running an older version than another. After
 updating, re-paste `mod-scripts/ai-relay.js` and confirm the console prints
-`[GM_AI_Bridge] Relay script loaded (v2.6.2)`. Saving is not loading. See **[Setup](Setup)** step 3.
+`[GM_AI_Bridge] Relay script loaded (v2.7.0)`. Saving is not loading. See **[Setup](Setup)** step 3.
 
 **Names must match the map.** The Gem matches what you say against the actual token names on the page — it won't
 invent one. If you call the boss "the big guy", add a nickname in the Gem.
