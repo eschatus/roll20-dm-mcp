@@ -15,6 +15,7 @@
 // three triggers perfectly intact.
 // ─────────────────────────────────────────────────────────────────────────────
 import { describe, it, expect, beforeEach } from "vitest";
+import { readFileSync } from "fs";
 import { Roll20Emulator } from "./roll20-emulator.js";
 
 let emu: Roll20Emulator;
@@ -31,6 +32,26 @@ function assertNoLiveTriggers(content: string): void {
   expect(content).not.toContain("@{");
   expect(content).not.toContain("%{");
 }
+
+describe("chatSend is the only door out", () => {
+  // The source-level guard, and the reason this bug cannot come back the way it arrived.
+  // Patching call sites one at a time is precisely how sixteen sendChat sites ended up with one
+  // escape between them. A new sendChat added later must fail here rather than in a live session,
+  // where the symptom is the entire Mod sandbox switching off mid-combat.
+  it("has exactly one raw sendChat( call in the relay, inside chatSend", () => {
+    const src = readFileSync("mod-scripts/ai-relay.js", "utf8");
+    const calls = src
+      .split("\n")
+      .map((line, i) => ({ line: line.trim(), n: i + 1 }))
+      .filter((l) => /(^|[^A-Za-z0-9_.])sendChat\s*\(/.test(l.line) && !l.line.startsWith("//"));
+
+    expect(
+      calls.map((c) => `${c.n}: ${c.line}`),
+      "every outgoing message must go through chatSend()",
+    ).toHaveLength(1);
+    expect(src).toContain("function chatSend(");
+  });
+});
 
 describe("player-typed text can never carry a live trigger into chat", () => {
   it("neutralizes an inline roll a player typed after !dm", () => {

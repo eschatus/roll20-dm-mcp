@@ -118,8 +118,9 @@ moved to beyond-mcp with the code.)
   malformed one throws inside Roll20's own chat pipeline — asynchronously, uncatchable — and
   **disables the whole Mod sandbox**. `writeResult` neutralized these from the start and nothing
   else did, so the `!dm` handler echoed player-typed text straight back: `!dm [[grapple the ogre`
-  took the relay down for a live table, as would a player merely *named* `[[grim`. Two helpers now
-  own this: **`chatSafe(s)`** entity-encodes the three triggers for anything rendered as text
+  took the relay down for a live table, as would a player merely *named* `[[grim`. **`chatSend()` is THE chokepoint** — the sendChat analogue of `setSafe()`, and
+  `test/chat-trigger-safety.test.ts` asserts it is the only `sendChat(` in the file, so a new call
+  site fails a test instead of a live session. Two helpers back it: **`chatSafe(s)`** entity-encodes the three triggers for anything rendered as text
   (idempotent, safe to layer), and **`chatSafeTarget(name)`** *strips* them from a whisper's
   routing address, where an entity would misroute the whisper AND still fire. `esc()` composes
   `chatSafe` — HTML-escape first, then neutralize, or the `&` in `&#64;` gets double-escaped —

@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.6.1";
+var AI_RELAY_VERSION = "2.6.2";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -28,12 +28,12 @@ function writeResult(nonce, data, error) {
   // HTML-entity-encode just the three trigger sequences (never plain "[" — that's normal JSON
   // array syntax) so they survive as inert text; Playwright's textContent decode on the read side
   // turns them back into literal "@{"/"%{"/"[[" with no unescaping needed on our end.
-  const safePayload = chatSafe(payload);
+  // Neutralization happens in chatSend now — one door, not a per-caller ritual.
   // noarchive: won't appear in the persistent chat log.
   // display:none: hides any transient flash in the current session.
   // Playwright still reads textContent from hidden DOM elements.
-  sendChat("GM-AI-Bridge",
-    "/w gm <div style='display:none'>AIBRIDGE_RESULT:" + safePayload + "</div>",
+  chatSend("GM-AI-Bridge",
+    "/w gm <div style='display:none'>AIBRIDGE_RESULT:" + payload + "</div>",
     null,
     { noarchive: true }
   );
@@ -73,6 +73,22 @@ function chatSafe(s) {
 // an unmatched name is one lost message; an unsanitized one is an outage for the whole table.
 function chatSafeTarget(name) {
   return String(name == null ? "" : name).replace(/[[\]@%{}]/g, "").trim();
+}
+
+// THE chokepoint for every outgoing chat message — the sendChat analogue of setSafe(). Patching
+// call sites one at a time is how this hole survived in the first place: sixteen sendChat sites,
+// one of them escaped. A single door means a NEW sendChat added later is safe by default instead
+// of being a fresh outage waiting for a player to type "[[".
+//
+// `rawRolls` is the deliberate opt-out, for the four messages whose whole purpose is to carry live
+// syntax: the two initiative builders' "[[1d20…]]", rollFormulas' "/roll <formula>", and postChat's
+// roll templates. Those are server-composed and GM-gated. Everything ELSE — anything touched by a
+// player, a token name, a model-authored string — goes through neutralized, which is the default
+// precisely because that is the safe answer when someone forgets to think about it.
+//
+// test/chat-trigger-safety.test.ts asserts this is the only sendChat( in the file.
+function chatSend(speaker, message, callback, options, rawRolls) {
+  sendChat(speaker, rawRolls ? String(message == null ? "" : message) : chatSafe(message), callback, options);
 }
 
 // HTML-escape any player-derived string before interpolating it into sendChat HTML, AND neutralize
@@ -1615,7 +1631,7 @@ ACTIONS["runUVTT"] = function (args, msg, nonce, senderPlayerId) {
 
         let extraArgs = args.noObjects ? " --no-objects" : "";
         let uvttCmd = "!uvtt --ids " + uvttGraphic.id + extraArgs;
-        sendChat("API", uvttCmd);
+        chatSend("API", uvttCmd);
 
         writeResult(nonce, {
           graphicId: uvttGraphic.id,
@@ -1851,7 +1867,8 @@ ACTIONS["rollInitiativeForTokens"] = function (args, msg, nonce, senderPlayerId)
           return esc(t.name) + ": [[1d20" + (t.initBonus !== 0 ? sign + t.initBonus : "") + "]]";
         });
 
-        sendChat("Initiative", msgParts.join(" | "), function(ops) {
+        // rawRolls: this message IS the initiative roll. Token names inside it are esc()'d above.
+        chatSend("Initiative", msgParts.join(" | "), function(ops) {
           let inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
 
           let rollResults = validTokens.map(function(t, i) {
@@ -1891,12 +1908,12 @@ ACTIONS["rollInitiativeForTokens"] = function (args, msg, nonce, senderPlayerId)
                 + "<table style='width:100%;border-collapse:collapse;margin:4px 0;'>" + rows + "</table>"
                 + "<div style='color:#4a0000;text-align:center;font-size:0.85em;margin-top:4px;'>— ✦ —</div>"
                 + "</div>";
-              sendChat("Initiative", "/direct " + html);
+              chatSend("Initiative", "/direct " + html);
             }
           }
 
           writeResult(rollNonce, rollResults.concat(tokenData.filter(function(t) { return t.error; })));
-        }, { noarchive: true });
+        }, { noarchive: true }, true);
         return;
       }
       };
@@ -2006,7 +2023,7 @@ ACTIONS["whisperPlayer"] = function (args, msg, nonce, senderPlayerId) {
         // (writeResult below) stays hidden as before.
         var whisperSpeaker = args.speakAs || "The DM";
         // As with the !dm ack: the body is encoded, the routing address is stripped.
-        sendChat(whisperSpeaker, "/w " + chatSafeTarget(args.playerName) + " " + chatSafe(args.message), null, { noarchive: false });
+        chatSend(whisperSpeaker, "/w " + chatSafeTarget(args.playerName) + " " + args.message, null, { noarchive: false });
         writeResult(nonce, { ok: true });
         return;
       }
@@ -2286,7 +2303,7 @@ ACTIONS["rollFormulas"] = function (args, msg, nonce, senderPlayerId) {
           writeResult(rollNonce, rollResults);
         }
         items.forEach(function(item, idx) {
-          sendChat(defaultSpeaker, "/roll " + item.formula, function(ops) {
+          chatSend(defaultSpeaker, "/roll " + item.formula, function(ops) {
             var total = 0, dice = [];
             try {
               var pr = JSON.parse(ops[0].content);
@@ -2316,11 +2333,11 @@ ACTIONS["rollFormulas"] = function (args, msg, nonce, senderPlayerId) {
               + "<div style=\"color:" + inkTotal + ";font-weight:bold;font-size:2em;line-height:1.05;\">" + total + "</div>"
               + bd
               + "</div>";
-            sendChat(item.label || defaultSpeaker, (silent ? "/w gm " : "") + card, null, { noarchive: false });
+            chatSend(item.label || defaultSpeaker, (silent ? "/w gm " : "") + card, null, { noarchive: false });
 
             rollRemaining--;
             if (rollRemaining === 0) finishRolls();
-          });
+          }, null, true);
         });
         // Safety: if a callback never fires (bad formula, etc.), don't hang the relay — time out.
         setTimeout(function() {
@@ -2349,7 +2366,7 @@ ACTIONS["sendNarration"] = function (args, msg, nonce, senderPlayerId) {
         };
         let styleStr = styles[narStyle] || styles.narration;
         let html = "<div style='" + styleStr + "'>" + narText + "</div>";
-        sendChat(narSpeaker, chatSafe(html), null, {});
+        chatSend(narSpeaker, html, null, {});
         writeResult(nonce, { ok: true });
         return;
       }
@@ -2368,7 +2385,7 @@ ACTIONS["postChat"] = function (args, msg, nonce, senderPlayerId) {
         var speaker = String(args.speakAs || "D&D Beyond");
         var message = String(args.message || "");
         if (!message) { writeResult(nonce, { ok: false, error: "postChat: empty message" }); return; }
-        sendChat(speaker, message, null, { noarchive: false });
+        chatSend(speaker, message, null, { noarchive: false }, true);
         writeResult(nonce, { ok: true });
         return;
       };
@@ -2835,12 +2852,12 @@ on("chat:message", function (msg) {
         timestamp: Date.now(),
       });
       if (inbox.length > DM_INBOX_MAX) inbox.shift();
-      sendChat("Initiative", "/desc 🎲 **" + esc(msg.who || "Someone") + "** has set their mind to an action.");
+      chatSend("Initiative", "/desc 🎲 **" + esc(msg.who || "Someone") + "** has set their mind to an action.");
       let ackVerb = isQuery ? "Got your question — I'll answer shortly." : "Got it — I'll have this ready for your turn.";
       // Both halves are player-controlled and need DIFFERENT handling: the body is display text
       // (encode), the target is a routing address (strip). See chatSafeTarget.
       // dmText is PLAYER-TYPED and echoed straight back into chat — the sandbox-killing vector.
-      sendChat("GM-AI-Bridge",
+      chatSend("GM-AI-Bridge",
         "/w " + (chatSafeTarget(msg.who) || "gm") + " " + ackVerb + " (" + esc(dmText) + ")",
         null, { noarchive: true });
     }
@@ -2954,7 +2971,7 @@ on("change:campaign:turnorder", function(obj, prev) {
           return "<div style='color:#d4a0a0;font-family:\"Palatino Linotype\",Palatino,serif;font-size:0.9em;padding:1px 4px;'>" + r + "</div>";
         }).join("")
       + "</div>";
-    sendChat("GM-AI-Bridge", chatSafe(summaryHtml), null, { noarchive: false });
+    chatSend("GM-AI-Bridge", summaryHtml, null, { noarchive: false });
     bs.round++;
   }
 
@@ -3012,10 +3029,10 @@ on("change:campaign:turnorder", function(obj, prev) {
     + "<div style='color:#cc4444;font-family:\"Palatino Linotype\",Palatino,serif;font-size:1em;'>🩸 <b>" + esc(name) + "</b> — Round " + bs.round + "</div>"
     + hpLine + condLine + intentLine
     + "</div>";
-  sendChat("Initiative", chatSafe(html), null, { noarchive: false });
+  chatSend("Initiative", html, null, { noarchive: false });
 
   if (mobPlan) {
-    sendChat("GM-AI-Bridge", "/w gm " + chatSafe(mobPlan.html), null, { noarchive: true });
+    chatSend("GM-AI-Bridge", "/w gm " + mobPlan.html, null, { noarchive: true });
   }
 });
 
@@ -3070,7 +3087,7 @@ on("add:graphic", function(obj) {
 
     let sign = initBonus >= 0 ? "+" : "";
     let expr = "[[1d20" + (initBonus !== 0 ? sign + initBonus : "") + "]]";
-    sendChat("Initiative", expr, function(ops) {
+    chatSend("Initiative", expr, function(ops) {
       let inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
       let roll = inlinerolls[0];
       let total = roll ? roll.results.total : (randomInteger(20) + initBonus);
@@ -3092,8 +3109,8 @@ on("add:graphic", function(obj) {
       Campaign().set("turnorder", JSON.stringify(freshOrder));
 
       let bonusStr = initBonus !== 0 ? " (d20" + sign + initBonus + ")" : "";
-      sendChat("Initiative", "/w gm ⚡ Auto-init: **" + esc(tokenName) + "** → **" + total + "**" + bonusStr);
-    }, { noarchive: true });
+      chatSend("Initiative", "/w gm ⚡ Auto-init: **" + esc(tokenName) + "** → **" + total + "**" + bonusStr);
+    }, { noarchive: true }, true);
   }, 800);
 });
 
