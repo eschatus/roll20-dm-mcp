@@ -13,18 +13,34 @@ is **out of scope here**, not "bridged with Playwright".
 > "formerly browser-bridged" table for where each capability went. **RT (Firebase RTDB) is the
 > only transport.**
 
-> Doc sources: the Roll20 Mod API reference lives at help.roll20.net (Zendesk) and
-> wiki.roll20.net (`API:Objects`, `API:Function_documentation`, `API:Events`). **Both hard-block
-> automated fetching (HTTP 403 via Cloudflare/Zendesk).** This baseline is reconstructed from
-> known API surface, validated against Roll20's own summary (createObj-supported types and the
-> five event types are quoted verbatim from the help center). There is no longer an authenticated
-> browser session to read them through — if a future task needs a property table that isn't here,
-> open the page in your own browser and paste what you find.
+> **Doc sources — and they ARE machine-readable.** The reference lives at help.roll20.net
+> (Zendesk): [Function Documentation](https://help.roll20.net/hc/en-us/articles/360037772833-Mod-Scripts-Function-Documentation),
+> [Objects](https://help.roll20.net/hc/en-us/articles/360037772793-Mod-Scripts-Objects),
+> [Change Log](https://help.roll20.net/hc/en-us/articles/360037772613-Change-Log).
+> This doc used to claim both doc hosts "hard-block automated fetching (HTTP 403)". That is
+> **false and cost us a rebuild-from-memory baseline.** What 403s is the agent `WebFetch` tool's
+> user agent. `curl` with a browser UA gets a 200 and the whole article:
+>
+> ```
+> curl -sSL -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36' <url>
+> ```
+>
+> Read the page before trusting anything below it — §2 is transcribed from the live articles, but
+> Roll20 ships changes weekly and the Objects page visibly lags its own change log.
 
-Last analyzed: 2026-08-26 (repo v2.0.0). Relay version string: `2.5.0` (reported by the `ping`
-action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
+**Mod Script Sandbox v1.0 vs v1.5 — read this before anything else.** On **2026-09-02** Roll20 made
+**v1.5 the default** for every game that had never explicitly picked a version (the old
+"Experimental"/"Default" labels were renamed to 1.5/1.0 in the same release). The two are a
+documented behavioral fork, they are **per-campaign** exactly like a relay deploy, and a campaign
+can be moved back to 1.0 by hand. `ACTIONS["ping"]` echoes `Campaign().sandboxVersion` /
+`nodeVersion` / `sheetName` and a `beacon` flag as of relay **2.7.0**, and `transport_status`
+surfaces them under `sandbox` — that is how you find out which one a campaign is on. A `sandbox` of
+`null` there means the *relay* is older than 2.7.0, not that the sandbox is old.
+
+Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.4). Relay version string: `2.7.0`
+(reported by the `ping` action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
-(`[GM_AI_Bridge] Relay script loaded (v2.5.0)`), not the save.
+(`[GM_AI_Bridge] Relay script loaded (v2.7.0)`), not the save.
 
 ---
 
@@ -63,15 +79,23 @@ Coverage = relay + direct RTDB.
 ## 2. Roll20 Mod API surface (the baseline)
 
 ### Object types
-`createObj(type, …)` **can create** exactly these (per Roll20 docs):
-`graphic`, `text`, `path`, `character`, `ability`, `attribute`, `handout`, `rollabletable`,
-`tableitem`, `macro`.
+`createObj(type, …)` **can create** exactly these (transcribed live 2026-09-08):
+`graphic`, `text`, `path`, `pathv2`, `character`, `ability`, `attribute`, `handout`,
+`rollabletable`, `tableitem`, `macro`, `card`, `deck`, `custfx`, `window`, `door`, `pin`
+— plus `pageFolder` on **sandbox v1.5 only**.
 
-**Read/queryable but NOT createObj-creatable:** `page`, `campaign`, `player`, `deck`, `card`,
-`hand`, `jukeboxtrack`, `custfx`.
+`pathv2` (DL barriers/walls), `door` and `window` are now first-class in that list, so the
+legacy-`path` fallback in the relay's `createWalls` is dead code (and it hardcodes a yellow stroke
+against the project's blue-wall convention — #207).
 
-**Updated Dynamic Lighting (UDL) engine adds** `pathv2` (DL barriers/walls), `door`, `window` —
-creatable via `createObj` on the current engine (the relay relies on this for doors/windows).
+**`pin` is a new object type this project does not use at all** (#203). Map pins: `shape`
+(teardrop/circle/diamond/square), a built-in `icon` set or a `pinImage`, `title`/`notes`/`gmNotes`,
+`link` + `linkType:"handout"`, and per-audience visibility (`visibleTo`, `tooltipVisibleTo`,
+`gmNotesVisibleTo`, …). Note the camelCase — `gmNotes` on a pin, not `gmnotes` as everywhere else.
+
+**Read/queryable but still NOT createObj-creatable:** `page`, `campaign`, `player`, `hand`,
+`jukeboxtrack`. `page`'s absence is what justifies `rtCreatePage` (#178) — the RTDB write is the
+only browserless way to make one, and that is confirmed still true.
 
 ### Universal functions
 `createObj` · `getObj(type,id)` · `findObjs(attrs,opts)` · `filterObjs(fn)` · `getAllObjs()` ·
@@ -85,6 +109,42 @@ Object methods: `.get(prop)`, `.set(prop|obj)`, `.setWithWorker(...)`, `.remove(
 `stopJukeboxPlaylist()` · `toFront(obj)` / `toBack(obj)` · `randomInteger(max)` ·
 `getActiveCharacterId()` · `setDefaultTokenForCharacter(char,token)` · `onSheetWorkerCompleted()`.
 Persistent storage: the global **`state`** object (survives sandbox restarts).
+
+**Documented but unused here (both sandbox versions):**
+- **`setAttrs(charId, {name: value})`** — writes attributes and **defaults to `setWithWorker`**
+  (`options.silent` opts out), handles `_max` suffixes and `repeating_…_$n` names. Sheet workers
+  firing is exactly what the `rollbase` scaffolding and the `<ability>_mod` derivation in
+  `createCharacter` exist to work around. Untested against a live sheet; #206.
+- `getSheetItem` / `setSheetItem` (async, Promise) — the sheet-aware attribute carriers. On v1.0
+  they wrap attributes; on v1.5 they also reach Beacon computed properties and `user.*` attrs.
+- `getSheetDefaultValue(name, valtype?)` — the sheet's default for a field, not the live value.
+- `findObjs` options now include **`tagMatch: 'all' | 'any' | 'only'`** beside `caseInsensitive`
+  and `startsWith`. (#209 covers this and the rest of the small unused surface.)
+- Card/deck helpers: `shuffleDeck`, `cardInfo`, `recallCards`, `dealCardsToTurn`, `drawCard`,
+  `pickUpCard`, `takeCardFromPlayer`, `playCardToTable`, `giveCardToPlayer`.
+
+**Sandbox v1.5 only:**
+- `getComputed` / `setComputed` / `performAction` — Beacon sheet computed properties and sheet
+  actions. Enumerate them with `Campaign().computedSummary` / `actionSummary`.
+- `toAbove(obj, target)` / `toBelow(obj, target)` — precise layer ordering; `toFront`/`toBack` are
+  also "substantially faster" here, and graphics/paths/text gain `.toFront()` / `.toBack()` methods.
+- `spawnFxBetweenPoints` beam types point at the end point (an angle bug is fixed).
+- `log` error messages carry a context object; the Apr 2026 server release added per-script
+  callstacks with script name + line and attributed "Possible Infinite Loop Detected" reports.
+- Graphic `currentSide` — setting it auto-updates `imgsrc` for rollable tokens.
+
+### Campaign() direct properties (NOT behind `.get()`)
+`sandboxVersion` (`"1.0"`/`"1.5"`) · `nodeVersion` — both sandboxes.
+`sheetName` · `computedSummary` · `actionSummary` — v1.5 only.
+
+**Beacon sheets are a live hazard for the attribute path.** A Beacon ("advanced") sheet keeps
+character data in computed properties, so `findObjs({_type:"attribute"})` cannot see it and
+`createObj("attribute")` cannot reach it — the object is created, and the sheet never reads it. As
+of relay 2.7.0 `setCharacterAttributes` refuses that write and reports it under `failed` with a
+reason, rather than reporting `created` for a write that did nothing
+(`test/sandbox-handshake.test.ts`). Full read/write support via `setComputed`/`setSheetItem` is
+#205 — both are async, which the relay's action handlers have a pattern for (`rollDice`)
+but have never needed for a write.
 
 ### Events (5 kinds)
 `ready` · `change:<type>[:<prop>]` · `add:<type>` · `destroy:<type>` · `chat:message`.
@@ -159,7 +219,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `sendPing` | send_ping | maps | "look here" / pull player view to a spot |
 | `spawnFx` / `spawnFxBetweenPoints` | spawn_fx, spawn_fx_between_points | maps | explosions, beams, spell nova |
 | `toFront` / `toBack` | to_front, to_back | maps | z-order |
-| `ping` | (health check) | — | reports relay version (2.5.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
+| `ping` | (health check) | — | reports relay version (2.7.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
 | **event** `chat:message` | (passive) | — | buffers chat, parses `!dm`. Player `!`-commands are **forwarded, not answered** — `forwardChat` broadcasts them as an SSE `chat-message`; the gem decides what to do. |
 | **event** `change:campaign:turnorder` | (passive) | — | turn/round announcements |
 | **event** `add:graphic` | (passive) | — | auto-rolls initiative for NPC tokens dropped during combat |

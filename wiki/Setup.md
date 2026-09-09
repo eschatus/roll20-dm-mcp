@@ -86,10 +86,10 @@ The Mod script is the server's hands inside Roll20. It receives commands from th
 **Verify the load, not the save.** A saved script can still fail to start. Check the API Output Console for:
 
 ```
-[GM_AI_Bridge] Relay script loaded (v2.5.0)
+[GM_AI_Bridge] Relay script loaded (v2.7.0)
 ```
 
-The current version is **2.5.0**, and it must match `EXPECTED_RELAY_VERSION` in `src/bridge/relay-version.ts`. A mismatch warns once and shows up in `transport_status`; it never throws, so a stale deploy fails in confusing ways rather than loudly. Check the banner.
+The current version is **2.7.0**, and it must match `EXPECTED_RELAY_VERSION` in `src/bridge/relay-version.ts`. A mismatch warns once and shows up in `transport_status`; it never throws, so a stale deploy fails in confusing ways rather than loudly. Check the banner.
 
 **Deploys are per-campaign.** Each Roll20 game carries its own copy of the script, so one campaign can be running an older relay than another. Re-paste after every update to `ai-relay.js`, in every campaign you run.
 
@@ -205,7 +205,7 @@ The Gem is an Electron overlay that floats on your screen. It shows a glowing fa
 
 What matters from *this* side of the relationship:
 
-- The Gem pins this repository as a dependency by tag (currently `#v2.0.3`) and builds it in the clone, so you do not need a separate checkout of roll20-dm-mcp for the Gem to run. Changes here reach the Gem only when it re-pins.
+- The Gem pins this repository as a dependency by tag (currently `#v2.0.4`) and builds it in the clone, so you do not need a separate checkout of roll20-dm-mcp for the Gem to run. Changes here reach the Gem only when it re-pins.
 - It bundles `skills/dm-rules.md` and `mod-scripts/ai-relay.js` from this repo into its installer.
 - It furnishes the two credential files from step 5, and it is the only supported harvester.
 - It consumes the `/events` SSE stream, and it owns the two responsibilities this server gave up: deciding tactical plans (storing them via `set_mob_plan`) and answering player `!`-commands (off `chat-message` events).

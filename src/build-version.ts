@@ -10,4 +10,4 @@
 // Why it matters: a caller that cannot see which server build it is talking to cannot tell a
 // stale install from a current one. The gem shipped for weeks against a server bundle nine days
 // older than its own build with nothing reporting the gap (roll20-dm-mcp, 2026-08-18).
-export const BUILD_VERSION = "2.0.3";
+export const BUILD_VERSION = "2.0.4";

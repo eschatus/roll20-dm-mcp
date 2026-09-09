@@ -76,7 +76,7 @@ D&D Beyond at all.
 
 ### The Gem pins this repository
 
-The Gem installs roll20-dm-mcp as a dependency at a fixed tag — currently **`#v2.0.3`** — and builds it in its
+The Gem installs roll20-dm-mcp as a dependency at a fixed tag — currently **`#v2.0.4`** — and builds it in its
 own clone. So you do not need a separate checkout of this repo for the Gem to run, and changes made here reach
 the Gem only when it re-pins. It also bundles this repo's `skills/dm-rules.md` and `mod-scripts/ai-relay.js`
 into its installer.
@@ -88,7 +88,7 @@ into its installer.
 **The Mod script must be loaded, per campaign.** Roll20 only runs the helper script when your campaign is open,
 and each campaign carries its own copy — so one game can be running an older version than another. After
 updating, re-paste `mod-scripts/ai-relay.js` and confirm the console prints
-`[GM_AI_Bridge] Relay script loaded (v2.5.0)`. Saving is not loading. See **[Setup](Setup)** step 3.
+`[GM_AI_Bridge] Relay script loaded (v2.7.0)`. Saving is not loading. See **[Setup](Setup)** step 3.
 
 **Names must match the map.** The Gem matches what you say against the actual token names on the page — it won't
 invent one. If you call the boss "the big guy", add a nickname in the Gem.

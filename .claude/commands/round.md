@@ -68,7 +68,7 @@ Extract (see dm-rules.md for the condition/death/wound and voice-to-text rules):
   — Round N").
 - **Zones/auras** — clear burned-away areas: `clear_zone` for a named zone made by `create_zone`;
   `remove_object` to delete a stray template graphic/token. Set/clear concentration auras on tokens
-  via `set_token_props` (e.g. `aura1_radius=0` to clear; `layer="map"` to retire a template).
+  via `set_token_aura` (`radiusFeet=0` clears; `set_token_props layer="map"` retires a template).
 
 ## Step 3: Propose before executing
 

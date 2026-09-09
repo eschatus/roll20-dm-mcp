@@ -757,12 +757,26 @@ export function registerCombatTools(server: McpServer): void {
     async ({ attributeName, value, max, characterName, charSheetId }) => {
       const resolvedCharId = await resolveCharSheetId(characterName, charSheetId);
       const attrValue = max !== undefined ? { current: value, max } : value;
-      const result = await roll20.relayCommand<{ updated: string[]; created: string[]; failed: string[] }>({
+      const result = await roll20.relayCommand<{
+        updated: string[]; created: string[]; failed: string[];
+        reasons?: Record<string, string>;
+        sheet?: { sandbox: string | null; sheetName: string | null; beacon: boolean };
+      }>({
         action: "setCharacterAttributes",
         charId: resolvedCharId,
         attributes: { [attributeName]: attrValue },
       });
       const status = result.updated.length ? "updated" : result.created.length ? "created" : "failed";
+      // A write the relay could not land is reported as an error, not as a cheerful body carrying
+      // status:"failed" that a caller can skim past. The Beacon-sheet case (issue below) reaches
+      // here with a reason naming the carrier that would have worked (#205).
+      if (status === "failed") {
+        const why = result.reasons?.[attributeName] ?? "the relay reported the write as failed";
+        const where = result.sheet?.beacon
+          ? ` (campaign is on Mod Script Sandbox ${result.sheet.sandbox ?? "?"} with a Beacon sheet: ${result.sheet.sheetName ?? "?"})`
+          : "";
+        return fail(`Could not set "${attributeName}" on character ${resolvedCharId}: ${why}${where}`);
+      }
       return json({ charSheetId: resolvedCharId, attribute: attributeName, value, max, status }, false);
     }
   );
@@ -1011,7 +1025,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "set_token_props",
-    "Set one or more properties on a Roll20 token — name, position, aura, tint, bars, layer, etc. Use aura1_radius (feet, 0 to clear) + aura1_color (#hex) + showplayers_aura1=true for visible spell auras. Use tint_color for colored overlays. Target with characterName (or tokenId) — same as every other token-mutation tool.",
+    "Set one or more properties on a Roll20 token — name, position, aura, tint, bars, layer, etc. Use tint_color for colored overlays. Target with characterName (or tokenId) — same as every other token-mutation tool. For a spell EMANATION (Spirit Guardians, Aura of Protection — anything that moves with the creature) prefer set_token_aura: it is one call, defaults to player-visible, and takes the aura shape. The raw aura fields here stay for fine-grained edits.",
     {
       characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Thorne'."),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
@@ -1024,11 +1038,13 @@ export function registerCombatTools(server: McpServer): void {
       layer: z.string().optional().describe("Roll20 layer: tokens, map, gmlayer, objects"),
       aura1_radius: z.number().optional().describe("Aura 1 radius in feet (0 clears it)"),
       aura1_color: z.string().optional().describe("Aura 1 color as #hex"),
-      aura1_square: z.boolean().optional().describe("True for square aura, false (default) for circle"),
+      aura1_square: z.boolean().optional().describe("Legacy boolean shape toggle: true for square, false for circle. Roll20 keeps it in sync with aura1_options — prefer aura1_options, which can express shapes this boolean cannot."),
+      aura1_options: z.string().optional().describe("Aura 1 shape. Roll20 documents 'circle' and 'square'; the 2026-09-01 release added hex and outline-only (border) variants whose property strings Roll20 has not documented — this is a free string so a working value passes straight through instead of being blocked by a guessed enum."),
       showplayers_aura1: z.boolean().optional().describe("Show aura 1 to players"),
       aura2_radius: z.number().optional(),
       aura2_color: z.string().optional(),
       aura2_square: z.boolean().optional(),
+      aura2_options: z.string().optional().describe("Aura 2 shape — see aura1_options."),
       showplayers_aura2: z.boolean().optional(),
       tint_color: z.string().optional().describe("#hex color overlay on token, or 'transparent' to clear"),
       bar2_value: z.number().optional(),
@@ -1050,6 +1066,54 @@ export function registerCombatTools(server: McpServer): void {
       }
       await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props });
       return text(`Updated token ${characterName ?? resolvedTokenId}: ${Object.keys(props).join(", ")}`);
+    }
+  );
+
+  server.tool(
+    "set_token_aura",
+    "Set or clear a token's aura — the table's visual for an EMANATION, i.e. an effect centred on a creature that MOVES WITH IT (Spirit Guardians, Aura of Protection, a dragon's Frightful Presence). A fixed area that stays where it was cast uses create_zone instead, never this. Auras are player-visible by default, because their whole job is showing the table where the effect reaches. Pass radiusFeet 0 to clear one. Slot 2 is a second, independent aura on the same token — use it for a creature carrying two overlapping effects rather than overwriting the first.",
+    {
+      characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Brie Mossfrond'."),
+      tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
+      radiusFeet: z.number().min(0).describe("Aura radius in FEET (page units), e.g. 15 for Spirit Guardians. A bare NUMBER. 0 clears the aura."),
+      slot: z.union([z.literal(1), z.literal(2)]).default(1).describe("Which of the token's two aura slots to use. Default 1."),
+      color: z.string().optional().describe("Aura color as #hex, e.g. '#cc0000'. Left alone when omitted, so re-radiusing an existing aura keeps its color."),
+      shape: z.string().optional().describe("Aura shape. Roll20 documents 'circle' (default) and 'square'; the 2026-09-01 release added hex and outline-only (border) variants whose property strings are not yet documented — passed through verbatim."),
+      visibleToPlayers: z.boolean().default(true).describe("Show the aura to players. Defaults true — an emanation the table cannot see defeats the point."),
+    },
+    async ({ characterName, tokenId, radiusFeet, slot, color, shape, visibleToPlayers }) => {
+      let resolvedTokenId = tokenId;
+      if (!resolvedTokenId) {
+        if (!characterName) throw new Error("Provide characterName or tokenId");
+        resolvedTokenId = await resolveTokenOrThrow(characterName);
+      }
+      const props: Record<string, unknown> = { [`aura${slot}_radius`]: radiusFeet };
+      // Clearing is radius-only on purpose: colour and shape survive, so the next cast of the same
+      // effect on the same creature comes back looking the way the DM set it up.
+      // NB break_concentration tears down aura slot 1 ONLY, so a concentration effect parked on
+      // slot 2 currently outlives its own teardown — issue #210.
+      if (radiusFeet > 0) {
+        if (color) props[`aura${slot}_color`] = color;
+        if (shape) {
+          // aura{n}_options is the authoritative shape field and Roll20 documents the legacy
+          // aura{n}_square boolean as "kept in sync" with it. That sync is Roll20's claim, not
+          // something verified here, and a graphic silently DROPS a property it doesn't recognise
+          // (the #162/#164 class) — so for the two shapes the boolean can express, write it too.
+          // They mean the same thing, so this is belt-and-braces, not two sources of truth. Shapes
+          // the boolean cannot express (hex, the border-only variants) go through options alone.
+          props[`aura${slot}_options`] = shape;
+          if (shape === "square") props[`aura${slot}_square`] = true;
+          else if (shape === "circle") props[`aura${slot}_square`] = false;
+        }
+        props[`showplayers_aura${slot}`] = visibleToPlayers;
+      }
+      await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props });
+      const who = characterName ?? resolvedTokenId;
+      return text(
+        radiusFeet > 0
+          ? `Aura ${slot} on ${who}: ${radiusFeet} ft${shape ? `, ${shape}` : ""}${color ? `, ${color}` : ""}, ${visibleToPlayers ? "visible to players" : "GM-only"}. It moves with the token — clear it with radiusFeet 0 when the effect ends.${slot === 2 ? " NOTE: break_concentration only tears down slot 1 (#210), so a concentration effect on slot 2 must be cleared by hand." : ""}`
+          : `Aura ${slot} cleared on ${who}.`
+      );
     }
   );
 

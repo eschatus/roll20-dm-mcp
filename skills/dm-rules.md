@@ -91,7 +91,7 @@ convenience would conflict with a rule below, the rule wins.
   `set_token_marker(condition:"concentrating", active:true)`, never a dying/death tool (issue #168).
 - Downed PC: `set_pc_dying` (prone + unconscious, stays on token layer). Concentration break:
   `break_concentration` (marker + aura + linked zones, in one call).
-- Token visuals/position/aura/layer: `set_token_props`.
+- Token visuals/position/layer: `set_token_props`. Auras: `set_token_aura`.
 - Areas: `create_zone` / `clear_zone` / `list_zones`; `find_tokens_in_range` for AoE targeting.
 
 ## Conditions, deaths, wounds
@@ -197,7 +197,7 @@ Work out what a mob intends the same way you work out anything else, then write 
 ## Areas: aura vs. zone
 
 - **Emanation** spells that move with a creature (Spirit Guardians, Aura of Vitality, etc.) →
-  token **aura** (`set_token_props aura1_radius/aura1_color/showplayers_aura1`), not a zone.
+  token **aura** (`set_token_aura` — radius in feet, `0` clears, player-visible by default), not a zone.
 - **Fixed-area** spells (Web, Cloudkill, Spike Growth, Fireball footprint) → `create_zone`.
 - One-shot instantaneous spells (Fireball, Thunder Wave) need no persistent zone; clean up any
   pre-placed template token with `remove_object` after resolving.

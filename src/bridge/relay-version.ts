@@ -7,4 +7,4 @@
 // marker table lock in test/marker-tables.test.ts). Bump BOTH together when ai-relay.js changes
 // in a way worth flagging to a DM running an older deploy — see src/bridge/relay-version-check.ts
 // for how a mismatch gets reported.
-export const EXPECTED_RELAY_VERSION = "2.5.0";
+export const EXPECTED_RELAY_VERSION = "2.7.0";

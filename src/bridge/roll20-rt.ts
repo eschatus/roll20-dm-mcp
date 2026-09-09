@@ -498,7 +498,8 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
           rotation: t.rotation || 0, imgsrc: t.imgsrc, statusmarkers: t.statusmarkers || "",
           bar1_value: t.bar1_value, bar1_max: t.bar1_max, bar2_value: t.bar2_value, bar2_max: t.bar2_max,
           bar3_value: t.bar3_value, bar3_max: t.bar3_max,
-          aura1_radius: t.aura1_radius, aura1_color: t.aura1_color, aura2_radius: t.aura2_radius, aura2_color: t.aura2_color,
+          aura1_radius: t.aura1_radius, aura1_color: t.aura1_color, aura1_square: t.aura1_square, aura1_options: t.aura1_options,
+          aura2_radius: t.aura2_radius, aura2_color: t.aura2_color, aura2_square: t.aura2_square, aura2_options: t.aura2_options,
           tint_color: t.tint_color, light_radius: t.light_radius, light_dimradius: t.light_dimradius,
           gmnotes: t.gmnotes || "",
         };

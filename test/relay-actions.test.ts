@@ -527,13 +527,19 @@ describe("createCharacter relay action", () => {
   });
 });
 
-describe("getCharacterAttributes — sandbox-crash guard (writeResult escaping)", () => {
-  // Regression for a real incident: a character attribute containing literal "@{pbd_safe}",
+describe("getCharacterAttributes — sandbox-crash guard (payload encoding)", () => {
+  // Regression for a real incident, TWICE. A character attribute containing literal "@{pbd_safe}",
   // "%{Vampire|kingdom-culture-action}", or "[[1d20]]"-shaped text crashed the WHOLE Mod sandbox
   // when echoed back, because Roll20's own chat pipeline live-evaluates "@{...}"/"%{...}"/"[[...]]"
   // in any outgoing sendChat message — including ones that are just data being relayed back to the
   // caller, not meant to be interpreted at all.
-  it("never sends a raw '@{', '%{', or '[[' to sendChat when an attribute contains that text", () => {
+  //
+  // The first fix HTML-entity-escaped those three sequences, and this test passed against it while
+  // the bug stayed live: Roll20 decodes "&#91;" back to "[" BEFORE scanning for inline rolls, so
+  // the escape was undone in transit. Relay 2.7.0 percent-encodes the whole payload instead, so
+  // the assertion is now the stronger one — no Roll20 metacharacter of ANY kind on the wire, not
+  // just the three we happened to think of (that list never included "&{" roll templates).
+  it("puts no Roll20 metacharacter on the wire when an attribute contains that text", () => {
     const charId = emu.createCharacter("Vex", { strength: 14 });
     emu.relay({
       action: "setCharacterAttributes",
@@ -542,12 +548,15 @@ describe("getCharacterAttributes — sandbox-crash guard (writeResult escaping)"
     });
     emu.relay({ action: "getCharacterAttributes", charId });
 
-    const resultMessages = emu.chatLog.filter((m) => m.content.includes("AIBRIDGE_RESULT:"));
+    const resultMessages = emu.chatLog.filter((m) => m.content.includes("AIBRIDGE_RESULT_ENC:"));
     expect(resultMessages.length).toBeGreaterThan(0);
     for (const m of resultMessages) {
-      expect(m.content).not.toContain("@{");
-      expect(m.content).not.toContain("%{");
-      expect(m.content).not.toContain("[[");
+      const payload = m.content.slice(
+        m.content.indexOf("AIBRIDGE_RESULT_ENC:") + "AIBRIDGE_RESULT_ENC:".length,
+        m.content.indexOf("</div>"),
+      );
+      // Nothing Roll20's chat pipeline reacts to, at all — brackets, braces, "&" or "$".
+      expect(payload).not.toMatch(/[[\]{}&$]/);
     }
   });
 

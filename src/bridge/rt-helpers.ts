@@ -4,9 +4,29 @@
 
 export const AIBRIDGE_MARKER = "AIBRIDGE_RESULT:";
 
+// Relay >= 2.7.0 percent-encodes the whole payload under its own marker. The old marker carried
+// raw JSON with three sequences HTML-entity-escaped, which Roll20 decoded back before scanning for
+// inline rolls — so a malformed one still disabled the sandbox. Both are parsed here: the encoded
+// form is preferred, and the legacy form keeps a campaign on an older relay working until it is
+// redeployed (deploys are per-campaign and manual).
+export const AIBRIDGE_MARKER_ENC = "AIBRIDGE_RESULT_ENC:";
+
 // Extract the first balanced-brace JSON object following the AIBRIDGE marker (mirrors the
 // roll20.ts OBSERVER_SCRIPT). Tolerates braces inside strings and escaped quotes.
 export function parseAibridge(text: string): { nonce: number; data?: unknown; error?: string } | null {
+  // Relay >= 2.7.0: the whole payload is one percent-encoded token, so there is no brace-scanning
+  // to do and nothing in it Roll20 could have mangled. Runs first — a message carrying the encoded
+  // marker never also carries the legacy one.
+  const encPos = text.indexOf(AIBRIDGE_MARKER_ENC);
+  if (encPos !== -1) {
+    const encStart = encPos + AIBRIDGE_MARKER_ENC.length;
+    // The payload ends at the first character outside the percent-encoding alphabet — in practice
+    // the "<" of the closing </div> the Mod wraps it in.
+    const encoded = /^[A-Za-z0-9\-_.!~*'()%]+/.exec(text.slice(encStart));
+    if (!encoded) return null;
+    try { return JSON.parse(decodeURIComponent(encoded[0])); } catch { return null; }
+  }
+
   const pos = text.indexOf(AIBRIDGE_MARKER);
   if (pos === -1) return null;
   const start = pos + AIBRIDGE_MARKER.length;

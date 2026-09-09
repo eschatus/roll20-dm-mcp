@@ -105,6 +105,29 @@ moved to beyond-mcp with the code.)
   #162, #164). Zone metadata therefore lives in **`state.GM_AI_Bridge.zones`**, not on the path
   object; zone tint is baked into the fill color instead of an opacity prop. Anything keyed off
   path-object metadata is dead by construction — go through the zones state.
+- **Two sandboxes now: v1.0 and v1.5, and v1.5 became the DEFAULT on 2026-09-02** for any campaign
+  that never explicitly picked one. Per-campaign, like a relay deploy. `ping` echoes
+  `Campaign().sandboxVersion`/`nodeVersion`/`sheetName` plus a `beacon` flag (relay ≥ 2.6.0) and
+  `transport_status` shows them under `sandbox`. The fork that bites: a **Beacon** ("advanced")
+  character sheet keeps data in *computed properties*, not `attribute` objects — `findObjs` can't
+  see it and `createObj("attribute")` can't reach it, so an attribute write there is created,
+  unread, and looks successful. `setCharacterAttributes` now refuses it and returns a reason;
+  `setComputed`/`setSheetItem` are the real carriers and aren't wired yet (#205).
+- **Nothing may reach `sendChat` carrying a live chat trigger.** Roll20 live-evaluates `[[`
+  (inline roll), `@{` (attribute ref) and `%{` (ability/macro call) in EVERY outgoing message; a
+  malformed one throws inside Roll20's own chat pipeline — asynchronously, uncatchable — and
+  **disables the whole Mod sandbox**. `writeResult` neutralized these from the start and nothing
+  else did, so the `!dm` handler echoed player-typed text straight back: `!dm [[grapple the ogre`
+  took the relay down for a live table, as would a player merely *named* `[[grim`. **`chatSend()` is THE chokepoint** — the sendChat analogue of `setSafe()`, and
+  `test/chat-trigger-safety.test.ts` asserts it is the only `sendChat(` in the file, so a new call
+  site fails a test instead of a live session. Two helpers back it: **`chatSafe(s)`** entity-encodes the three triggers for anything rendered as text
+  (idempotent, safe to layer), and **`chatSafeTarget(name)`** *strips* them from a whisper's
+  routing address, where an entity would misroute the whisper AND still fire. `esc()` composes
+  `chatSafe` — HTML-escape first, then neutralize, or the `&` in `&#64;` gets double-escaped —
+  so every `esc()` call site is covered. `esc()` is NOT idempotent; apply it once. Deliberate
+  exceptions, both server-composed and GM-only: `postChat` (must emit real roll-template syntax)
+  and the `[[1d20…]]` the initiative builders send — there, escape the *token name*, never the
+  whole message. Pinned by `test/chat-trigger-safety.test.ts`.
 - **The Mod sandbox cannot import TS.** Tables that must agree are kept in **hand-synced copies** —
   most importantly the condition→marker map lives in three places (`src/tools/combat.ts` array,
   `src/bridge/markers.ts` Record, `mod-scripts/ai-relay.js`) and they are **not identical**
@@ -128,8 +151,15 @@ moved to beyond-mcp with the code.)
   `name`/`description`/`npc_options-flag: 0`. Legendary actions live in a parallel
   `repeating_npcaction-l_` section with the same schema. **Never read a field containing literal
   `@{`/`[[` (e.g. `rollbase`) back through `getCharacterAttributes`/`read_character_attributes`**
-  — Roll20's chat pipeline live-evaluates it on echo and errors (the writeResult escape fix keeps
-  this from crashing the whole sandbox, but the read still fails). Verify writes instead by
+  — Roll20's chat pipeline live-evaluates it on echo. **The old writeResult entity-escape did NOT
+  prevent this**, whatever this file used to say: Roll20 decodes `&#91;` back to `[` before it
+  scans for inline rolls, so the escape was undone in transit and one such read disabled the whole
+  sandbox — seen live on relay 2.6.2 with every escape in place, three separate times. Relay
+  ≥ 2.7.0 percent-encodes the ENTIRE payload under an `AIBRIDGE_RESULT_ENC:` marker instead, which
+  is structurally incapable of carrying `[[`/`@{`/`%{`/`&{` (`encodeURIComponent` turns `{` into
+  `%7B`, `[` into `%5B`, `&` into `%26`); `parseAibridge` decodes it and still accepts the legacy
+  marker for a campaign that hasn't been re-pasted. Enumerating Roll20's trigger syntax was the
+  losing move — that list never included `&{`. Verify writes instead by
   reading `Campaign.characters.get(id).attribs` directly in the browser, which bypasses the
   chat-echo path entirely — see `scripts/dump-character-attrs.ts` and
   `scripts/find-character-by-name.ts`.
@@ -227,6 +257,13 @@ registry override (`sidekick: true`, `src/registry/characters.ts`) is needed to 
   (npcOnly / `entries[].hp` seeding) all read the same `sidekickNames` set
   (`registry.listSidekickNames()`) so a sidekick routes as an NPC everywhere HP/death routing is
   decided. See issue #132.
+
+**Auras (emanations):** `set_token_aura` is the one-call primitive — radius in feet, `0` clears,
+slot 1 or 2, player-visible by default. Shape goes to `aura{n}_options` (the authoritative field;
+Roll20 keeps the legacy `aura{n}_square` boolean in sync with it, so never write both). Roll20
+documents `"circle"`/`"square"`; the 2026-09-01 release added hex and outline-only variants whose
+property strings Roll20 hasn't published, so the schema takes a free string rather than a guessed
+enum. Emanations that move with a creature use an aura; fixed areas use `create_zone`.
 
 **Conditions/markers:** `set_token_marker` → `toggleCondition` → three-tier `resolveMarkerForState`
 (CONDITION → PSEUDO → hashed ad-hoc). Custom campaign marker set, IDs 4444311–4444352; default
