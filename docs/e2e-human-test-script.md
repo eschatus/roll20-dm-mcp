@@ -105,9 +105,9 @@ quietly try to open a browser. `[ ]`
 | 1.2 | (A) "Switch to e2e-test" → `switch_campaign { slugOrName: "e2e-test" }` ⚠ | switches **and then STOPS** — the assistant must **wait for your confirmation** before any further tool call (rule: `skills/dm-rules.md` "switch then wait"). Registry-only now: there is no browser to navigate. | [ ] |
 | 1.3 | **Judge checkpoint:** did the assistant correctly *not* chain another tool after the switch? | yes = PASS | [ ] |
 | 1.4 | Confirm "go ahead" → `active_campaign` 🔒 | shows e2e-test active | [ ] |
-| 1.5 | **Deploy the Mod relay BY HAND**: open the campaign's API/Mod console, paste `mod-scripts/ai-relay.js`, save ⚠ | Mod console prints `[GM_AI_Bridge] Relay script loaded (v2.5.0)`. **Verify the LOAD, not the save** — a saved-but-crashed script looks identical if you only check the save. Deploys are **per-campaign**: a campaign you haven't pasted into is running an old relay, or none. | [ ] |
+| 1.5 | **Deploy the Mod relay BY HAND**: open the campaign's API/Mod console, paste `mod-scripts/ai-relay.js`, save ⚠ | Mod console prints `[GM_AI_Bridge] Relay script loaded (v2.7.0)`. **Verify the LOAD, not the save** — a saved-but-crashed script looks identical if you only check the save. Deploys are **per-campaign**: a campaign you haven't pasted into is running an old relay, or none. | [ ] |
 | 1.6 | `npx tsx src/recon/soak-test.ts` | round-trip `pong`, direct reads, scratch-token create, **PC-HP via `adjustPcHp`**, batchExec, conditions, dice engine, cleanup — all pass, exit 0 | [ ] |
-| 1.7 | (A) "transport status" → `transport_status` 🔒 | RT healthy; **circuit breaker closed**; counters present; active campaign = e2e-test; **relay version handshake reports 2.5.0** with no mismatch warning (a mismatch means 1.5 didn't take) | [ ] |
+| 1.7 | (A) "transport status" → `transport_status` 🔒 | RT healthy; **circuit breaker closed**; counters present; active campaign = e2e-test; **relay version handshake reports 2.7.0** with no mismatch warning (a mismatch means 1.5 didn't take) | [ ] |
 
 **Negative/safety check:**
 
@@ -520,7 +520,7 @@ Output JSON:
   repo (a local `voice-hud/` here is a pre-split leftover).
 - **Mod redeploy after editing `mod-scripts/ai-relay.js`:** **paste it into the
   campaign's API console by hand**, per campaign, and confirm the console prints
-  `[GM_AI_Bridge] Relay script loaded (v2.5.0)`. Verify the LOAD, not the save.
+  `[GM_AI_Bridge] Relay script loaded (v2.7.0)`. Verify the LOAD, not the save.
   (`npm run release:mod` and `deploy_mod_script` are deleted.)
 - **Transport:** RT (Firebase RTDB) only. No browser, no Playwright, no chromium step.
 - **Credentials:** furnished, never minted — the server reads

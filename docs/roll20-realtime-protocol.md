@@ -9,10 +9,11 @@ the `!ai-relay` chat message and reads the `AIBRIDGE_RESULT` whisper back — **
 ## STATUS: ✅ VALIDATED end-to-end (2026-06-05); the ONLY transport since 2026-08-26
 
 Implemented in `src/bridge/roll20-rt.ts`. **RT is the only transport** — the legacy Playwright
-browser→chat relay and `CLIENT_READS` were deleted in #122/#179, so `ROLL20_TRANSPORT=browser`
-selects nothing and there is no fallback of any kind. An RT failure surfaces as a thrown error
-naming the fix. Live round-trip confirmed: **~420ms cold / ~49ms warm**. The Mod script, its relay
-actions, and the `AIBRIDGE_RESULT` protocol are unchanged.
+browser→chat relay and `CLIENT_READS` were deleted in #122/#179, and the `ROLL20_TRANSPORT` switch
+that used to opt out of it was itself removed in #180 (there is no fallback of any kind, and no env
+var that selects a transport). An RT failure surfaces as a thrown error naming the fix. Live
+round-trip confirmed: **~420ms cold / ~49ms warm**. The Mod script, its relay actions, and the
+`AIBRIDGE_RESULT` protocol are unchanged.
 
 Roll20's tabletop state and chat live in a **Firebase Realtime Database**. The Mod sandbox reacts
 to `on("chat:message")`. Chat is written **exclusively over Firebase** (confirmed: no chat XHR

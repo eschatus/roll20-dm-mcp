@@ -5,14 +5,29 @@
 
 import * as registry from "../registry/characters.js";
 import * as roll20 from "../bridge/roll20.js";
+import { normalizeNameForMatch } from "./nameMatch.js";
 
 // ── MCP response builders ─────────────────────────────────────────────────────
-// Every tool returns { content: [{ type: "text", text }] }. These two trim the
-// boilerplate: text() for a plain string, json() for a JSON.stringify'd value.
-type ToolResult = { content: { type: "text"; text: string }[] };
+// Every tool returns { content: [{ type: "text", text }] }. These three trim the
+// boilerplate: text() for a plain string, json() for a JSON.stringify'd value,
+// fail() for a string describing something that did NOT happen.
+//
+// isError is the field an MCP client reads to tell a failure from a success. A
+// handler that THROWS gets it for free (the SDK sets it), but one that RETURNS a
+// failure had no way to say so, so every non-throwing failure arrived as a success
+// carrying failure prose and clients had to pattern-match English to notice (#190).
+// fail() is the one way to express that — don't hand-roll the object.
+type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
 export function text(s: string): ToolResult {
   return { content: [{ type: "text", text: s }] };
+}
+
+// A failure the handler chose to RETURN rather than throw, because the prose is
+// more useful to the DM than a stack trace — but the caller must still be able to
+// tell it from a success. The operation described did NOT happen.
+export function fail(s: string): ToolResult {
+  return { content: [{ type: "text", text: s }], isError: true };
 }
 
 export function json(value: unknown, pretty = true): ToolResult {
@@ -176,6 +191,19 @@ export async function resolveToken(
   name: string,
   tokenList?: { id: string; name: string }[],
 ): Promise<{ id?: string; candidates?: string[] }> {
+  // PR #198 review (Devin, finding 1): a punctuation-only name ("," / "...")
+  // — or, for this required-string param, an outright empty/whitespace-only
+  // one — normalizes to "". String.prototype.includes("") is true for every
+  // string, so letting this flow into the exact/substring/word-overlap
+  // passes below (or into the registry lookup, which has the same risk)
+  // would silently match or resolve EVERY token on the page. Refuse up
+  // front — returning {} (no id, no candidates) rather than throwing keeps
+  // this consistent with every other "couldn't resolve" outcome resolveToken
+  // already produces: resolveTokenOrThrow turns it into the same loud
+  // "Ambiguous target … No matching token on the page" error, and callers
+  // that loop over many selectors (batch_exec's per-op resolution) report it
+  // as a normal per-op failure instead of aborting the whole batch.
+  if (!normalizeNameForMatch(name)) return {};
   const entry = registry.lookup(name);
   if (entry?.roll20TokenId) return { id: entry.roll20TokenId };
   try {
@@ -184,24 +212,55 @@ export async function resolveToken(
       const pageId = await roll20.getCurrentPageId();
       return roll20.relayCommand<{ id: string; name: string }[]>({ action: "getTokens", pageId });
     })();
-    const want = name.trim().toLowerCase();
+    // norm(): display form (original case, first line, trimmed) — used only for
+    // "did you mean" candidates. normalizeNameForMatch(): comparison form,
+    // case- AND punctuation-folded (issue #195: "Bandit Captain, the Scarred"
+    // must match "Bandit Captain the Scarred") — used for every
+    // equality/substring test below. Folding punctuation only ever WIDENS a
+    // match versus the old case-only fold, so a name that was unambiguous
+    // stays unambiguous; a normalization that newly collides two tokens still
+    // falls through to the candidates path below rather than picking one.
     const norm = (t: { name?: string }) => (t.name || "").split("\n")[0].trim();
+    const want = normalizeNameForMatch(name);
 
-    const exact = tokens.find((t) => norm(t).toLowerCase() === want);
-    if (exact) return { id: exact.id };
+    // filter (not find): two DIFFERENT board names that fold to the same
+    // comparison form ("Iron, Golem" / "Iron Golem") must still surface as
+    // ambiguous, not silently resolve to whichever came first in the list.
+    // Also covers two GENUINELY IDENTICAL names (no punctuation involved at
+    // all, e.g. two hand-placed "Goblin" tokens, or #199's epithet renamer
+    // re-issuing an epithet already on the board) — writing damage to
+    // whichever came first is a silent wrong write; refusing with both named
+    // as candidates is correct. Same "only widen, never guess" principle the
+    // issue itself states for punctuation, applied here to a case #195
+    // didn't name but the DM confirmed should behave the same way.
+    const exactMatches = tokens.filter((t) => normalizeNameForMatch(norm(t)) === want);
+    if (exactMatches.length === 1) return { id: exactMatches[0].id };
+    if (exactMatches.length > 1) return { candidates: exactMatches.map(norm) };
 
     const subs = tokens.filter((t) => {
-      const n = norm(t).toLowerCase();
+      const n = normalizeNameForMatch(norm(t));
       return n && (n.includes(want) || want.includes(n));
     });
     if (subs.length === 1) return { id: subs[0].id };
     if (subs.length > 1) return { candidates: subs.map(norm) };
 
     // No substring hit — offer token-word overlap candidates (e.g. "the twisted"
-    // → every "Mage the Twisted"-ish name) so the agent can clarify.
+    // → every "Mage the Twisted"-ish name) so the agent can clarify. NOTE
+    // (issue #195 follow-up): this branch is candidates-only BY CONSTRUCTION —
+    // there is no `if (near.length === 1) return { id }`. Once the substring
+    // pass above misses, resolveTokenOrThrow is guaranteed to throw; the
+    // outcome was decided two branches earlier, not rescued here. On a board
+    // where every candidate shares a common word (e.g. four "Bandit Captain
+    // the <epithet>" tokens all containing "bandit"), this returns ALL of
+    // them and the caller sees "Ambiguous target … Did you mean: …?" even for
+    // a name that was never actually ambiguous — the normalization above
+    // (issue #195) is what keeps queries like "the Scarred"/"Scarred" out of
+    // this branch in the first place, by resolving them via the substring
+    // pass instead. Don't read a near-miss here as something the next line
+    // might still rescue.
     const words = want.split(/\s+/).filter((w) => w.length > 2);
     const near = tokens.filter((t) => {
-      const n = norm(t).toLowerCase();
+      const n = normalizeNameForMatch(norm(t));
       return words.some((w) => n.includes(w));
     }).map(norm);
     return { candidates: Array.from(new Set(near)).slice(0, 8) };

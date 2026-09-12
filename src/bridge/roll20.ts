@@ -29,12 +29,12 @@ export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
   // Test harness routes every relay action through the in-memory emulator (bypasses rt/browser).
   if (_testTransport) return _testTransport.relay<T>(cmd);
 
-  // BROWSERLESS by default (ROLL20_TRANSPORT=rt, the default): push !ai-relay over Firebase RTDB and
-  // read the Mod's AIBRIDGE_RESULT back. The Mod runs every action, so RT serves all of them — no
-  // browser involved. There is deliberately NO silent Playwright fallback here: a packaged install
-  // ships no browser, so an RT failure must SURFACE (and prompt a token re-harvest in the gem),
-  // never quietly reach for a Chromium that isn't there. The legacy browser→chat relay is an
-  // explicit dev opt-out via ROLL20_TRANSPORT=browser.
+  // BROWSERLESS, unconditionally: push !ai-relay over Firebase RTDB and read the Mod's
+  // AIBRIDGE_RESULT back. The Mod runs every action, so RT serves all of them — no browser
+  // involved, and there is no env var that selects anything else (#122/#179/#180 — the legacy
+  // browser→chat relay is deleted, not an opt-out). There is deliberately NO silent Playwright
+  // fallback here: a packaged install ships no browser, so an RT failure must SURFACE (and
+  // prompt a token re-harvest in the gem), never quietly reach for a Chromium that isn't there.
   const action = cmd.action as string;
   {
 

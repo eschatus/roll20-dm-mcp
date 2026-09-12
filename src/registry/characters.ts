@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, renameSync } from "fs";
 import { dataPath } from "../dataDir.js";
 import { getActiveCampaign } from "./campaigns.js";
+import { normalizeNameForMatch } from "../tools/nameMatch.js";
 
 // Data dir resolved by ../dataDir (ROLL20_DATA_DIR override; default ./data).
 const REGISTRY_PATH = dataPath("characters.json");
@@ -12,9 +13,15 @@ export interface CharacterEntry {
   // Per-token override (issue #132): true for a player-controlled token whose
   // HP nonetheless lives in Roll20 bar1 and who dies like an NPC (Tua, Salros
   // Eventide, Amri in the Firebirds campaign) — `controlledby` alone can't
-  // tell a sidekick from a true PC. Settable via set_token_class (voice: "Tua
-  // is a sidekick"); read by isPcToken/splitPcNpc wherever HP/death routing
-  // decides (update_token_hp, update_hp_many, resolve_aoe, roll_initiative).
+  // tell it from a true PC. This covers ANY player-controlled NPC, not just
+  // the "sidekick" companion case the name comes from: a familiar, an animal
+  // companion, a summon — mechanically identical, all bar1 + NPC death
+  // semantics, no separate class needed (issue #196 — a per-flavor enum was
+  // considered and rejected; they don't route differently, so a `familiar`
+  // value would have been surface without behavior). Settable via
+  // set_token_class (voice: "Tua is a sidekick"); read by isPcToken/
+  // splitPcNpc wherever HP/death routing decides (update_token_hp,
+  // update_hp_many, resolve_aoe, roll_initiative).
   sidekick?: boolean;
 }
 
@@ -73,6 +80,23 @@ export function register(
  * Resolve a character name to its registry key within one campaign's registry.
  * Pure: exact (case-insensitive) match first, then bidirectional substring
  * fuzzy match. Returns the matched key, or null. Exported for unit testing.
+ *
+ * PR #198 review (Devin) fixed two gaps on top of the original #195 fix:
+ *  - finding 1 (wildcard): a punctuation-only `name` ("," / "...") folds to
+ *    "" via normalizeNameForMatch, and "".includes("") is true for every
+ *    registry key — an unguarded fuzzy check would treat that as "matches
+ *    every character". Guarded below.
+ *  - finding 2 (collision consistency): this used to be `Object.keys(reg)
+ *    .find(...)`, silently returning the FIRST key that collided — bypassing
+ *    the ambiguity refusal resolveToken enforces for the token-scan path.
+ *    Now collects every colliding key and returns null (not a guess) when
+ *    more than one matches, exactly like resolveToken's "did you mean"
+ *    branch degrades instead of picking one. lookup() below then returns
+ *    null for an ambiguous name, and resolveToken's registry short-circuit
+ *    (combatHelpers.ts) falls through to the token scan — which applies the
+ *    SAME ambiguity refusal against the board's actual token names — rather
+ *    than resolving to whichever registered character happened to be listed
+ *    first.
  */
 export function resolveCharacterKey(
   name: string,
@@ -80,7 +104,15 @@ export function resolveCharacterKey(
 ): string | null {
   const key = name.toLowerCase();
   if (reg[key]) return key;
-  return Object.keys(reg).find((k) => k.includes(key) || key.includes(k)) ?? null;
+  const normKey = normalizeNameForMatch(key);
+  if (!normKey) return null; // punctuation-only/empty — never a wildcard match
+  const matches = new Set<string>();
+  for (const k of Object.keys(reg)) {
+    if (k.includes(key) || key.includes(k)) { matches.add(k); continue; }
+    const normK = normalizeNameForMatch(k);
+    if (normK && (normK.includes(normKey) || normKey.includes(normK))) matches.add(k);
+  }
+  return matches.size === 1 ? [...matches][0] : null;
 }
 
 export function lookup(name: string): CharacterEntry | null {
@@ -108,9 +140,11 @@ export function remove(name: string): boolean {
 }
 
 /**
- * Set (or clear) the sidekick override for a character/token name. Upserts a
- * minimal registry entry when the name isn't registered yet — a sidekick can
- * be flagged by voice ("Tua is a sidekick") before any DDB/token registration
+ * Set (or clear) the player-controlled-NPC override for a character/token
+ * name — covers a sidekick, a familiar, an animal companion, or a summon
+ * alike (they route identically; see the `sidekick` field comment). Upserts
+ * a minimal registry entry when the name isn't registered yet — this can be
+ * flagged by voice ("Tua is a sidekick") before any DDB/token registration
  * exists. Resolves against existing keys fuzzily (resolveCharacterKey) first
  * so this doesn't create a duplicate entry for an already-registered name.
  */
@@ -133,9 +167,11 @@ export function isSidekick(name: string): boolean {
 }
 
 /**
- * The active campaign's sidekick names (registry keys, already lowercased) —
- * the set aoe.ts's classifyToken/isPcToken/splitPcNpc need to route a
- * player-controlled token as a sidekick instead of a PC.
+ * The active campaign's player-controlled-NPC names (registry keys, already
+ * lowercased) — the set aoe.ts's classifyToken/isPcToken/splitPcNpc need to
+ * route a player-controlled token as one instead of a true PC. Covers
+ * sidekicks, familiars, animal companions, and summons alike — see the
+ * `sidekick` field comment on CharacterEntry.
  */
 export function listSidekickNames(): Set<string> {
   const full = load();

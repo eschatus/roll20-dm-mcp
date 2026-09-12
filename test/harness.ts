@@ -23,7 +23,7 @@ import { registerCombatTools } from "../src/tools/combat.js";
 import { registerZoneTools } from "../src/tools/zones.js";
 
 // ── Fake MCP server ───────────────────────────────────────────────────────────
-type ToolResult = { content: Array<{ type: string; text: string }> };
+type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
 
 export class FakeMcpServer {
@@ -42,7 +42,17 @@ export class FakeMcpServer {
 export interface Harness {
   emu: Roll20Emulator;
   server: FakeMcpServer;
-  callTool(name: string, args?: Record<string, unknown>): Promise<{ text: string; json: unknown }>;
+  callTool(name: string, args?: Record<string, unknown>): Promise<{ text: string; json: unknown; isError: boolean }>;
+  /**
+   * Make one relay action reject, so a test can prove a failure is SURFACED rather than
+   * swallowed into a plausible empty/zero answer (#190/#191/#192). Persists until
+   * clearRelayFailures().
+   */
+  failRelayAction(action: string, message?: string): void;
+  clearRelayFailures(): void;
+  /** Every relay action ATTEMPTED, in order — lets a test prove a side effect never ran. */
+  readonly relayLog: string[];
+  clearRelayLog(): void;
   teardown(): void;
 }
 
@@ -51,16 +61,27 @@ export interface HarnessOptions {
 }
 
 export function setupHarness(opts: HarnessOptions = {}): Harness {
-  // RT is now the default transport, but the harness only mocks the browser/relay seam
-  // (__setBridgeTestTransport) — NOT the direct-RTDB read paths (getCurrentPageId etc. branch on
-  // rtEnabled()). Force browser mode so those reads go through the emulator, not real Firebase.
-  const _prevTransport = process.env.ROLL20_TRANSPORT;
-  process.env.ROLL20_TRANSPORT = "browser";
+  // The test seam is __setBridgeTestTransport (below), not an env var: relayCommand and
+  // getCurrentPageId (src/bridge/roll20.ts) both check whether a test transport is installed
+  // and, if so, route reads/writes through it instead of real RTDB/Firebase. There used to be a
+  // ROLL20_TRANSPORT=browser env-var seam too, but it was already dead by the time it was
+  // removed in #180 — the read paths it once gated (getCurrentPageId) had moved onto this same
+  // _testTransport check, so setting it here was a no-op that nothing exercised.
   const emu = new Roll20Emulator({ seed: opts.seed });
   emu.load();
 
+  // Failure injection for the swallowed-failure regressions: an action named here rejects
+  // instead of reaching the emulator, standing in for a transport blip / auth expiry.
+  const failingActions = new Map<string, string>();
+  const relayLog: string[] = [];
+
   roll20.__setBridgeTestTransport({
-    relay: <T>(cmd: Record<string, unknown>) => Promise.resolve(emu.relay<T>(cmd)),
+    relay: <T>(cmd: Record<string, unknown>) => {
+      relayLog.push(String(cmd.action));
+      const injected = failingActions.get(String(cmd.action));
+      if (injected) return Promise.reject(new Error(injected));
+      return Promise.resolve(emu.relay<T>(cmd));
+    },
     evaluate: <T>(fn: (args?: unknown) => T, args?: unknown) => {
       // The page-eval closures used by the bridge read window.Campaign.* — point
       // window at the emulator's Campaign model and run them in Node.
@@ -81,15 +102,18 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
     const text = res?.content?.[0]?.text ?? "";
     let json: unknown;
     try { json = JSON.parse(text); } catch { /* not JSON */ }
-    return { text, json };
+    return { text, json, isError: res?.isError === true };
   }
 
   return {
     emu, server, callTool,
+    failRelayAction: (action: string, message?: string) =>
+      void failingActions.set(action, message ?? `injected relay failure: ${action}`),
+    clearRelayFailures: () => failingActions.clear(),
+    relayLog,
+    clearRelayLog: () => { relayLog.length = 0; },
     teardown: () => {
       roll20.__setBridgeTestTransport(null);
-      if (_prevTransport === undefined) delete process.env.ROLL20_TRANSPORT;
-      else process.env.ROLL20_TRANSPORT = _prevTransport;
     },
   };
 }

@@ -2,14 +2,13 @@
 // + deployed Mod, focused on the reliability changes in the 2026-06-14 review pass.
 // Seeds throwaway tokens, runs a scripted combat, verifies, then cleans up.
 //
-// Run (stop the long-running HTTP server first — two processes sharing the browser/
-// relay collide on the chat input and the nonce stream):
+// Run (stop the long-running HTTP server first — two processes sharing the relay collide
+// on the nonce stream):
 //
-//     ROLL20_TRANSPORT=rt npx tsx src/recon/fake-combat-it.ts
+//     npx tsx src/recon/fake-combat-it.ts
 //
-// ROLL20_TRANSPORT=rt is important: the read-modify-write transaction fix lives on the
-// RT direct-write path. Without it the concurrency probe tests the (serialized) browser
-// relay instead, which would pass for a different reason and not exercise the fix.
+// RT is the only transport (#122/#179/#180 — there is no ROLL20_TRANSPORT switch any more),
+// so the read-modify-write transaction fix on the RT direct-write path is always exercised.
 //
 // Safety: refuses to run unless the active campaign slug looks like a throwaway
 // (matches /candlekeep|test|harness/), or HARNESS_FORCE=1 is set — so it can't seed
@@ -26,7 +25,7 @@
 import "dotenv/config";
 import * as campaigns from "../registry/campaigns.js";
 import * as roll20 from "../bridge/roll20.js";
-import { rtEnabled, rtGet } from "../bridge/roll20-rt.js";
+import { rtGet } from "../bridge/roll20-rt.js";
 import { getStats } from "../bridge/transport-health.js";
 
 const HARNESS_SLUG = process.env.HARNESS_CAMPAIGN || "candlekeep-and-golden-vault";
@@ -88,7 +87,7 @@ async function main() {
     process.exit(2);
   }
   console.error(`[harness] campaign: ${target.name} (roll20 ${target.roll20CampaignId})`);
-  console.error(`[harness] transport: ${rtEnabled() ? "rt (transaction path WILL be exercised)" : "browser — ⚠ set ROLL20_TRANSPORT=rt to exercise the RMW fix"}`);
+  console.error("[harness] transport: rt (the only transport — transaction path WILL be exercised)");
 
   const pageId = await resolvePageId();
   console.error(`[harness] player page: ${pageId}\n`);

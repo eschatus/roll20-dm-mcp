@@ -6,14 +6,16 @@ import {
   SAVE_ABILITIES, type SaveAbility, type AoeToken,
   saveAttrNames, resolveSaveBonus, damageOnSave,
   isPcToken, splitPcNpc, isDowned, resolveNamesToTokens, hasHpBar,
+  classifyToken,
 } from "./aoe.js";
 import { getLastPing, publishMobPlan } from "../bridge/roll20-rt.js";
 import {
   type TurnEntry, type BatchResult,
-  text, json, num, indexBatchResults, coerceStringArray, coerceBoolean, coerceObjectArray,
+  text, fail, json, num, indexBatchResults, coerceStringArray, coerceBoolean, coerceObjectArray,
   tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId, renderRollCard,
   renderMobPlanCard,
 } from "./combatHelpers.js";
+import { normalizeNameForMatch, isPunctuationOnlyInput } from "./nameMatch.js";
 
 // ONE canonical condition table — Roll20 status marker tags for D&D 5e
 // conditions, keyed by natural-language / DDB condition name. The marker-tag→
@@ -204,10 +206,10 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "set_token_class",
-    "Mark a player-controlled token as a SIDEKICK (issue #132) — a companion (Tua, Salros Eventide, Amri in the Firebirds campaign) whose HP nonetheless lives in Roll20 bar1 (never tracked/gmnotes state) and who dies like an NPC (kill_token: immediate dead marker + map layer — no PC-style dying/death-saves state). `controlledby` alone can't tell a sidekick from a true PC, so this is a persistent per-character override in the campaign's characters registry. Read wherever PC/NPC/sidekick routing is decided: update_token_hp, update_hp_many, resolve_aoe, roll_initiative. Use when the DM says a companion IS a sidekick, e.g. 'Tua is a sidekick' → {\"characterName\":\"Tua\",\"tokenClass\":\"sidekick\"}. Pass tokenClass:'pc' to clear the override (back to an ordinary Beyond20-tracked PC).",
+    "Mark a player-controlled token as a SIDEKICK (issue #132) — this covers ANY player-controlled NPC, not just a party companion in the strict sense: a sidekick, a familiar, an animal companion, a summon are all the same mechanical thing (issue #196 — they route identically, so there is no separate 'familiar' class; a wizard's familiar and Tua are marked the same way). HP nonetheless lives in Roll20 bar1 (never tracked/gmnotes state) and it dies like an NPC (kill_token: immediate dead marker + map layer — no PC-style dying/death-saves state). `controlledby` alone can't tell it from a true PC, so this is a persistent per-character override in the campaign's characters registry. Read wherever PC/NPC/sidekick routing is decided: update_token_hp, update_hp_many, resolve_aoe, roll_initiative. Use when the DM says a companion IS a sidekick/familiar/summon, e.g. 'Tua is a sidekick' → {\"characterName\":\"Tua\",\"tokenClass\":\"sidekick\"}. Pass tokenClass:'pc' to clear the override (back to an ordinary Beyond20-tracked PC). list_tokens/get_token read the class back as `tokenClass`.",
     {
       characterName: z.string().describe("Character/token name, e.g. 'Tua', 'Salros Eventide'. Fuzzy-resolved against the registry (exact, then substring both ways) — same tolerance as other character-name tools."),
-      tokenClass: z.enum(["sidekick", "pc"]).describe("'sidekick' = player-controlled but bar1-managed with NPC death semantics. 'pc' clears the override, reverting to an ordinary Beyond20-tracked PC."),
+      tokenClass: z.enum(["sidekick", "pc"]).describe("'sidekick' = player-controlled but bar1-managed with NPC death semantics — covers a sidekick, familiar, animal companion, or summon alike. 'pc' clears the override, reverting to an ordinary Beyond20-tracked PC."),
     },
     async ({ characterName, tokenClass }) => {
       const entry = registry.setSidekick(characterName, tokenClass === "sidekick");
@@ -231,7 +233,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "list_tokens",
-    "List all tokens on the current (or specified) page with their name, layer, controlledby, and represents fields. Useful for diagnosing which tokens are present before combat.",
+    "List all tokens on the current (or specified) page with their name, layer, controlledby, represents, and tokenClass (\"pc\"|\"npc\"|\"sidekick\" — the same class HP/death routing uses internally, issue #196; \"sidekick\" covers any player-controlled NPC: a party sidekick, a familiar, an animal companion, a summon) fields. Useful for diagnosing which tokens are present before combat, and for building a roster that can tell a true PC apart from a player-controlled NPC.",
     {
       pageId: z.string().optional().describe("Page to inspect. Defaults to the current player page."),
     },
@@ -241,6 +243,7 @@ export function registerCombatTools(server: McpServer): void {
         action: "getTokens",
         pageId: activePage,
       });
+      const sidekickNames = registry.listSidekickNames();
       return json(tokens.map((t) => {
         const hpMax = num(t.bar1_max);
         const hasBar = hpMax !== null && hpMax > 0;
@@ -250,6 +253,7 @@ export function registerCombatTools(server: McpServer): void {
           layer: t.layer,
           controlledby: t.controlledby,
           represents: t.represents,
+          tokenClass: classifyToken(t, sidekickNames),
           // Real numbers, not "133/133" — see num() in combatHelpers.
           hp: hasBar ? num(t.bar1_value) : null,
           hpMax: hasBar ? hpMax : null,
@@ -491,22 +495,36 @@ export function registerCombatTools(server: McpServer): void {
             radiusFeet: nearPcsFeet,
             pageId: activePage,
             layerFilter: "objects",
-          }).catch(() => [] as { id: string }[]);
+          });
+          // No .catch here (#192): swallowing a failed range read dropped that PC's
+          // neighbours and returned a SHORTER board with no cue anything went wrong.
+          // Under-reporting a combatant is worse than erroring — a short board reads
+          // as "these are the tokens near the party" and the DM has nothing to re-ask.
           for (const n of nearby ?? []) nearIds.add(n.id);
         }
       }
 
+      // PR #198 review (Devin, finding 1): a punctuation-only nameFilter
+      // ("," / "...") normalizes to "" — every token name ".includes("")" —
+      // so an unguarded filter would silently select the WHOLE board. This
+      // is a single top-level param (not a shared per-op batch loop), so
+      // refuse the whole call loudly rather than skip/wildcard.
+      if (nameFilter && isPunctuationOnlyInput(nameFilter)) {
+        throw new Error(`nameFilter "${nameFilter}" is punctuation-only after normalization and would match every token — refusing rather than selecting the whole board.`);
+      }
       const TOKEN_LAYERS = new Set(["tokens", "objects"]);
-      const needle = nameFilter?.toLowerCase();
+      const needle = nameFilter ? normalizeNameForMatch(nameFilter) : undefined;
       const entryList = entries ?? [];
       // Explicit name list: a token matches if a provided name is contained in (or
-      // equals) the token's name, or vice versa — case-insensitive. Tolerant of
-      // epithets ("Bugbear" ↔ "Bugbear the Heavy-Handed") and full names alike.
-      // entries[].match values join the selection (union with names); an entry's
-      // match may also be an exact token id.
+      // equals) the token's name, or vice versa — case- and punctuation-insensitive
+      // (issue #195). Tolerant of epithets ("Bugbear" ↔ "Bugbear the Heavy-Handed",
+      // "Bandit Captain, the Scarred" ↔ "Bandit Captain the Scarred") and full names
+      // alike. entries[].match values join the selection (union with names); an
+      // entry's match may also be an exact token id.
       const nameMatches = (w: string, name: string) => {
-        const tn = name.toLowerCase();
-        return tn.includes(w) || w.includes(tn);
+        const tn = normalizeNameForMatch(name);
+        const nw = normalizeNameForMatch(w);
+        return tn.includes(nw) || nw.includes(tn);
       };
       // An entry match that IS a token id must only match by id — fed into the
       // bidirectional name test it could sweep in an unrelated short-named token
@@ -514,6 +532,19 @@ export function registerCombatTools(server: McpServer): void {
       const allTokenIds = new Set(tokens.map((t) => t.id));
       const selectors = [...(names ?? []), ...entryList.map((e) => e.match).filter((m) => !allTokenIds.has(m))]
         .map((n) => n.toLowerCase().trim()).filter(Boolean);
+      // PR #198 review (Devin, finding 1): same wildcard risk as nameFilter
+      // above, for names[] / entries[].match — a punctuation-only selector
+      // folds to "" and nameMatches("", tokenName) is true for EVERY token
+      // via the empty-substring test. roll_initiative is a single top-level
+      // call (not batch_exec's per-op loop), so refuse the whole call loudly
+      // and name the offending selector, rather than silently drop just that
+      // one selector (which would look like it worked while quietly rolling
+      // initiative for nobody the DM asked for, or — worse — for everyone).
+      for (const w of selectors) {
+        if (isPunctuationOnlyInput(w)) {
+          throw new Error(`Selector "${w}" is punctuation-only after normalization and would match every token — refusing rather than selecting the whole board.`);
+        }
+      }
       // Selection is active whenever names/entries were given — even if every
       // selector is an id-form match (selectors then empty, entryIds carries it).
       const hasSelection = Boolean(names?.length || entryList.length);
@@ -524,7 +555,7 @@ export function registerCombatTools(server: McpServer): void {
         if (!TOKEN_LAYERS.has(t.layer)) return false;
         if (npcOnly && isPcToken(t, sidekickNames)) return false;
         if (hasSelection && !matchesWanted(t)) return false;
-        if (needle && !t.name.toLowerCase().includes(needle)) return false;
+        if (needle && !normalizeNameForMatch(t.name).includes(needle)) return false;
         if (nearIds && !nearIds.has(t.id)) return false;
         return true;
       });
@@ -683,7 +714,7 @@ export function registerCombatTools(server: McpServer): void {
       const result = await roll20.relayCommand<{ ok: boolean; current?: { id: string; pr: number; name: string }; note?: string }>({
         action: "advanceTurn",
       });
-      if (!result.ok) return text(result.note ?? "Turn order is empty.");
+      if (!result.ok) return fail(result.note ?? "Turn order is empty.");
       return text(`Now up: **${result.current!.name}** (initiative ${result.current!.pr})`);
     }
   );
@@ -726,12 +757,26 @@ export function registerCombatTools(server: McpServer): void {
     async ({ attributeName, value, max, characterName, charSheetId }) => {
       const resolvedCharId = await resolveCharSheetId(characterName, charSheetId);
       const attrValue = max !== undefined ? { current: value, max } : value;
-      const result = await roll20.relayCommand<{ updated: string[]; created: string[]; failed: string[] }>({
+      const result = await roll20.relayCommand<{
+        updated: string[]; created: string[]; failed: string[];
+        reasons?: Record<string, string>;
+        sheet?: { sandbox: string | null; sheetName: string | null; beacon: boolean };
+      }>({
         action: "setCharacterAttributes",
         charId: resolvedCharId,
         attributes: { [attributeName]: attrValue },
       });
       const status = result.updated.length ? "updated" : result.created.length ? "created" : "failed";
+      // A write the relay could not land is reported as an error, not as a cheerful body carrying
+      // status:"failed" that a caller can skim past. The Beacon-sheet case (issue below) reaches
+      // here with a reason naming the carrier that would have worked (#205).
+      if (status === "failed") {
+        const why = result.reasons?.[attributeName] ?? "the relay reported the write as failed";
+        const where = result.sheet?.beacon
+          ? ` (campaign is on Mod Script Sandbox ${result.sheet.sandbox ?? "?"} with a Beacon sheet: ${result.sheet.sheetName ?? "?"})`
+          : "";
+        return fail(`Could not set "${attributeName}" on character ${resolvedCharId}: ${why}${where}`);
+      }
       return json({ charSheetId: resolvedCharId, attribute: attributeName, value, max, status }, false);
     }
   );
@@ -811,7 +856,7 @@ export function registerCombatTools(server: McpServer): void {
         // NPC: the token bar IS the source of truth. Guard a missing bar (writing to it
         // silently no-ops); setHp is allowed — it establishes a value.
         if (setHp === undefined && !hasHpBar(token)) {
-          return text(`${token.name}: no HP bar set (bar1_max is empty) — ${damage !== undefined ? "damage" : "healing"} not applied. Roll initiative to auto-init NPC HP from DDB, set the bar in Roll20, or use setHp to establish one.`);
+          return fail(`${token.name}: no HP bar set (bar1_max is empty) — ${damage !== undefined ? "damage" : "healing"} not applied. Roll initiative to auto-init NPC HP from DDB, set the bar in Roll20, or use setHp to establish one.`);
         }
         maxHp = Number(token.bar1_max) || 0;
         const currentHp = Number(token.bar1_value) || 0;
@@ -870,17 +915,27 @@ export function registerCombatTools(server: McpServer): void {
       type Tk = { id: string; name: string; bar1_value: number; bar1_max: number; controlledby?: string };
       const tokens = await roll20.relayCommand<Tk[]>({ action: "getTokens", pageId });
 
-      let targets: Tk[] = [];
+      // names[] goes through the same resolveNamesToTokens matcher resolve_aoe
+      // uses (issue #195: normalized, so punctuation in a spoken/transcribed
+      // name doesn't block a hit) instead of a third inline copy of the same
+      // bidirectional-substring logic.
+      let targets: AoeToken[] = [];
       if (nameMatch) {
-        const m = nameMatch.trim().toLowerCase();
-        targets = tokens.filter((t) => (t.name || "").toLowerCase().includes(m));
+        // PR #198 review (Devin, finding 1) — the headline bug: a
+        // punctuation-only nameMatch ("," / "...") normalizes to "", and
+        // every token name ".includes("")" — unguarded, this would apply
+        // damage/healing to the WHOLE BOARD in one call. nameMatch is a
+        // single top-level param, so refuse the whole call loudly.
+        if (isPunctuationOnlyInput(nameMatch)) {
+          throw new Error(`nameMatch "${nameMatch}" is punctuation-only after normalization and would match every token — refusing rather than applying ${damage !== undefined ? "damage" : "healing"} to the whole board.`);
+        }
+        const m = normalizeNameForMatch(nameMatch);
+        targets = tokens.filter((t) => normalizeNameForMatch(t.name).includes(m));
       }
       if (names?.length) {
-        for (const want of names) {
-          const w = want.trim().toLowerCase();
-          const hit = tokens.find((t) => (t.name || "").trim().toLowerCase() === w)
-                   ?? tokens.find((t) => (t.name || "").toLowerCase().includes(w));
-          if (hit && !targets.some((x) => x.id === hit.id)) targets.push(hit);
+        const { matched } = resolveNamesToTokens(names, tokens);
+        for (const hit of matched) {
+          if (!targets.some((x) => x.id === hit.id)) targets.push(hit);
         }
       }
       if (!targets.length) throw new Error(`No tokens matched ${nameMatch ? `'${nameMatch}'` : (names || []).join(", ")}`);
@@ -894,7 +949,7 @@ export function registerCombatTools(server: McpServer): void {
       const noBar = npcs.filter((t) => !hasHpBar(t));
       const npcTargets = npcs.filter((t) => hasHpBar(t));
       if (!pcs.length && !npcTargets.length) {
-        return text(`${damage !== undefined ? "−" + damage : "+" + heal} applied to 0/${noBar.length}: no HP bar — ${noBar.map((t) => (t.name || "").split("\n")[0].trim()).join(", ")} (roll initiative to auto-init NPC HP, or set bar1 in Roll20).`);
+        return fail(`${damage !== undefined ? "−" + damage : "+" + heal} applied to 0/${noBar.length}: no HP bar — ${noBar.map((t) => (t.name || "").split("\n")[0].trim()).join(", ")} (roll initiative to auto-init NPC HP, or set bar1 in Roll20).`);
       }
 
       // Tag each op with the target token id so the per-op batch result can be
@@ -957,17 +1012,20 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "get_token",
-    "Read all properties of a single Roll20 token by ID — position, size, aura, statusmarkers, HP bars, layer, rotation, etc.",
+    "Read all properties of a single Roll20 token by ID — position, size, aura, statusmarkers, HP bars, layer, rotation, tokenClass (\"pc\"|\"npc\"|\"sidekick\", issue #196 — \"sidekick\" covers any player-controlled NPC: a party sidekick, a familiar, an animal companion, a summon), etc. Errors (isError:true) if tokenId matches no token on the page — a miss is never reported as success.",
     { tokenId: z.string().describe("Roll20 token ID") },
     async ({ tokenId }) => {
-      const token = await roll20.relayCommand({ action: "getTokenById", tokenId });
-      return json(token);
+      type TokenData = AoeToken & Record<string, unknown>;
+      const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId });
+      if (!token) return fail(`token not found: ${tokenId}`);
+      const tokenClass = classifyToken(token, registry.listSidekickNames());
+      return json({ ...token, tokenClass });
     }
   );
 
   server.tool(
     "set_token_props",
-    "Set one or more properties on a Roll20 token — name, position, aura, tint, bars, layer, etc. Use aura1_radius (feet, 0 to clear) + aura1_color (#hex) + showplayers_aura1=true for visible spell auras. Use tint_color for colored overlays. Target with characterName (or tokenId) — same as every other token-mutation tool.",
+    "Set one or more properties on a Roll20 token — name, position, aura, tint, bars, layer, etc. Use tint_color for colored overlays. Target with characterName (or tokenId) — same as every other token-mutation tool. For a spell EMANATION (Spirit Guardians, Aura of Protection — anything that moves with the creature) prefer set_token_aura: it is one call, defaults to player-visible, and takes the aura shape. The raw aura fields here stay for fine-grained edits.",
     {
       characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Thorne'."),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
@@ -980,11 +1038,13 @@ export function registerCombatTools(server: McpServer): void {
       layer: z.string().optional().describe("Roll20 layer: tokens, map, gmlayer, objects"),
       aura1_radius: z.number().optional().describe("Aura 1 radius in feet (0 clears it)"),
       aura1_color: z.string().optional().describe("Aura 1 color as #hex"),
-      aura1_square: z.boolean().optional().describe("True for square aura, false (default) for circle"),
+      aura1_square: z.boolean().optional().describe("Legacy boolean shape toggle: true for square, false for circle. Roll20 keeps it in sync with aura1_options — prefer aura1_options, which can express shapes this boolean cannot."),
+      aura1_options: z.string().optional().describe("Aura 1 shape. Roll20 documents 'circle' and 'square'; the 2026-09-01 release added hex and outline-only (border) variants whose property strings Roll20 has not documented — this is a free string so a working value passes straight through instead of being blocked by a guessed enum."),
       showplayers_aura1: z.boolean().optional().describe("Show aura 1 to players"),
       aura2_radius: z.number().optional(),
       aura2_color: z.string().optional(),
       aura2_square: z.boolean().optional(),
+      aura2_options: z.string().optional().describe("Aura 2 shape — see aura1_options."),
       showplayers_aura2: z.boolean().optional(),
       tint_color: z.string().optional().describe("#hex color overlay on token, or 'transparent' to clear"),
       bar2_value: z.number().optional(),
@@ -1006,6 +1066,54 @@ export function registerCombatTools(server: McpServer): void {
       }
       await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props });
       return text(`Updated token ${characterName ?? resolvedTokenId}: ${Object.keys(props).join(", ")}`);
+    }
+  );
+
+  server.tool(
+    "set_token_aura",
+    "Set or clear a token's aura — the table's visual for an EMANATION, i.e. an effect centred on a creature that MOVES WITH IT (Spirit Guardians, Aura of Protection, a dragon's Frightful Presence). A fixed area that stays where it was cast uses create_zone instead, never this. Auras are player-visible by default, because their whole job is showing the table where the effect reaches. Pass radiusFeet 0 to clear one. Slot 2 is a second, independent aura on the same token — use it for a creature carrying two overlapping effects rather than overwriting the first.",
+    {
+      characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Brie Mossfrond'."),
+      tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
+      radiusFeet: z.number().min(0).describe("Aura radius in FEET (page units), e.g. 15 for Spirit Guardians. A bare NUMBER. 0 clears the aura."),
+      slot: z.union([z.literal(1), z.literal(2)]).default(1).describe("Which of the token's two aura slots to use. Default 1."),
+      color: z.string().optional().describe("Aura color as #hex, e.g. '#cc0000'. Left alone when omitted, so re-radiusing an existing aura keeps its color."),
+      shape: z.string().optional().describe("Aura shape. Roll20 documents 'circle' (default) and 'square'; the 2026-09-01 release added hex and outline-only (border) variants whose property strings are not yet documented — passed through verbatim."),
+      visibleToPlayers: z.boolean().default(true).describe("Show the aura to players. Defaults true — an emanation the table cannot see defeats the point."),
+    },
+    async ({ characterName, tokenId, radiusFeet, slot, color, shape, visibleToPlayers }) => {
+      let resolvedTokenId = tokenId;
+      if (!resolvedTokenId) {
+        if (!characterName) throw new Error("Provide characterName or tokenId");
+        resolvedTokenId = await resolveTokenOrThrow(characterName);
+      }
+      const props: Record<string, unknown> = { [`aura${slot}_radius`]: radiusFeet };
+      // Clearing is radius-only on purpose: colour and shape survive, so the next cast of the same
+      // effect on the same creature comes back looking the way the DM set it up.
+      // NB break_concentration tears down aura slot 1 ONLY, so a concentration effect parked on
+      // slot 2 currently outlives its own teardown — issue #210.
+      if (radiusFeet > 0) {
+        if (color) props[`aura${slot}_color`] = color;
+        if (shape) {
+          // aura{n}_options is the authoritative shape field and Roll20 documents the legacy
+          // aura{n}_square boolean as "kept in sync" with it. That sync is Roll20's claim, not
+          // something verified here, and a graphic silently DROPS a property it doesn't recognise
+          // (the #162/#164 class) — so for the two shapes the boolean can express, write it too.
+          // They mean the same thing, so this is belt-and-braces, not two sources of truth. Shapes
+          // the boolean cannot express (hex, the border-only variants) go through options alone.
+          props[`aura${slot}_options`] = shape;
+          if (shape === "square") props[`aura${slot}_square`] = true;
+          else if (shape === "circle") props[`aura${slot}_square`] = false;
+        }
+        props[`showplayers_aura${slot}`] = visibleToPlayers;
+      }
+      await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props });
+      const who = characterName ?? resolvedTokenId;
+      return text(
+        radiusFeet > 0
+          ? `Aura ${slot} on ${who}: ${radiusFeet} ft${shape ? `, ${shape}` : ""}${color ? `, ${color}` : ""}, ${visibleToPlayers ? "visible to players" : "GM-only"}. It moves with the token — clear it with radiusFeet 0 when the effect ends.${slot === 2 ? " NOTE: break_concentration only tears down slot 1 (#210), so a concentration effect on slot 2 must be cleared by hand." : ""}`
+          : `Aura ${slot} cleared on ${who}.`
+      );
     }
   );
 
@@ -1232,6 +1340,32 @@ export function registerCombatTools(server: McpServer): void {
         return json({ wouldAffect: { npcs: npcs.map((n) => n.name), pcs: pcs.map((p) => p.name), skippedDown }, drawNote: drawNote || undefined });
       }
 
+      // ── Save bonuses are read BEFORE the public damage roll ──
+      // This read can fail, and resolve_aoe fails with it rather than rolling saves
+      // blind (#191). Doing it HERE means the failure lands before Roll20's public
+      // roller has posted a damage total the whole table can see — otherwise a retry
+      // posts a SECOND total for the same effect and the DM has to adjudicate which
+      // one counted. A zone/aura drawn earlier still stands: ping-centered mode has to
+      // draw the zone before it can ask which tokens are inside, so that side effect
+      // genuinely cannot be hoisted. The error names it instead, so a retry doesn't
+      // silently leave two.
+      const bonusByChar = new Map<string, { bonus: number; source: string }>();
+      if (args.saveAbility && npcs.length) {
+        for (const npc of npcs) {
+          const charId = npc.represents || "";
+          if (!charId || bonusByChar.has(charId)) continue;
+          const attrs = await roll20.relayCommand<Record<string, { current: unknown }>>({
+            action: "getCharacterAttributes", charId, names: saveAttrNames(args.saveAbility),
+          }).catch((e: Error) => {
+            throw new Error(
+              `${npc.name}: could not read save bonuses from character ${charId} (${e.message}). ` +
+              `No damage rolled and nothing applied.${drawNote ? ` NOTE: ${drawNote}` : ""} Re-run resolve_aoe.`
+            );
+          });
+          bonusByChar.set(charId, resolveSaveBonus(attrs, args.saveAbility));
+        }
+      }
+
       // ── Damage: one public roll for the whole effect ──
       let dmg = args.damage ?? 0;
       if (args.damageFormula) {
@@ -1248,15 +1382,9 @@ export function registerCombatTools(server: McpServer): void {
       type NpcResult = { token: AoeToken; bonus: number; source: string; total?: number; saved: boolean; applied: number; noBar?: boolean };
       const npcResults: NpcResult[] = [];
       if (args.saveAbility && npcs.length) {
-        const bonusByChar = new Map<string, { bonus: number; source: string }>();
         for (const npc of npcs) {
           const charId = npc.represents || "";
-          if (charId && !bonusByChar.has(charId)) {
-            const attrs = await roll20.relayCommand<Record<string, { current: unknown }>>({
-              action: "getCharacterAttributes", charId, names: saveAttrNames(args.saveAbility),
-            }).catch(() => null);
-            bonusByChar.set(charId, resolveSaveBonus(attrs, args.saveAbility));
-          }
+          // Bonuses were resolved above, before the public roll — see that block for why.
           const b = charId ? bonusByChar.get(charId)! : { bonus: 0, source: "none" };
           npcResults.push({ token: npc, ...b, saved: false, applied: 0 });
         }
@@ -1318,7 +1446,11 @@ export function registerCombatTools(server: McpServer): void {
         const cur = Number(r.token.bar1_value) || 0;
         const max = Number(r.token.bar1_max) || 0;
         const newHp = Math.max(0, cur - r.applied);
-        const save = r.total !== undefined ? `save ${r.total} vs DC ${args.saveDc} ${r.saved ? "✓" : "✗"}` : "no save";
+        // Mark a save rolled on a flat d20 because the sheet carried no bonus for that
+        // ability: without it a blind +0 is indistinguishable in the report from a real
+        // one, and nobody ever learns which saves were rolled without a stat (#191).
+        const flat = r.source === "none" ? " [flat d20 — no save bonus on sheet]" : "";
+        const save = r.total !== undefined ? `save ${r.total} vs DC ${args.saveDc} ${r.saved ? "✓" : "✗"}${flat}` : "no save";
         const hpErr = errOf(`hp:${r.token.id}`);
         const condErr = errOf(`cond:${r.token.id}`);
         const condNote = !r.saved && args.onFailCondition ? (condErr ? ` cond FAILED(${condErr})` : ` +${args.onFailCondition}`) : "";
@@ -1431,7 +1563,12 @@ export function registerCombatTools(server: McpServer): void {
     async () => {
       // Read the ids first so the HUD can be told which cards to drop — clearMobPlans
       // itself returns only {ok}, and a HUD that isn't told keeps rendering them.
-      const plans = await roll20.relayCommand<Record<string, unknown>>({ action: "getMobPlans" }).catch(() => ({}));
+      // Not .catch(() => ({})) (#192): a swallowed read reported "Cleared 0 plan(s)" while
+      // clearMobPlans really ran, so the plans were gone from the relay and still on the
+      // HUD — precisely the failure the comment above says this read exists to prevent.
+      // Failing here instead leaves nothing half-done: the plans are still stored and the
+      // DM can re-run.
+      const plans = await roll20.relayCommand<Record<string, unknown>>({ action: "getMobPlans" });
       const ids = Object.keys(plans ?? {});
       await roll20.relayCommand({ action: "clearMobPlans" });
       for (const id of ids) publishMobPlan(id, null);

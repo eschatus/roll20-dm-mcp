@@ -86,10 +86,10 @@ The Mod script is the server's hands inside Roll20. It receives commands from th
 **Verify the load, not the save.** A saved script can still fail to start. Check the API Output Console for:
 
 ```
-[GM_AI_Bridge] Relay script loaded (v2.5.0)
+[GM_AI_Bridge] Relay script loaded (v2.7.0)
 ```
 
-The current version is **2.5.0**, and it must match `EXPECTED_RELAY_VERSION` in `src/bridge/relay-version.ts`. A mismatch warns once and shows up in `transport_status`; it never throws, so a stale deploy fails in confusing ways rather than loudly. Check the banner.
+The current version is **2.7.0**, and it must match `EXPECTED_RELAY_VERSION` in `src/bridge/relay-version.ts`. A mismatch warns once and shows up in `transport_status`; it never throws, so a stale deploy fails in confusing ways rather than loudly. Check the banner.
 
 **Deploys are per-campaign.** Each Roll20 game carries its own copy of the script, so one campaign can be running an older relay than another. Re-paste after every update to `ai-relay.js`, in every campaign you run.
 
@@ -103,14 +103,15 @@ The current version is **2.5.0**, and it must match `EXPECTED_RELAY_VERSION` in 
 npm run serve
 ```
 
-On first run it generates an auth token and writes it to `.env`. If a `.mcp.json` already exists in the project root with a `roll20-dm` entry, it also injects the bearer header there so Claude Code can find the server — but **it does not create `.mcp.json`**, and that file is gitignored, so a fresh clone has none. Write it yourself first:
+On first run it generates an auth token, writes it to `.env`, and **creates `.mcp.json`** (that file is gitignored, so a fresh clone has none) with a `roll20-dm` and a `roll20-dm-maps` entry, injecting the bearer header into the `roll20-dm` block:
 
 ```json
 {
   "mcpServers": {
     "roll20-dm": {
       "type": "http",
-      "url": "http://127.0.0.1:39200/mcp"
+      "url": "http://127.0.0.1:39200/mcp",
+      "headers": { "Authorization": "Bearer <generated token>" }
     },
     "roll20-dm-maps": {
       "type": "stdio",
@@ -122,9 +123,7 @@ On first run it generates an auth token and writes it to `.env`. If a `.mcp.json
 }
 ```
 
-(On Windows, escape the backslashes: `C:\\Users\\you\\roll20-dm-mcp\\dist\\index-maps.js`.)
-
-Then run `npm run serve` — the `Authorization` header appears in the `roll20-dm` block — and restart Claude Code.
+If `.mcp.json` already exists (e.g. you hand-wrote one, or it's a re-run), it only fills in whichever of the `roll20-dm` / `roll20-dm-maps` entries are missing and refreshes the `roll20-dm` bearer header — any other servers you've added stay untouched. You don't need to write this file yourself; just restart Claude Code after the first `npm run serve` to pick it up.
 
 The server runs as long as the terminal stays open. Keep it running during play. Besides `/mcp` it serves `/events`, a bearer-authenticated SSE stream carrying `combat-update`, `mob-plan`, `inbox-item`, `sandbox-status`, `map-ping`, and `chat-message` events; that's how the Gem's HUD and its player-command handling stay in sync.
 
@@ -206,7 +205,7 @@ The Gem is an Electron overlay that floats on your screen. It shows a glowing fa
 
 What matters from *this* side of the relationship:
 
-- The Gem pins this repository as a dependency by tag (currently `#v2.0.2`) and builds it in the clone, so you do not need a separate checkout of roll20-dm-mcp for the Gem to run. Changes here reach the Gem only when it re-pins.
+- The Gem pins this repository as a dependency by tag (currently `#v2.0.4`) and builds it in the clone, so you do not need a separate checkout of roll20-dm-mcp for the Gem to run. Changes here reach the Gem only when it re-pins.
 - It bundles `skills/dm-rules.md` and `mod-scripts/ai-relay.js` from this repo into its installer.
 - It furnishes the two credential files from step 5, and it is the only supported harvester.
 - It consumes the `/events` SSE stream, and it owns the two responsibilities this server gave up: deciding tactical plans (storing them via `set_mob_plan`) and answering player `!`-commands (off `chat-message` events).

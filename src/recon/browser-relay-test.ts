@@ -1,12 +1,14 @@
-// Control test: run a MOD-ONLY action through the known-good Playwright browser relay (RT disabled)
-// in the current campaign. getPcHp has no client-direct reader, so it must round-trip through the
-// Mod — exactly like RT does. If THIS also times out, the Mod sandbox is down (not our transport).
+// STALE (#180): this was meant as a control test running a MOD-ONLY action through the legacy
+// Playwright browser relay (RT disabled) to distinguish "Mod is down" from "RT is down". That
+// browser relay was deleted in #122/#179, and relayCommand (src/bridge/roll20.ts) never branched
+// on ROLL20_TRANSPORT to begin with — it always dispatches over RT. So this script is now
+// identical to running the RT path a second time; it no longer isolates anything. Left in place
+// as a plain "is the Mod alive" liveness probe, not a control test.
 
 import { relayCommand } from "../bridge/roll20.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
 
 async function main() {
-  process.env.ROLL20_TRANSPORT = "browser"; // force the legacy browser relay (RT is the default now)
   const camp = getActiveCampaign();
   console.error(`[browser-relay] campaign: ${camp.name} (${camp.roll20CampaignId})`);
   console.error("[browser-relay] getPcHp (Mod round-trip via Playwright chat relay)...");

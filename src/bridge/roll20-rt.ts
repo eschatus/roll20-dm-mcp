@@ -12,7 +12,8 @@
 //
 // The session cookie is harvested ONCE via the existing browser bridge (which keeps a persistent
 // logged-in profile), cached to disk, and only re-harvested on 401. The browser is NOT held open
-// during operation — all traffic is the socket. Enable with ROLL20_TRANSPORT=rt.
+// during operation — all traffic is the socket. RT is the only transport (#122/#179) — there is
+// no runtime switch for it.
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import path from "path";
@@ -59,13 +60,6 @@ const TOKEN_CACHE = dataPath("roll20-rt-token.json");
 // Firebase custom tokens are valid ~1h and re-exchangeable; cache below that so quick server
 // restarts skip the browser entirely. Only a cold start past the window touches Chromium.
 const TOKEN_MAX_AGE_MS = 50 * 60_000;
-
-// Browserless RTDB transport is the DEFAULT now — combat must not silently depend on a browser
-// (a packaged install ships none). Opt OUT to the legacy browser→chat relay with
-// ROLL20_TRANSPORT=browser (dev only). Mirrors DDB_TRANSPORT's default-rt/opt-out-browser shape.
-export function rtEnabled(): boolean {
-  return (process.env.ROLL20_TRANSPORT || "rt").toLowerCase() !== "browser";
-}
 
 // --- Firebase custom-token harvest (browser touched once at cold start, then cached) ---
 //
@@ -504,7 +498,8 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
           rotation: t.rotation || 0, imgsrc: t.imgsrc, statusmarkers: t.statusmarkers || "",
           bar1_value: t.bar1_value, bar1_max: t.bar1_max, bar2_value: t.bar2_value, bar2_max: t.bar2_max,
           bar3_value: t.bar3_value, bar3_max: t.bar3_max,
-          aura1_radius: t.aura1_radius, aura1_color: t.aura1_color, aura2_radius: t.aura2_radius, aura2_color: t.aura2_color,
+          aura1_radius: t.aura1_radius, aura1_color: t.aura1_color, aura1_square: t.aura1_square, aura1_options: t.aura1_options,
+          aura2_radius: t.aura2_radius, aura2_color: t.aura2_color, aura2_square: t.aura2_square, aura2_options: t.aura2_options,
           tint_color: t.tint_color, light_radius: t.light_radius, light_dimradius: t.light_dimradius,
           gmnotes: t.gmnotes || "",
         };
@@ -520,9 +515,12 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
             color: o.color, isOpen: o.isOpen, isLocked: o.isLocked, isSecret: o.isSecret,
           };
         };
-        const empty: Record<string, Record<string, unknown>> = {};
-        const doors = await rtGet<Record<string, Record<string, unknown>>>(`doors/page/${cmd.pageId}`).catch(() => empty);
-        const windows = await rtGet<Record<string, Record<string, unknown>>>(`windows/page/${cmd.pageId}`).catch(() => empty);
+        // No .catch (#192): rtGet returns snap.val(), which is null for a MISSING node — it
+        // does not throw — and the Object.values(x || {}) below already covers that. A catch
+        // here could therefore only mask a REAL failure (auth expiry, permission denied,
+        // transport down) and report "no doors on this page" for a read that never landed.
+        const doors = await rtGet<Record<string, Record<string, unknown>>>(`doors/page/${cmd.pageId}`);
+        const windows = await rtGet<Record<string, Record<string, unknown>>>(`windows/page/${cmd.pageId}`);
         return {
           doors: Object.values(doors || {}).map((d) => mapOpening(d, "door")),
           windows: Object.values(windows || {}).map((w) => mapOpening(w, "window")),
@@ -531,7 +529,10 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
       case "getPaths": {
         const layer = cmd.layer as string | undefined;
         const includePath = cmd.includePath === true;
-        const paths = await rtGet<Record<string, Record<string, unknown>>>(`paths/page/${cmd.pageId}`).catch(() => ({} as Record<string, Record<string, unknown>>));
+        // Same reasoning as getDoors (#192): a missing node is null, already handled below,
+        // so this catch could only hide a real failure — and an empty wall list reads as
+        // "no walls placed", which is exactly what a wall-placement QC pass checks for.
+        const paths = await rtGet<Record<string, Record<string, unknown>>>(`paths/page/${cmd.pageId}`);
         let list: Record<string, unknown>[] = Object.values(paths || {});
         if (layer) list = list.filter((p) => p.layer === layer);
         const out = list.map((p) => {

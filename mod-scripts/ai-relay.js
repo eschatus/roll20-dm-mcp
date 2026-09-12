@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.6.0";
+var AI_RELAY_VERSION = "2.8.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -19,38 +19,135 @@ function writeResult(nonce, data, error) {
   const payload = error
     ? JSON.stringify({ nonce, error: String(error) })
     : JSON.stringify({ nonce, data });
-  // Echoed data (e.g. a character's raw attribute text) can itself contain "@{...}" (attribute
-  // ref), "%{...}" (ability/macro call), or "[[...]]" (inline roll) — Roll20 scans EVERY outgoing
-  // chat message for all three and tries to live-evaluate them. A malformed one throws inside
-  // Roll20's own chat pipeline and disables the WHOLE sandbox (not just this message) — hit in
-  // practice via stray "@{pbd_safe}" / "%{Vampire|kingdom-culture-action}" text sitting in
-  // character attributes, crashing the Mod every time getCharacterAttributes read it back.
-  // HTML-entity-encode just the three trigger sequences (never plain "[" — that's normal JSON
-  // array syntax) so they survive as inert text; Playwright's textContent decode on the read side
-  // turns them back into literal "@{"/"%{"/"[[" with no unescaping needed on our end.
-  const safePayload = payload
-    .replace(/@\{/g, "&#64;{")
-    .replace(/%\{/g, "&#37;{")
-    .replace(/\[\[/g, "&#91;&#91;");
+  // PERCENT-ENCODE the whole payload. This replaces the old HTML-entity escape of "@{"/"%{"/"[[",
+  // which did not work and could not work: Roll20 decodes "&#91;" back to "[" BEFORE it scans the
+  // message for inline rolls, so the escape was undone in transit and a single
+  // getCharacterAttributes over a sheet holding a rollbase-style value still disabled the entire
+  // Mod sandbox. Verified live on a Kingmaker campaign, relay 2.6.2, with every escape in place.
+  //
+  // Enumerating Roll20's trigger syntax is the losing move — that list was "@{", "%{", "[[" and
+  // never included "&{" (roll templates), and there is no reason to believe it is complete now.
+  // encodeURIComponent instead makes the payload STRUCTURALLY incapable of carrying any of them:
+  // it encodes "{" as %7B, "[" as %5B, "&" as %26 and "$" as %24, so no "@{", "%{", "&{", "[[" or
+  // "$[[" can survive no matter what a character sheet contains. The output alphabet has nothing
+  // Roll20's chat pipeline reacts to. The TS side (parseAibridge in src/bridge/rt-helpers.ts)
+  // decodes it; a NEW marker keeps that unambiguous, and the legacy marker still parses there so
+  // a campaign running an older relay keeps working until it is redeployed.
+  //
   // noarchive: won't appear in the persistent chat log.
   // display:none: hides any transient flash in the current session.
-  // Playwright still reads textContent from hidden DOM elements.
-  sendChat("GM-AI-Bridge",
-    "/w gm <div style='display:none'>AIBRIDGE_RESULT:" + safePayload + "</div>",
+  chatSend("GM-AI-Bridge",
+    "/w gm <div style='display:none'>AIBRIDGE_RESULT_ENC:" + encodeURIComponent(payload) + "</div>",
     null,
     { noarchive: true }
   );
 }
 
-// HTML-escape any player-derived string before interpolating it into sendChat HTML.
-// Prevents player-authored who/content/intent text from injecting markup into our cards.
-function esc(s) {
+// Neutralize the THREE sequences Roll20 live-evaluates in every outgoing chat message:
+// "[[" (inline roll), "@{" (attribute ref) and "%{" (ability/macro call). A malformed one throws
+// inside Roll20's OWN chat pipeline — asynchronously, where no try/catch of ours can reach it —
+// and disables the WHOLE Mod sandbox, not just that message.
+//
+// writeResult has neutralized these since the stray-"@{pbd_safe}" incident, but it was the only
+// path that did. Every other sendChat interpolated free text raw, and one of those paths takes
+// text a PLAYER typed: `!dm [[grapple the ogre` is enough to kill the relay for the whole table.
+// esc() was never protection against this — it escapes HTML metacharacters and leaves all three
+// triggers perfectly intact.
+//
+// HTML entities, so the DM still reads the literal characters while the chat parser never sees a
+// trigger. Never encode a lone "[" — that is ordinary prose, and ordinary JSON.
+//
+// chatSafe itself IS idempotent (its output contains none of the three triggers), which is what
+// makes it safe to layer over a string whose parts were already esc()'d. esc() is NOT idempotent --
+// it escapes "&" -- so apply esc once, where a value is interpolated, and never again.
+function chatSafe(s) {
   return String(s == null ? "" : s)
+    .replace(/@\{/g, "&#64;{")
+    .replace(/%\{/g, "&#37;{")
+    .replace(/\[\[/g, "&#91;&#91;");
+}
+
+// Sanitize a WHISPER TARGET -- the "<name>" in "/w <name> ...", which Roll20 parses as a routing
+// address rather than rendering as text. Entity-encoding is WRONG here: "&#91;&#91;grim" becomes
+// part of the name Roll20 tries to match, so the whisper misroutes and, because the address is
+// re-scanned with the rest of the line, the trigger still fires. Strip the characters instead.
+//
+// A display name is player-controlled: the `!dm` acknowledgement whispers back to msg.who, so a
+// player NAMED "[[grim" killed the sandbox without typing anything at all. A whisper degraded to
+// an unmatched name is one lost message; an unsanitized one is an outage for the whole table.
+function chatSafeTarget(name) {
+  return String(name == null ? "" : name).replace(/[[\]@%{}]/g, "").trim();
+}
+
+// THE chokepoint for every outgoing chat message — the sendChat analogue of setSafe(). Patching
+// call sites one at a time is how this hole survived in the first place: sixteen sendChat sites,
+// one of them escaped. A single door means a NEW sendChat added later is safe by default instead
+// of being a fresh outage waiting for a player to type "[[".
+//
+// `rawRolls` is the deliberate opt-out, for the four messages whose whole purpose is to carry live
+// syntax: the two initiative builders' "[[1d20…]]", rollFormulas' "/roll <formula>", and postChat's
+// roll templates. Those are server-composed and GM-gated. Everything ELSE — anything touched by a
+// player, a token name, a model-authored string — goes through neutralized, which is the default
+// precisely because that is the safe answer when someone forgets to think about it.
+//
+// test/chat-trigger-safety.test.ts asserts this is the only sendChat( in the file.
+function chatSend(speaker, message, callback, options, rawRolls) {
+  sendChat(speaker, rawRolls ? String(message == null ? "" : message) : chatSafe(message), callback, options);
+}
+
+// HTML-escape any player-derived string before interpolating it into sendChat HTML, AND neutralize
+// the chat-pipeline triggers. Order matters: HTML-escape first, or chatSafe's own "&#64;" would
+// have its ampersand escaped to "&amp;#64;" and render as literal text instead of "@".
+function esc(s) {
+  return chatSafe(String(s == null ? "" : s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+    .replace(/'/g, "&#39;"));
+}
+
+// Which Mod Script Sandbox this campaign is running, and what it implies for character data.
+//
+// Roll20 flipped the DEFAULT sandbox from v1.0 to v1.5 on 2026-09-02 for every game that had never
+// explicitly picked one, and the two are a documented behavioral fork (Beacon sheets, toAbove/
+// toBelow, currentSide, the spawnFxBetweenPoints angle fix). The version is PER-CAMPAIGN, exactly
+// like a relay deploy is, so the TS side has to be able to see which one it is talking to —
+// ACTIONS["ping"] echoes this alongside AI_RELAY_VERSION.
+//
+// These four live DIRECTLY on the object Campaign() returns, not behind .get(). A sandbox that
+// predates them yields undefined, which is why nothing here probes or throws.
+function sheetContext() {
+  var c = Campaign();
+  var summary = c.computedSummary;
+  // Roll20 documents computedSummary only as "available Beacon computed property names" and does
+  // NOT specify the element shape, so handle the plausible ones. Getting this wrong is not
+  // cosmetic: a list that matches nothing would put the silent false success back while cheerfully
+  // reporting beacon:true, so an unreadable-but-present summary is tracked separately below.
+  var raw = Array.isArray(summary) ? summary
+    : (summary && typeof summary === "object") ? Object.keys(summary)
+    : [];
+  var computed = [];
+  raw.forEach(function (entry) {
+    if (typeof entry === "string") { computed.push(entry); return; }
+    if (entry && typeof entry === "object") {
+      var n = entry.name || entry.property || entry.key;
+      if (typeof n === "string") computed.push(n);
+    }
+  });
+  return {
+    sandbox: c.sandboxVersion || null,
+    node: c.nodeVersion || null,
+    sheetName: c.sheetName || null,
+    // A Beacon ("advanced") character sheet keeps its data in computed properties rather than
+    // `attribute` objects, so the attribute-object read/write path in this script cannot see or
+    // reach any of it. setCharacterAttributes uses this to refuse a write it cannot land.
+    beacon: raw.length > 0,
+    computed: computed,
+    // A Beacon sheet whose property names we could not extract: we know attribute writes are
+    // unreliable here but not which ones, so every create is refused rather than guessed at.
+    computedUnreadable: raw.length > 0 && computed.length === 0,
+  };
 }
 
 // True iff the message sender is a GM. Uses playerIsGM when present (it is in the
@@ -142,8 +239,11 @@ function tokenRich(t) {
     ["aura1_radius",     t.get("aura1_radius")],
     ["aura1_color",      t.get("aura1_color")],
     ["aura1_square",     t.get("aura1_square")],
+    ["aura1_options",    t.get("aura1_options")],
     ["aura2_radius",     t.get("aura2_radius")],
     ["aura2_color",      t.get("aura2_color")],
+    ["aura2_square",     t.get("aura2_square")],
+    ["aura2_options",    t.get("aura2_options")],
     ["light_radius",     t.get("light_radius")],
     ["light_dimradius",  t.get("light_dimradius")],
     ["tint_color",       t.get("tint_color")],
@@ -156,8 +256,8 @@ function tokenRich(t) {
     var v = p[1];
     if (v === null || v === undefined || v === "" || v === false) return;
     // Skip aura colors/shape when no aura radius is set
-    if ((p[0] === "aura1_color" || p[0] === "aura1_square") && (!aura1r || aura1r === "")) return;
-    if ((p[0] === "aura2_color" || p[0] === "aura2_square") && (!aura2r || aura2r === "")) return;
+    if ((p[0] === "aura1_color" || p[0] === "aura1_square" || p[0] === "aura1_options") && (!aura1r || aura1r === "")) return;
+    if ((p[0] === "aura2_color" || p[0] === "aura2_square" || p[0] === "aura2_options") && (!aura2r || aura2r === "")) return;
     // Skip transparent tint and zero rotation (defaults, carry no information)
     if (p[0] === "tint_color" && v === "transparent") return;
     if (p[0] === "rotation" && v === 0) return;
@@ -355,8 +455,8 @@ function setDefaultTokenForChar(t, args) {
     "bar1_link", "bar2_link", "bar3_link",
     "bar1_value", "bar1_max", "bar2_value", "bar2_max", "bar3_value", "bar3_max",
     "width", "height", "rotation", "statusmarkers", "tint_color",
-    "aura1_radius", "aura1_color", "aura1_square", "showplayers_aura1",
-    "aura2_radius", "aura2_color", "aura2_square", "showplayers_aura2",
+    "aura1_radius", "aura1_color", "aura1_square", "aura1_options", "showplayers_aura1",
+    "aura2_radius", "aura2_color", "aura2_square", "aura2_options", "showplayers_aura2",
     "showname", "showplayers_name", "showplayers_bar1", "showplayers_bar2", "showplayers_bar3",
     "light_radius", "light_dimradius", "light_otherplayers", "light_hassight",
     "light_angle", "light_losangle", "sides", "currentside",
@@ -1610,7 +1710,7 @@ ACTIONS["runUVTT"] = function (args, msg, nonce, senderPlayerId) {
 
         let extraArgs = args.noObjects ? " --no-objects" : "";
         let uvttCmd = "!uvtt --ids " + uvttGraphic.id + extraArgs;
-        sendChat("API", uvttCmd);
+        chatSend("API", uvttCmd);
 
         writeResult(nonce, {
           graphicId: uvttGraphic.id,
@@ -1867,10 +1967,12 @@ ACTIONS["rollInitiativeForTokens"] = function (args, msg, nonce, senderPlayerId)
         // Build one inline roll expression per token: "Name: [[1d20+bonus]]"
         let msgParts = validTokens.map(function(t) {
           let sign = t.initBonus >= 0 ? "+" : "";
-          return t.name + ": [[1d20" + (t.initBonus !== 0 ? sign + t.initBonus : "") + "]]";
+          // esc() the name, never the whole part: the "[[1d20…]]" here is a roll we MEAN to send.
+          return esc(t.name) + ": [[1d20" + (t.initBonus !== 0 ? sign + t.initBonus : "") + "]]";
         });
 
-        sendChat("Initiative", msgParts.join(" | "), function(ops) {
+        // rawRolls: this message IS the initiative roll. Token names inside it are esc()'d above.
+        chatSend("Initiative", msgParts.join(" | "), function(ops) {
           let inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
 
           let rollResults = validTokens.map(function(t, i) {
@@ -1910,12 +2012,12 @@ ACTIONS["rollInitiativeForTokens"] = function (args, msg, nonce, senderPlayerId)
                 + "<table style='width:100%;border-collapse:collapse;margin:4px 0;'>" + rows + "</table>"
                 + "<div style='color:#4a0000;text-align:center;font-size:0.85em;margin-top:4px;'>— ✦ —</div>"
                 + "</div>";
-              sendChat("Initiative", "/direct " + html);
+              chatSend("Initiative", "/direct " + html);
             }
           }
 
           writeResult(rollNonce, rollResults.concat(tokenData.filter(function(t) { return t.error; })));
-        }, { noarchive: true });
+        }, { noarchive: true }, true);
         return;
       }
       };
@@ -2024,7 +2126,8 @@ ACTIONS["whisperPlayer"] = function (args, msg, nonce, senderPlayerId) {
         // whose output the campaign's bridge-suppression CSS hides. The AIBRIDGE_RESULT to the GM
         // (writeResult below) stays hidden as before.
         var whisperSpeaker = args.speakAs || "The DM";
-        sendChat(whisperSpeaker, "/w " + args.playerName + " " + args.message, null, { noarchive: false });
+        // As with the !dm ack: the body is encoded, the routing address is stripped.
+        chatSend(whisperSpeaker, "/w " + chatSafeTarget(args.playerName) + " " + args.message, null, { noarchive: false });
         writeResult(nonce, { ok: true });
         return;
       }
@@ -2092,11 +2195,36 @@ ACTIONS["setCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) 
         let charId = args.charId;
         let attributes = args.attributes || {};
         let updated = [], created = [], failed = [];
+        // Reasons keyed by attribute name, for anything that lands in `failed`.
+        let reasons = {};
+        let ctx = sheetContext();
         Object.keys(attributes).forEach(function(attrName) {
           let val = attributes[attrName];
           let isObj = typeof val === "object" && val !== null;
           let currentVal = isObj ? val.current : val;
           let maxVal = isObj ? val.max : undefined;
+          // The Beacon check comes FIRST, before the exists/create split. It deliberately covers
+          // the update branch too: on a Beacon sheet the sheet does not read `attribute` objects
+          // for a computed property, so writing one that already exists is just as much of a
+          // no-op as creating one. Campaigns that ran relay <= 2.5.0 against a Beacon sheet are
+          // exactly the ones carrying orphan attributes now, and a guard that only covered the
+          // create branch would be inert for every one of them.
+          if (ctx.computed.indexOf(attrName) !== -1) {
+            failed.push(attrName);
+            reasons[attrName] = "Beacon computed property (sandbox " + (ctx.sandbox || "?") +
+              ", sheet " + (ctx.sheetName || "?") + ") — the sheet does not read `attribute` " +
+              "objects for this name, so neither creating nor updating one reaches it; " +
+              "needs setComputed/setSheetItem";
+            return;
+          }
+          if (ctx.computedUnreadable) {
+            failed.push(attrName);
+            reasons[attrName] = "Beacon sheet (sandbox " + (ctx.sandbox || "?") + ", sheet " +
+              (ctx.sheetName || "?") + ") whose computed-property names could not be read from " +
+              "Campaign().computedSummary — cannot tell whether an attribute write would land, " +
+              "so refusing rather than reporting a success that may be a no-op";
+            return;
+          }
           let existing = findObjs({ _type: "attribute", _characterid: charId, name: attrName });
           if (existing.length > 0) {
             let updates = {};
@@ -2109,10 +2237,13 @@ ACTIONS["setCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) 
             if (currentVal !== undefined) createArgs.current = currentVal;
             if (maxVal !== undefined) createArgs.max = maxVal;
             let obj = createObj("attribute", createArgs);
-            if (obj) { created.push(attrName); } else { failed.push(attrName); }
+            if (obj) { created.push(attrName); } else { failed.push(attrName); reasons[attrName] = "createObj('attribute') returned undefined"; }
           }
         });
-        writeResult(nonce, { updated: updated, created: created, failed: failed });
+        writeResult(nonce, {
+          updated: updated, created: created, failed: failed, reasons: reasons,
+          sheet: { sandbox: ctx.sandbox, sheetName: ctx.sheetName, beacon: ctx.beacon },
+        });
         return;
       }
       };
@@ -2276,7 +2407,7 @@ ACTIONS["rollFormulas"] = function (args, msg, nonce, senderPlayerId) {
           writeResult(rollNonce, rollResults);
         }
         items.forEach(function(item, idx) {
-          sendChat(defaultSpeaker, "/roll " + item.formula, function(ops) {
+          chatSend(defaultSpeaker, "/roll " + item.formula, function(ops) {
             var total = 0, dice = [];
             try {
               var pr = JSON.parse(ops[0].content);
@@ -2306,11 +2437,11 @@ ACTIONS["rollFormulas"] = function (args, msg, nonce, senderPlayerId) {
               + "<div style=\"color:" + inkTotal + ";font-weight:bold;font-size:2em;line-height:1.05;\">" + total + "</div>"
               + bd
               + "</div>";
-            sendChat(item.label || defaultSpeaker, (silent ? "/w gm " : "") + card, null, { noarchive: false });
+            chatSend(item.label || defaultSpeaker, (silent ? "/w gm " : "") + card, null, { noarchive: false });
 
             rollRemaining--;
             if (rollRemaining === 0) finishRolls();
-          });
+          }, null, true);
         });
         // Safety: if a callback never fires (bad formula, etc.), don't hang the relay — time out.
         setTimeout(function() {
@@ -2339,7 +2470,7 @@ ACTIONS["sendNarration"] = function (args, msg, nonce, senderPlayerId) {
         };
         let styleStr = styles[narStyle] || styles.narration;
         let html = "<div style='" + styleStr + "'>" + narText + "</div>";
-        sendChat(narSpeaker, html, null, {});
+        chatSend(narSpeaker, html, null, {});
         writeResult(nonce, { ok: true });
         return;
       }
@@ -2351,11 +2482,14 @@ ACTIONS["sendNarration"] = function (args, msg, nonce, senderPlayerId) {
 // pump to mirror an orphaned character's real DDB dice into Roll20 as a native-looking
 // roll card. `message` carries pre-computed values only (no [[…]] inline rolls), so
 // Roll20 renders exactly what the player rolled on D&D Beyond rather than re-rolling.
+// DELIBERATELY NOT chatSafe()'d: this path exists to emit "&{template:…} @{…}" roll-template
+// syntax, and neutralizing the triggers would turn every card into literal text. It is a
+// GM-only relay action carrying server-composed values, not player-typed chat.
 ACTIONS["postChat"] = function (args, msg, nonce, senderPlayerId) {
         var speaker = String(args.speakAs || "D&D Beyond");
         var message = String(args.message || "");
         if (!message) { writeResult(nonce, { ok: false, error: "postChat: empty message" }); return; }
-        sendChat(speaker, message, null, { noarchive: false });
+        chatSend(speaker, message, null, { noarchive: false }, true);
         writeResult(nonce, { ok: true });
         return;
       };
@@ -2381,7 +2515,18 @@ ACTIONS["batchExec"] = function (args, msg, nonce, senderPlayerId) {
       };
 ACTIONS["ping"] = function (args, msg, nonce, senderPlayerId) {
         {
-        writeResult(nonce, { pong: true, version: AI_RELAY_VERSION });
+        // Two independent version handshakes ride on this one cheap action: `version` is THIS
+        // script's (hand-synced with src/bridge/relay-version.ts), and `sandbox` is the Roll20
+        // sandbox the campaign runs on — see sheetContext(). Both are per-campaign drift.
+        let ctx = sheetContext();
+        writeResult(nonce, {
+          pong: true,
+          version: AI_RELAY_VERSION,
+          sandbox: ctx.sandbox,
+          node: ctx.node,
+          sheetName: ctx.sheetName,
+          beacon: ctx.beacon,
+        });
         return;
       }
       };
@@ -2811,9 +2956,14 @@ on("chat:message", function (msg) {
         timestamp: Date.now(),
       });
       if (inbox.length > DM_INBOX_MAX) inbox.shift();
-      sendChat("Initiative", "/desc 🎲 **" + (msg.who || "Someone") + "** has set their mind to an action.");
+      chatSend("Initiative", "/desc 🎲 **" + esc(msg.who || "Someone") + "** has set their mind to an action.");
       let ackVerb = isQuery ? "Got your question — I'll answer shortly." : "Got it — I'll have this ready for your turn.";
-      sendChat("GM-AI-Bridge", "/w " + (msg.who || "gm") + " " + ackVerb + " (" + dmText + ")", null, { noarchive: true });
+      // Both halves are player-controlled and need DIFFERENT handling: the body is display text
+      // (encode), the target is a routing address (strip). See chatSafeTarget.
+      // dmText is PLAYER-TYPED and echoed straight back into chat — the sandbox-killing vector.
+      chatSend("GM-AI-Bridge",
+        "/w " + (chatSafeTarget(msg.who) || "gm") + " " + ackVerb + " (" + esc(dmText) + ")",
+        null, { noarchive: true });
     }
     return;
   }
@@ -2925,7 +3075,7 @@ on("change:campaign:turnorder", function(obj, prev) {
           return "<div style='color:#d4a0a0;font-family:\"Palatino Linotype\",Palatino,serif;font-size:0.9em;padding:1px 4px;'>" + r + "</div>";
         }).join("")
       + "</div>";
-    sendChat("GM-AI-Bridge", summaryHtml, null, { noarchive: false });
+    chatSend("GM-AI-Bridge", summaryHtml, null, { noarchive: false });
     bs.round++;
   }
 
@@ -2983,10 +3133,10 @@ on("change:campaign:turnorder", function(obj, prev) {
     + "<div style='color:#cc4444;font-family:\"Palatino Linotype\",Palatino,serif;font-size:1em;'>🩸 <b>" + esc(name) + "</b> — Round " + bs.round + "</div>"
     + hpLine + condLine + intentLine
     + "</div>";
-  sendChat("Initiative", html, null, { noarchive: false });
+  chatSend("Initiative", html, null, { noarchive: false });
 
   if (mobPlan) {
-    sendChat("GM-AI-Bridge", "/w gm " + mobPlan.html, null, { noarchive: true });
+    chatSend("GM-AI-Bridge", "/w gm " + mobPlan.html, null, { noarchive: true });
   }
 });
 
@@ -3041,7 +3191,7 @@ on("add:graphic", function(obj) {
 
     let sign = initBonus >= 0 ? "+" : "";
     let expr = "[[1d20" + (initBonus !== 0 ? sign + initBonus : "") + "]]";
-    sendChat("Initiative", expr, function(ops) {
+    chatSend("Initiative", expr, function(ops) {
       let inlinerolls = (ops && ops[0] && ops[0].inlinerolls) ? ops[0].inlinerolls : [];
       let roll = inlinerolls[0];
       let total = roll ? roll.results.total : (randomInteger(20) + initBonus);
@@ -3063,8 +3213,8 @@ on("add:graphic", function(obj) {
       Campaign().set("turnorder", JSON.stringify(freshOrder));
 
       let bonusStr = initBonus !== 0 ? " (d20" + sign + initBonus + ")" : "";
-      sendChat("Initiative", "/w gm ⚡ Auto-init: **" + esc(tokenName) + "** → **" + total + "**" + bonusStr);
-    }, { noarchive: true });
+      chatSend("Initiative", "/w gm ⚡ Auto-init: **" + esc(tokenName) + "** → **" + total + "**" + bonusStr);
+    }, { noarchive: true }, true);
   }, 800);
 });
 
