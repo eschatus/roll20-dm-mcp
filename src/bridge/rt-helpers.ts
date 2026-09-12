@@ -11,6 +11,18 @@ export const AIBRIDGE_MARKER = "AIBRIDGE_RESULT:";
 // redeployed (deploys are per-campaign and manual).
 export const AIBRIDGE_MARKER_ENC = "AIBRIDGE_RESULT_ENC:";
 
+// The ONE place that decides whether a chat message is a relay reply. It used to be two: a cheap
+// `content.includes(AIBRIDGE_MARKER)` pre-filter guarding the call to parseAibridge, in
+// roll20-rt.ts. When relay 2.7.0 moved the payload under AIBRIDGE_RESULT_ENC:, parseAibridge
+// learned the new marker and that pre-filter did not — and "AIBRIDGE_RESULT_ENC:" does not
+// contain the substring "AIBRIDGE_RESULT:", so every reply was rejected before it was ever
+// parsed and every relay round-trip timed out (#213). Marker knowledge lives here, next to the
+// parser, and nothing else may re-derive it.
+export function hasAibridgeMarker(text: unknown): boolean {
+  return typeof text === "string"
+    && (text.includes(AIBRIDGE_MARKER_ENC) || text.includes(AIBRIDGE_MARKER));
+}
+
 // Extract the first balanced-brace JSON object following the AIBRIDGE marker (mirrors the
 // roll20.ts OBSERVER_SCRIPT). Tolerates braces inside strings and escaped quotes.
 export function parseAibridge(text: string): { nonce: number; data?: unknown; error?: string } | null {

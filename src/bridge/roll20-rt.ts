@@ -30,7 +30,7 @@ import { recordSuccess, recordFailure } from "./transport-health.js";
 import { resolveMarkerForState, computeHpThresholds, WOUNDED_MARKER, DEAD_MARKER } from "./markers.js";
 import { trackCustomState, getCustomStates as getCustomStatesStore } from "./relayState.js";
 import {
-  AIBRIDGE_MARKER as MARKER, parseAibridge, cleanChat, resolveInlineRolls,
+  hasAibridgeMarker, parseAibridge, cleanChat, resolveInlineRolls,
   parsePcHpBlock, writePcHpBlock, type PcHpEntry,
   mapToken, parseTurnorder, stripUndefWrite,
   parseBroadcastPing, type MapPing,
@@ -212,8 +212,10 @@ function bufferChat(val: unknown): void {
 
 // Try to resolve a pending relay from a message `content` string. Returns true if it matched.
 function tryResolveContent(content: unknown): boolean {
-  if (typeof content !== "string" || !content.includes(MARKER)) return false;
-  const parsed = parseAibridge(content);
+  // hasAibridgeMarker, not a local marker test: this gate and parseAibridge must agree on what a
+  // reply looks like, and when they disagreed the transport went dark with every test green (#213).
+  if (!hasAibridgeMarker(content)) return false;
+  const parsed = parseAibridge(content as string);
   if (!parsed) return false;
   const p = pending.get(parsed.nonce);
   if (!p) return false; // not ours (or already timed out)
@@ -318,6 +320,18 @@ function forwardChat(val: unknown, key: string | null, live: boolean): void {
 // Narrow test seam: drive the chat-child handler directly (src/bridge/roll20-rt.chat.test.ts)
 // without a live RTDB connection. Same pattern as __setAnthropicForTest elsewhere.
 export const __handleChatChildForTest = handleChatChild;
+
+// Companion seam: register a pending relay the way relayCommand does, so a test can prove a reply
+// arriving on /chat actually RESOLVES it. Without this the gate in tryResolveContent had no test
+// that ran it — the marker tests all called parseAibridge directly, past the gate, which is how
+// #213 shipped with a green suite.
+export function __seedPendingRelayForTest(nonce: number): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { pending.delete(nonce); reject(new Error("test pending timeout")); }, 5000);
+    if (typeof timer.unref === "function") timer.unref();
+    pending.set(nonce, { resolve, reject, timer });
+  });
+}
 
 async function connect(): Promise<RtConn> {
   const { roll20CampaignId } = getActiveCampaign();

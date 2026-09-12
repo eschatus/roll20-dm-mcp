@@ -7,6 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   __handleChatChildForTest as handleChatChild,
+  __seedPendingRelayForTest as seedPending,
   onRtdbEvent,
   type RtdbBroadcastEvent,
   type ChatMessageEvent,
@@ -97,5 +98,50 @@ describe("SSE chat forwarding (#171)", () => {
     handleChatChild(key, { who: "Rigan", playerid: "p-rigan", content: "once" }, true);
     handleChatChild(key, { who: "Rigan", playerid: "p-rigan", content: "once" }, true);
     expect(chatEvents()).toHaveLength(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #213 — the relay REPLY must resolve the pending command, whichever marker the
+// campaign's deployed relay uses. Relay 2.7.0 moved the payload under
+// AIBRIDGE_RESULT_ENC:; parseAibridge learned that marker but the gate in front
+// of it kept testing for "AIBRIDGE_RESULT:", which is NOT a substring of
+// "AIBRIDGE_RESULT_ENC:". Every reply was dropped before it was parsed, every
+// round-trip timed out, and every test stayed green because they all called
+// parseAibridge directly. These go through the gate.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("relay reply resolution (#213)", () => {
+  const encReply = (payload: object) =>
+    `<div style='display:none'>AIBRIDGE_RESULT_ENC:${encodeURIComponent(JSON.stringify(payload))}</div>`;
+  const legacyReply = (payload: object) =>
+    `<div style='display:none'>AIBRIDGE_RESULT:${JSON.stringify(payload)}</div>`;
+  const deliver = (content: string) =>
+    handleChatChild(nextKey(), { who: "GM-AI-Bridge", playerid: "API", content }, true);
+
+  it("resolves a pending command from a relay >= 2.7.0 percent-encoded reply", async () => {
+    const p = seedPending(4242);
+    deliver(encReply({ nonce: 4242, data: { ok: true, version: "2.7.0" } }));
+    await expect(p).resolves.toEqual({ ok: true, version: "2.7.0" });
+  });
+
+  it("still resolves a legacy reply (deploys are per-campaign and manual)", async () => {
+    const p = seedPending(4243);
+    deliver(legacyReply({ nonce: 4243, data: { ok: true } }));
+    await expect(p).resolves.toEqual({ ok: true });
+  });
+
+  it("rejects on a relay error, encoded", async () => {
+    const p = seedPending(4244);
+    deliver(encReply({ nonce: 4244, error: "no such token" }));
+    await expect(p).rejects.toThrow("no such token");
+  });
+
+  it("does not consume a reply meant for another nonce", async () => {
+    const p = seedPending(4245);
+    deliver(encReply({ nonce: 999999, data: "someone else's" }));
+    let settled = false;
+    void p.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(settled).toBe(false);
   });
 });
