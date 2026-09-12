@@ -76,7 +76,7 @@ D&D Beyond at all.
 
 ### The Gem pins this repository
 
-The Gem installs roll20-dm-mcp as a dependency at a fixed tag — currently **`#v2.0.4`** — and builds it in its
+The Gem installs roll20-dm-mcp as a dependency at a fixed tag — currently **`#v2.0.5`** — and builds it in its
 own clone. So you do not need a separate checkout of this repo for the Gem to run, and changes made here reach
 the Gem only when it re-pins. It also bundles this repo's `skills/dm-rules.md` and `mod-scripts/ai-relay.js`
 into its installer.

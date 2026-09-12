@@ -1,6 +1,6 @@
 {
   "name": "roll20-dm-mcp",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "description": "MCP servers for driving a Roll20 table — combat and map prep primitives, no browser",
   "main": "dist/index-combat.js",
   "scripts": {

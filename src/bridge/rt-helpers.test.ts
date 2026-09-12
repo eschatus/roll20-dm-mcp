@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  parseAibridge, cleanChat, resolveInlineRolls, parsePcHpBlock, writePcHpBlock,
+  parseAibridge, hasAibridgeMarker, cleanChat, resolveInlineRolls, parsePcHpBlock, writePcHpBlock,
   mapToken, parseTurnorder, stripUndefWrite, parseBroadcastPing,
 } from "./rt-helpers.js";
 
@@ -269,5 +269,38 @@ describe("parseAibridge — percent-encoded payloads (relay >= 2.7.0)", () => {
 
   it("returns null on a truncated encoded payload rather than a partial object", () => {
     expect(parseAibridge("AIBRIDGE_RESULT_ENC:%7B%22nonce%22%3A1")).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #213: the marker test that gates parseAibridge has to know the SAME markers
+// parseAibridge does. It didn't — "AIBRIDGE_RESULT_ENC:" does not contain the
+// substring "AIBRIDGE_RESULT:", so a relay-2.7.0 reply failed the gate and was
+// never parsed at all.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("hasAibridgeMarker", () => {
+  it("recognizes the encoded marker (the one the substring test missed)", () => {
+    expect("AIBRIDGE_RESULT_ENC:".includes("AIBRIDGE_RESULT:")).toBe(false); // why the gate failed
+    expect(hasAibridgeMarker("<div>AIBRIDGE_RESULT_ENC:%7B%7D</div>")).toBe(true);
+  });
+
+  it("recognizes the legacy marker", () => {
+    expect(hasAibridgeMarker('<div>AIBRIDGE_RESULT:{"nonce":1}</div>')).toBe(true);
+  });
+
+  it("rejects table chat and non-strings", () => {
+    expect(hasAibridgeMarker("Rigan attacks the ogre")).toBe(false);
+    expect(hasAibridgeMarker(undefined)).toBe(false);
+    expect(hasAibridgeMarker({ content: "AIBRIDGE_RESULT_ENC:" })).toBe(false);
+  });
+
+  it("agrees with parseAibridge on every form the relay emits", () => {
+    for (const wire of [
+      `AIBRIDGE_RESULT_ENC:${encodeURIComponent(JSON.stringify({ nonce: 1, data: 1 }))}`,
+      `AIBRIDGE_RESULT:${JSON.stringify({ nonce: 2, data: 2 })}`,
+    ]) {
+      expect(hasAibridgeMarker(wire)).toBe(true);
+      expect(parseAibridge(wire)).not.toBeNull();
+    }
   });
 });
