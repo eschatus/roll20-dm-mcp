@@ -37,7 +37,7 @@ can be moved back to 1.0 by hand. `ACTIONS["ping"]` echoes `Campaign().sandboxVe
 surfaces them under `sandbox` — that is how you find out which one a campaign is on. A `sandbox` of
 `null` there means the *relay* is older than 2.7.0, not that the sandbox is old.
 
-Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.4). Relay version string: `2.7.0`
+Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.5). Relay version string: `2.7.0`
 (reported by the `ping` action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
 (`[GM_AI_Bridge] Relay script loaded (v2.7.0)`), not the save.
