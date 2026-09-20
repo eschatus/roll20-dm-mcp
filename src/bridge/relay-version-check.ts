@@ -122,8 +122,11 @@ export function reportRelayVersion(
   console.error(
     `[roll20] Roll20 relay is out of date — found ${found}, expected ${EXPECTED_RELAY_VERSION}. ` +
     `The deployed Mod script (mod-scripts/ai-relay.js) doesn't match this server build — likely ` +
-    `deployed from the wrong branch or working tree. Run "npm run release:mod" from the checkout ` +
-    `with the build you intend to run, then reconnect Roll20. (Also visible via transport_status.)`,
+    `deployed from the wrong branch or working tree, or simply not re-pasted since it changed. ` +
+    `Deploys are per-campaign and hand-attended: run "npm run build:mod" from the checkout with ` +
+    `the build you intend to run, paste mod-scripts/.ai-relay.deploy.js into that campaign's ` +
+    `Settings > API Scripts, and check the load banner says v${EXPECTED_RELAY_VERSION}. ` +
+    `(Also visible via transport_status.)`,
   );
 }
 

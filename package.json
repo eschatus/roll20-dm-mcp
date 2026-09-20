@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node dist/index-combat.js",
     "build": "tsc",
+  "build:mod": "node scripts/build-mod.mjs",
     "prepare": "tsc",
     "dev": "tsx watch src/index-combat.ts",
     "serve": "tsx src/index-http.ts",

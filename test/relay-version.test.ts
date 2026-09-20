@@ -80,7 +80,12 @@ describe("reportRelayVersion — clash detection and reporting", () => {
     expect(text).toContain("out of date");
     expect(text).toContain("found 2.1.0");
     expect(text).toContain(`expected ${EXPECTED_RELAY_VERSION}`);
-    expect(text).toContain("npm run release:mod");
+    // The fix command must be one that EXISTS: this line told the DM to run "npm run release:mod"
+    // for weeks after #175 deleted it, because nothing pinned it to a real script.
+    expect(text).toContain("npm run build:mod");
+    expect(text).toContain(".ai-relay.deploy.js");
+    expect(text).not.toContain("release:mod");
+    expect(JSON.parse(readFileSync("package.json", "utf8")).scripts).toHaveProperty("build:mod");
     expect(text).not.toMatch(/circuit.?breaker/i);
   });
 });

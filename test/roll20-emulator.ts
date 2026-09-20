@@ -17,7 +17,12 @@ import * as vm from "vm";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const AI_RELAY_PATH = path.resolve(__dirname, "../mod-scripts/ai-relay.js");
+// AI_RELAY_PATH env override: point the whole emulator suite at the MINIFIED deploy artifact
+// (npm run build:mod -- --verify) to prove the bytes a DM actually pastes behave like the source.
+// node --check only proves the minified output parses; this proves it still works.
+const AI_RELAY_PATH = process.env.AI_RELAY_PATH
+  ? path.resolve(process.env.AI_RELAY_PATH)
+  : path.resolve(__dirname, "../mod-scripts/ai-relay.js");
 
 // Keys Roll20 mirrors between a settable form and a read-only underscore form
 // (createObj("graphic",{pageid}) is later read as get("_pageid")). We store both.

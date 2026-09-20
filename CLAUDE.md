@@ -39,7 +39,12 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
   the Roll20 API sandbox and only takes effect once deployed — but deploying means driving a
   browser against a live account, so it is a human-attended act, not something an MCP server or a
   dev session does. Paste `mod-scripts/ai-relay.js` into the campaign's API console yourself (or
-  use the gem's attended flow). Verify the LOAD, never the write: the sandbox banner
+  use the gem's attended flow). **`npm run build:mod`** produces the paste-ready artifact
+  (`mod-scripts/.ai-relay.deploy.js`, gitignored): esbuild minify → `node --check` → a
+  version-drift assert, ~156KB → ~63KB. `npm run build:mod -- --verify` re-runs the emulator
+  suite against the MINIFIED bytes (the `AI_RELAY_PATH` env override on `test/roll20-emulator.ts`),
+  which is the only check that proves mangling did not break a handler — `node --check` only
+  proves it parses. Verify the LOAD, never the write: the sandbox banner
   `[GM_AI_Bridge] Relay script loaded (vX.Y.Z)` or a `ping` returning the version. Deploys are
   **per-campaign** — each campaign carries its own copy, so one can run a newer relay than another.
   CI runs `node --check mod-scripts/ai-relay.js` as a syntax gate.
