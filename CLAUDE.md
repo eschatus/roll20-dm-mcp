@@ -111,8 +111,18 @@ moved to beyond-mcp with the code.)
   `transport_status` shows them under `sandbox`. The fork that bites: a **Beacon** ("advanced")
   character sheet keeps data in *computed properties*, not `attribute` objects — `findObjs` can't
   see it and `createObj("attribute")` can't reach it, so an attribute write there is created,
-  unread, and looks successful. `setCharacterAttributes` now refuses it and returns a reason;
-  `setComputed`/`setSheetItem` are the real carriers and aren't wired yet (#205).
+  unread, and looks successful. `setCharacterAttributes` refuses it and returns a reason; the real
+  carriers are wired as of relay **2.9.0** (#205) and live in `src/tools/sheet.ts`:
+  **`get_sheet_item`/`set_sheet_item`** (version-agnostic — on v1.0 they wrap attributes, so prefer
+  them when you don't know the sandbox), `get_computed_property`/`set_computed_property` and
+  `perform_sheet_action` (v1.5 only), and `get_sheet_summary` to enumerate what a sheet offers.
+  Three gotchas: all six carriers are **async**, so the relay writes their result from the
+  promise's settlement (`settleSheetAsync`, 6s timeout — the first *write* to need the deferred
+  `writeResult` pattern `rollFormulas` established); `setSheetItem`'s **`allowThrow` defaults to
+  TRUE here**, inverting Roll20's default, because the lenient mode resolves without saying whether
+  the write landed; and `performAction`'s action name travels as **`actionName`**, since the
+  dispatcher consumes a command's `action` field as the relay action to run. See
+  `docs/roll20-api-coverage.md` → "Beacon sheet carriers" for what is still unverified live.
 - **Nothing may reach `sendChat` carrying a live chat trigger.** Roll20 live-evaluates `[[`
   (inline roll), `@{` (attribute ref) and `%{` (ability/macro call) in EVERY outgoing message; a
   malformed one throws inside Roll20's own chat pipeline — asynchronously, uncatchable — and

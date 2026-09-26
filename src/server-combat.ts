@@ -6,6 +6,7 @@ import { registerCombatTools } from "./tools/combat.js";
 import { registerJournalTools } from "./tools/journal.js";
 import { registerTransportTools } from "./tools/transport.js";
 import { registerCharacterEditTools } from "./tools/characters-edit.js";
+import { registerSheetTools } from "./tools/sheet.js";
 import { registerZoneTools } from "./tools/zones.js";
 import { BUILD_VERSION } from "./build-version.js";
 
@@ -23,6 +24,9 @@ export function buildCombatServer(): McpServer {
   registerJournalTools(server);
   registerTransportTools(server);
   registerCharacterEditTools(server);
+  // Beacon ("advanced") character sheet access — the carriers that reach data the attribute
+  // tools cannot see on Mod Script Sandbox v1.5 (#205).
+  registerSheetTools(server);
   // Map/wall/zone tooling lives in the maps suite (roll20-dm-maps). Combat keeps
   // only the dual-use pieces it needs live: zones (fixed-area spells) + screenshot
   // (board vision). The prep-only analysis/wall tools (registerVisionTools) do NOT

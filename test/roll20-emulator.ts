@@ -67,6 +67,39 @@ export interface EmulatorOptions {
   gmPlayerId?: string;
 }
 
+// ── v1.5 sheet carriers (Beacon) ──────────────────────────────────────────────
+// Roll20's signatures, which the relay has to marshal for exactly:
+//   getSheetItem(characterId, property, valtype?, options?)        -> Promise  (v1.0 + v1.5)
+//   setSheetItem(characterId, property, value, valtype?, options?) -> Promise  (v1.0 + v1.5)
+//   getComputed / setComputed / performAction({ characterId, ... }) -> Promise (v1.5 only)
+// The model here is deliberately thin: it records what it was called with and resolves or rejects
+// on command. Tests assert the RELAY's marshalling, batching and error reporting — the half we
+// actually own — not a guess at Beacon's internals.
+export type SheetCall = { fn: string; args: unknown[] };
+
+export interface SheetCarrierOptions {
+  /** "1.0" installs the sheet-item pair plus the documented no-op stubs; "1.5" installs everything. */
+  sandboxVersion?: "1.0" | "1.5";
+  sheetName?: string;
+  /** Beacon computed properties: name -> value (or {current, max}). Becomes computedSummary. */
+  computed?: Record<string, unknown>;
+  /** Computed properties that reject a write (Roll20: "the computed doesn't exist or is read-only"). */
+  readOnlyComputed?: string[];
+  /** Beacon action names. Becomes actionSummary. */
+  actions?: string[];
+  /** Action names whose promise rejects. */
+  failActions?: string[];
+  /** Property names whose getSheetItem/setSheetItem promise rejects. */
+  failItems?: string[];
+  /** Property/action names whose promise NEVER settles — exercises the relay's async timeout. */
+  stall?: string[];
+}
+
+interface SheetModel extends SheetCarrierOptions {
+  values: Record<string, { current?: unknown; max?: unknown }>;
+  user: Record<string, { current?: unknown; max?: unknown }>;
+}
+
 export class Roll20Emulator {
   private store: R20Obj[] = [];
   private idCounter = 0;
@@ -76,6 +109,13 @@ export class Roll20Emulator {
   private gmIds = new Set<string>();
   private rng: () => number;
   private vmRng: () => number;
+  // The contextified sandbox object from load(); it IS the vm's global object, so a carrier
+  // installed on it later (installSheetCarriers) is visible to already-loaded relay code.
+  private vmSandbox: Record<string, unknown> | null = null;
+  private sheet: SheetModel | null = null;
+
+  /** Every call the relay made into a v1.5 sheet carrier, in order. For assertions. */
+  readonly sheetCalls: SheetCall[] = [];
 
   readonly chatLog: Array<{ who: string; content: string; options?: unknown }> = [];
   readonly logs: unknown[][] = [];
@@ -355,6 +395,7 @@ export class Roll20Emulator {
       clearTimeout,
     };
     vm.createContext(sandbox);
+    this.vmSandbox = sandbox;
     vm.runInContext(code, sandbox, { filename: "ai-relay.js" });
     this.emit("ready");
   }
@@ -392,6 +433,11 @@ export class Roll20Emulator {
     }
     if (result.error) throw new Error(`Relay error for '${cmd.action}': ${result.error}`);
     return result.data as T;
+  }
+
+  /** The raw result record stored for a nonce, or undefined if none has landed yet. */
+  resultFor(nonce: number): { data?: unknown; error?: string } | undefined {
+    return this.resultByNonce.get(nonce);
   }
 
   /**
@@ -468,6 +514,150 @@ export class Roll20Emulator {
       // be able to see it — without it a token that IS player-controlled looks unowned.
       controlledby: t.get("controlledby"),
     };
+  }
+
+  // ── v1.5 sheet carriers ─────────────────────────────────────────────────────
+  /**
+   * Install the Beacon sheet carriers into the loaded vm context and set the Campaign() direct
+   * properties that go with them. A fresh emulator has NONE of them, which is a pre-v1.5 sandbox.
+   */
+  installSheetCarriers(opts: SheetCarrierOptions = {}): void {
+    if (!this.vmSandbox) throw new Error("installSheetCarriers() must be called after load()");
+    const version = opts.sandboxVersion ?? "1.5";
+    const values: Record<string, { current?: unknown; max?: unknown }> = {};
+    for (const [k, v] of Object.entries(opts.computed ?? {})) {
+      values[k] = (v !== null && typeof v === "object") ? { ...(v as object) } : { current: v };
+    }
+    const model: SheetModel = { ...opts, sandboxVersion: version, values, user: {} };
+    this.sheet = model;
+
+    Object.assign(this.campaignModel as unknown as Record<string, unknown>, {
+      sandboxVersion: version,
+      nodeVersion: "v20.11.1",
+      sheetName: opts.sheetName ?? (version === "1.5" ? "D&D 5E 2024" : "D&D 5E by Roll20"),
+      // v1.0 has neither summary — that is how sheetContext() tells the sheets apart.
+      ...(version === "1.5"
+        ? { computedSummary: Object.keys(values), actionSummary: [...(opts.actions ?? [])] }
+        : {}),
+    });
+
+    const record = (fn: string, args: unknown[]): void => { this.sheetCalls.push({ fn, args }); };
+    const stalls = (name: unknown): boolean =>
+      (model.stall ?? []).includes(String(name));
+    const never = (): Promise<never> => new Promise<never>(() => {});
+    const isComputed = (prop: string): boolean =>
+      version === "1.5" && Object.prototype.hasOwnProperty.call(model.values, prop);
+
+    const legacy = (charId: string, prop: string): R20Obj | undefined =>
+      this.store.find((o) =>
+        o.get("_type") === "attribute" && o.get("_characterid") === charId && o.get("name") === prop);
+
+    const readItem = (charId: string, prop: string, valtype: string): unknown => {
+      if (isComputed(prop)) return model.values[prop][valtype as "current" | "max"];
+      if (prop.startsWith("user.")) return model.user[prop]?.[valtype as "current" | "max"];
+      const attr = legacy(charId, prop);
+      return attr ? attr.get(valtype) : undefined;
+    };
+
+    const carriers: Record<string, unknown> = {
+      getSheetItem: (charId: string, prop: string, valtype = "current", options?: unknown) => {
+        record("getSheetItem", [charId, prop, valtype, options]);
+        if (stalls(prop)) return never();
+        if ((model.failItems ?? []).includes(prop)) return Promise.reject(new Error(`cannot read ${prop}`));
+        return Promise.resolve(readItem(charId, prop, valtype));
+      },
+      setSheetItem: (
+        charId: string, prop: string, value: unknown, valtype = "current",
+        options: { createAttr?: boolean; withWorker?: boolean; allowThrow?: boolean } = {}
+      ) => {
+        record("setSheetItem", [charId, prop, value, valtype, options]);
+        if (stalls(prop)) return never();
+        if ((model.failItems ?? []).includes(prop)) return Promise.reject(new Error(`cannot write ${prop}`));
+        const refuse = (why: string): Promise<void> =>
+          // Roll20's allowThrow:false is the silent path — it resolves having done nothing at all.
+          options.allowThrow ? Promise.reject(new Error(why)) : Promise.resolve();
+        if (isComputed(prop)) {
+          if ((model.readOnlyComputed ?? []).includes(prop)) return refuse(`computed property ${prop} is read-only`);
+          model.values[prop][valtype as "current" | "max"] = value;
+          return Promise.resolve();
+        }
+        if (prop.startsWith("user.")) {
+          (model.user[prop] ||= {})[valtype as "current" | "max"] = value;
+          return Promise.resolve();
+        }
+        const attr = legacy(charId, prop);
+        if (attr) { attr.set(valtype, value); return Promise.resolve(); }
+        if (options.createAttr === false) return refuse(`attribute ${prop} does not exist and createAttr is off`);
+        this.createObj("attribute", { characterid: charId, name: prop, [valtype]: value });
+        return Promise.resolve();
+      },
+    };
+
+    if (version === "1.5") {
+      Object.assign(carriers, {
+        getComputed: (call: { characterId: string; property: string }) => {
+          record("getComputed", [call]);
+          if (stalls(call.property)) return never();
+          return Promise.resolve(model.values[call.property]?.current);
+        },
+        setComputed: (call: { characterId: string; property: string; args?: unknown; value?: unknown }) => {
+          record("setComputed", [call]);
+          if (stalls(call.property)) return never();
+          if (!Object.prototype.hasOwnProperty.call(model.values, call.property)) {
+            return Promise.reject(new Error(`no such computed property: ${call.property}`));
+          }
+          if ((model.readOnlyComputed ?? []).includes(call.property)) {
+            return Promise.reject(new Error(`computed property ${call.property} is read-only`));
+          }
+          // Where the new value sits inside setComputed's payload is undocumented, so the model
+          // accepts either of the two shapes the relay forwards.
+          const bag = call.args as { value?: unknown } | undefined;
+          model.values[call.property].current = call.value !== undefined ? call.value : bag?.value;
+          return Promise.resolve();
+        },
+        performAction: (call: { characterId: string; action: string }) => {
+          record("performAction", [call]);
+          if (stalls(call.action)) return never();
+          if ((model.failActions ?? []).includes(call.action)) {
+            return Promise.reject(new Error(`action ${call.action} blew up`));
+          }
+          return Promise.resolve();
+        },
+      });
+    } else {
+      // Roll20 documents these as no-op stubs on v1.0 — present, and silently useless. The relay
+      // refuses them on sandbox "1.0" precisely because "the function exists" proves nothing.
+      Object.assign(carriers, {
+        getComputed: (call: unknown) => { record("getComputed", [call]); return Promise.resolve(undefined); },
+        setComputed: (call: unknown) => { record("setComputed", [call]); return Promise.resolve(undefined); },
+        performAction: (call: unknown) => { record("performAction", [call]); return Promise.resolve(undefined); },
+      });
+    }
+
+    Object.assign(this.vmSandbox, carriers);
+  }
+
+  /** The Beacon model's current values — for asserting what a write actually landed. */
+  sheetValues(): Record<string, { current?: unknown; max?: unknown }> {
+    if (!this.sheet) throw new Error("No sheet carriers installed");
+    return { ...this.sheet.values, ...this.sheet.user };
+  }
+
+  /**
+   * relay() for an action that settles ASYNCHRONOUSLY (the v1.5 sheet carriers). Dispatches the
+   * command, then drains the microtask queue until the deferred writeResult lands. Microtasks
+   * only — no timers — so a test can hold fake timers and still get a real answer.
+   */
+  async relayAsync<T = unknown>(cmd: Record<string, unknown>, opts: { playerid?: string; ticks?: number } = {}): Promise<T> {
+    const nonce = ++this.nonceCounter;
+    this.resultByNonce.delete(nonce);
+    this.dispatchChat("!ai-relay " + JSON.stringify({ ...cmd, nonce }), { playerid: opts.playerid });
+    const ticks = opts.ticks ?? 200;
+    for (let i = 0; i < ticks && !this.resultByNonce.has(nonce); i++) await Promise.resolve();
+    const result = this.resultByNonce.get(nonce);
+    if (!result) throw new Error(`Relay produced no result for action '${cmd.action}' (nonce ${nonce})`);
+    if (result.error) throw new Error(`Relay error for '${cmd.action}': ${result.error}`);
+    return result.data as T;
   }
 
   turnOrder(): Array<{ id: string; pr: string; custom: string; _pageid?: string }> {

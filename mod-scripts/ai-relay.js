@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.8.0";
+var AI_RELAY_VERSION = "2.9.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -107,6 +107,25 @@ function esc(s) {
     .replace(/'/g, "&#39;"));
 }
 
+// Roll20 documents computedSummary/actionSummary only as "available Beacon <thing> names" and
+// does NOT specify the element shape, so handle the plausible ones. Getting this wrong is not
+// cosmetic for computedSummary: a list that matches nothing would put the silent false success
+// back while cheerfully reporting beacon:true, so callers track rawCount separately.
+function summaryNames(summary) {
+  var raw = Array.isArray(summary) ? summary
+    : (summary && typeof summary === "object") ? Object.keys(summary)
+    : [];
+  var names = [];
+  raw.forEach(function (entry) {
+    if (typeof entry === "string") { names.push(entry); return; }
+    if (entry && typeof entry === "object") {
+      var n = entry.name || entry.property || entry.key || entry.action;
+      if (typeof n === "string") names.push(n);
+    }
+  });
+  return { rawCount: raw.length, names: names };
+}
+
 // Which Mod Script Sandbox this campaign is running, and what it implies for character data.
 //
 // Roll20 flipped the DEFAULT sandbox from v1.0 to v1.5 on 2026-09-02 for every game that had never
@@ -115,26 +134,13 @@ function esc(s) {
 // like a relay deploy is, so the TS side has to be able to see which one it is talking to —
 // ACTIONS["ping"] echoes this alongside AI_RELAY_VERSION.
 //
-// These four live DIRECTLY on the object Campaign() returns, not behind .get(). A sandbox that
-// predates them yields undefined, which is why nothing here probes or throws.
+// All five of the properties read here live DIRECTLY on the object Campaign() returns, not behind
+// .get(). A sandbox that predates them yields undefined, which is why nothing here probes or throws.
 function sheetContext() {
   var c = Campaign();
-  var summary = c.computedSummary;
-  // Roll20 documents computedSummary only as "available Beacon computed property names" and does
-  // NOT specify the element shape, so handle the plausible ones. Getting this wrong is not
-  // cosmetic: a list that matches nothing would put the silent false success back while cheerfully
-  // reporting beacon:true, so an unreadable-but-present summary is tracked separately below.
-  var raw = Array.isArray(summary) ? summary
-    : (summary && typeof summary === "object") ? Object.keys(summary)
-    : [];
-  var computed = [];
-  raw.forEach(function (entry) {
-    if (typeof entry === "string") { computed.push(entry); return; }
-    if (entry && typeof entry === "object") {
-      var n = entry.name || entry.property || entry.key;
-      if (typeof n === "string") computed.push(n);
-    }
-  });
+  var computedSummary = summaryNames(c.computedSummary);
+  var actionSummary = summaryNames(c.actionSummary);
+  var computed = computedSummary.names;
   return {
     sandbox: c.sandboxVersion || null,
     node: c.nodeVersion || null,
@@ -142,12 +148,79 @@ function sheetContext() {
     // A Beacon ("advanced") character sheet keeps its data in computed properties rather than
     // `attribute` objects, so the attribute-object read/write path in this script cannot see or
     // reach any of it. setCharacterAttributes uses this to refuse a write it cannot land.
-    beacon: raw.length > 0,
+    beacon: computedSummary.rawCount > 0,
     computed: computed,
     // A Beacon sheet whose property names we could not extract: we know attribute writes are
     // unreliable here but not which ones, so every create is refused rather than guessed at.
-    computedUnreadable: raw.length > 0 && computed.length === 0,
+    computedUnreadable: computedSummary.rawCount > 0 && computed.length === 0,
+    // Beacon sheet ACTIONS (performAction names). Enumerated the same way and reported by
+    // getSheetSummary; nothing gates on it, so an unreadable actionSummary is just an empty list.
+    actions: actionSummary.names,
   };
+}
+
+// ── Beacon sheet carriers: async plumbing (Mod Script Sandbox v1.5) ───────────────────────────
+//
+// getSheetItem/setSheetItem/getComputed/setComputed/performAction all return PROMISES, and every
+// ACTIONS handler here is synchronous. Deferred writeResult is an established pattern in this
+// script — rollFormulas writes its result from a sendChat callback — but no action had needed it
+// for a promise. settleSheetAsync is that pattern for a promise:
+//
+//   - the dispatcher's try/catch only wraps the SYNCHRONOUS part of a handler, so a rejection has
+//     to be caught here or it becomes an unhandled rejection and the caller waits out the full
+//     transport timeout with nothing to show for it;
+//   - a carrier that never settles gets a named error rather than an opaque transport timeout;
+//   - the result payload goes out through writeResult like any other, so it is percent-encoded and
+//     therefore safe even when a computed property's value contains "@{" or "[[".
+var SHEET_ASYNC_TIMEOUT_MS = 6000;  // under the TS side's 8s read / 30s write relay timeouts, so
+                                    // OUR error wins the race and names the stuck carrier.
+
+function errText(e) {
+  if (e == null) return "(no reason given)";
+  return (typeof e === "object" && e.message) ? String(e.message) : String(e);
+}
+
+function settleSheetAsync(nonce, label, promise, mapValue) {
+  var done = false;
+  function ok(v) { if (done) return; done = true; writeResult(nonce, v); }
+  function bad(e) { if (done) return; done = true; writeResult(nonce, undefined, label + ": " + errText(e)); }
+  try {
+    Promise.resolve(promise).then(function (value) {
+      var out;
+      // A throw inside the mapper is OUR bug, not the sheet's — report it, don't lose it.
+      try { out = mapValue ? mapValue(value) : value; } catch (e) { bad(e); return; }
+      ok(out);
+    }, bad);
+  } catch (e) { bad(e); return; }
+  setTimeout(function () {
+    if (done) return;
+    done = true;
+    writeResult(nonce, undefined, label + ": no result after " + SHEET_ASYNC_TIMEOUT_MS +
+      "ms — the sheet carrier never settled");
+  }, SHEET_ASYNC_TIMEOUT_MS);
+}
+
+// Why a v1.5-only carrier is unusable here, or null if it is usable. Roll20 documents getComputed
+// and performAction as NO-OP STUBS on v1.0, so "the function exists" is not enough to go on: a
+// campaign that is still on v1.0 would get a silent nothing, which is the same class of false
+// success as the Beacon attribute write this guard's sibling in setCharacterAttributes refuses.
+function carrierUnavailable(name, exists) {
+  var ctx = sheetContext();
+  if (!exists) {
+    return name + "() does not exist in this Mod sandbox (sandbox " + (ctx.sandbox || "?") +
+      ") — it needs Mod Script Sandbox v1.5";
+  }
+  if (ctx.sandbox === "1.0") {
+    return name + "() is a no-op stub on Mod Script Sandbox v1.0 — switch the campaign's sandbox " +
+      "to v1.5 (Settings \u2192 Mod Scripts) before using Beacon computed properties or actions";
+  }
+  return null;
+}
+
+// The sheet fingerprint every Beacon action reports back, so a caller that gets a surprising
+// answer can see which sandbox and which sheet produced it without a second round trip.
+function sheetStamp(ctx) {
+  return { sandbox: ctx.sandbox, sheetName: ctx.sheetName, beacon: ctx.beacon };
 }
 
 // True iff the message sender is a GM. Uses playerIsGM when present (it is in the
@@ -2214,7 +2287,8 @@ ACTIONS["setCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) 
             reasons[attrName] = "Beacon computed property (sandbox " + (ctx.sandbox || "?") +
               ", sheet " + (ctx.sheetName || "?") + ") — the sheet does not read `attribute` " +
               "objects for this name, so neither creating nor updating one reaches it; " +
-              "needs setComputed/setSheetItem";
+              "use the setSheetItem or setComputed relay actions instead (MCP: set_sheet_item / " +
+              "set_computed_property)";
             return;
           }
           if (ctx.computedUnreadable) {
@@ -2920,6 +2994,263 @@ ACTIONS["editCharacter"] = function (args, msg, nonce, senderPlayerId) {
         return;
       }
       };
+
+// ── Beacon sheet carriers (issue #205) ────────────────────────────────────────────────────────
+// Roll20's own signatures, which differ between the two families and are easy to get backwards:
+//   getSheetItem(characterId, property, valtype?, options?)                 -> Promise, both v1.0/v1.5
+//   setSheetItem(characterId, property, value, valtype?, options?)          -> Promise, both v1.0/v1.5
+//   getComputed({ characterId, property, args?, playerId? })                -> Promise, v1.5 only
+//   setComputed({ characterId, property, args?, playerId? })                -> Promise, v1.5 only
+//   performAction({ characterId, action, args?, playerId? })                -> Promise, v1.5 only
+// The sheet-item pair takes POSITIONAL arguments; the Beacon trio takes ONE OBJECT.
+
+ACTIONS["getSheetSummary"] = function (args, msg, nonce, senderPlayerId) {
+  // Enumerate what this campaign's sheet actually offers: Campaign().computedSummary (Beacon
+  // computed property names) and Campaign().actionSummary (Beacon action names), plus the sandbox
+  // fingerprint. This is the "what can I even call" read that has to come before the rest.
+  let ctx = sheetContext();
+  writeResult(nonce, {
+    sandbox: ctx.sandbox,
+    node: ctx.node,
+    sheetName: ctx.sheetName,
+    beacon: ctx.beacon,
+    computedUnreadable: ctx.computedUnreadable,
+    computed: ctx.computed,
+    actions: ctx.actions,
+    carriers: {
+      getSheetItem: typeof getSheetItem === "function",
+      setSheetItem: typeof setSheetItem === "function",
+      getComputed: typeof getComputed === "function",
+      setComputed: typeof setComputed === "function",
+      performAction: typeof performAction === "function",
+    },
+  });
+  return;
+};
+
+ACTIONS["getSheetItem"] = function (args, msg, nonce, senderPlayerId) {
+  // The VERSION-AGNOSTIC read: on v1.0 this wraps getAttrByName, on v1.5 it also reaches Beacon
+  // computed properties and "user.*" custom attributes. Prefer it over getCharacterAttributes for
+  // anything that has to work on both sandboxes.
+  if (typeof getSheetItem !== "function") {
+    throw new Error("getSheetItem() does not exist in this Mod sandbox (sandbox " +
+      (sheetContext().sandbox || "?") + ") — use getCharacterAttributes instead");
+  }
+  let charId = args.charId;
+  if (!charId) throw new Error("getSheetItem: charId is required");
+  let names = args.names || (args.property ? [args.property] : []);
+  if (typeof names === "string") names = [names];
+  if (!Array.isArray(names) || !names.length) {
+    throw new Error("getSheetItem: pass property (one name) or names (a list)");
+  }
+  let valtype = args.valtype || "current";
+  let ctx = sheetContext();
+  // Per-name catch, so one unreadable property reports itself instead of failing the whole batch.
+  // Promise.all over the resolved-either-way rows therefore never rejects.
+  let all = Promise.all(names.map(function (name) {
+    return Promise.resolve(getSheetItem(charId, name, valtype)).then(
+      function (v) { return { name: name, value: v === undefined ? null : v }; },
+      function (e) { return { name: name, error: errText(e) }; }
+    );
+  }));
+  settleSheetAsync(nonce, "getSheetItem", all, function (rows) {
+    let values = {}, failed = [], reasons = {};
+    rows.forEach(function (row) {
+      if (row.error !== undefined) { failed.push(row.name); reasons[row.name] = row.error; return; }
+      values[row.name] = row.value;
+    });
+    return { valtype: valtype, values: values, failed: failed, reasons: reasons, sheet: sheetStamp(ctx) };
+  });
+  return;
+};
+
+ACTIONS["setSheetItem"] = function (args, msg, nonce, senderPlayerId) {
+  // The VERSION-AGNOSTIC write. args.attributes mirrors setCharacterAttributes: a name -> value
+  // map where a value may be a scalar (current only) or { current, max }.
+  if (typeof setSheetItem !== "function") {
+    throw new Error("setSheetItem() does not exist in this Mod sandbox (sandbox " +
+      (sheetContext().sandbox || "?") + ") — use setCharacterAttributes instead");
+  }
+  let charId = args.charId;
+  if (!charId) throw new Error("setSheetItem: charId is required");
+  let attributes = args.attributes;
+  if (!attributes && args.property) {
+    attributes = {};
+    attributes[args.property] = (args.valtype === "max") ? { max: args.value } : args.value;
+  }
+  if (!attributes || !Object.keys(attributes).length) {
+    throw new Error("setSheetItem: pass attributes ({name: value}) or property + value");
+  }
+
+  // allowThrow DEFAULTS TO TRUE here, inverting Roll20's default. Left off, setSheetItem RESOLVES
+  // whether or not the write landed — on a Beacon sheet a property that is missing or read-only
+  // fails silently, which is the exact "reported success, did nothing" failure the Beacon guard in
+  // setCharacterAttributes exists to kill. With it on, the rejection becomes a named entry in
+  // failed/reasons. A caller that genuinely wants the lenient behaviour has to ask for it, and the
+  // result then carries a note saying it is not evidence the write landed.
+  let allowThrow = args.allowThrow !== false;
+  let opts = { allowThrow: allowThrow };
+  if (args.createAttr !== undefined) opts.createAttr = args.createAttr;
+  if (args.withWorker !== undefined) opts.withWorker = args.withWorker;
+
+  // One setSheetItem call per (name, valtype) pair — a { current, max } value is two writes.
+  let writes = [];
+  Object.keys(attributes).forEach(function (name) {
+    let val = attributes[name];
+    let isObj = typeof val === "object" && val !== null;
+    if (!isObj) { writes.push({ name: name, valtype: "current", value: val }); return; }
+    if (val.current !== undefined) writes.push({ name: name, valtype: "current", value: val.current });
+    if (val.max !== undefined) writes.push({ name: name, valtype: "max", value: val.max });
+  });
+  if (!writes.length) throw new Error("setSheetItem: every value was empty — nothing to write");
+
+  let ctx = sheetContext();
+  // A label distinguishes the two valtypes of one name in the result lists: "hp" and "hp:max".
+  function label(w) { return w.valtype === "current" ? w.name : w.name + ":" + w.valtype; }
+  let all = Promise.all(writes.map(function (w) {
+    return Promise.resolve(setSheetItem(charId, w.name, w.value, w.valtype, opts)).then(
+      function () { return { label: label(w) }; },
+      function (e) { return { label: label(w), error: errText(e) }; }
+    );
+  }));
+  settleSheetAsync(nonce, "setSheetItem", all, function (rows) {
+    let written = [], failed = [], reasons = {};
+    rows.forEach(function (row) {
+      if (row.error !== undefined) { failed.push(row.label); reasons[row.label] = row.error; return; }
+      written.push(row.label);
+    });
+    let out = {
+      written: written, failed: failed, reasons: reasons,
+      allowThrow: allowThrow, sheet: sheetStamp(ctx),
+    };
+    if (!allowThrow) {
+      out.note = "allowThrow was off, so setSheetItem resolved without reporting whether the write " +
+        "landed — `written` means the call returned, NOT that the sheet took the value. Read it " +
+        "back with getSheetItem to confirm.";
+    }
+    return out;
+  });
+  return;
+};
+
+ACTIONS["getComputed"] = function (args, msg, nonce, senderPlayerId) {
+  // Read one Beacon computed property. v1.5 only.
+  let why = carrierUnavailable("getComputed", typeof getComputed === "function");
+  if (why) throw new Error(why);
+  if (!args.charId) throw new Error("getComputed: charId is required");
+  if (!args.property) throw new Error("getComputed: property is required");
+  let ctx = sheetContext();
+  // playerId defaults to the GM who sent the command. Roll20 documents it as required for some
+  // Beacon features (roll queries), and the sender is the only player we can honestly attribute
+  // the read to. stripUndef keeps an absent one out of the call object entirely.
+  let call = stripUndef({
+    characterId: args.charId,
+    property: args.property,
+    args: args.args,
+    playerId: args.playerId || senderPlayerId || undefined,
+  });
+  settleSheetAsync(nonce, "getComputed(" + args.property + ")", getComputed(call), function (value) {
+    return {
+      property: args.property,
+      value: value === undefined ? null : value,
+      // A name that is not in computedSummary is the likeliest reason for a null, so say so here
+      // rather than leaving the caller to guess.
+      known: ctx.computed.indexOf(args.property) !== -1,
+      sheet: sheetStamp(ctx),
+    };
+  });
+  return;
+};
+
+ACTIONS["setComputed"] = function (args, msg, nonce, senderPlayerId) {
+  // Write one WRITABLE Beacon computed property. v1.5 only.
+  let why = carrierUnavailable("setComputed", typeof setComputed === "function");
+  if (why) throw new Error(why);
+  if (!args.charId) throw new Error("setComputed: charId is required");
+  if (!args.property) throw new Error("setComputed: property is required");
+  // Roll20 documents setComputed's payload as { characterId, property, args?, playerId? } and does
+  // NOT publish where inside it the NEW VALUE sits — and `args` being optional argues it is not
+  // simply that. So the relay does not invent a shape (a guessed key would write nothing, silently,
+  // which is precisely the failure #205 exists to end): it forwards `args` and `value` verbatim,
+  // whichever the caller supplies, and lets the caller match its own sheet.
+  if (args.args === undefined && args.value === undefined) {
+    throw new Error("setComputed: pass args (Roll20's documented payload bag) and/or value — " +
+      "Roll20 does not publish where the new value sits in setComputed's payload, so the relay " +
+      "forwards both verbatim rather than guessing a key that would write nothing");
+  }
+  let ctx = sheetContext();
+  let call = stripUndef({
+    characterId: args.charId,
+    property: args.property,
+    args: args.args,
+    value: args.value,
+    playerId: args.playerId || senderPlayerId || undefined,
+  });
+  let readable = typeof getComputed === "function";
+  settleSheetAsync(nonce, "setComputed(" + args.property + ")", Promise.resolve(setComputed(call))
+    .then(function () {
+      // setComputed resolves VOID — it is no evidence the value landed. Read it straight back
+      // when we can, so the result carries something observed instead of something assumed.
+      if (!readable) return null;
+      return Promise.resolve(getComputed(stripUndef({
+        characterId: args.charId, property: args.property,
+        playerId: args.playerId || senderPlayerId || undefined,
+      }))).then(function (v) { return v === undefined ? null : v; },
+                function (e) { return { readBackError: errText(e) }; });
+    }), function (readBack) {
+      return {
+        ok: true,
+        property: args.property,
+        known: ctx.computed.indexOf(args.property) !== -1,
+        readBack: readBack,
+        note: readable
+          ? "setComputed returns void; `readBack` is a getComputed of the same property immediately " +
+            "afterwards. If it does not show the new value the property is read-only or the args " +
+            "payload was not the shape this sheet wanted."
+          : "setComputed returns void and getComputed is unavailable here, so nothing confirms the " +
+            "write landed.",
+        sheet: sheetStamp(ctx),
+      };
+    });
+  return;
+};
+
+ACTIONS["performAction"] = function (args, msg, nonce, senderPlayerId) {
+  // Run a Beacon sheet action — how a monster's attack is triggered on a Beacon sheet. v1.5 only.
+  // NB the action name arrives as `actionName`, not `action`: the dispatcher consumes the
+  // command's `action` field as the name of the RELAY action, so it never reaches a handler.
+  let why = carrierUnavailable("performAction", typeof performAction === "function");
+  if (why) throw new Error(why);
+  if (!args.charId) throw new Error("performAction: charId is required");
+  if (!args.actionName) throw new Error("performAction: actionName is required (the Beacon action to run)");
+  let ctx = sheetContext();
+  let known = ctx.actions.indexOf(args.actionName) !== -1;
+  let call = stripUndef({
+    characterId: args.charId,
+    action: args.actionName,
+    args: args.args,
+    playerId: args.playerId || senderPlayerId || undefined,
+  });
+  settleSheetAsync(nonce, "performAction(" + args.actionName + ")", performAction(call), function () {
+    return {
+      ok: true,
+      action: args.actionName,
+      // Roll20 falls back to invoking a character ABILITY of the same name when the name is not a
+      // Beacon action. That fallback is Roll20's, not ours: firing a second sendChat here would
+      // double-trigger the ability. known:false is the caller's signal that the call went down
+      // the ability path (or nowhere, if no such ability exists).
+      known: known,
+      note: known
+        ? "performAction returns void — this reports that the sheet accepted the call, not what it " +
+          "rolled. The roll itself lands in Roll20 chat."
+        : "\"" + args.actionName + "\" is not in Campaign().actionSummary, so Roll20 falls back to a " +
+          "character ability of that name. If the character has no such ability, nothing happened.",
+      sheet: sheetStamp(ctx),
+    };
+  });
+  return;
+};
+
 
 on("chat:message", function (msg) {
   // Buffer only real table chat: not relay commands, and NOT our own API/bridge output

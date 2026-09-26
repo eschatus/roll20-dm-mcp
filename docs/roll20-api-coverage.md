@@ -37,10 +37,10 @@ can be moved back to 1.0 by hand. `ACTIONS["ping"]` echoes `Campaign().sandboxVe
 surfaces them under `sandbox` — that is how you find out which one a campaign is on. A `sandbox` of
 `null` there means the *relay* is older than 2.7.0, not that the sandbox is old.
 
-Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.6). Relay version string: `2.8.0`
+Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.6). Relay version string: `2.9.0`
 (reported by the `ping` action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
-(`[GM_AI_Bridge] Relay script loaded (v2.8.0)`), not the save.
+(`[GM_AI_Bridge] Relay script loaded (v2.9.0)`), not the save.
 
 ---
 
@@ -115,8 +115,6 @@ Persistent storage: the global **`state`** object (survives sandbox restarts).
   (`options.silent` opts out), handles `_max` suffixes and `repeating_…_$n` names. Sheet workers
   firing is exactly what the `rollbase` scaffolding and the `<ability>_mod` derivation in
   `createCharacter` exist to work around. Untested against a live sheet; #206.
-- `getSheetItem` / `setSheetItem` (async, Promise) — the sheet-aware attribute carriers. On v1.0
-  they wrap attributes; on v1.5 they also reach Beacon computed properties and `user.*` attrs.
 - `getSheetDefaultValue(name, valtype?)` — the sheet's default for a field, not the live value.
 - `findObjs` options now include **`tagMatch: 'all' | 'any' | 'only'`** beside `caseInsensitive`
   and `startsWith`. (#209 covers this and the rest of the small unused surface.)
@@ -125,7 +123,8 @@ Persistent storage: the global **`state`** object (survives sandbox restarts).
 
 **Sandbox v1.5 only:**
 - `getComputed` / `setComputed` / `performAction` — Beacon sheet computed properties and sheet
-  actions. Enumerate them with `Campaign().computedSummary` / `actionSummary`.
+  actions; enumerate them with `Campaign().computedSummary` / `actionSummary`. **Wired as of relay
+  2.9.0** — see "Beacon sheet carriers" below.
 - `toAbove(obj, target)` / `toBelow(obj, target)` — precise layer ordering; `toFront`/`toBack` are
   also "substantially faster" here, and graphics/paths/text gain `.toFront()` / `.toBack()` methods.
 - `spawnFxBetweenPoints` beam types point at the end point (an angle bug is fixed).
@@ -142,9 +141,60 @@ character data in computed properties, so `findObjs({_type:"attribute"})` cannot
 `createObj("attribute")` cannot reach it — the object is created, and the sheet never reads it. As
 of relay 2.7.0 `setCharacterAttributes` refuses that write and reports it under `failed` with a
 reason, rather than reporting `created` for a write that did nothing
-(`test/sandbox-handshake.test.ts`). Full read/write support via `setComputed`/`setSheetItem` is
-#205 — both are async, which the relay's action handlers have a pattern for (`rollDice`)
-but have never needed for a write.
+(`test/sandbox-handshake.test.ts`). Relay **2.9.0** adds the carriers that actually reach the data
+(#205) — see the next section.
+
+### Beacon sheet carriers (relay 2.9.0, #205)
+
+Roll20's own signatures, which differ between the two families and are easy to get backwards — the
+sheet-item pair is POSITIONAL, the Beacon trio takes ONE OBJECT:
+
+```
+getSheetItem(characterId, property, valtype?, options?)          -> Promise   v1.0 + v1.5
+setSheetItem(characterId, property, value, valtype?, options?)   -> Promise   v1.0 + v1.5
+getComputed({ characterId, property, args?, playerId? })         -> Promise   v1.5 only
+setComputed({ characterId, property, args?, playerId? })         -> Promise   v1.5 only
+performAction({ characterId, action, args?, playerId? })         -> Promise   v1.5 only
+```
+
+| relay action | MCP tool | notes |
+|---|---|---|
+| `getSheetSummary` | `get_sheet_summary` | `computedSummary` + `actionSummary` + which carriers exist. The "what can I even call" read — start here when a character read comes back empty. |
+| `getSheetItem` | `get_sheet_item` | version-agnostic read; `names[]` batches, and a per-name failure is isolated into `failed`/`reasons` instead of costing the batch |
+| `setSheetItem` | `set_sheet_item` | version-agnostic write; `attributes` mirrors `setCharacterAttributes` (a `{current,max}` value becomes two calls, labelled `hp` and `hp:max`) |
+| `getComputed` | `get_computed_property` | `known:false` flags a name that is not in `computedSummary` |
+| `setComputed` | `set_computed_property` | returns void, so the result carries a `readBack` |
+| `performAction` | `perform_sheet_action` | the action name travels as **`actionName`** — the dispatcher eats the command's `action` field as the relay action to run |
+
+Three things about this path are load-bearing:
+
+- **Async, with a deferred `writeResult`.** Every carrier returns a Promise and every `ACTIONS`
+  handler is synchronous. `settleSheetAsync` writes the result from the settlement — the same
+  pattern `rollFormulas` uses for its `sendChat` callbacks, and the first *write* to need it. It
+  also owns a **6s timeout**, deliberately under the TS side's 8s read / 30s write relay timeouts,
+  so a carrier that never settles is reported by name instead of surfacing as an opaque transport
+  timeout. Rejections are caught there too: the dispatcher's `try/catch` only wraps the synchronous
+  half of a handler, so an uncaught one would be an unhandled rejection and a silent 30s wait.
+- **`allowThrow` defaults to TRUE**, inverting Roll20's default. Left off, `setSheetItem` resolves
+  whether or not the write landed — on a Beacon sheet a property that is missing or read-only fails
+  silently, which is the same "reported success, did nothing" failure the Beacon guard in
+  `setCharacterAttributes` exists to kill. A caller that wants the lenient behaviour must ask for
+  `allowThrow:false`, and the result then carries a note saying `written` is not evidence.
+- **`setComputed`'s value key is not published.** Roll20 documents the payload as
+  `{characterId, property, args?, playerId?}` and never says where the new value sits (and `args`
+  being optional argues it is not simply that). The relay therefore forwards `args` **and** `value`
+  verbatim and refuses a call carrying neither, rather than guessing a key that would write
+  nothing. `readBack` is how you find out which one your sheet wanted.
+
+**Still unverified live.** No v1.5 Beacon campaign was available when this landed, so the signatures
+above are transcribed from `help.roll20.net/hc/en-us/articles/360037772833` — which now 403s a plain
+`curl` even with a browser UA, and was read through `r.jina.ai` instead. Three things a live Beacon
+campaign should settle: which of `args`/`value` `setComputed` reads; whether `performAction`'s
+documented fallback to a same-named character ability is Roll20's own (the relay assumes it is and
+deliberately does **not** fire its own `sendChat`, which would double-trigger the ability —
+`known:false` is the caller's signal that the call went down that path); and the element shape of
+`computedSummary`/`actionSummary` (`summaryNames` accepts plain strings and the obvious
+descriptor-object forms).
 
 ### Events (5 kinds)
 `ready` · `change:<type>[:<prop>]` · `add:<type>` · `destroy:<type>` · `chat:message`.
@@ -210,6 +260,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `getDmInbox`/`clearDmInbox` | get_dm_inbox, clear_dm_inbox | combat | `!dm` queue |
 | `setMobPlan`/`getMobPlans`/`clearMobPlans` | set_mob_plan, get_mob_plans, clear_mob_plans | combat | **storage only.** The server no longer *plans* anything — the tactics tools (`plan_tactics`, `plan_all_tactics`, `record_tactic_outcome`, `get/clear_tactic_memory`) are removed and the gem owns tactical planning; this is just where it parks the resulting whisper cards. |
 | `setCharacterAttributes`/`getCharacterAttributes` | set_character_attribute, get_character_attribute, read_character_attributes | combat | sheet attrs. **Never read a field containing literal `@{`/`[[`** (e.g. `rollbase`) — Roll20's chat pipeline live-evaluates it on echo. |
+| `getSheetSummary`/`getSheetItem`/`setSheetItem`/`getComputed`/`setComputed`/`performAction` | get_sheet_summary, get_sheet_item, set_sheet_item, get_computed_property, set_computed_property, perform_sheet_action | combat | **Beacon ("advanced") sheet access, #205.** The only path that reaches a v1.5 sheet's computed properties; all six are **async** (deferred `writeResult`, 6s timeout). See "Beacon sheet carriers" above. |
 | `getRepeatingSection` | *(none)* | — | **read-only** (e.g. npcaction); row cap (maxRows default 60, `__truncated` flag); no field projection. Orphaned since tactics moved to the gem — the action still exists but no MCP tool calls it. |
 | `editCharacter` | set_character_props | combat | edit top-level character fields (name/bio/avatar/controlledby/archived/inplayerjournals) |
 | `batchExec` | batch_exec, update_hp_many, resolve_aoe, roll_initiative (HP seeding) | combat | runs N token actions in one relay round-trip |
@@ -219,7 +270,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `sendPing` | send_ping | maps | "look here" / pull player view to a spot |
 | `spawnFx` / `spawnFxBetweenPoints` | spawn_fx, spawn_fx_between_points | maps | explosions, beams, spell nova |
 | `toFront` / `toBack` | to_front, to_back | maps | z-order |
-| `ping` | (health check) | — | reports relay version (2.8.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
+| `ping` | (health check) | — | reports relay version (2.9.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
 | **event** `chat:message` | (passive) | — | buffers chat, parses `!dm`. Player `!`-commands are **forwarded, not answered** — `forwardChat` broadcasts them as an SSE `chat-message`; the gem decides what to do. |
 | **event** `change:campaign:turnorder` | (passive) | — | turn/round announcements |
 | **event** `add:graphic` | (passive) | — | auto-rolls initiative for NPC tokens dropped during combat |
