@@ -14,6 +14,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { setupHarness, type Harness } from "./harness.js";
 import * as characters from "../src/registry/characters.js";
+import { relayVersionAtLeast } from "../src/bridge/relay-version.js";
 
 let h: Harness;
 let pageId: string;
@@ -287,6 +288,96 @@ describe("revive_token — PC initiative is player-owned", () => {
   });
 });
 
+describe("revive_token — a stale deployed relay never gets a keepTurn write", () => {
+  // keepTurn exists only from relay 2.9.0. An older relay drops the flag and re-sorts the order,
+  // rewinding play to the top and firing the turn hook — so revive must not write there at all.
+  const setup = async (name: string) => {
+    const goblin = newToken(`${name} Goblin`, 7);
+    const fighter = newToken(`${name} Fighter`, 30, `player-${name}`);
+    const orc = newToken(`${name} Orc`, 15);
+    // Mid-round: the Goblin (pr 8) is up, the Fighter (pr 17) has acted.
+    seedTurnOrder([{ id: goblin, pr: "8" }, { id: fighter, pr: "17" }]);
+    await h.callTool("kill_token", { tokenId: orc });
+    return { goblin, fighter, orc };
+  };
+
+  it("relay 2.8.0: revives the token but leaves the order alone and says to redeploy", async () => {
+    const { goblin, fighter, orc } = await setup("Stale");
+    const before = h.emu.turnOrder().map((e) => `${e.id}:${e.pr}`);
+    h.stubRelayAction("ping", { pong: true, version: "2.8.0" });
+    h.clearRelayLog();
+    let json: unknown;
+    try {
+      ({ json } = await h.callTool("revive_token", { tokenId: orc, hp: 9, initiative: 12 }));
+    } finally {
+      h.clearRelayFailures();
+    }
+
+    expect(json).toMatchObject({ initiative: null, initiativeSource: "pending" });
+    const res = json as { initiativeNote: string; summary: string };
+    expect(res.initiativeNote).toMatch(/v2\.8\.0/);
+    expect(res.initiativeNote).toMatch(/[Rr]edeploy the relay/);
+    expect(res.initiativeNote).toMatch(/initiative:12/);
+    expect(res.summary).toMatch(/turn order NOT updated/);
+    // HP / marker / layer still landed.
+    expect(bar(orc)).toBe(9);
+    expect(markers(orc)).not.toMatch(/dead/);
+    expect(layer(orc)).toBe("objects");
+    // Nothing touched the order: no write, no roll, and the Goblin is still up.
+    expect(h.relayLog).not.toContain("mergeTurnOrder");
+    expect(h.relayLog).not.toContain("rollInitiativeForTokens");
+    expect(h.emu.turnOrder().map((e) => `${e.id}:${e.pr}`)).toEqual(before);
+    expect(h.emu.turnOrder()[0].id).toBe(goblin);
+    expect(h.emu.turnOrder().find((e) => e.id === fighter)?.pr).toBe("17");
+  });
+
+  it("unknown relay version (ping carries none): treated as stale, no roll and no write", async () => {
+    const { orc } = await setup("Unknown");
+    const before = h.emu.turnOrder().map((e) => `${e.id}:${e.pr}`);
+    h.stubRelayAction("ping", { pong: true });
+    h.clearRelayLog();
+    let json: unknown;
+    try {
+      ({ json } = await h.callTool("revive_token", { tokenId: orc, hp: 9 }));
+    } finally {
+      h.clearRelayFailures();
+    }
+
+    expect(json).toMatchObject({ initiative: null, initiativeSource: "pending" });
+    expect((json as { initiativeNote: string }).initiativeNote).toMatch(/unknown version/);
+    expect(layer(orc)).toBe("objects");
+    expect(h.relayLog).not.toContain("mergeTurnOrder");
+    expect(h.relayLog).not.toContain("rollInitiativeForTokens");
+    expect(h.emu.turnOrder().map((e) => `${e.id}:${e.pr}`)).toEqual(before);
+  });
+
+  it("a surviving row needs no write, so it is preserved even on a stale relay", async () => {
+    const ogre = newToken("Stale Ogre", 59);
+    seedTurnOrder([{ id: ogre, pr: "11" }]);
+    await h.callTool("kill_token", { tokenId: ogre });
+    h.stubRelayAction("ping", { pong: true, version: "2.8.0" });
+    let json: unknown;
+    try {
+      ({ json } = await h.callTool("revive_token", { tokenId: ogre, hp: 14 }));
+    } finally {
+      h.clearRelayFailures();
+    }
+    expect(json).toMatchObject({ initiative: 11, initiativeSource: "preserved" });
+  });
+});
+
+describe("relayVersionAtLeast", () => {
+  it("compares dotted versions numerically and treats unreadable as too old", () => {
+    expect(relayVersionAtLeast("2.9.0", "2.9.0")).toBe(true);
+    expect(relayVersionAtLeast("2.10.0", "2.9.0")).toBe(true);
+    expect(relayVersionAtLeast("3.0", "2.9.0")).toBe(true);
+    expect(relayVersionAtLeast("2.8.9", "2.9.0")).toBe(false);
+    expect(relayVersionAtLeast("2.9", "2.9.0")).toBe(true);
+    expect(relayVersionAtLeast(null, "2.9.0")).toBe(false);
+    expect(relayVersionAtLeast("2.9.0-beta", "2.9.0")).toBe(false);
+  });
+});
+
 describe("revive_token — failure visibility", () => {
   it("surfaces a relay failure instead of reporting a revive that never happened", async () => {
     const id = newToken("Wight", 45);
@@ -314,8 +405,12 @@ describe("revive_token — failure visibility", () => {
     }
     expect(message).toMatch(/failed at step 'layer'/);
     expect(message).toMatch(/Committed: hp, dead/);
-    expect(message).toMatch(/layer → set_token_props/);
-    expect(message).toMatch(/initiative → roll_initiative/);
+    expect(message).toMatch(/Still to do: layer, initiative/);
+    // The repair is the idempotent tool itself — never roll_initiative (legacy sort rewinds the
+    // turn, and it would roll a PC's initiative) or the per-step tools.
+    expect(message).toContain(`re-run revive_token tokenId:"${id}" hp:20`);
+    expect(message).toMatch(/initiative:N/);
+    expect(message).not.toMatch(/roll_initiative|set_token_props|set_token_marker|update_token_hp/);
     // What the error says landed, did land.
     expect(bar(id)).toBe(20);
     expect(markers(id)).not.toMatch(/dead/);
