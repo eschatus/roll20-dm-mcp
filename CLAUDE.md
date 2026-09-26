@@ -235,6 +235,17 @@ vision/wall tooling is maps-only.)
   to `bar1` like an NPC's. AC is reported back but never stored: `createToken` doesn't set
   `represents`, so a bare token has no sheet to hold it.
 - `batch_import_maps` is the folder→Roll20 pipeline (uses `listPages` + the steps above).
+- **Map pins (`create_map_pin` / `list_map_pins` / `update_map_pin` / `delete_map_pin`, #203) are the
+  one object type with camelCase properties** — `gmNotes`, `bgColor`, `pinImage`, `visibleTo`, not the
+  `gmnotes` used everywhere else in the Roll20 API. A pin drops an unsupported property write
+  silently, exactly like `path` does (#162/#164), so the relay whitelists the pin property names
+  (`PIN_PROPS` in `ai-relay.js`) and returns which ones it wrote — if a field you passed is missing
+  from `wrote`, it was a typo, not a Roll20 refusal. `imageDesynced`/`notesDesynced`/`gmNotesDesynced`
+  are **one flag wearing three names** (setting any one sets all three), so the tools expose a single
+  `desynced` boolean and the relay refuses two conflicting values. Hidden-until-found is
+  `visibleTo: ""` at creation, flipped to `"all"` with `update_map_pin`. Pin `x`/`y` are **assumed**
+  page pixels (70px/square, like a graphic's `left`/`top`) and `getPins` matches a page on `pageid`
+  OR `_pageid` — both still need a live check (steps 2.9/2.10 of `docs/e2e-human-test-script.md`).
 
 ## Combat development
 

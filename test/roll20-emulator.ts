@@ -27,7 +27,7 @@ const MIRROR_KEYS = new Set(["type", "id", "pageid", "characterid", "subtype", "
 // (data/Mod_Objects - Roll20 Wiki.html — "Path" section) plus the properties
 // this codebase's own path-writing actions already round-trip successfully
 // (`path`, `pageid`/`_pageid`). A type with no entry here is unrestricted —
-// this is intentionally scoped to `path` only (issue #164): without it,
+// this is intentionally scoped to `path` and `pin` (issues #164, #203): without it,
 // createObj("path",{...}).set("name"/"gmnotes", ...) silently "succeeds" in
 // tests while Roll20 drops both writes for real, which is exactly the bug
 // that shipped (mirrors the fill_opacity lesson from #162, same object type).
@@ -40,6 +40,20 @@ const PROP_WHITELIST: Record<string, Set<string>> = {
     "path", "fill", "stroke", "rotation", "layer", "stroke_width",
     "width", "height", "top", "left", "scaleX", "scaleY",
     "barrierType", "oneWayReversed", "controlledby",
+  ]),
+  // `pin` (issue #203) — same reasoning as `path`, with a sharper edge: every pin property is
+  // camelCase (`gmNotes`, `bgColor`, `pinImage`, `visibleTo`), so the lowercase spelling used
+  // everywhere else in the Roll20 API is exactly the mistake to expect, and Roll20 would drop it
+  // silently. Sourced from the Mod Objects doc's "Pin" section (see issue #203).
+  pin: new Set([
+    "id", "_id", "type", "_type", "pageid", "_pageid",
+    "x", "y", "scale",
+    "shape", "bgColor", "customizationType", "icon", "pinImage", "useTextIcon", "iconText",
+    "title", "notes", "gmNotes", "tooltipImage", "tooltipImageSize", "autoNotesType",
+    "link", "linkType", "subLink", "subLinkType",
+    "visibleTo", "tooltipVisibleTo", "tooltipTitleVisibleTo", "nameplateVisibleTo",
+    "imageVisibleTo", "notesVisibleTo", "gmNotesVisibleTo",
+    "imageDesynced", "notesDesynced", "gmNotesDesynced",
   ]),
 };
 

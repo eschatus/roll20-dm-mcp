@@ -53,6 +53,7 @@ describe("read actions (smoke)", () => {
     ["getPaths", "PAGE"],
     ["getWalls", "PAGE"],
     ["listZones", "PAGE"],
+    ["getPins", "PAGE"],
   ] as const)("%s resolves without throwing", (action, arg) => {
     const cmd = arg === "PAGE" ? { action, pageId } : { action, ...(arg as object) };
     expect(() => emu.relay(cmd)).not.toThrow();

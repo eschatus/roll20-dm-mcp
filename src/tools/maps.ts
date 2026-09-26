@@ -474,6 +474,134 @@ export function registerMapTools(server: McpServer): void {
     }
   );
 
+  // ── Map pins (#203) ─────────────────────────────────────────────────────────
+  // Roll20's native point-of-interest marker: an icon or image on the page with a tooltip, notes,
+  // GM notes, an optional handout link, and per-audience visibility on each of those. The
+  // Roll20-native way to express a module's keyed locations, and a "reveal the shrine once they
+  // find it" marker (create it with visibleTo "", flip it to "all" when they find it).
+  //
+  // NB the property names are camelCase — `gmNotes`, `bgColor`, `pinImage` — unlike `gmnotes`
+  // everywhere else in the Roll20 API. The relay refuses any name outside its pin whitelist rather
+  // than let Roll20 drop it silently (#162/#164's lesson).
+  const PIN_AUDIENCE = z.enum(["all", ""]);
+  const pinAudience = (what: string) =>
+    PIN_AUDIENCE.describe(`Who sees ${what}: "all" for everyone, "" for the GM only.`);
+
+  // Shared between create_map_pin and update_map_pin. No zod defaults on purpose: an unset field is
+  // left to Roll20 on create and left UNTOUCHED on update, so an update can't silently reset a look.
+  const PIN_FIELDS = {
+    title: z.string().optional().describe("Pin title, shown on the nameplate/tooltip."),
+    notes: z.string().optional().describe("Player-visible notes (HTML)."),
+    gmNotes: z.string().optional().describe("GM-only notes (HTML). Note the camelCase."),
+    scale: z.number().min(0.25).max(2).optional().describe("Pin size, 0.25–2.0."),
+    shape: z.enum(["teardrop", "circle", "diamond", "square"]).optional(),
+    bgColor: z.string().optional().describe("#RRGGBB, #RRGGBBAA, or 'transparent'."),
+    customizationType: z.enum(["icon", "image"]).optional().describe("Whether the pin shows `icon` or `pinImage`."),
+    icon: z.string().optional().describe("Built-in icon name, e.g. base-dot, base-castle, base-skullSimple, base-chest, base-village."),
+    pinImage: z.string().optional().describe("Roll20 art-library URL, used when customizationType is 'image'."),
+    useTextIcon: z.boolean().optional().describe("Show iconText instead of an icon/image."),
+    iconText: z.string().optional().describe("Text for useTextIcon — Roll20 renders only the first 3 characters."),
+    tooltipImage: z.string().optional().describe("Roll20 art-library URL shown in the tooltip."),
+    tooltipImageSize: z.enum(["small", "medium", "large", "xl"]).optional(),
+    autoNotesType: z.string().optional(),
+    link: z.string().optional().describe("Handout id to link this pin to."),
+    linkType: z.enum(["handout", ""]).optional(),
+    subLink: z.string().optional(),
+    subLinkType: z.enum(["headerPlayer", "headerGM", ""]).optional(),
+    visibleTo: pinAudience("the pin itself").optional(),
+    tooltipVisibleTo: pinAudience("the tooltip").optional(),
+    tooltipTitleVisibleTo: pinAudience("the tooltip title").optional(),
+    nameplateVisibleTo: pinAudience("the nameplate").optional(),
+    imageVisibleTo: pinAudience("the pin image").optional(),
+    notesVisibleTo: pinAudience("the notes").optional(),
+    gmNotesVisibleTo: pinAudience("the GM notes").optional(),
+    desynced: z.boolean().optional().describe(
+      "Override a linked handout's content with this pin's own title/notes/image. Roll20 keeps imageDesynced/notesDesynced/gmNotesDesynced as ONE coupled flag — setting any one sets all three — so this is a single boolean."
+    ),
+  };
+
+  // Map the tool's arg bag onto the relay's pin properties, expanding `desynced` into the three
+  // coupled Roll20 flags. Nothing undefined is forwarded (an undefined write crashes the sandbox).
+  const PIN_FIELD_NAMES = Object.keys(PIN_FIELDS).filter((k) => k !== "desynced");
+  function pinRelayArgs(a: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const k of PIN_FIELD_NAMES) if (a[k] !== undefined) out[k] = a[k];
+    if (a.desynced !== undefined) {
+      out.imageDesynced = a.desynced;
+      out.notesDesynced = a.desynced;
+      out.gmNotesDesynced = a.desynced;
+    }
+    return out;
+  }
+
+  server.tool(
+    "create_map_pin",
+    "Place a Roll20 map pin — an interactive point-of-interest marker with a title, notes, GM notes, an optional handout link, and per-audience visibility. Use for module keyed locations, and for markers revealed later (create with visibleTo '', then update_map_pin to 'all').",
+    {
+      pageId: z.string(),
+      x: z.number().describe("X position in Roll20 page pixels (70px per grid square)"),
+      y: z.number().describe("Y position in Roll20 page pixels (70px per grid square)"),
+      ...PIN_FIELDS,
+    },
+    async ({ pageId, x, y, ...rest }) => {
+      const result = await roll20.relayCommand<{ id: string; pageId: string; wrote: string[] }>({
+        action: "createPin",
+        pageId,
+        x,
+        y,
+        ...pinRelayArgs(rest as Record<string, unknown>),
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify({ pinId: result.id, pageId: result.pageId, x, y, wrote: result.wrote }) }],
+      };
+    }
+  );
+
+  server.tool(
+    "list_map_pins",
+    "Read back Roll20 map pins with all their properties. Omit pageId to list every pin in the campaign.",
+    {
+      pageId: z.string().optional(),
+    },
+    async ({ pageId }) => {
+      const pins = await roll20.relayCommand<object[]>({ action: "getPins", ...(pageId ? { pageId } : {}) });
+      return { content: [{ type: "text", text: JSON.stringify(pins) }] };
+    }
+  );
+
+  server.tool(
+    "update_map_pin",
+    "Change an existing Roll20 map pin. Only the fields you pass are written — everything else is left alone. Flipping visibleTo to 'all' is how a hidden point of interest gets revealed.",
+    {
+      pinId: z.string(),
+      x: z.number().optional().describe("X position in Roll20 page pixels (70px per grid square)"),
+      y: z.number().optional().describe("Y position in Roll20 page pixels (70px per grid square)"),
+      ...PIN_FIELDS,
+    },
+    async ({ pinId, x, y, ...rest }) => {
+      const result = await roll20.relayCommand<{ ok: boolean; id: string; updated: string[] }>({
+        action: "setPinProps",
+        pinId,
+        ...(x !== undefined ? { x } : {}),
+        ...(y !== undefined ? { y } : {}),
+        ...pinRelayArgs(rest as Record<string, unknown>),
+      });
+      return { content: [{ type: "text", text: JSON.stringify({ pinId: result.id, updated: result.updated }) }] };
+    }
+  );
+
+  server.tool(
+    "delete_map_pin",
+    "Delete a Roll20 map pin by id.",
+    {
+      pinId: z.string(),
+    },
+    async ({ pinId }) => {
+      const result = await roll20.relayCommand<{ ok: boolean; id: string }>({ action: "deletePin", pinId });
+      return { content: [{ type: "text", text: JSON.stringify({ ok: result.ok, pinId: result.id }) }] };
+    }
+  );
+
   server.tool(
     "to_front",
     "Move a Roll20 graphic to the front (top of z-order) on its layer.",

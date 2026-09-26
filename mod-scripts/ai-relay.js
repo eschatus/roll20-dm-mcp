@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.8.0";
+var AI_RELAY_VERSION = "2.9.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -1793,6 +1793,119 @@ ACTIONS["clearDLOpenings"] = function (args, msg, nonce, senderPlayerId) {
         findObjs({ _type: "door", pageid: args.pageId }).forEach(function(o) { o.remove(); removed++; });
         findObjs({ _type: "window", pageid: args.pageId }).forEach(function(o) { o.remove(); removed++; });
         writeResult(nonce, { removed: removed });
+        return;
+      }
+      };
+// ── Map pins (issue #203) ────────────────────────────────────────────────────
+// Roll20's `pin` object is an interactive marker placed on a page: an icon or an image, a tooltip,
+// a title, notes and GM notes, an optional link to a journal handout, and per-audience visibility
+// on every one of those. Two things about it break the conventions every other object type here
+// follows, and both are silent when got wrong:
+//
+//  1) The property names are **camelCase** — `gmNotes`, `bgColor`, `pinImage`, `visibleTo`. A pin
+//     has no `gmnotes`, and Roll20 drops an unsupported property write without erroring (the
+//     `path` lesson from #162/#164), so the whitelist below is the only spelling that ever reaches
+//     Roll20 — a name not in it is refused up front instead of looking like a successful write.
+//  2) `imageDesynced` / `notesDesynced` / `gmNotesDesynced` are one flag wearing three names:
+//     setting any one of them sets all three. normalizePinDesync makes that explicit rather than
+//     letting last-write-wins pick, and refuses a caller asking for two different values.
+var PIN_PROPS = [
+  // placement (x/y are page pixels, same units as a graphic's left/top)
+  "x", "y", "scale",
+  // look
+  "shape", "bgColor", "customizationType", "icon", "pinImage", "useTextIcon", "iconText",
+  // content
+  "title", "notes", "gmNotes", "tooltipImage", "tooltipImageSize", "autoNotesType",
+  // linking to a journal handout
+  "link", "linkType", "subLink", "subLinkType",
+  // visibility — each is "all" or ""
+  "visibleTo", "tooltipVisibleTo", "tooltipTitleVisibleTo", "nameplateVisibleTo",
+  "imageVisibleTo", "notesVisibleTo", "gmNotesVisibleTo",
+  // desync — coupled, see normalizePinDesync
+  "imageDesynced", "notesDesynced", "gmNotesDesynced",
+];
+var PIN_DESYNC_PROPS = ["imageDesynced", "notesDesynced", "gmNotesDesynced"];
+
+function normalizePinDesync(props) {
+  var given = PIN_DESYNC_PROPS.filter(function (k) { return props[k] !== undefined; });
+  if (given.length === 0) return props;
+  var want = props[given[0]];
+  given.forEach(function (k) {
+    if (props[k] !== want) {
+      throw new Error("pin: imageDesynced/notesDesynced/gmNotesDesynced are ONE coupled flag in Roll20 — setting any one sets all three. Pass a single value, not " + JSON.stringify(props));
+    }
+  });
+  PIN_DESYNC_PROPS.forEach(function (k) { props[k] = want; });
+  return props;
+}
+
+// Pull the writable pin properties out of a relay args bag. Drops undefined/null (a createObj or
+// .set() carrying undefined async-crashes the WHOLE sandbox — see setSafe) and drops anything that
+// is not a real pin property, so a typo is visible in the returned `wrote` list instead of silent.
+function pickPinProps(args) {
+  var out = {};
+  PIN_PROPS.forEach(function (k) {
+    if (args[k] !== undefined && args[k] !== null) out[k] = args[k];
+  });
+  return normalizePinDesync(out);
+}
+
+// Which page a pin is on. Roll20 mirrors `pageid` and `_pageid`, and which one findObjs matches has
+// differed by object type in this sandbox already (`path`/`graphic` answer to `_pageid`, `pathv2`/
+// `door`/`window` to `pageid`); the docs don't say which a pin uses. Read BOTH rather than guess —
+// a wrong guess returns an empty list, which reads as "this page has no pins".
+function pinPageId(pin) {
+  return String(pin.get("pageid") || pin.get("_pageid") || "");
+}
+
+// A pin's full property bag. Safe to echo back even though `notes`/`gmNotes` hold DM-authored HTML
+// that can contain "[[" or "@{": relay >= 2.7.0 percent-encodes the entire result payload, so no
+// chat trigger can survive the trip (see writeResult).
+function readPin(pin) {
+  var out = { id: pin.id, pageid: pinPageId(pin) };
+  PIN_PROPS.forEach(function (k) { out[k] = pin.get(k); });
+  return out;
+}
+
+ACTIONS["createPin"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // `pageid` has to be supplied AT CREATION — it reads back as the read-only `_pageid`
+        // afterwards, exactly like a graphic's, so there is no second chance to place the pin.
+        let pinProps = pickPinProps(args);
+        let pin = createObj("pin", Object.assign({ pageid: args.pageId }, pinProps));
+        if (!pin) throw new Error("createObj('pin') returned undefined — check pageId, and that this campaign's Mod sandbox supports the 'pin' object type");
+        writeResult(nonce, { id: pin.id, pageId: pinPageId(pin), wrote: Object.keys(pinProps) });
+        return;
+      }
+      };
+ACTIONS["getPins"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // pageId is optional — omit it to enumerate every pin in the campaign.
+        let pins = findObjs({ _type: "pin" }).filter(function (p) {
+          return !args.pageId || pinPageId(p) === String(args.pageId);
+        });
+        writeResult(nonce, pins.map(readPin));
+        return;
+      }
+      };
+ACTIONS["setPinProps"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let pin = getObj("pin", args.pinId);
+        if (!pin) throw new Error("Pin not found: " + args.pinId);
+        let props = pickPinProps(args);
+        let keys = Object.keys(props);
+        if (keys.length === 0) throw new Error("setPinProps: no pin properties to write — pass at least one of: " + PIN_PROPS.join(", "));
+        setSafe(pin, props);
+        writeResult(nonce, { ok: true, id: pin.id, updated: keys });
+        return;
+      }
+      };
+ACTIONS["deletePin"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let pin = getObj("pin", args.pinId);
+        if (!pin) throw new Error("Pin not found: " + args.pinId);
+        pin.remove();
+        writeResult(nonce, { ok: true, id: args.pinId });
         return;
       }
       };

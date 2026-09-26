@@ -80,6 +80,21 @@ After placing DL walls, immediately call `decorate_openings` with the `doors`, `
 
 This is automatic — do not ask the DM before doing it.
 
+### 4b. Mark points of interest (optional)
+
+If the map has keyed locations — a module's numbered rooms, a shrine, a stash — drop a
+`create_map_pin` per location: `{ pageId, x, y, title, notes, gmNotes, icon, customizationType:
+"icon" }`. `x`/`y` are page pixels (70 per square), same as a token's.
+
+- Something the party should not see yet goes in with `visibleTo: ""` and is revealed later with
+  `update_map_pin { pinId, visibleTo: "all" }`. That is the whole "reveal the shrine once they find
+  it" flow — no deleting and re-creating.
+- `link` + `linkType: "handout"` ties a pin to a journal handout, so the pin *is* the handout's
+  location on the map.
+- Pin properties are **camelCase** (`gmNotes`, `bgColor`, `pinImage`) unlike everything else in the
+  Roll20 API, and `create_map_pin` reports back a `wrote` list — if a field you passed isn't in it,
+  it was a typo.
+
 ### 5. Report back
 
 Report:
