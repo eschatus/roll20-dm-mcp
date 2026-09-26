@@ -3187,33 +3187,67 @@ ACTIONS["setComputed"] = function (args, msg, nonce, senderPlayerId) {
     playerId: args.playerId || senderPlayerId || undefined,
   });
   let readable = typeof getComputed === "function";
+  // A scalar `value` is the one shape we can check against the read-back. An `args` bag is
+  // sheet-specific: we cannot know which key inside it is the new value, so the outcome of
+  // an args-only write is reported as unverified, never as confirmed.
+  let comparable = args.value !== undefined && (typeof args.value !== "object" || args.value === null);
   settleSheetAsync(nonce, "setComputed(" + args.property + ")", Promise.resolve(setComputed(call))
     .then(function () {
       // setComputed resolves VOID — it is no evidence the value landed. Read it straight back
       // when we can, so the result carries something observed instead of something assumed.
-      if (!readable) return null;
+      if (!readable) return { readBack: null, readBackError: null };
       return Promise.resolve(getComputed(stripUndef({
-        characterId: args.charId, property: args.property,
+        characterId: args.charId, property: args.property, args: args.args,
         playerId: args.playerId || senderPlayerId || undefined,
-      }))).then(function (v) { return v === undefined ? null : v; },
-                function (e) { return { readBackError: errText(e) }; });
-    }), function (readBack) {
+      }))).then(function (v) { return { readBack: v === undefined ? null : v, readBackError: null }; },
+                function (e) { return { readBack: null, readBackError: errText(e) }; });
+    }), function (rb) {
+      var verified = null;   // true = read-back matches, false = it does not, null = cannot tell
+      var note;
+      if (!readable) {
+        note = "setComputed returns void and getComputed is unavailable here, so nothing confirms the " +
+          "write landed. UNVERIFIED.";
+      } else if (rb.readBackError) {
+        verified = comparable ? false : null;
+        note = "setComputed resolved but the read-back failed: " + rb.readBackError + ". " +
+          (comparable ? "The write is NOT confirmed." : "UNVERIFIED.");
+      } else if (comparable) {
+        verified = computedMatches(rb.readBack, args.value);
+        note = verified
+          ? "setComputed returns void; `readBack` is a getComputed of the same property immediately " +
+            "afterwards and it shows the new value."
+          : "setComputed resolved but `readBack` (a getComputed immediately afterwards) still shows " +
+            "the old value — the property is read-only or `value` is not where this sheet expects " +
+            "the new value to sit. The write did NOT land.";
+      } else {
+        note = "setComputed returns void; `readBack` is a getComputed of the same property (with the " +
+          "same args) immediately afterwards. Roll20 does not publish which key in `args` carries " +
+          "the new value, so the relay cannot compare it — UNVERIFIED; check readBack yourself.";
+      }
       return {
-        ok: true,
+        ok: verified !== false,
+        verified: verified,
         property: args.property,
         known: ctx.computed.indexOf(args.property) !== -1,
-        readBack: readBack,
-        note: readable
-          ? "setComputed returns void; `readBack` is a getComputed of the same property immediately " +
-            "afterwards. If it does not show the new value the property is read-only or the args " +
-            "payload was not the shape this sheet wanted."
-          : "setComputed returns void and getComputed is unavailable here, so nothing confirms the " +
-            "write landed.",
+        readBack: rb.readBack,
+        readBackError: rb.readBackError || undefined,
+        note: note,
         sheet: sheetStamp(ctx),
       };
     });
   return;
 };
+
+// Does a getComputed read-back show the scalar we just wrote? Beacon values may come back as
+// a {current,max} pair or as a string where we sent a number, so compare loosely.
+function computedMatches(readBack, value) {
+  if (readBack === value) return true;
+  if (readBack !== null && typeof readBack === "object") {
+    return Object.prototype.hasOwnProperty.call(readBack, "current") &&
+      String(readBack.current) === String(value);
+  }
+  return String(readBack) === String(value);
+}
 
 ACTIONS["performAction"] = function (args, msg, nonce, senderPlayerId) {
   // Run a Beacon sheet action — how a monster's attack is triggered on a Beacon sheet. v1.5 only.
@@ -3225,6 +3259,15 @@ ACTIONS["performAction"] = function (args, msg, nonce, senderPlayerId) {
   if (!args.actionName) throw new Error("performAction: actionName is required (the Beacon action to run)");
   let ctx = sheetContext();
   let known = ctx.actions.indexOf(args.actionName) !== -1;
+  // Roll20 falls back to a same-named character ABILITY when the name is not a Beacon action.
+  // If there is no such ability either, the call would do nothing — refuse it before it is made,
+  // rather than reporting a dispatch that went nowhere.
+  let ability = known ? null : findObjs({ _type: "ability", _characterid: args.charId, name: args.actionName })[0] || null;
+  if (!known && !ability) {
+    throw new Error("performAction: \"" + args.actionName + "\" is not in Campaign().actionSummary and " +
+      "the character has no ability of that name — nothing would fire. Known actions: [" +
+      ctx.actions.join(", ") + "]");
+  }
   let call = stripUndef({
     characterId: args.charId,
     action: args.actionName,
@@ -3238,13 +3281,15 @@ ACTIONS["performAction"] = function (args, msg, nonce, senderPlayerId) {
       // Roll20 falls back to invoking a character ABILITY of the same name when the name is not a
       // Beacon action. That fallback is Roll20's, not ours: firing a second sendChat here would
       // double-trigger the ability. known:false is the caller's signal that the call went down
-      // the ability path (or nowhere, if no such ability exists).
+      // the ability path; the relay has already checked that the ability exists.
       known: known,
+      abilityFallback: !known,
+      abilityId: ability ? ability.id : undefined,
       note: known
         ? "performAction returns void — this reports that the sheet accepted the call, not what it " +
           "rolled. The roll itself lands in Roll20 chat."
-        : "\"" + args.actionName + "\" is not in Campaign().actionSummary, so Roll20 falls back to a " +
-          "character ability of that name. If the character has no such ability, nothing happened.",
+        : "\"" + args.actionName + "\" is not in Campaign().actionSummary, so Roll20 fell back to the " +
+          "character ability of that name (which exists). The ability's output lands in Roll20 chat.",
       sheet: sheetStamp(ctx),
     };
   });

@@ -161,10 +161,10 @@ performAction({ characterId, action, args?, playerId? })         -> Promise   v1
 |---|---|---|
 | `getSheetSummary` | `get_sheet_summary` | `computedSummary` + `actionSummary` + which carriers exist. The "what can I even call" read — start here when a character read comes back empty. |
 | `getSheetItem` | `get_sheet_item` | version-agnostic read; `names[]` batches, and a per-name failure is isolated into `failed`/`reasons` instead of costing the batch |
-| `setSheetItem` | `set_sheet_item` | version-agnostic write; `attributes` mirrors `setCharacterAttributes` (a `{current,max}` value becomes two calls, labelled `hp` and `hp:max`) |
+| `setSheetItem` | `set_sheet_item` | version-agnostic write; `attributes` mirrors `setCharacterAttributes` (a `{current,max}` value becomes two calls, labelled `hp` and `hp:max`). Any failed field makes the MCP result `isError` (`partial:true`), still listing `written` |
 | `getComputed` | `get_computed_property` | `known:false` flags a name that is not in `computedSummary` |
-| `setComputed` | `set_computed_property` | returns void, so the result carries a `readBack` |
-| `performAction` | `perform_sheet_action` | the action name travels as **`actionName`** — the dispatcher eats the command's `action` field as the relay action to run |
+| `setComputed` | `set_computed_property` | returns void, so the result carries a `readBack` (read with the same `args`). A scalar `value` is compared against it: mismatch → `ok:false`/`verified:false` and an `isError` MCP result; args-only writes are `verified:null` |
+| `performAction` | `perform_sheet_action` | the action name travels as **`actionName`** — the dispatcher eats the command's `action` field as the relay action to run. A name that is neither a Beacon action nor a same-named ability is refused before the call is made |
 
 Three things about this path are load-bearing:
 
@@ -192,7 +192,8 @@ above are transcribed from `help.roll20.net/hc/en-us/articles/360037772833` — 
 campaign should settle: which of `args`/`value` `setComputed` reads; whether `performAction`'s
 documented fallback to a same-named character ability is Roll20's own (the relay assumes it is and
 deliberately does **not** fire its own `sendChat`, which would double-trigger the ability —
-`known:false` is the caller's signal that the call went down that path); and the element shape of
+`known:false`/`abilityFallback:true` is the caller's signal that the call went down that path, and
+the relay checks the ability exists first so a name matching neither is refused); and the element shape of
 `computedSummary`/`actionSummary` (`summaryNames` accepts plain strings and the obvious
 descriptor-object forms).
 

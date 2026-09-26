@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as roll20 from "../bridge/roll20.js";
-import { text, fail, json, resolveCharSheetId } from "./combatHelpers.js";
+import { fail, failJson, json, resolveCharSheetId } from "./combatHelpers.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Beacon character sheet access (Mod Script Sandbox v1.5) — issue #205.
@@ -68,7 +68,7 @@ export function registerSheetTools(server: McpServer): void {
 
   server.tool(
     "set_sheet_item",
-    "Write character sheet fields the VERSION-AGNOSTIC way: on sandbox v1.0 this sets ordinary attributes, on v1.5 it also reaches Beacon computed properties and 'user.*' custom attributes. This is the tool set_character_attribute points you at when it refuses a write on a Beacon sheet. A value may be a scalar (sets 'current') or {current, max}. The write is STRICT by default — a property that is missing or read-only is reported as failed rather than reported as written, because Roll20's lenient mode resolves whether or not the write landed.",
+    "Write character sheet fields the VERSION-AGNOSTIC way: on sandbox v1.0 this sets ordinary attributes, on v1.5 it also reaches Beacon computed properties and 'user.*' custom attributes. This is the tool set_character_attribute points you at when it refuses a write on a Beacon sheet. A value may be a scalar (sets 'current') or {current, max}. The write is STRICT by default — a property that is missing or read-only is reported as failed rather than reported as written, because Roll20's lenient mode resolves whether or not the write landed. If ANY field fails the result is an error (partial:true) that still lists which fields were written.",
     {
       attributes: z.record(z.string(), z.union([
         z.string(), z.number(), z.boolean(),
@@ -89,6 +89,11 @@ export function registerSheetTools(server: McpServer): void {
       if (r.written.length === 0) {
         return fail(`Nothing was written to character ${charId}: ` +
           r.failed.map((n) => `${n}: ${r.reasons[n]}`).join("; "));
+      }
+      if (r.failed.length > 0) {
+        // A partial write is still a failed write — the caller asked for the whole map. Keep the
+        // structured result so they can see exactly which fields landed.
+        return failJson({ charSheetId: charId, partial: true, ...r });
       }
       return json({ charSheetId: charId, ...r });
     }
@@ -115,7 +120,7 @@ export function registerSheetTools(server: McpServer): void {
 
   server.tool(
     "set_computed_property",
-    "Write ONE writable Beacon computed property (Mod Script Sandbox v1.5 only). Roll20 does NOT publish where the new value sits inside setComputed's payload, so pass 'value' and/or 'args' and the relay forwards both verbatim rather than guessing a key that would write nothing. setComputed itself returns void, so the result carries a readBack — a read of the same property immediately afterwards, which is the only evidence the write landed. For anything that also exists as a plain attribute, prefer set_sheet_item.",
+    "Write ONE writable Beacon computed property (Mod Script Sandbox v1.5 only). Roll20 does NOT publish where the new value sits inside setComputed's payload, so pass 'value' and/or 'args' and the relay forwards both verbatim rather than guessing a key that would write nothing. setComputed itself returns void, so the result carries a readBack — a read of the same property immediately afterwards, which is the only evidence the write landed. With a scalar 'value' the relay compares readBack against it: a mismatch is returned as an error (verified:false). An args-only write cannot be compared and comes back verified:null (unverified) — check readBack yourself. For anything that also exists as a plain attribute, prefer set_sheet_item.",
     {
       property: z.string().describe("Computed property name, as listed by get_sheet_summary"),
       value: z.union([z.string(), z.number(), z.boolean()]).optional().describe("The new value, forwarded as call.value"),
@@ -127,15 +132,19 @@ export function registerSheetTools(server: McpServer): void {
     async ({ property, value, args, playerId, characterName, charSheetId }) => {
       const charId = await resolveCharSheetId(characterName, charSheetId);
       const r = await roll20.relayCommand<{
-        ok: boolean; property: string; known: boolean; readBack: unknown; note: string; sheet: SheetStamp;
+        ok: boolean; verified: boolean | null; property: string; known: boolean;
+        readBack: unknown; readBackError?: string; note: string; sheet: SheetStamp;
       }>({ action: "setComputed", charId, property, value, args, playerId });
+      if (!r.ok) {
+        return failJson({ charSheetId: charId, ...r });
+      }
       return json({ charSheetId: charId, ...r });
     }
   );
 
   server.tool(
     "perform_sheet_action",
-    "Run a Beacon sheet ACTION on a character — this is how a monster's attack is triggered on a Beacon sheet, where the repeating_npcaction attributes do not exist (Mod Script Sandbox v1.5 only). List the available names with get_sheet_summary. The roll lands in Roll20 chat; the tool result reports that the sheet accepted the call, not what it rolled. If the name is not a Beacon action, Roll20 falls back to invoking a character ability of that name — the result flags that with known:false.",
+    "Run a Beacon sheet ACTION on a character — this is how a monster's attack is triggered on a Beacon sheet, where the repeating_npcaction attributes do not exist (Mod Script Sandbox v1.5 only). List the available names with get_sheet_summary. The roll lands in Roll20 chat; the tool result reports that the sheet accepted the call, not what it rolled. If the name is not a Beacon action, Roll20 falls back to invoking a character ability of that name — the result flags that with known:false and abilityFallback:true. If neither exists the call is refused rather than dispatched to nowhere.",
     {
       actionName: z.string().describe("Beacon action name, as listed by get_sheet_summary"),
       args: z.record(z.string(), z.unknown()).optional().describe("Beacon's args payload for this action, if it takes one"),
@@ -145,14 +154,10 @@ export function registerSheetTools(server: McpServer): void {
     },
     async ({ actionName, args, playerId, characterName, charSheetId }) => {
       const charId = await resolveCharSheetId(characterName, charSheetId);
-      const r = await roll20.relayCommand<{ ok: boolean; action: string; known: boolean; note: string; sheet: SheetStamp }>(
-        { action: "performAction", charId, actionName, args, playerId }
-      );
-      if (!r.known) {
-        return text(`Dispatched "${actionName}" on character ${charId}, but it is NOT in Campaign().actionSummary — ` +
-          `Roll20 will have fallen back to a character ability of that name, and if there is no such ability nothing happened. ` +
-          `Run get_sheet_summary to see the real action names.`);
-      }
+      const r = await roll20.relayCommand<{
+        ok: boolean; action: string; known: boolean; abilityFallback: boolean; abilityId?: string;
+        note: string; sheet: SheetStamp;
+      }>({ action: "performAction", charId, actionName, args, playerId });
       return json({ charSheetId: charId, ...r });
     }
   );

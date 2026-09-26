@@ -85,6 +85,8 @@ export interface SheetCarrierOptions {
   computed?: Record<string, unknown>;
   /** Computed properties that reject a write (Roll20: "the computed doesn't exist or is read-only"). */
   readOnlyComputed?: string[];
+  /** Computed properties whose setComputed resolves but silently ignores the payload. */
+  ignoreComputedWrites?: string[];
   /** Beacon action names. Becomes actionSummary. */
   actions?: string[];
   /** Action names whose promise rejects. */
@@ -609,6 +611,7 @@ export class Roll20Emulator {
           if ((model.readOnlyComputed ?? []).includes(call.property)) {
             return Promise.reject(new Error(`computed property ${call.property} is read-only`));
           }
+          if ((model.ignoreComputedWrites ?? []).includes(call.property)) return Promise.resolve();
           // Where the new value sits inside setComputed's payload is undocumented, so the model
           // accepts either of the two shapes the relay forwards.
           const bag = call.args as { value?: unknown } | undefined;

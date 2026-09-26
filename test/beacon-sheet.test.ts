@@ -258,6 +258,30 @@ describe("getComputed / setComputed — v1.5 only, one object argument", () => {
     expect(callsTo("setComputed")[0].args[0]).toMatchObject({ property: "ac", value: 20 });
   });
 
+  it("marks a scalar write whose read-back still shows the old value as NOT ok", async () => {
+    // The setter resolved, but the sheet ignored the payload. A resolved void promise is not a
+    // landed write; the read-back is, and it disagrees.
+    emu.installSheetCarriers({ computed: { ac: 17 }, ignoreComputedWrites: ["ac"] });
+    const r = await emu.relayAsync<{ ok: boolean; verified: boolean | null; readBack: unknown; note: string }>({
+      action: "setComputed", charId, property: "ac", value: 20,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.verified).toBe(false);
+    expect(r.readBack).toBe(17);
+    expect(r.note).toMatch(/did NOT land/);
+  });
+
+  it("reads back with the same args it wrote with, and calls an args-only write unverified", async () => {
+    emu.installSheetCarriers({ computed: { ac: 17 } });
+    const r = await emu.relayAsync<{ ok: boolean; verified: boolean | null; readBack: unknown }>({
+      action: "setComputed", charId, property: "ac", args: { value: 19 },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.verified).toBeNull();
+    expect(r.readBack).toBe(19);
+    expect(callsTo("getComputed")[0].args[0]).toMatchObject({ property: "ac", args: { value: 19 } });
+  });
+
   it("surfaces a rejected write as a relay error, not a cheerful ok", async () => {
     emu.installSheetCarriers({ computed: { ac: 17 }, readOnlyComputed: ["ac"] });
     await expect(emu.relayAsync({ action: "setComputed", charId, property: "ac", value: 20 }))
@@ -280,16 +304,25 @@ describe("performAction — triggering a Beacon sheet action", () => {
     });
   });
 
-  it("says when a name is not a Beacon action, because Roll20 then falls back to an ability", async () => {
+  it("says when a name is not a Beacon action but a same-named ability exists for Roll20 to fall back to", async () => {
     // The fallback is ROLL20'S, not ours — firing our own sendChat here would double-trigger the
-    // ability. All the relay can honestly do is flag which path the call took.
+    // ability. All the relay can honestly do is check the ability exists and flag the path taken.
     emu.installSheetCarriers({ computed: { ac: 17 }, actions: ["attack.claw"] });
-    const r = await emu.relayAsync<{ known: boolean; note: string }>({
+    emu.createObj("ability", { characterid: charId, name: "Bite", action: "/r 1d6" });
+    const r = await emu.relayAsync<{ known: boolean; abilityFallback: boolean; note: string }>({
       action: "performAction", charId, actionName: "Bite",
     });
     expect(r.known).toBe(false);
-    expect(r.note).toMatch(/falls back to a character ability/);
+    expect(r.abilityFallback).toBe(true);
+    expect(r.note).toMatch(/fell back to the character ability/);
     expect(callsTo("performAction")).toHaveLength(1);
+  });
+
+  it("refuses a name that is neither a Beacon action nor an ability, instead of dispatching to nowhere", async () => {
+    emu.installSheetCarriers({ computed: { ac: 17 }, actions: ["attack.claw"] });
+    await expect(emu.relayAsync({ action: "performAction", charId, actionName: "Bite" }))
+      .rejects.toThrow(/"Bite" is not in Campaign\(\)\.actionSummary and the character has no ability/);
+    expect(callsTo("performAction")).toEqual([]);
   });
 
   it("reports a rejected action instead of swallowing it", async () => {
@@ -361,6 +394,14 @@ describe("MCP tools over the carriers", () => {
     expect(h.emu.sheetValues().ac.current).toBe(17);
   });
 
+  it("set_sheet_item reports a PARTIAL write as an error that still lists what landed", async () => {
+    const r = await h.callTool("set_sheet_item", { charSheetId: sheetId, attributes: { hp: 12, ac: 20 } });
+    expect(r.isError).toBe(true);
+    expect(r.json).toMatchObject({ partial: true, written: ["hp"], failed: ["ac"] });
+    expect(h.emu.sheetValues().hp.current).toBe(12);
+    expect(h.emu.sheetValues().ac.current).toBe(17);
+  });
+
   it("set_character_attribute still refuses a Beacon write, and now names the tool that works", async () => {
     // The end of the chain the guard was always pointing at: refusal → the carrier that lands.
     const r = await h.callTool("set_character_attribute", {
@@ -381,14 +422,23 @@ describe("MCP tools over the carriers", () => {
     expect(known.isError).toBe(false);
     expect((known.json as { known: boolean }).known).toBe(true);
 
-    const unknown = await h.callTool("perform_sheet_action", { charSheetId: sheetId, actionName: "Bite" });
-    expect(unknown.text).toMatch(/NOT in Campaign\(\)\.actionSummary/);
+    await expect(h.callTool("perform_sheet_action", { charSheetId: sheetId, actionName: "Bite" }))
+      .rejects.toThrow(/not in Campaign\(\)\.actionSummary and the character has no ability/);
   });
 
   it("set_computed_property carries the read-back that is its only evidence", async () => {
     const r = await h.callTool("set_computed_property", { charSheetId: sheetId, property: "hp", value: 9 });
     expect(r.isError).toBe(false);
-    expect((r.json as { readBack: unknown }).readBack).toBe(9);
+    expect(r.json).toMatchObject({ ok: true, verified: true, readBack: 9 });
+  });
+
+  it("set_computed_property is an ERROR when the read-back disagrees with the value sent", async () => {
+    h.emu.installSheetCarriers({
+      computed: { hp: { current: 31, max: 44 } }, ignoreComputedWrites: ["hp"],
+    });
+    const r = await h.callTool("set_computed_property", { charSheetId: sheetId, property: "hp", value: 9 });
+    expect(r.isError).toBe(true);
+    expect(r.json).toMatchObject({ ok: false, verified: false, readBack: 31 });
   });
 
   it("a v1.0 campaign gets told to switch sandboxes rather than a silent nothing", async () => {
