@@ -121,7 +121,10 @@ convenience would conflict with a rule below, the rule wins.
   `concentration: true` (or `resolve_aoe draw:"aura"` with `auraConcentration: true`) — that records
   the slot, so the break tears down the right ring. Without it the cascade falls back to slot 1, and
   a spell parked on slot 2 survives its own teardown. A non-concentration aura (a permanent light
-  ring, a marching-order marker) leaves `concentration` false and is never torn down by a break.
+  ring, a marching-order marker) leaves `concentration` false. On slot 2, or on a slot that a
+  tagged spell had claimed, it is never torn down by a break. On slot 1 of a token with no live
+  claim it IS — an untagged slot-1 ring is treated as the historical concentration ring — so park
+  a permanent ring on slot 2 when the token also concentrates.
 - Breaks arrive two ways:
   - **Declaratively** — the DM says the spell ends ("she loses Bless", "the guardians fade") or
     the save already happened at the table. Call `break_concentration` directly, no question asked.

@@ -1123,7 +1123,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "find_tokens_in_range",
-    "Find all Roll20 tokens within radiusFeet of a center token. Use for AoE targeting — find who's in range of a spell or effect. Returns token names, HP, layer, and distance sorted nearest-first. After targeting, place a visual marker with set_token_props (aura1_radius + aura1_color) on the caster and create_zone to track the persistent AoE area.",
+    "Find all Roll20 tokens within radiusFeet of a center token. Use for AoE targeting — find who's in range of a spell or effect. Returns token names, HP, layer, and distance sorted nearest-first. After targeting, show an emanation that moves with the caster with set_token_aura (concentration:true when it is a concentration spell), or a fixed persistent area with create_zone.",
     {
       centerTokenId: z.string().describe("Roll20 token ID of the caster / effect origin"),
       radiusFeet: z.number().describe("Effect radius in feet, e.g. 15 for Spiritual Guardians, 20 for Fireball"),
@@ -1168,7 +1168,7 @@ export function registerCombatTools(server: McpServer): void {
       healing: z.boolean().default(false).describe("true = restore HP instead of dealing it. The formula/flat amount is applied as POSITIVE HP to every resolved target (PCs route through adjustPcHp; NPCs write bar1). No saving throws, no conditions; downed creatures ARE included so you can heal them up. Use targetNames to hand-pick the allies you're healing (e.g. Mass Cure Wounds)."),
       halfOnSave: z.boolean().default(true).describe("true = save takes half (Fireball); false = save negates"),
       onFailCondition: z.string().optional().describe("Condition applied to NPCs that FAIL, e.g. 'restrained', 'prone'"),
-      draw: z.enum(["zone", "aura", "none"]).default("zone").describe("Visual for the area: 'zone' (default) draws a circle on the map at the blast point — clear with clear_zone when it ends; 'aura' (token-centered mode only) sets a player-visible aura on the center token instead — right for emanations like Spirit Guardians that move with the caster; 'none' skips the visual. Ignored for zoneName/targetNames modes (nothing new to draw)."),
+      draw: z.enum(["zone", "aura", "none"]).default("zone").describe("Visual for the area: 'zone' (default) draws a circle on the map at the blast point — clear with clear_zone when it ends; 'aura' (token-centered mode only) sets a player-visible aura on the center token instead — right for emanations like Spirit Guardians that move with the caster (pass auraConcentration:true for concentration emanations — Spirit Guardians, Moonbeam… — so a break tears the ring down); 'none' skips the visual. Ignored for zoneName/targetNames modes (nothing new to draw)."),
       color: z.string().default("#cc0000").describe("Zone/aura color as #hex"),
       // draw:"aura" goes through the same relay action as set_token_aura, so an AoE-placed aura and
       // a hand-placed one are the same object with the same lifecycle (issue #210).

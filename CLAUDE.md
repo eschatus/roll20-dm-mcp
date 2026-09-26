@@ -274,6 +274,11 @@ Recasting onto the other slot moves the claim and zeroes the ring it used to own
 `set_token_aura` and `resolve_aoe draw:"aura"` go through the one `setTokenAura` relay action
 (write + bookkeeping in one step); a raw `set_token_props` write of `aura{n}_radius` is routed
 through the Mod (never the RTDB direct path) so it releases the claim on the slot it overwrites.
+**The contract in one sentence:** a tagged (`concentration:true`) ring is torn down on its own slot,
+an untracked token's slot-1 ring is torn down as it always was, and a released claim touches
+nothing — except that an UNTAGGED slot-1 ring drawn over a released claim resets the token to
+untracked, so a caller that never tags (the pinned gem, `resolve_aoe`'s default) still gets a
+slot-1 teardown on every break, not just the first.
 
 **Conditions/markers:** `set_token_marker` → `toggleCondition` → three-tier `resolveMarkerForState`
 (CONDITION → PSEUDO → hashed ad-hoc). Custom campaign marker set, IDs 4444311–4444352; default
