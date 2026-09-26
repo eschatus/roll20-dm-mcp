@@ -97,4 +97,20 @@ describe("the RT token is read from ROLL20_RT_TOKEN or the data dir, never harve
     process.env.ROLL20_RT_TOKEN = JSON.stringify({ campaignId: CAMPAIGN, customToken: "x" });
     await expect(read()).rejects.toThrow(/is missing databaseURL/);
   });
+
+  it("refuses a set-but-blank env var rather than quietly using the file", async () => {
+    fs.writeFileSync(path.join(tmp, "roll20-rt-token.json"), token({ campaignId: "111111" }));
+    process.env.ROLL20_RT_TOKEN = "   ";
+    await expect(read()).rejects.toThrow(/ROLL20_RT_TOKEN is set but is empty/);
+  });
+
+  it("keeps an explicit harvestedAt of 0 for the age gate instead of repairing it to 'now'", async () => {
+    process.env.ROLL20_RT_TOKEN = token({ harvestedAt: 0 });
+    await expect(read()).rejects.toThrow(/cached token is \d+m old/);
+  });
+
+  it("refuses a non-numeric harvestedAt", async () => {
+    process.env.ROLL20_RT_TOKEN = token({ harvestedAt: "yesterday" });
+    await expect(read()).rejects.toThrow(/harvestedAt is not a finite epoch-ms number/);
+  });
 });

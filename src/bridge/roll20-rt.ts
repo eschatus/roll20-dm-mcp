@@ -98,8 +98,12 @@ const TOKEN_ENV_SHAPE =
   `roll20-rt-token.json; unset it to fall back to that file`;
 
 function readEnvToken(): TokenCache | null {
-  const raw = process.env[TOKEN_ENV]?.trim();
-  if (!raw) return null;
+  const value = process.env[TOKEN_ENV];
+  if (value === undefined) return null;
+  const raw = value.trim();
+  if (!raw) {
+    throw new Roll20TokenUnavailableError("(unknown)", `${TOKEN_ENV} is set but is empty — ${TOKEN_ENV_SHAPE}`);
+  }
   let parsed: unknown;
   try { parsed = JSON.parse(raw); }
   catch {
@@ -116,14 +120,25 @@ function readEnvToken(): TokenCache | null {
       `${TOKEN_ENV} is set but is missing ${missing.join("/")} — ${TOKEN_ENV_SHAPE}`,
     );
   }
+  // An env-furnished token may arrive without the harvest stamp (hand-assembled, or copied
+  // field-by-field). Fall back to when THIS process started rather than inventing a fresh
+  // "now" on every read, so the reported age still moves and an expiring token still says so.
+  // A stamp that IS present must be a finite number; anything else is refused, not repaired.
+  let harvestedAt = PROCESS_START;
+  if (t.harvestedAt !== undefined && t.harvestedAt !== null) {
+    if (typeof t.harvestedAt !== "number" || !Number.isFinite(t.harvestedAt)) {
+      throw new Roll20TokenUnavailableError(
+        String(t.campaignId),
+        `${TOKEN_ENV} is set but harvestedAt is not a finite epoch-ms number — ${TOKEN_ENV_SHAPE}`,
+      );
+    }
+    harvestedAt = t.harvestedAt;
+  }
   return {
     campaignId: String(t.campaignId),
     customToken: String(t.customToken),
     databaseURL: String(t.databaseURL),
-    // An env-furnished token may arrive without the harvest stamp (hand-assembled, or copied
-    // field-by-field). Fall back to when THIS process started rather than inventing a fresh
-    // "now" on every read, so the reported age still moves and an expiring token still says so.
-    harvestedAt: Number(t.harvestedAt) || PROCESS_START,
+    harvestedAt,
   };
 }
 
