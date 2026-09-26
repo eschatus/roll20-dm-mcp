@@ -386,12 +386,29 @@ function releaseConcentrationAura(tokenId) {
   concentrationAuras()[tokenId] = 0;
 }
 
+// An UNTAGGED (not concentration) aura drawn on slot 1 over a RELEASED claim returns the token
+// to the untracked legacy state (absent entry → a break tears down slot 1). Without this, one
+// break would leave the claim at 0 forever, and every later untagged slot-1 aura — the ONLY
+// kind a caller that predates concentration:true ever draws, and resolve_aoe draw:"aura"'s
+// default — would survive every later break. Slot 1 only: an untagged slot-2 ring keeps the
+// released claim, so a break still never falls back onto an unrelated slot-1 ring.
+function resetReleasedConcentrationAura(tokenId, slot, radius) {
+  let reg = concentrationAuras();
+  if (slot !== 1 || !(radius > 0)) return;
+  if (Object.prototype.hasOwnProperty.call(reg, tokenId) && Number(reg[tokenId]) === 0) delete reg[tokenId];
+}
+
 // A raw aura-radius write onto the slot a concentration effect claims means that slot no
 // longer belongs to the spell (the DM replaced or cleared the ring by hand via setTokenProps).
-// Release the claim so the break cascade leaves the new ring alone.
+// Release the claim so the break cascade leaves the new ring alone. A raw slot-1 ring drawn
+// over a released claim resets it, exactly as an untagged setTokenAura does.
 function releaseConcentrationAuraIfOverwritten(tokenId, props) {
   let reg = concentrationAuras();
   let slot = Number(reg[tokenId]);
+  if (slot === 0 && Object.prototype.hasOwnProperty.call(props, "aura1_radius")) {
+    resetReleasedConcentrationAura(tokenId, 1, Number(props.aura1_radius));
+    return;
+  }
   if (slot !== 1 && slot !== 2) return;
   if (Object.prototype.hasOwnProperty.call(props, "aura" + slot + "_radius")) reg[tokenId] = 0;
 }
@@ -2131,15 +2148,9 @@ ACTIONS["setTokenAura"] = function (args, msg, nonce, senderPlayerId) {
         }
         if (radius > 0) {
           if (args.color) props["aura" + slot + "_color"] = args.color;
-          if (args.shape) {
-            // aura{n}_options is the authoritative shape field; Roll20 documents the legacy
-            // aura{n}_square boolean as kept in sync with it. Write both for the two shapes the
-            // boolean can express (belt-and-braces against a silently-dropped property, the
-            // #162/#164 class); hex and the border-only variants go through options alone.
-            props["aura" + slot + "_options"] = args.shape;
-            if (args.shape === "square") props["aura" + slot + "_square"] = true;
-            else if (args.shape === "circle") props["aura" + slot + "_square"] = false;
-          }
+          // aura{n}_options is the authoritative shape field; Roll20 keeps the legacy
+          // aura{n}_square boolean in sync with it, so only _options is ever written.
+          if (args.shape) props["aura" + slot + "_options"] = args.shape;
           props["showplayers_aura" + slot] = args.visibleToPlayers !== false;
         }
         setSafe(t, props);
@@ -2148,8 +2159,11 @@ ACTIONS["setTokenAura"] = function (args, msg, nonce, senderPlayerId) {
         // that slot, or reusing it for something that ISN'T concentration (a permanent light ring,
         // a marching-order marker), releases the claim — otherwise the break cascade would later
         // tear down an aura that no longer belongs to a spell.
+        // An untagged slot-1 ring over a RELEASED claim resets the token to untracked (see
+        // resetReleasedConcentrationAura) so a caller that never tags keeps master's behaviour.
         if (args.concentration && radius > 0) reg[args.tokenId] = slot;
         else if (prior === slot) releaseConcentrationAura(args.tokenId);
+        else if (!args.concentration) resetReleasedConcentrationAura(args.tokenId, slot, radius);
 
         writeResult(nonce, {
           ok: true,

@@ -579,6 +579,14 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
 // Validated: accepted by rules, persisted, and propagated to all clients (incl. the Mod's getObj).
 // Token writes are proven; map-object writes (walls/doors/windows) are likely valid — same RTDB auth,
 // same collection pattern as graphics. Falls back to the Mod on any error so the caller is unaffected.
+// A setTokenProps that must reach the Mod instead of being written straight to RTDB. Aura
+// radius writes do: the Mod owns the concentration-aura slot registry (#210) and must release
+// (or reset) a claim when the DM overwrites that slot's ring by hand — a direct write would
+// change the ring behind the registry's back.
+export function tokenPropsNeedMod(props: Record<string, unknown>): boolean {
+  return Object.keys(props).some((k) => /^aura[12]_radius$/.test(k));
+}
+
 async function tryDirectWrite(cmd: Record<string, unknown>): Promise<unknown | typeof NOT_HANDLED> {
   if (cmd.__forceMod) return NOT_HANDLED;
   const action = cmd.action as string;
@@ -715,9 +723,7 @@ async function tryDirectWrite(cmd: Record<string, unknown>): Promise<unknown | t
       case "setTokenProps": {
         const p = cmd.props as Record<string, unknown> | undefined;
         if (!p || typeof p !== "object" || !Object.keys(p).length) return NOT_HANDLED; // flattened shape → Mod
-        // Aura radius writes go through the Mod: it owns the concentration-aura slot registry
-        // (#210) and must release a claim when the DM overwrites that slot's ring by hand.
-        if (Object.keys(p).some((k) => /^aura[12]_radius$/.test(k))) return NOT_HANDLED;
+        if (tokenPropsNeedMod(p)) return NOT_HANDLED;
         const pid = await rtFindTokenPage(cmd.tokenId as string, cmd.pageId as string | undefined);
         if (!pid) return NOT_HANDLED;
         await rtUpdate(`graphics/page/${pid}/${cmd.tokenId}`, p);
@@ -803,6 +809,11 @@ async function tryDirectWrite(cmd: Record<string, unknown>): Promise<unknown | t
     return NOT_HANDLED;
   }
 }
+
+// Seam onto the direct-write path, so a test can prove a command is routed to the Mod (returns
+// NOT_HANDLED) without an RTDB connection. The test harness otherwise bypasses it entirely.
+export const __tryDirectWriteForTest = (cmd: Record<string, unknown>) => tryDirectWrite(cmd);
+export const __NOT_HANDLED_FOR_TEST = NOT_HANDLED;
 
 // Drop-in replacement for roll20.ts relayCommand. Reads + side-effect-free token writes are served
 // directly off the socket (no Mod, no chat); everything else (writes with side effects, un-mapped

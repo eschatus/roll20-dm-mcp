@@ -351,7 +351,9 @@ describe("concentration aura slot ownership (#210)", () => {
     expect(Number(props.aura2_radius)).toBe(10);
     expect(props.aura2_color).toBe("#00ff00");
     expect(props.aura2_options).toBe("square");
-    expect(props.aura2_square).toBe(true);
+    // _options is authoritative and Roll20 keeps _square in sync itself — never write both.
+    // "" is the emulator's never-written value; a _square write would have stored true.
+    expect(props.aura2_square).toBe("");
     expect(props.showplayers_aura2).toBe(false);
   });
 
@@ -373,5 +375,86 @@ describe("concentration aura slot ownership (#210)", () => {
     const result = await h.callTool("break_concentration", { characterName: "Dawn Caller" });
     expect((result.json as { auraSlot: number }).auraSlot).toBe(2);
     expect(aura2(id)).toBe(0);
+  });
+
+  // ── Untagged callers keep master's behaviour (review of #220) ──────────────────────────────
+  // A caller that never sends concentration:true — the pinned gem, resolve_aoe's default — must
+  // get a slot-1 teardown on EVERY break, not just the first. A break leaves a released (0)
+  // claim; an untagged slot-1 ring drawn afterwards resets the token to untracked.
+
+  it("untagged slot-1 aura → break, repeated: the ring is torn down every time", async () => {
+    h.emu.createToken({
+      pageid: pageId, name: "Maud Crane", controlledby: "player-maud",
+      bar1_value: 22, bar1_max: 22,
+    });
+    const id = tokenId("Maud Crane");
+
+    for (let round = 1; round <= 3; round++) {
+      await h.callTool("set_token_marker", { characterName: "Maud Crane", condition: "concentrating", active: true });
+      await h.callTool("set_token_aura", { characterName: "Maud Crane", radiusFeet: 15 });
+      expect(aura(id)).toBe(15);
+
+      const result = await h.callTool("break_concentration", { characterName: "Maud Crane" });
+      const data = result.json as { auraSlot: number | null; auraCleared: boolean };
+      expect({ round, auraSlot: data.auraSlot, auraCleared: data.auraCleared }).toEqual({ round, auraSlot: 1, auraCleared: true });
+      expect(aura(id)).toBe(0);
+    }
+  });
+
+  it("a raw set_token_props slot-1 ring after a break is torn down by the next break", async () => {
+    h.emu.createToken({
+      pageid: pageId, name: "Hesper Lark", controlledby: "player-hesper",
+      bar1_value: 22, bar1_max: 22, statusmarkers: "Concentrating::4444313", aura1_radius: 10,
+    });
+    const id = tokenId("Hesper Lark");
+
+    await h.callTool("break_concentration", { characterName: "Hesper Lark" });
+    expect(aura(id)).toBe(0);
+    await h.callTool("set_token_props", { characterName: "Hesper Lark", aura1_radius: 20 });
+
+    const result = await h.callTool("break_concentration", { characterName: "Hesper Lark" });
+    expect((result.json as { auraSlot: number | null }).auraSlot).toBe(1);
+    expect(aura(id)).toBe(0);
+  });
+
+  it("after a prior break, resolve_aoe draw:'aura' with the default auraConcentration is still torn down", async () => {
+    h.emu.createToken({
+      pageid: pageId, name: "Brother Oswin", controlledby: "player-oswin",
+      bar1_value: 26, bar1_max: 26, statusmarkers: "Concentrating::4444313", left: 800, top: 800,
+    });
+    const id = tokenId("Brother Oswin");
+
+    // An earlier, unrelated break leaves the token's claim released.
+    await h.callTool("break_concentration", { characterName: "Brother Oswin" });
+
+    await h.callTool("set_token_marker", { characterName: "Brother Oswin", condition: "concentrating", active: true });
+    await h.callTool("resolve_aoe", {
+      label: "Spirit Guardians", centerTokenName: "Brother Oswin", radiusFeet: 15,
+      draw: "aura", dryRun: false, damage: 0, pageId,
+    });
+    expect(aura(id)).toBe(15);
+
+    const result = await h.callTool("break_concentration", { characterName: "Brother Oswin" });
+    const data = result.json as { auraSlot: number | null; auraCleared: boolean };
+    expect(data.auraSlot).toBe(1);
+    expect(data.auraCleared).toBe(true);
+    expect(aura(id)).toBe(0);
+  });
+
+  it("an untagged slot-2 ring after a break does NOT reset the claim onto slot 1", async () => {
+    h.emu.createToken({
+      pageid: pageId, name: "Quill Harrow", controlledby: "player-quill",
+      bar1_value: 20, bar1_max: 20, statusmarkers: "Concentrating::4444313", aura1_radius: 10,
+    });
+    const id = tokenId("Quill Harrow");
+
+    await h.callTool("set_token_aura", { characterName: "Quill Harrow", radiusFeet: 15, slot: 2, concentration: true });
+    await h.callTool("break_concentration", { characterName: "Quill Harrow" });
+    await h.callTool("set_token_aura", { characterName: "Quill Harrow", radiusFeet: 5, slot: 2 });
+
+    const result = await h.callTool("break_concentration", { characterName: "Quill Harrow" });
+    expect((result.json as { auraSlot: number | null }).auraSlot).toBeNull();
+    expect(aura(id)).toBe(10);  // unrelated slot-1 ring survives
+    expect(aura2(id)).toBe(5);  // the untagged slot-2 ring survives
   });
 });
