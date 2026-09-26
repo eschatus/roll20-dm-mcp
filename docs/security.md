@@ -44,7 +44,10 @@ exchangeable.
 - **The server never harvests it.** `getCustomToken` (`src/bridge/roll20-rt.ts`) reads the cache or
   throws — there is no harvest fallback by design (#177). The gem (dm-whisper) is the sole harvester.
 - **Campaign-scoped.** A token for campaign A is refused for campaign B rather than silently used.
-- **Short-lived.** Rejected once older than `TOKEN_MAX_AGE_MS` (50 min, under Firebase's ~1 h validity).
+- **Short-lived.** A Firebase custom token is spent ~1 h after mint, and the exchange is what
+  enforces that — Firebase's rejection, not a local clock check. (The clock check used to be the
+  gate; it locked out every other reader of the data dir while the credential was still good, so
+  it is now advisory only and surfaces via `transport_status.rtToken` — #216.)
 - **Fails loudly and actionably.** Absent, stale, wrong-campaign, or shard-less → a typed
   `Roll20TokenUnavailableError` naming exactly what to refresh ("reconnect Roll20 in the gem"). A
   silent fallback is precisely the failure mode #83 closed on the relay path; the same reasoning

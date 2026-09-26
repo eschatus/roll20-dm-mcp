@@ -75,7 +75,7 @@ driving a browser against your live Roll20 account, which is a human-attended ac
 
 | file (in the data dir) | what it is | lifetime |
 |---|---|---|
-| `roll20-rt-token.json` | the realtime credential — **campaign-scoped**, carries that campaign's RTDB shard | ~50 min |
+| `roll20-rt-token.json` | the realtime credential — **campaign-scoped**, carries that campaign's RTDB shard | ~1 h |
 | `roll20-upload-cache.json` | endpoint + cookies for art upload (uploads themselves are a plain HTTP POST) | 8 h |
 
 When one is missing, stale, or belongs to a different campaign, you get a typed error

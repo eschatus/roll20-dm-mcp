@@ -3,12 +3,13 @@ import { getStats } from "../bridge/transport-health.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
 import { EXPECTED_RELAY_VERSION } from "../bridge/relay-version.js";
 import { getRelayVersionMismatch, getRelaySandboxInfo } from "../bridge/relay-version-check.js";
+import { getRtTokenStatus } from "../bridge/roll20-rt.js";
 import { BUILD_VERSION } from "../build-version.js";
 
 export function registerTransportTools(server: McpServer): void {
   server.tool(
     "transport_status",
-    "Show this server's build version, RT transport health, circuit-breaker state, counters, active campaign, and the deployed Mod relay's version handshake",
+    "Show this server's build version, RT transport health, circuit-breaker state, counters, active campaign, the age of the on-disk Roll20 realtime token, and the deployed Mod relay's version handshake",
     {},
     async () => {
       let activeCampaign = "(none)";
@@ -29,6 +30,11 @@ export function registerTransportTools(server: McpServer): void {
             // the default on 2026-09-02). null = not probed yet, or the deployed relay is older
             // than 2.6.0 and doesn't echo it.
             sandbox,
+            // Age of the furnished roll20-rt-token.json (#216). An already-connected server runs
+            // off its live socket and stays healthy long after this file goes cold, which is
+            // exactly when every OTHER reader of the data dir (roll20-dm-maps over stdio, a CLI
+            // script) gets locked out. Reporting it here is the only warning anyone gets.
+            rtToken: getRtTokenStatus(),
             relayVersion: {
               expected: EXPECTED_RELAY_VERSION,
               // null = no mismatch detected yet (either not probed, or the deployed relay matches).
