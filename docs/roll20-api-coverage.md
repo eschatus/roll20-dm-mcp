@@ -272,12 +272,15 @@ Legend: ✅ exposed · 🟡 partial · ❌ API-reachable but **not exposed** (ad
   `set_token_props` validates the presentation/behaviour properties added in #204:
   `bar{1,2,3}_num_permission` (`everyone` | `hidden` | `""` = editors only), `lockMovement`,
   `renderAsScenery`, `baseOpacity` / `fadeOnOverlap` / `fadeOpacity`, `night_vision_effect`,
-  `bar_location` / `compact_bar`, `currentSide` (v1.5), `interactionManualReset` /
-  `interactionTriggered`. `create_npc_token` / `create_monster_token` create tokens with
-  `bar1_num_permission: "hidden"`, which turns "never put HP numbers in front of players"
-  from a narration rule into a property of the token; PC tokens are left alone.
+  `bar_location` / `compact_bar`, `currentSide` (v1.5), `interactionManualReset` (an action —
+  `true` resets the object's interactions) / `interactionTriggered` (state Roll20 sets when the
+  interaction fires; read it back via `get_token`). NPC HP digits are editor-only by Roll20's
+  default (`""`; an NPC token has no controllers, so only the GM reads them) — the creation tools
+  write nothing unless `showHpNumbersToPlayers: true` opts a token into `"everyone"`.
   **Anything a creation path sets must also appear in `setDefaultTokenForChar`'s KEYS list**
-  in `ai-relay.js`, or it is silently lost when the sheet's default token is applied.
+  in `ai-relay.js`, or it is silently lost when the sheet's default token is applied. The two
+  interaction flags are deliberately excluded (a default token must not replay a reset).
+  Roll20 now also documents a **4th bar** (`bar4_*`); it is not yet exposed by any tool.
 - **HP & conditions** — token bars + status markers + char `active_conditions`; `batch_exec` for bulk; three-way PC / NPC / sidekick routing.
 - **Initiative / turn order** — read, merge, advance, real-dice roll, auto announcements, round detection, epithets, per-combatant `entries[{match,bonus,hp}]` overrides.
 - **Dice** — real Roll20 engine via inline rolls, plus `post_roll_as_character` for results rolled elsewhere.

@@ -123,14 +123,16 @@ describe("setDefaultToken carries the new properties (#204)", () => {
     expect(saved).not.toHaveProperty("tint_color");
   });
 
-  it("copies the interaction flags too", async () => {
+  it("does NOT copy the interaction flags — one is a reset action, the other Roll20-owned state", async () => {
     const charId = h.emu.createCharacter("Lever");
     await h.callTool("set_token_props", { tokenId, interactionManualReset: true, interactionTriggered: true });
     h.emu.relay({ action: "setDefaultToken", tokenId, charId });
 
     const saved = JSON.parse(String(h.emu.getObj("character", charId)!.get("defaulttoken"))) as Record<string, unknown>;
-    expect(saved.interactionManualReset).toBe(true);
-    expect(saved.interactionTriggered).toBe(true);
+    // A default token carrying interactionManualReset:true would re-fire the reset every
+    // time the sheet is dragged onto a map; interactionTriggered would restore stale state.
+    expect(saved).not.toHaveProperty("interactionManualReset");
+    expect(saved).not.toHaveProperty("interactionTriggered");
   });
 });
 
@@ -170,7 +172,10 @@ describe("get_token reads the new properties back (#204)", () => {
     expect(t.interactionTriggered).toBe(false);
   });
 
-  it("reports the graphic default '' for an untouched bar-number permission rather than dropping it", async () => {
+  // This asserts the EMULATOR's default for an untouched graphic. Roll20's documented default
+  // for bar{n}_num_permission is also "" (editors only), so the two happen to agree — but this
+  // test proves the read path keeps "", not what a live Roll20 token holds.
+  it("reports the emulator's default '' for an untouched bar-number permission rather than dropping it", async () => {
     const res = await h.callTool("get_token", { tokenId });
     const t = res.json as Record<string, unknown>;
     expect(t).toHaveProperty("bar1_num_permission", "");

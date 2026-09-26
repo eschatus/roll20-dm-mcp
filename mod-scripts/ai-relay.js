@@ -464,7 +464,8 @@ function setDefaultTokenForChar(t, args) {
   if (!t.get("represents")) t.set("represents", charId); // keep the link bidirectional
   // A key missing from this list is a property SILENTLY LOST when the sheet's default token is
   // applied — the same way the aura shape was lost before "aura1_options" was added here. Any
-  // property a creation path or a tool sets on a token belongs here.
+  // property a creation path or a tool sets on a token belongs here, unless re-applying it on
+  // every drag would itself be wrong (see the interaction flags below).
   var KEYS = [
     "name", "imgsrc", "represents", "controlledby",
     "bar1_link", "bar2_link", "bar3_link",
@@ -478,7 +479,11 @@ function setDefaultTokenForChar(t, args) {
     "light_radius", "light_dimradius", "light_otherplayers", "light_hassight",
     "light_angle", "light_losangle", "night_vision_effect",
     "lockMovement", "renderAsScenery", "baseOpacity", "fadeOnOverlap", "fadeOpacity",
-    "interactionManualReset", "interactionTriggered",
+    // interactionManualReset / interactionTriggered are deliberately NOT here. Setting
+    // interactionManualReset:true is an ACTION (it resets the object's interactions), and
+    // interactionTriggered is state Roll20 sets when the object fires — copying either into a
+    // default token would replay a reset, or a stale triggered state, every time the sheet is
+    // dragged out. They stay readable on a live token (tokenRich / the RT read).
     // camelCase, per the Objects doc — the lowercase "currentside" this list used to carry
     // reads back undefined and was therefore never copied at all.
     "sides", "currentSide",

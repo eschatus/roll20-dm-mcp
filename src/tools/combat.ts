@@ -1053,7 +1053,7 @@ export function registerCombatTools(server: McpServer): void {
       bar3_max: z.number().optional(),
       controlledby: z.string().optional(),
       showname: z.boolean().optional(),
-      bar1_num_permission: NUM_PERMISSION.optional().describe("Who may read the NUMBER in bar 1 (the bar itself is governed by showplayers_bar1). 'everyone' = the table sees the digits; 'hidden' = nobody but the GM does; '' = only players who can EDIT the token. NPC tokens are created 'hidden', which is the narration rule ('never put HP numbers in front of players') as a property of the token rather than something the DM has to remember each turn."),
+      bar1_num_permission: NUM_PERMISSION.optional().describe("Who may read the NUMBER in bar 1 (the bar itself is governed by showplayers_bar1). Roll20's values: '' (the default) = only the token's editors (the GM and anyone in controlledby); 'hidden' = hidden; 'everyone' = all players. An NPC token has no controllers, so under the default its digits are already GM-only; set 'everyone' to show them to the table."),
       bar2_num_permission: NUM_PERMISSION.optional().describe("Who may read the number in bar 2 — see bar1_num_permission."),
       bar3_num_permission: NUM_PERMISSION.optional().describe("Who may read the number in bar 3 — see bar1_num_permission."),
       lockMovement: z.boolean().optional().describe("Pin the token in place — it can no longer be dragged on the map. Use for scenery and for a downed token that shouldn't get shoved around. Note the camelCase; Roll20 spells this one differently from the snake_case bar/aura fields."),
@@ -1065,8 +1065,8 @@ export function registerCombatTools(server: McpServer): void {
       bar_location: z.string().optional().describe("Where the token's bars are drawn: 'overlap_top', 'overlap_bottom', 'bottom', or '' for the default (above the token). Useful on small tokens where the bars cover the art."),
       compact_bar: z.string().optional().describe("Compact (thin) bar presentation: 'compact' to enable, '' for normal. A string, not a boolean — Roll20's own vocabulary."),
       currentSide: z.number().int().min(0).optional().describe("SANDBOX v1.5 ONLY — index into the token's `sides` (rollable table token). Setting it auto-updates imgsrc, Marketplace art included, so it flips a token between forms (wildshape, a door's open/closed art) with no re-upload. On sandbox v1.0 the write lands and nothing happens. If the same write also carries a valid imgsrc, imgsrc wins."),
-      interactionManualReset: z.boolean().optional().describe("Interaction system: the object's triggered state must be reset by hand rather than automatically. Largely unexplored here — passed through as given."),
-      interactionTriggered: z.boolean().optional().describe("Interaction system: whether the object is currently in its triggered state. Largely unexplored here — passed through as given."),
+      interactionManualReset: z.boolean().optional().describe("Interaction system ACTION: setting this true RESETS the object's interactions (Roll20 docs). It is a one-shot trigger, not a persistent mode — which is why it is NOT copied into a character's default token. Largely unexplored here — passed through as given."),
+      interactionTriggered: z.boolean().optional().describe("Interaction system STATE: Roll20 sets this when the object's interaction is triggered — read it back via get_token. Writing it here overrides Roll20's own bookkeeping; to reset, prefer interactionManualReset:true. Not copied into default tokens. Largely unexplored here — passed through as given."),
     },
     async ({ characterName, tokenId, ...fields }) => {
       let resolvedTokenId = tokenId;

@@ -166,10 +166,10 @@ what you did, mechanically and explicitly.
   applied**, and describe relative health in words (bloodied, badly hurt, near death, reeling,
   dropped). You must **NEVER** state a target's **remaining or total HP** to players (no "4/15",
   no "33 left"). Damage dealt = allowed; HP totals/remaining = never. (The GM-facing gem report
-  above may still show exact totals — that surface is GM-only.) The token itself now backs this up:
-  NPC/monster tokens are created with `bar1_num_permission: "hidden"`, so the table sees the HP bar
-  move but never the digits. That is a backstop, not a licence — the rule above still governs what
-  you SAY.
+  above may still show exact totals — that surface is GM-only.) On the token, NPC HP digits are
+  already editor-only by Roll20's default (an NPC token has no controllers, so only the GM reads
+  them); `create_npc_token` can opt a token into showing them to everyone with
+  `showHpNumbersToPlayers: true`. None of that governs what you SAY — the rule above does.
 - `send_narration` otherwise carries only what the DM told you to say, plus at most a few words of
   color tied to a mechanical outcome. Don’t freelance narration.
 - **Not every clause maps to a tool.** Positional or flavor clauses that don't change tracked
