@@ -6,23 +6,22 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { describe, it, expect, beforeEach } from "vitest";
 import { readFileSync } from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
 import { EXPECTED_RELAY_VERSION } from "../src/bridge/relay-version.js";
 import {
   reportRelayVersion,
   getRelayVersionMismatch,
   _resetRelayVersionCheckForTest,
 } from "../src/bridge/relay-version-check.js";
-import { Roll20Emulator } from "./roll20-emulator.js";
+import { Roll20Emulator, AI_RELAY_PATH } from "./roll20-emulator.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RELAY_PATH = path.join(__dirname, "..", "mod-scripts", "ai-relay.js");
+// The relay the emulator loads: the source normally, the minified artifact under
+// `npm run build:mod -- --verify` — so the pair is checked against the bytes a DM pastes.
+const RELAY_PATH = AI_RELAY_PATH;
 
 function parseRelayVersion(): string {
   const src = readFileSync(RELAY_PATH, "utf8");
   const m = src.match(/var\s+AI_RELAY_VERSION\s*=\s*"([^"]+)"/);
-  if (!m) throw new Error("AI_RELAY_VERSION constant not found in mod-scripts/ai-relay.js");
+  if (!m) throw new Error(`AI_RELAY_VERSION constant not found in ${RELAY_PATH}`);
   return m[1];
 }
 

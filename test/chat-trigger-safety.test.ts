@@ -16,7 +16,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { describe, it, expect, beforeEach } from "vitest";
 import { readFileSync } from "fs";
-import { Roll20Emulator } from "./roll20-emulator.js";
+import { Roll20Emulator, AI_RELAY_PATH } from "./roll20-emulator.js";
 
 let emu: Roll20Emulator;
 
@@ -39,17 +39,20 @@ describe("chatSend is the only door out", () => {
   // escape between them. A new sendChat added later must fail here rather than in a live session,
   // where the symptom is the entire Mod sandbox switching off mid-combat.
   it("has exactly one raw sendChat( call in the relay, inside chatSend", () => {
-    const src = readFileSync("mod-scripts/ai-relay.js", "utf8");
-    const calls = src
+    // Reads whatever the emulator loads — the source normally, the MINIFIED artifact under
+    // `npm run build:mod -- --verify`. Counts call SITES, not lines: the minified output is a
+    // handful of very long lines, so a per-line count would pass with any number of calls on one.
+    const src = readFileSync(AI_RELAY_PATH, "utf8");
+    const code = src
       .split("\n")
-      .map((line, i) => ({ line: line.trim(), n: i + 1 }))
-      .filter((l) => /(^|[^A-Za-z0-9_.])sendChat\s*\(/.test(l.line) && !l.line.startsWith("//"));
+      .filter((line) => !line.trim().startsWith("//"))
+      .join("\n");
+    const calls = [...code.matchAll(/(^|[^A-Za-z0-9_.$])sendChat\s*\(/g)].map((m) =>
+      code.slice(Math.max(0, m.index - 40), m.index + 60).trim(),
+    );
 
-    expect(
-      calls.map((c) => `${c.n}: ${c.line}`),
-      "every outgoing message must go through chatSend()",
-    ).toHaveLength(1);
-    expect(src).toContain("function chatSend(");
+    expect(calls, "every outgoing message must go through chatSend()").toHaveLength(1);
+    expect(src).toMatch(/function chatSend\s*\(/);
   });
 });
 

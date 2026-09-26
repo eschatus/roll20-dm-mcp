@@ -14,7 +14,7 @@
 // free identifiers and survive, and so do this file's own top-level declarations — which matters,
 // because the sandbox calls into them. es2019 keeps the output inside the sandbox engine.
 import { execFileSync } from "child_process";
-import { readFileSync, statSync } from "fs";
+import { readFileSync, rmSync, statSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { buildSync } from "esbuild";
@@ -33,16 +33,55 @@ const srcVersion = versionOf(srcCode, "source");
 
 // esbuild's JS API, not its CLI: node on Windows refuses to spawn a .cmd shim without a shell
 // (EINVAL since the CVE-2024-27980 fix), and esbuild is already a devDependency here.
-buildSync({ entryPoints: [SRC], outfile: OUT, minify: true, target: "es2019", logLevel: "info" });
+//
+// tsconfigRaw "{}": without it esbuild reads the REPO's tsconfig.json, sees "strict": true
+// (which implies alwaysStrict), and prepends a "use strict" directive the source never had —
+// silently changing the semantics of every function in the sandbox. The relay is plain sandbox
+// JS; the server's TypeScript settings have no business shaping it.
+buildSync({ entryPoints: [SRC], outfile: OUT, minify: true, target: "es2019", tsconfigRaw: "{}", logLevel: "info" });
+
+// Every gate below rejects the artifact. A rejected artifact must not survive at the documented
+// paste path, where a human would paste it anyway — so a failed gate deletes it before exiting.
+const reject = (why) => {
+  rmSync(OUT, { force: true });
+  console.error(`[build:mod] REJECTED — ${why}`);
+  console.error(`[build:mod] deleted ${OUT}; nothing to paste.`);
+  process.exit(1);
+};
+
 // A bad minify must never reach a live campaign: a syntax error in the Mod editor takes the whole
 // sandbox down, and the editor will happily accept it.
-execFileSync(process.execPath, ["--check", OUT], { stdio: "inherit" });
+try {
+  execFileSync(process.execPath, ["--check", OUT], { stdio: "inherit" });
+} catch {
+  reject("node --check failed on the minified output (see the syntax error above)");
+}
+
+const outCode = readFileSync(OUT, "utf8");
+
+// The minifier must not ADD a directive prologue. "use strict" changes runtime semantics (sloppy
+// assignments throw, `this` in plain calls is undefined), and it arrived once already via the
+// repo tsconfig — so any leading directive the source lacks is a build fault, not a style nit.
+const leadingDirective = (code) => {
+  const body = code.replace(/^(?:\s+|\/\/[^\n]*\n?|\/\*[\s\S]*?\*\/)*/, "");
+  const m = /^(["'])(use [^"']*)\1/.exec(body);
+  return m ? m[2] : null;
+};
+const outDirective = leadingDirective(outCode);
+if (outDirective && outDirective !== leadingDirective(srcCode)) {
+  reject(`minified output begins with a "${outDirective}" directive the source does not have`);
+}
 
 // The version is the ONLY thing a DM can see to tell which build is deployed (the load banner and
 // the ping handshake both read it), so a build that lost or changed it is worse than no build.
-const outVersion = versionOf(readFileSync(OUT, "utf8"), "minified output");
+let outVersion;
+try {
+  outVersion = versionOf(outCode, "minified output");
+} catch (e) {
+  reject(e.message);
+}
 if (outVersion !== srcVersion) {
-  throw new Error(`version drift: source says ${srcVersion}, minified output says ${outVersion}`);
+  reject(`version drift: source says ${srcVersion}, minified output says ${outVersion}`);
 }
 
 const before = statSync(SRC).size, after = statSync(OUT).size;
@@ -53,7 +92,11 @@ if (process.argv.includes("--verify")) {
   // same emulator suite the source passes, so mangling that broke a handler fails here.
   console.error("[build:mod] running the emulator suite against the MINIFIED artifact…");
   const vitest = resolve(root, "node_modules/vitest/vitest.mjs");   // the .mjs, not the .cmd shim
-  execFileSync(process.execPath, [vitest, "run", "test/"], { stdio: "inherit", env: { ...process.env, AI_RELAY_PATH: OUT } });
+  try {
+    execFileSync(process.execPath, [vitest, "run", "test/"], { stdio: "inherit", env: { ...process.env, AI_RELAY_PATH: OUT } });
+  } catch {
+    reject("the emulator suite failed against the minified artifact (see the failures above)");
+  }
 }
 
 console.error(`[build:mod] paste ${OUT} into the campaign's Mod editor; verify the LOAD banner:`);

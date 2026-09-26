@@ -20,7 +20,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // AI_RELAY_PATH env override: point the whole emulator suite at the MINIFIED deploy artifact
 // (npm run build:mod -- --verify) to prove the bytes a DM actually pastes behave like the source.
 // node --check only proves the minified output parses; this proves it still works.
-const AI_RELAY_PATH = process.env.AI_RELAY_PATH
+// Exported so the tests that read the relay as TEXT (source-level gates, parsed constants) read the
+// same bytes the emulator executes — otherwise --verify would check them against the source.
+export const AI_RELAY_PATH = process.env.AI_RELAY_PATH
   ? path.resolve(process.env.AI_RELAY_PATH)
   : path.resolve(__dirname, "../mod-scripts/ai-relay.js");
 
