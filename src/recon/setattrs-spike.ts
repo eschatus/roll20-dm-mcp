@@ -52,6 +52,15 @@ const EXPECTED_MODS: Record<string, number> = {
   intelligence: -2, wisdom: 0, charisma: -1,
 };
 
+// What we write into the $0 npcaction row. Every one of these must read back before a verdict.
+const ROW_INPUTS: Record<string, string | number> = {
+  name: "Greatclub",
+  attack_tohit: 5,
+  attack_damage: "2d8+3",
+  attack_damagetype: "bludgeoning",
+  "npc_options-flag": 0,
+};
+
 // The fields the 5e OGL sheet's own worker is supposed to generate for an attack row. We write
 // NONE of them; if any appears, a worker ran.
 const COMPANION_FIELDS = [
@@ -106,7 +115,6 @@ async function main() {
   });
   console.error(`scratch character: ${charId}`);
 
-  let failures = 0;
   try {
     // ── Arm 1: ability scores, no _mod written ───────────────────────────────
     const abilityWrite = await relayCommand<SetAttrsResult>({
@@ -122,13 +130,9 @@ async function main() {
     const rowWrite = await relayCommand<SetAttrsResult>({
       action: "setAttrs",
       charId,
-      attributes: {
-        "repeating_npcaction_$0_name": "Greatclub",
-        "repeating_npcaction_$0_attack_tohit": 5,
-        "repeating_npcaction_$0_attack_damage": "2d8+3",
-        "repeating_npcaction_$0_attack_damagetype": "bludgeoning",
-        "repeating_npcaction_$0_npc_options-flag": 0,
-      },
+      attributes: Object.fromEntries(
+        Object.entries(ROW_INPUTS).map(([field, v]) => [`repeating_npcaction_$0_${field}`, v]),
+      ),
     });
     console.error(`npcaction write → workersExecuted=${rowWrite.workersExecuted}`
       + (rowWrite.note ? ` (${rowWrite.note})` : ""));
@@ -138,10 +142,38 @@ async function main() {
 
     const attrs = await readAttrs(charId);
     if (attrs.size === 0) {
-      console.error("\n❌ RTDB readback returned no attributes — cannot judge. Check char-blobs "
+      throw new Error("RTDB readback returned no attributes — cannot judge. Check char-blobs "
         + `shape for this campaign (src/recon/rtdb-schema.ts) and inspect ${charId} by hand.`);
-      failures++;
     }
+
+    // ── Precondition: did the INPUT writes land? ─────────────────────────────
+    // Sheet defaults can make the blob non-empty even when nothing we wrote arrived. A verdict
+    // computed on top of that would blame the workers for a failed write, so demand every input
+    // first and treat any gap as inconclusive rather than NEGATIVE.
+    const missingInputs: string[] = [];
+    for (const [name, want] of Object.entries(SCORES)) {
+      const got = cur(attrs, name);
+      if (got === null || Number(got) !== want) missingInputs.push(`${name}=${got === null ? "<absent>" : JSON.stringify(got)} (want ${want})`);
+    }
+    // The row id setAttrs minted for $0 — the one row carrying every field we wrote.
+    const candidateRows = new Set<string>();
+    for (const name of attrs.keys()) {
+      const m = /^repeating_npcaction_([^_]+)_/.exec(name);
+      if (m) candidateRows.add(m[1]);
+    }
+    const rowIds = [...candidateRows].filter((rowId) =>
+      Object.entries(ROW_INPUTS).every(([field, want]) =>
+        cur(attrs, `repeating_npcaction_${rowId}_${field}`) === String(want)));
+    if (rowIds.length === 0) {
+      missingInputs.push(`no npcaction row carries all of {${Object.keys(ROW_INPUTS).join(", ")}}`
+        + ` (rows seen: ${candidateRows.size ? [...candidateRows].join(", ") : "<none>"})`);
+    }
+    if (missingInputs.length) {
+      throw new Error("INCONCLUSIVE — the setAttrs inputs did not land, so worker behaviour cannot be judged:\n  "
+        + missingInputs.join("\n  ")
+        + `\n  Inspect ${charId} by hand (rerun with --keep) before reading anything into this.`);
+    }
+    console.error(`\ninputs landed: ${Object.keys(SCORES).length} scores · npcaction row ${rowIds.join(", ")}`);
 
     // ── Verdict 1: <ability>_mod derivation ──────────────────────────────────
     console.error("\n<ability>_mod derivation:");
@@ -155,13 +187,7 @@ async function main() {
     }
 
     // ── Verdict 2: the rollbase scaffolding ──────────────────────────────────
-    // The row id setAttrs minted for $0 — everything under repeating_npcaction_<row>_.
-    const rowIds = new Set<string>();
-    for (const name of attrs.keys()) {
-      const m = /^repeating_npcaction_([^_]+)_/.exec(name);
-      if (m) rowIds.add(m[1]);
-    }
-    console.error(`\nnpcaction rows materialised: ${rowIds.size ? [...rowIds].join(", ") : "<none>"}`);
+    console.error(`\nnpcaction rows materialised: ${rowIds.join(", ")}`);
     let companionsPresent = 0;
     for (const rowId of rowIds) {
       for (const field of COMPANION_FIELDS) {
@@ -178,10 +204,10 @@ async function main() {
 
     // ── Conclusion ───────────────────────────────────────────────────────────
     const modsWork = modsDerived === Object.keys(SCORES).length;
-    const rollbaseWorks = companionsPresent === COMPANION_FIELDS.length * Math.max(1, rowIds.size);
+    const rollbaseWorks = companionsPresent === COMPANION_FIELDS.length * rowIds.length;
     console.error("\n──────── verdict ────────");
     console.error(`_mod derivation by sheet worker:  ${modsWork ? "YES ✅" : `NO ❌ (${modsDerived}/${Object.keys(SCORES).length})`}`);
-    console.error(`rollbase scaffolding by worker:   ${rollbaseWorks ? "YES ✅" : `NO ❌ (${companionsPresent}/${COMPANION_FIELDS.length * Math.max(1, rowIds.size)})`}`);
+    console.error(`rollbase scaffolding by worker:   ${rollbaseWorks ? "YES ✅" : `NO ❌ (${companionsPresent}/${COMPANION_FIELDS.length * rowIds.length})`}`);
     console.error(
       modsWork && rollbaseWorks
         ? "\n→ POSITIVE. Route createCharacter/setCharacterAttributes through setAttrs, delete the\n"
@@ -199,7 +225,6 @@ async function main() {
         .catch((e) => console.error(`\n⚠ could not delete scratch character ${charId}: ${e}`));
     }
   }
-  if (failures) process.exitCode = 1;
 }
 
 main().then(() => process.exit(process.exitCode || 0), (e) => { console.error("❌ spike FAILED:", e); process.exit(1); });
