@@ -76,11 +76,18 @@ describe("reportRelayVersion — clash detection and reporting", () => {
     expect(errors).toHaveLength(1);
     const text = String(errors[0][0]);
     // Actionable and free of internal plumbing (no "circuit breaker"/"transport" jargon) —
-    // states found vs. expected and the exact fix command.
+    // states found vs. expected and the exact fix.
     expect(text).toContain("out of date");
     expect(text).toContain("found 2.1.0");
     expect(text).toContain(`expected ${EXPECTED_RELAY_VERSION}`);
-    expect(text).toContain("npm run release:mod");
+    // The fix is the ATTENDED manual paste, and it is confirmed by the LOAD banner (#175).
+    // It must NOT name a deploy command: `release:mod` and `deploy_mod_script` are deleted
+    // precisely so a dev session cannot drive a browser at a live campaign, and an error that
+    // still told a DM to run one would send them looking for a script that no longer exists.
+    expect(text).toContain("mod-scripts/ai-relay.js");
+    expect(text).toMatch(/manual and attended/i);
+    expect(text).toContain(`Relay script loaded (v${EXPECTED_RELAY_VERSION})`);
+    expect(text).not.toMatch(/release:mod|deploy_mod_script/);
     expect(text).not.toMatch(/circuit.?breaker/i);
   });
 });

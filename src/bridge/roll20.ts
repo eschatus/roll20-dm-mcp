@@ -127,8 +127,10 @@ function extractCdnUrl(body: unknown): string | null {
   return null;
 }
 
-// Attempt a direct HTTP upload using cached session credentials. Returns the CDN URL or
-// throws — caller must fall back to Playwright if this fails.
+// Attempt a direct HTTP upload using FURNISHED session credentials (roll20-upload-cache.json,
+// harvested in the gem where a human is present). Returns the CDN URL or throws — and a throw is
+// terminal. There is nothing to fall back TO: the Playwright uploader that used to catch this
+// harvested the credential itself, which is the capability #175/#177 removed. See uploadArt.
 async function uploadArtDirect(localAbsPath: string, cache: UploadCache): Promise<string> {
   const { readFileSync } = await import("fs");
 
