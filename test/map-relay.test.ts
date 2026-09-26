@@ -9,6 +9,7 @@
 // the relay, read it back via the relay).
 // ─────────────────────────────────────────────────────────────────────────────
 import { describe, it, expect, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { Roll20Emulator } from "./roll20-emulator.js";
 
 let emu: Roll20Emulator;
@@ -57,6 +58,54 @@ describe("path / wall writes", () => {
     expect(Array.isArray(res)).toBe(true);
     const walls = emu.relay<unknown[]>({ action: "getWalls", pageId: pid });
     expect(walls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  // #207: createWalls used to fall back to a legacy `path` object hardcoded to yellow
+  // (#FFFF00) when createObj("pathv2") came back undefined. pathv2 is createObj-able on the
+  // supported engine, so the fallback was dead code that would have broken the blue-wall
+  // convention if it ever fired. Walls are pathv2, blue by default, and nothing lands on the
+  // walls layer as a legacy path.
+  it("createWalls makes blue pathv2 barriers with no legacy-path fallback", () => {
+    const res = emu.relay<Array<{ id: string; kind: string }>>({
+      action: "createWalls", pageId: pid,
+      walls: [{ x1: 0, y1: 0, x2: 140, y2: 0 }, { x1: 0, y1: 0, x2: 0, y2: 140 }],
+    });
+    expect(res.map((r) => r.kind)).toEqual(["pathv2", "pathv2"]);
+    for (const r of res) {
+      const obj = emu.getObj("pathv2", r.id);
+      expect(obj).toBeTruthy();
+      expect(obj!.get("stroke")).toBe("#0044FF");
+      expect(obj!.get("shape")).toBe("pol");
+    }
+    // No legacy path objects on the walls layer — getWalls reports those with kind "path".
+    const walls = emu.relay<Array<{ kind: string }>>({ action: "getWalls", pageId: pid });
+    expect(walls.filter((w) => w.kind === "path")).toEqual([]);
+  });
+
+  // The emulator's createObj never returns undefined, so the behavioral test above cannot reach
+  // the removed branch. Pin it at the source level instead (same approach as
+  // test/chat-trigger-safety.test.ts): no wall creator may create a legacy `path` on the walls
+  // layer, and no yellow may be hardcoded there.
+  it("no wall creator in ai-relay.js carries a legacy-path / yellow fallback", () => {
+    const src = readFileSync("mod-scripts/ai-relay.js", "utf8");
+    const handlerBody = (action: string) => {
+      const start = src.indexOf(`ACTIONS["${action}"]`);
+      expect(start, `${action} handler not found`).toBeGreaterThan(-1);
+      const next = src.indexOf('ACTIONS["', start + 1);
+      return src.slice(start, next === -1 ? undefined : next);
+    };
+
+    // createWalls only ever creates walls: nothing legacy, no yellow anywhere in it.
+    const walls = handlerBody("createWalls");
+    expect(walls).not.toContain("#FFFF00");
+    expect(walls).not.toContain('createObj("path"');
+    expect(walls).toContain("pathv2Failure");
+
+    // createPolylines also draws on non-wall layers with legacy paths (yellow default is fine
+    // there), so check only the walls branch — everything up to its pathv2 failure throw.
+    const polylines = handlerBody("createPolylines");
+    expect(polylines).toContain("pathv2Failure");
+    expect(polylines.slice(0, polylines.indexOf("pathv2Failure"))).not.toContain("#FFFF00");
   });
 
   it("clearLayer removes everything on the walls layer", () => {
