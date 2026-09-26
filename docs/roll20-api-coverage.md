@@ -88,23 +88,27 @@ Coverage = relay + direct RTDB.
 legacy-`path` fallback in the relay's `createWalls` is dead code (and it hardcodes a yellow stroke
 against the project's blue-wall convention — #207).
 
-**`pin` is now exposed** (#203, relay v2.9.0) — `createPin`/`getPins`/`setPinProps`/`deletePin` →
-`create_map_pin`, `list_map_pins`, `update_map_pin`, `delete_map_pin` in the maps suite. Map pins:
-`shape` (teardrop/circle/diamond/square), a built-in `icon` set or a `pinImage`,
-`title`/`notes`/`gmNotes`, `link` + `linkType:"handout"`, and per-audience visibility (`visibleTo`,
-`tooltipVisibleTo`, `gmNotesVisibleTo`, …). Two traps, both silent:
-- **camelCase** — `gmNotes` on a pin, not `gmnotes` as everywhere else. Roll20 drops an unsupported
-  property write without erroring (the `path` lesson, #162/#164), so the relay whitelists the pin
-  property names and reports which ones it wrote; `test/roll20-emulator.ts` gives `pin` a
-  `PROP_WHITELIST` entry so a lowercase spelling fails a test instead of shipping.
-- **`imageDesynced`/`notesDesynced`/`gmNotesDesynced` are ONE flag wearing three names** — setting
-  any one sets all three. The relay writes all three together and refuses two different values; the
-  tools expose a single `desynced` boolean.
+**`pin` is now exposed over direct RTDB** (#203) — `create_map_pin`, `list_map_pins`,
+`update_map_pin`, `delete_map_pin` in the maps suite, no relay action. A pin is a plain node at
+`<storagePath>/pins/page/<pageId>/<pinId>` (`src/bridge/pins.ts`): `push()` mints the id, `update()`
+merges a partial, `rtGet` reads it back — the doors/windows pattern, so **no Mod redeploy**. Verified
+live on Three Families: `x`/`y` are page **pixels** (70/square, like a graphic's `left`/`top`) and
+the page is the path — there is no `pageid` in the payload. Map pins carry `shape`
+(teardrop/circle/diamond/square), a built-in `icon` set or a `pinImage`, `title`/`notes`/`gmNotes`,
+`link` + `linkType:"handout"`, and per-audience visibility (`visibleTo`, `tooltipVisibleTo`,
+`gmNotesVisibleTo`, …). Traps, all silent:
+- **camelCase** — `gmNotes` on a pin, not `gmnotes` as everywhere else. The MCP SDK strips an
+  unknown key during Zod validation, so a typo is dropped, never written, and never errors; both
+  write tools echo the exact key list they wrote (`wrote` / `updated`).
+- **`gmNotesVisibleTo` defaults to `"all"` on Roll20's side** (as do the other `*VisibleTo`).
+  `create_map_pin` writes `""` unless told otherwise, so GM notes stay GM-only.
+- **`imageDesynced`/`notesDesynced`/`gmNotesDesynced` are ONE flag wearing three names** — the tools
+  expose a single `desynced` boolean and write all three.
+- **750 chars is a UI cap, not a storage one** — the Roll20 pin editor truncates pasted notes, but
+  RTDB accepted and returned 8.6k-char notes intact.
 
-Still unverified live (needs a ≥ 2.9.0 deploy — steps 2.9/2.10 of `docs/e2e-human-test-script.md`):
-whether a pin's `x`/`y` are page pixels (assumed, same as a graphic's `left`/`top`) or cells, and
-whether `findObjs` matches a pin on `pageid` or `_pageid` (`getPins` reads **both**, so it can't
-guess wrong).
+The one remaining live check is propagation — an open client rendering an RTDB-side pin write
+without a reload (steps 2.9/2.10 of `docs/e2e-human-test-script.md`).
 
 **Read/queryable but still NOT createObj-creatable:** `page`, `campaign`, `player`, `hand`,
 `jukeboxtrack`. `page`'s absence is what justifies `rtCreatePage` (#178) — the RTDB write is the
@@ -211,7 +215,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `setPageBackground` | (internal) | — | bg color only |
 | `createZone`/`clearZone`/`listZones`/`findTokensInZone`/`processRoundEndZones` | create_zone, clear_zone, list_zones, process_round_end_zones, resolve_aoe | both | path on the map layer; **metadata lives in `state.GM_AI_Bridge.zones`, not on the path object** (path objects silently drop `name`/`gmnotes`/`fill_opacity` — #162/#164) |
 | `removeObject` | remove_object | combat | graphic or path |
-| `createPin` / `getPins` / `setPinProps` / `deletePin` | create_map_pin, list_map_pins, update_map_pin, delete_map_pin | maps | native map pins (#203). **camelCase properties** (`gmNotes`, `bgColor`, `pinImage`) and a whitelist on the relay side, because Roll20 drops an unsupported pin property silently. `pageid` is supplied at creation; `getPins` matches on `pageid` OR `_pageid` rather than guessing which one `findObjs` wants. |
+| *(direct RTDB — no relay action)* | create_map_pin, list_map_pins, update_map_pin, delete_map_pin | maps | native map pins (#203) at `pins/page/<pageId>/<pinId>` via `src/bridge/pins.ts`. **camelCase properties** (`gmNotes`, `bgColor`, `pinImage`); `gmNotesVisibleTo` defaults to `""` on create. `debugPage` lists `pin` alongside the other types. |
 | `getTurnOrder`/`setTurnOrder`/`advanceTurn` | get_turn_order, clear_turn_order, advance_turn, update_turn_order, inject_round_marker, batch_exec | combat | `Campaign.turnorder`. **Never write `setTurnOrder` wholesale** — it erases player entries; only `clear_turn_order` does that deliberately. |
 | `mergeTurnOrder` | roll_initiative, inject_round_marker, update_turn_order | combat | NPC-only upsert (preserves PC entries) |
 | `rollInitiativeForTokens` | roll_initiative | combat | real dice + epithets; honours per-combatant `bonusOverrides` from `entries[].bonus` (#172) |
@@ -233,7 +237,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `sendPing` | send_ping | maps | "look here" / pull player view to a spot |
 | `spawnFx` / `spawnFxBetweenPoints` | spawn_fx, spawn_fx_between_points | maps | explosions, beams, spell nova |
 | `toFront` / `toBack` | to_front, to_back | maps | z-order |
-| `ping` | (health check) | — | reports relay version (2.9.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
+| `ping` | (health check) | — | reports relay version (2.8.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
 | **event** `chat:message` | (passive) | — | buffers chat, parses `!dm`. Player `!`-commands are **forwarded, not answered** — `forwardChat` broadcasts them as an SSE `chat-message`; the gem decides what to do. |
 | **event** `change:campaign:turnorder` | (passive) | — | turn/round announcements |
 | **event** `add:graphic` | (passive) | — | auto-rolls initiative for NPC tokens dropped during combat |
@@ -320,7 +324,7 @@ These are the "stop hitting the wall" items. None need the browser.
 - **Pings** — `sendPing` → `send_ping`.
 - **Z-order** — `toFront`/`toBack` → `to_front`, `to_back`.
 - **Handouts** — `createHandout` → `create_handout`.
-- **Map pins** — `createPin`/`getPins`/`setPinProps`/`deletePin` → `create_map_pin`, `list_map_pins`, `update_map_pin`, `delete_map_pin` (#203, relay v2.9.0). The Roll20-native primitive for module points of interest and for a marker revealed once the party finds it (`visibleTo: ""` → `"all"`).
+- **Map pins** — direct RTDB at `pins/page/<pageId>/<pinId>` → `create_map_pin`, `list_map_pins`, `update_map_pin`, `delete_map_pin` (#203, no relay action). The Roll20-native primitive for module points of interest and for a marker revealed once the party finds it (`visibleTo: ""` → `"all"`).
 - **Character stubs** — `createCharacter` → `create_character_stub`.
 - **Token↔sheet default token** — `setDefaultTokenForCharacter` → `setDefaultToken` / `batch_exec`.
 - **`add:graphic` hook** — auto-rolls initiative for NPC tokens dropped mid-combat.

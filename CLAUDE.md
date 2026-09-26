@@ -235,17 +235,21 @@ vision/wall tooling is maps-only.)
   to `bar1` like an NPC's. AC is reported back but never stored: `createToken` doesn't set
   `represents`, so a bare token has no sheet to hold it.
 - `batch_import_maps` is the folder→Roll20 pipeline (uses `listPages` + the steps above).
-- **Map pins (`create_map_pin` / `list_map_pins` / `update_map_pin` / `delete_map_pin`, #203) are the
-  one object type with camelCase properties** — `gmNotes`, `bgColor`, `pinImage`, `visibleTo`, not the
-  `gmnotes` used everywhere else in the Roll20 API. A pin drops an unsupported property write
-  silently, exactly like `path` does (#162/#164), so the relay whitelists the pin property names
-  (`PIN_PROPS` in `ai-relay.js`) and returns which ones it wrote — if a field you passed is missing
-  from `wrote`, it was a typo, not a Roll20 refusal. `imageDesynced`/`notesDesynced`/`gmNotesDesynced`
-  are **one flag wearing three names** (setting any one sets all three), so the tools expose a single
-  `desynced` boolean and the relay refuses two conflicting values. Hidden-until-found is
-  `visibleTo: ""` at creation, flipped to `"all"` with `update_map_pin`. Pin `x`/`y` are **assumed**
-  page pixels (70px/square, like a graphic's `left`/`top`) and `getPins` matches a page on `pageid`
-  OR `_pageid` — both still need a live check (steps 2.9/2.10 of `docs/e2e-human-test-script.md`).
+- **Map pins (`create_map_pin` / `list_map_pins` / `update_map_pin` / `delete_map_pin`, #203) are
+  direct RTDB, not relay.** A pin is a plain node at `<storagePath>/pins/page/<pageId>/<pinId>`
+  (same shape as doors/windows) that `push`/`update`/`rtGet` round-trip — `src/bridge/pins.ts`,
+  no relay action, **no Mod redeploy**. Verified live on #203: `x`/`y` are page **pixels**
+  (70px/square, like a graphic's `left`/`top`) and the page is the PATH — there is no `pageid`
+  in the payload. Pins are the one object type with **camelCase** properties (`gmNotes`, `bgColor`,
+  `pinImage`, `visibleTo`); the MCP SDK strips an unknown key during validation, so `gmnotes` is
+  silently dropped, not rejected — both write tools echo the exact key list they wrote (`wrote` /
+  `updated`) so a typo is visible. `imageDesynced`/`notesDesynced`/`gmNotesDesynced` are **one
+  flag wearing three names**, so the tools expose a single `desynced` boolean. **GM-notes leak:**
+  Roll20 documents `gmNotesVisibleTo` (and the other `*VisibleTo`) as defaulting to `"all"`, so
+  `create_map_pin` writes `gmNotesVisibleTo: ""` unless told otherwise. Hidden-until-found is
+  `visibleTo: ""` at creation, flipped to `"all"` with `update_map_pin`. The Roll20 UI truncates
+  pasted pin notes at 750 chars; that is a UI cap, not storage — 8k+ notes round-trip via RTDB.
+  Only remaining human check: an open client picks up an RTDB-side pin write live (e2e 2.9/2.10).
 
 ## Combat development
 
