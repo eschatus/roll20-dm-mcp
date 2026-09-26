@@ -39,14 +39,19 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
   the Roll20 API sandbox and only takes effect once deployed — but deploying means driving a
   browser against a live account, so it is a human-attended act, not something an MCP server or a
   dev session does. Paste `mod-scripts/ai-relay.js` into the campaign's API console yourself (or
-  use the gem's attended flow). Verify the LOAD, never the write: the sandbox banner
+  use the gem's attended flow). **`npm run build:mod`** produces the paste-ready artifact
+  (`mod-scripts/.ai-relay.deploy.js`, gitignored): esbuild minify → `node --check` → a
+  version-drift assert, ~156KB → ~63KB. `npm run build:mod -- --verify` re-runs the emulator
+  suite against the MINIFIED bytes (the `AI_RELAY_PATH` env override on `test/roll20-emulator.ts`),
+  which is the only check that proves mangling did not break a handler — `node --check` only
+  proves it parses. Verify the LOAD, never the write: the sandbox banner
   `[GM_AI_Bridge] Relay script loaded (vX.Y.Z)` or a `ping` returning the version. Deploys are
   **per-campaign** — each campaign carries its own copy, so one can run a newer relay than another.
   CI runs `node --check mod-scripts/ai-relay.js` as a syntax gate. **`test/no-browser-invariant.test.ts`
   keeps this closed structurally:** no file under `src/`, `scripts/`, `test/` or `mod-scripts/` may
   import `playwright`/`puppeteer`, attach over CDP, launch a browser, or name a remote-debugging
-  port, and `package.json` may declare no browser dependency and no `release:mod`-style deploy
-  script. Credentials here are **furnished, never minted** — a stale one throws a typed error
+  port, and `package.json` may declare no browser dependency and no npm script whose command
+  drives a browser or a deleted deploy tool (`build:mod` only builds the paste file). Credentials here are **furnished, never minted** — a stale one throws a typed error
   naming what to refresh; harvesting belongs to the gem, where a human is watching one window.
 - **Relay version handshake:** `AI_RELAY_VERSION` (`mod-scripts/ai-relay.js`) and
   `EXPECTED_RELAY_VERSION` (`src/bridge/relay-version.ts`) are a hand-synced pair, locked by
@@ -164,18 +169,13 @@ moved to beyond-mcp with the code.)
   is structurally incapable of carrying `[[`/`@{`/`%{`/`&{` (`encodeURIComponent` turns `{` into
   `%7B`, `[` into `%5B`, `&` into `%26`); `parseAibridge` decodes it and still accepts the legacy
   marker for a campaign that hasn't been re-pasted. Enumerating Roll20's trigger syntax was the
-  losing move — that list never included `&{`. **The two browser dump scripts this note used to
-  send you to (`scripts/dump-character-attrs.ts`, `scripts/find-character-by-name.ts`) are DELETED
-  (#175).** They attached over CDP to whatever logged-in Roll20 editor tab was open, so a dev
-  session verifying a write could act on a live campaign through an ambient credential — the thing
-  #83/#175 removed everywhere else. They also imported `playwright`, which is not a dependency, so
-  they could not run. `test/no-browser-invariant.test.ts` now fails if any browser driver returns.
-  So the ban above stands as written, but note *why* it may be obsolete and unproven rather than
-  obsolete and safe: the hazard was the entity-escape, and 2.7.0 replaced it with an encoding that
-  cannot carry a trigger — yet **nobody has re-read a `rollbase` field over a ≥2.7.0 relay to
-  confirm it**. If you need that verification, do it deliberately against a throwaway character,
-  not a live table, and update this note with the result. If you truly need a browser-side dump,
-  it belongs in the gem's own attended session, not in this repo.
+  losing move — that list never included `&{`. **There is currently NO chat-free way
+  to verify an attribute write.** The CDP dump scripts this note used to point at
+  (`scripts/dump-character-attrs.ts`, `scripts/find-character-by-name.ts`) are DELETED (#224): they
+  drove whatever logged-in Roll20 tab was open (an ambient credential, #83/#175) and imported
+  `playwright`, which isn't a dependency. A browserless RTDB attribute reader is tracked in **#230**
+  (blocked on locating the attribute node; probe in PR #231). Until it lands, don't read
+  `rollbase`-style fields back at all — nobody has confirmed the ≥2.7.0 encoding makes it safe.
 - **Ability-score `_mod` attributes don't auto-derive either**, for the same sheet-worker-never-
   fires-on-the-API reason. `createCharacter`'s relay action now derives `<ability>_mod` from the
   raw score at creation time (an explicitly-passed `_mod` is left untouched) — see
@@ -197,7 +197,8 @@ skills/                  dm-rules.md (canonical play rules), dm-map-setup.md
 docs/                    architecture, decisions, protocols, coverage, security
 test/                    integration tests + the Roll20 emulator (roll20-emulator.ts, harness.ts)
 scripts/                 one-off live diagnostics (run with tsx). Browserless only — see
-                         test/no-browser-invariant.test.ts
+                         test/no-browser-invariant.test.ts. Plus build-mod.mjs — the
+                         `npm run build:mod` relay minifier/gate
 wiki/                    GitHub wiki content (user-facing setup/player docs)
 ```
 

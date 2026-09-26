@@ -122,14 +122,16 @@ export function reportRelayVersion(
   // Deploying is an ATTENDED, out-of-band act (#175): it means pasting code into a live account's
   // API console, which needs a browser and a logged-in human. This repo ships no deploy command —
   // `npm run release:mod` and `deploy_mod_script` are deleted — so this instruction names the
-  // manual step and the banner that CONFIRMS it, never a command for a session to run.
+  // local build step, the manual paste, and the banner that CONFIRMS it; nothing in it drives a
+  // browser.
   console.error(
     `[roll20] Roll20 relay is out of date — found ${found}, expected ${EXPECTED_RELAY_VERSION}. ` +
     `The deployed Mod script (mod-scripts/ai-relay.js) doesn't match this server build — likely ` +
-    `deployed from the wrong branch or working tree. Deploying is manual and attended: paste ` +
-    `mod-scripts/ai-relay.js, from the checkout you intend to run, into the campaign's Mod (API) ` +
-    `console yourself, then confirm the sandbox logs ` +
-    `"[GM_AI_Bridge] Relay script loaded (v${EXPECTED_RELAY_VERSION})" and reconnect Roll20. ` +
+    `deployed from the wrong branch or working tree, or simply not re-pasted since it changed. ` +
+    `Deploys are per-campaign, manual and attended: run "npm run build:mod" from the checkout ` +
+    `with the build you intend to run, paste mod-scripts/.ai-relay.deploy.js into that campaign's ` +
+    `Settings > API Scripts yourself, then confirm the Mod console prints ` +
+    `"[GM_AI_Bridge] Relay script loaded (v${EXPECTED_RELAY_VERSION})". ` +
     `(Also visible via transport_status.)`,
   );
 }
