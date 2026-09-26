@@ -128,6 +128,56 @@ describe("setAttrs worker reporting", () => {
     expect(res.note).toMatch(/deliberately suppressed/);
   });
 
+  it("waits for a late onSheetWorkerCompleted and relays its verdict", () => {
+    const emu = new Roll20Emulator({ seed: 11, sheetWriteShim: "deferred" });
+    emu.load();
+    const charId = emu.createCharacter("Ghoul", {});
+    const nonce = 900001;
+    emu.relayWithNonce({ action: "setAttrs", charId, attributes: { strength: 13 }, timeoutMs: 5000 }, nonce);
+    // The write is done but the queue has not drained: no result yet, no guess.
+    expect(emu.resultFor(nonce)).toEqual({});
+    emu.fireSheetWorkers(true);
+    const res = emu.resultFor(nonce).data as SetAttrsResult;
+    expect(res.workersExecuted).toBe(true);
+    expect(res.note).toBeNull();
+  });
+
+  it("answers null with a timeout note when the hook never fires", async () => {
+    const emu = new Roll20Emulator({ seed: 11, sheetWriteShim: "deferred" });
+    emu.load();
+    const charId = emu.createCharacter("Wight", {});
+    const nonce = 900002;
+    emu.relayWithNonce({ action: "setAttrs", charId, attributes: { strength: 13 }, timeoutMs: 20 }, nonce);
+    expect(emu.resultFor(nonce)).toEqual({});
+    await new Promise((r) => setTimeout(r, 60));
+    const res = emu.resultFor(nonce).data as SetAttrsResult;
+    expect(res.workersExecuted).toBeNull();
+    expect(res.note).toMatch(/did not fire within 20ms/);
+    // A late drain after the timeout must not produce a second result.
+    emu.fireSheetWorkers(true);
+    expect((emu.resultFor(nonce).data as SetAttrsResult).workersExecuted).toBeNull();
+  });
+
+  it("carries the exception text when arming onSheetWorkerCompleted throws", () => {
+    const emu = new Roll20Emulator({ seed: 11, sheetWriteShim: "arm-throws" });
+    emu.load();
+    const charId = emu.createCharacter("Wraith", {});
+    const res = emu.relay<SetAttrsResult>({ action: "setAttrs", charId, attributes: { strength: 13 } });
+    expect(res.workersExecuted).toBeNull();
+    expect(res.note).toMatch(/threw while arming: .*emulated arming failure/);
+    expect(res.written).toEqual(["strength"]);
+  });
+
+  it("drops null too, so setAttrs cannot clear an attribute (pass \"\" to blank one)", () => {
+    const emu = shimEmu();
+    const charId = emu.createCharacter("Skeleton", {});
+    emu.relay({ action: "setAttrs", charId, attributes: { strength: 13 } });
+    const res = emu.relay<SetAttrsResult>({ action: "setAttrs", charId, attributes: { strength: null, dexterity: "" } });
+    expect(res.written).toEqual(["dexterity"]);
+    const attrs = emu.relay<Record<string, unknown>>({ action: "getCharacterAttributes", charId });
+    expect(attrs.strength).toBe(13);
+  });
+
   it("reports the sheet context, so a null result stays interpretable", () => {
     const emu = shimEmu();
     emu.campaignModel.set("turnorder", "");

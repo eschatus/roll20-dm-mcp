@@ -73,8 +73,13 @@ export interface EmulatorOptions {
    * workers at all, so it always reports `workersExecuted: false`. It exercises the relay
    * plumbing (flattening, the silent arm, the completion hook), never the sheet behaviour — that
    * question is settled live by src/recon/setattrs-spike.ts.
+   *
+   * `true` fires onSheetWorkerCompleted synchronously inside setAttrs. `"deferred"` holds the
+   * callbacks until the test calls `fireSheetWorkers()` (or never), which is how the async /
+   * timeout arm of the relay is exercised. `"arm-throws"` makes onSheetWorkerCompleted itself
+   * throw, so the relay's arming failure path can be observed.
    */
-  sheetWriteShim?: boolean;
+  sheetWriteShim?: boolean | "deferred" | "arm-throws";
 }
 
 export class Roll20Emulator {
@@ -90,7 +95,7 @@ export class Roll20Emulator {
   /** Every setAttrs() the relay made, when sheetWriteShim is on. */
   readonly setAttrsCalls: Array<{ charId: string; values: Record<string, unknown>; options: Record<string, unknown> }> = [];
   private sheetWorkerCallbacks: Array<(info: { workersExecuted: boolean }) => void> = [];
-  private readonly sheetWriteShim: boolean;
+  private readonly sheetWriteShim: boolean | "deferred" | "arm-throws";
 
   readonly chatLog: Array<{ who: string; content: string; options?: unknown }> = [];
   readonly logs: unknown[][] = [];
@@ -384,19 +389,28 @@ export class Roll20Emulator {
           if (existing) existing.set(field, value);
           else this.createObj("attribute", { characterid: charId, name: base, [field]: value });
         }
-        if (!options?.silent) {
-          const cbs = this.sheetWorkerCallbacks;
-          this.sheetWorkerCallbacks = [];
-          for (const cb of cbs) cb({ workersExecuted: false });
-        }
+        if (!options?.silent && this.sheetWriteShim !== "deferred") this.fireSheetWorkers(false);
       };
       sandbox.onSheetWorkerCompleted = (cb: (info: { workersExecuted: boolean }) => void) => {
+        if (this.sheetWriteShim === "arm-throws") throw new Error("emulated arming failure");
         this.sheetWorkerCallbacks.push(cb);
       };
     }
     vm.createContext(sandbox);
     vm.runInContext(code, sandbox, { filename: "ai-relay.js" });
     this.emit("ready");
+  }
+
+  /** Drain every armed onSheetWorkerCompleted callback with the given verdict. */
+  fireSheetWorkers(workersExecuted: boolean): void {
+    const cbs = this.sheetWorkerCallbacks;
+    this.sheetWorkerCallbacks = [];
+    for (const cb of cbs) cb({ workersExecuted });
+  }
+
+  /** The result record recorded for a nonce so far ({} if none), without re-dispatching. */
+  resultFor(nonce: number): { data?: unknown; error?: string } {
+    return this.resultByNonce.get(nonce) ?? {};
   }
 
   emit(event: string, msg?: unknown): void {

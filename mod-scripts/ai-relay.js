@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.9.0";
+var AI_RELAY_VERSION = "2.8.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -2267,8 +2267,9 @@ ACTIONS["setCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) 
 // args:
 //   charId      (required) character id
 //   attributes  {name: value} or {name: {current, max}}. Names may use setAttrs' own syntax:
-//               "<name>_max" targets the max value, "repeating_<section>_$<n>_<field>" addresses
-//               a repeating row by index.
+//               "<name>_max" targets the max value, "repeating_<section>_<rowId>_<field>" addresses
+//               a repeating row. Values go through stripUndef, which drops null as well as
+//               undefined/NaN — so this action CANNOT clear an attribute; pass "" to blank one.
 //   silent      true → pass {silent:true}, i.e. plain `set`, workers suppressed (the control arm)
 //   timeoutMs   how long to wait for onSheetWorkerCompleted before answering anyway (default 5000)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2327,6 +2328,7 @@ ACTIONS["setAttrs"] = function (args, msg, nonce, senderPlayerId) {
   // unrelated campaign activity would be attributed here — acceptable for a probe run against a
   // scratch character, and the alternative (arming after) can lose the signal outright.
   var armed = false;
+  var armNote = "onSheetWorkerCompleted is not available in this sandbox";
   if (!silent && typeof onSheetWorkerCompleted === "function") {
     try {
       onSheetWorkerCompleted(function (info) {
@@ -2335,6 +2337,7 @@ ACTIONS["setAttrs"] = function (args, msg, nonce, senderPlayerId) {
       armed = true;
     } catch (e) {
       armed = false;
+      armNote = "onSheetWorkerCompleted threw while arming: " + String(e);
     }
   }
 
@@ -2350,7 +2353,7 @@ ACTIONS["setAttrs"] = function (args, msg, nonce, senderPlayerId) {
   if (!armed) {
     finish(null, silent
       ? "silent write — workers deliberately suppressed, nothing to report"
-      : "onSheetWorkerCompleted is not available in this sandbox");
+      : armNote);
     return;
   }
   timer = setTimeout(function () {

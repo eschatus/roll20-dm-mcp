@@ -12,9 +12,9 @@
 // The emulator cannot answer this — it has no character sheet. So: run it against a live campaign.
 //
 // RUN:  npx tsx src/recon/setattrs-spike.ts [--keep]
-// Needs a deployed relay >= 2.9.0 (this is when ACTIONS["setAttrs"] landed) and a furnished
-// <data dir>/roll20-rt-token.json for the active campaign. --keep leaves the scratch character
-// behind for inspection; by default it is deleted.
+// Needs a deployed relay that carries ACTIONS["setAttrs"] (probed up front, not inferred from a
+// version number) and a furnished <data dir>/roll20-rt-token.json for the active campaign.
+// --keep leaves the scratch character behind for inspection; by default it is deleted.
 //
 // READBACK IS OFF RTDB, NOT OVER CHAT. `rollbase` is a macro template full of literal `@{` and
 // `[[`; Roll20 live-evaluates those on every outgoing chat message and a malformed one disables
@@ -28,18 +28,17 @@ import { rtGet } from "../bridge/roll20-rt.js";
 
 const KEEP = process.argv.includes("--keep");
 
-/** The relay release that added ACTIONS["setAttrs"]. */
-const SETATTRS_SINCE = "2.9.0";
-
-/** Numeric semver compare — a lexicographic one would rank "2.10.0" below "2.9.0". */
-function atLeast(found: string, want: string): boolean {
-  const f = found.split(".").map((n) => parseInt(n, 10) || 0);
-  const w = want.split(".").map((n) => parseInt(n, 10) || 0);
-  for (let i = 0; i < Math.max(f.length, w.length); i++) {
-    const a = f[i] ?? 0, b = w[i] ?? 0;
-    if (a !== b) return a > b;
-  }
-  return true;
+/**
+ * A Roll20-shaped repeating-row id (Firebase push-id alphabet, 20 chars, leading "-"). The
+ * relay's `$0` index syntax needs a row to already exist to address; on a character with zero
+ * rows the safe move is to mint the id ourselves, exactly as a sheet's generateRowID() would.
+ * Note the alphabet CONTAINS "_", so nothing downstream may split a row id on underscores.
+ */
+function mintRowId(): string {
+  const alphabet = "-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
+  let id = "-";
+  for (let i = 0; i < 19; i++) id += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return id;
 }
 
 const SCORES: Record<string, number> = {
@@ -52,7 +51,7 @@ const EXPECTED_MODS: Record<string, number> = {
   intelligence: -2, wisdom: 0, charisma: -1,
 };
 
-// What we write into the $0 npcaction row. Every one of these must read back before a verdict.
+// What we write into the minted npcaction row. Every one of these must read back before a verdict.
 const ROW_INPUTS: Record<string, string | number> = {
   name: "Greatclub",
   attack_tohit: 5,
@@ -78,7 +77,11 @@ type SetAttrsResult = {
 
 type Attr = { name?: string; current?: unknown; max?: unknown };
 
-/** Read every attribute off the RTDB char-blob. Chat-free, so a rollbase value is harmless. */
+/**
+ * Read every attribute off the RTDB char-blob, keyed by LOWER-CASED name — Roll20 folds attribute
+ * names case-insensitively, so a minted mixed-case row id may read back in another case.
+ * Chat-free, so a rollbase value is harmless.
+ */
 async function readAttrs(charId: string): Promise<Map<string, Attr>> {
   const blob = await rtGet<Record<string, unknown>>(`char-blobs/${charId}`).catch(() => null);
   const raw = (blob?.attribs ?? blob?.attributes) as Record<string, Attr> | undefined;
@@ -86,13 +89,13 @@ async function readAttrs(charId: string): Promise<Map<string, Attr>> {
   for (const [key, a] of Object.entries(raw ?? {})) {
     // The node is keyed by attribute id and each entry carries its own `name`; fall back to the
     // key if this campaign's backend shape differs (the schema was probed, not documented).
-    out.set(String(a?.name ?? key), a ?? {});
+    out.set(String(a?.name ?? key).toLowerCase(), a ?? {});
   }
   return out;
 }
 
 function cur(attrs: Map<string, Attr>, name: string): string | null {
-  const a = attrs.get(name);
+  const a = attrs.get(name.toLowerCase());
   if (!a) return null;
   return a.current === undefined || a.current === null ? "" : String(a.current);
 }
@@ -101,9 +104,18 @@ async function main() {
   const ping = await relayCommand<Record<string, unknown>>({ action: "ping" });
   console.error(`relay v${ping.version} · sandbox ${ping.sandbox ?? "?"} · node ${ping.node ?? "?"}`
     + ` · sheet ${ping.sheetName ?? "?"} · beacon ${ping.beacon}`);
-  if (!atLeast(String(ping.version ?? "0.0.0"), SETATTRS_SINCE)) {
-    throw new Error(`this campaign is on relay ${ping.version}; ACTIONS["setAttrs"] landed in `
-      + `${SETATTRS_SINCE} — paste mod-scripts/ai-relay.js into the campaign API console first`);
+  // Capability probe: a relay without the action answers "Unknown action"; one with it answers
+  // "charId is required". Neither touches any character.
+  try {
+    await relayCommand({ action: "setAttrs" });
+    throw new Error("setAttrs probe unexpectedly succeeded with no charId");
+  } catch (e) {
+    const text = String(e);
+    if (/Unknown action/i.test(text)) {
+      throw new Error(`this campaign is on relay ${ping.version}, which has no ACTIONS["setAttrs"] — `
+        + "paste mod-scripts/ai-relay.js into the campaign API console first");
+    }
+    if (!/charId is required/.test(text)) throw e;
   }
 
   const { id: charId } = await relayCommand<{ id: string }>({
@@ -127,13 +139,15 @@ async function main() {
       + ` · beacon=${abilityWrite.sheet.beacon}`);
 
     // ── Arm 2: one npcaction row, none of the companion fields ───────────────
+    const mintedRow = mintRowId();
     const rowWrite = await relayCommand<SetAttrsResult>({
       action: "setAttrs",
       charId,
       attributes: Object.fromEntries(
-        Object.entries(ROW_INPUTS).map(([field, v]) => [`repeating_npcaction_$0_${field}`, v]),
+        Object.entries(ROW_INPUTS).map(([field, v]) => [`repeating_npcaction_${mintedRow}_${field}`, v]),
       ),
     });
+    console.error(`npcaction row id minted: ${mintedRow}`);
     console.error(`npcaction write → workersExecuted=${rowWrite.workersExecuted}`
       + (rowWrite.note ? ` (${rowWrite.note})` : ""));
 
@@ -155,15 +169,20 @@ async function main() {
       const got = cur(attrs, name);
       if (got === null || Number(got) !== want) missingInputs.push(`${name}=${got === null ? "<absent>" : JSON.stringify(got)} (want ${want})`);
     }
-    // The row id setAttrs minted for $0 — the one row carrying every field we wrote.
+    // Row ids can contain "_", so split on the KNOWN field suffixes rather than on underscores.
+    const rowFieldRe = new RegExp(`^repeating_npcaction_(.+)_(${[...Object.keys(ROW_INPUTS), ...COMPANION_FIELDS]
+      .map((f) => f.replace(/[-$]/g, "\\$&")).join("|")})$`, "i");
     const candidateRows = new Set<string>();
     for (const name of attrs.keys()) {
-      const m = /^repeating_npcaction_([^_]+)_/.exec(name);
+      const m = rowFieldRe.exec(name);
       if (m) candidateRows.add(m[1]);
     }
     const rowIds = [...candidateRows].filter((rowId) =>
       Object.entries(ROW_INPUTS).every(([field, want]) =>
         cur(attrs, `repeating_npcaction_${rowId}_${field}`) === String(want)));
+    if (!rowIds.some((r) => r.toLowerCase() === mintedRow.toLowerCase())) {
+      console.error(`⚠ minted row ${mintedRow} not among rows carrying the inputs (${rowIds.join(", ") || "<none>"})`);
+    }
     if (rowIds.length === 0) {
       missingInputs.push(`no npcaction row carries all of {${Object.keys(ROW_INPUTS).join(", ")}}`
         + ` (rows seen: ${candidateRows.size ? [...candidateRows].join(", ") : "<none>"})`);

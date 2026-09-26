@@ -115,17 +115,22 @@ Persistent storage: the global **`state`** object (survives sandbox restarts).
   (`options.silent` opts out), handles `_max` suffixes and `repeating_…_$n` names. Sheet workers
   firing is exactly what the `rollbase` scaffolding and the `<ability>_mod` derivation in
   `createCharacter` exist to work around (#206).
-  **Status: instrumented, result NOT yet known.** `ACTIONS["setAttrs"]` (relay ≥ 2.9.0) performs
-  the write and reports back what `onSheetWorkerCompleted` said — `workersExecuted: true|false`,
-  or `null` when the sandbox never told us (no hook, a silent write, or the queue did not drain).
+  **Status: instrumented, result NOT yet known.** `ACTIONS["setAttrs"]` (in `ai-relay.js`,
+  unreleased — ships with the next relay roll-up, the spike probes for it rather than gating on a
+  version) performs the write and reports back what `onSheetWorkerCompleted` said —
+  `workersExecuted: true|false`, or `null` when the sandbox never told us (no hook, a silent write, or the queue did not drain).
   A `null` is **not** evidence that workers did not run. Nothing in either server calls it yet:
   `setCharacterAttributes` and `createCharacter` still use `createObj("attribute")` plus the two
   hand-built workarounds, because rerouting them depends on an answer nobody has measured.
-  **Run the spike:** `npx tsx src/recon/setattrs-spike.ts` against a live campaign on a relay
-  ≥ 2.9.0. It writes ability scores and one `repeating_npcaction` row through `setAttrs`, waits,
-  and reads back **off RTDB (`char-blobs/<id>`), never over chat** — `rollbase` is full of literal
-  `@{`/`[[`. (The issue suggested `scripts/dump-character-attrs.ts` for the readback; that script
-  imports Playwright, which this repo has not depended on since #179, so the RTDB path replaces it.)
+  Values pass through `stripUndef`, which drops `null` as well as `undefined`/`NaN` — so the
+  action **cannot clear an attribute**; pass `""` to blank one.
+  **Run the spike:** `npx tsx src/recon/setattrs-spike.ts` against a live campaign whose relay
+  carries the action. It writes ability scores and one `repeating_npcaction` row (under a minted
+  push-style row id — `$0` cannot address a row on a character that has none) through `setAttrs`,
+  waits, verifies every input read back before judging anything (otherwise INCONCLUSIVE), and
+  reads back **off RTDB (`char-blobs/<id>`), never over chat** — `rollbase` is full of literal
+  `@{`/`[[`. Whether `char-blobs/<id>` actually carries attribs is itself open (#230). (The issue
+  suggested `scripts/dump-character-attrs.ts` for the readback; that script imports Playwright, which this repo has not depended on since #179, so the RTDB path replaces it.)
   Record the outcome HERE when it is known, positive or negative, so nobody re-spikes it:
   - positive → route `createCharacter`/`setCharacterAttributes` through `setAttrs`, delete the
     `ABILITY_NAMES` derivation block in `ai-relay.js` and the `rollbase` template, and cut the two
