@@ -83,7 +83,7 @@ The Mod script is the server's hands inside Roll20. It receives commands from th
 4. Run `npm run build:mod` in this repo, then open `mod-scripts/.ai-relay.deploy.js`, copy all of it, paste it in
 5. Click **Save Script**
 
-`build:mod` minifies `mod-scripts/ai-relay.js` (~156KB of code and comments) down to ~63KB, which is what fits the Mod editor comfortably; it fails the build rather than emitting a script that would not parse, and `npm run build:mod -- --verify` additionally runs the emulator suite against the minified bytes. Pasting `ai-relay.js` itself still works if it fits — same code, same banner.
+`build:mod` minifies `mod-scripts/ai-relay.js` (~156KB of code and comments) down to ~63KB, which is what fits the Mod editor comfortably; it fails the build rather than emitting a script that would not parse, and `npm run build:mod -- --verify` additionally runs the emulator suite against the minified bytes. Pasting `mod-scripts/ai-relay.js` itself works too — it is what the DM Whisper gem pastes; the minified artifact is the same relay, just smaller, and prints the same load banner.
 
 **Verify the load, not the save.** A saved script can still fail to start. Check the API Output Console for:
 

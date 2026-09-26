@@ -24,7 +24,7 @@ src/**/*.js.map
 !assets/*.jpeg
 voice-hud/stt/.venv/
 
-# minified Mod build artifact (release:mod minifies ai-relay.js → here before deploy)
+# minified Mod build artifact (npm run build:mod minifies ai-relay.js → here; paste this one)
 mod-scripts/.ai-relay.deploy.js
 
 # test scratch

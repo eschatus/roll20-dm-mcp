@@ -188,7 +188,8 @@ skills/                  dm-rules.md (canonical play rules), dm-map-setup.md
 .claude/commands/        /combat, /round (session choreography)
 docs/                    architecture, decisions, protocols, coverage, security
 test/                    integration tests + the Roll20 emulator (roll20-emulator.ts, harness.ts)
-scripts/                 one-off live diagnostics (run with tsx, e.g. dump-character-attrs.ts)
+scripts/                 one-off live diagnostics (run with tsx, e.g. dump-character-attrs.ts),
+                         plus build-mod.mjs — the `npm run build:mod` relay minifier/gate
 wiki/                    GitHub wiki content (user-facing setup/player docs)
 ```
 
