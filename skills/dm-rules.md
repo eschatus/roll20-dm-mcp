@@ -108,12 +108,14 @@ convenience would conflict with a rule below, the rule wins.
     `prone` stays on until the DM separately says the PC stands up.
 - **A wrong kill is undone with `revive_token`, in one call** (issue #217). It is the exact inverse
   of `kill_token`: restores HP (required — nothing on the board remembers the pre-kill value),
-  clears `dead`, returns the token to the token layer, and puts its turn-order entry back (the
-  original `pr` if the kill left the entry behind, else an `initiative` you pass, else a fresh
+  clears `dead`, returns the token to the token layer, and puts its turn-order entry back (an
+  `initiative` you pass, else the original `pr` if the kill left the entry behind, else a fresh
   silent roll — NPCs and sidekicks only) without changing whose turn it is. A true PC whose entry
   is gone comes back with `initiativeSource:"pending"`: the player rolls, or you pass the pre-kill
-  `initiative`. If the call errors part-way, the message lists what landed and the repair call for
-  each step that didn't — run those, don't re-run the whole revive blind. Use it when a damage number landed on the wrong creature and crossed 0, or the DM
+  `initiative`. If the call errors part-way, the message lists what landed — re-run `revive_token`;
+  it is idempotent (add `initiative:N` if you know the pre-kill value). If the result says the
+  turn order was NOT updated because the relay is out of date, the token is revived but has no
+  row: tell the DM the relay needs redeploying, then re-run `revive_token` afterwards. Use it when a damage number landed on the wrong creature and crossed 0, or the DM
   retcons a death ("no, the ogre isn't dead") — never hand-unwind it with four separate calls, and
   never revive to 0 HP. A downed PC getting back up is NOT this: that's clearing `unconscious`.
 - Apply the `Wounded::4444333` marker when a token drops below 50% max HP; remove it when healed

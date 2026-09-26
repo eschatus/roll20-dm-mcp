@@ -267,9 +267,14 @@ silent `rollInitiativeForTokens` re-roll — NPC/sidekick only; a true PC with n
 `initiativeSource:"pending"` and the player rolls (PC initiative is read-only). Always upserted with
 `mergeTurnOrder keepTurn:true`, never a wholesale write: Roll20 marks the active turn by rotating
 the array, and the plain merge's pr-descending sort would rewind play to the top and trip the turn
-hook — `keepTurn` splices into the live rotation and leaves row 0 alone. The four steps commit one
-relay call at a time (no transaction); a failure part-way reports which steps landed and the repair
-call for each that didn't. Nothing on the board remembers a pre-kill HP or `pr`: a stash at the layer-write seam would
+hook — `keepTurn` splices into the live rotation and leaves row 0 alone. `keepTurn` exists only from relay 2.9.0 — an older relay drops the flag and
+re-sorts — so before any turn-order write revive pings the relay and, if it is older than 2.9.0
+or reports no version, skips the write and returns `initiativeSource:"pending"` with an
+`initiativeNote` to redeploy (unknown is treated as stale on purpose: a skipped write costs one
+re-run, a wrong one rewinds a live turn). The four steps commit one relay call at a time (no
+transaction); a failure part-way reports which steps landed, and the repair is to re-run
+`revive_token` — it is idempotent. Never hint `roll_initiative` as a repair: its legacy sort
+rewinds the turn and it would roll a PC's initiative. Nothing on the board remembers a pre-kill HP or `pr`: a stash at the layer-write seam would
 have to be hand-synced across BOTH write paths (`roll20-rt.ts`'s direct write and `ai-relay.js`'s
 copy), which is why revive reads the live order instead of trusting a cache.
 
