@@ -110,7 +110,15 @@ describe("no-browser invariant — nothing in this repo can drive a browser (#17
     };
     const scripts = pkg.scripts ?? {};
     expect(Object.keys(scripts)).not.toContain("release:mod");
-    const deployish = Object.entries(scripts).filter(([k]) => /deploy|release/i.test(k));
-    expect(deployish, `deploy-ish npm script: ${deployish.map(([k]) => k).join(", ")}`).toEqual([]);
+    // Judge a script by what its COMMAND does, not by its name: a future `release:notes` is
+    // harmless, a script named anything that launches a browser driver or calls the deleted
+    // deploy tools is not.
+    const drivesBrowserOrDeploys =
+      /(playwright|puppeteer|selenium|webdriver|chromium|chrome-remote-interface)|connectOverCDP|release-mod|deploy[_-]mod/i;
+    const offending = Object.entries(scripts).filter(([, cmd]) => drivesBrowserOrDeploys.test(cmd));
+    expect(offending, `browser/deploy npm script: ${offending.map(([k]) => k).join(", ")}`).toEqual([]);
+    // The paste-ready BUILD is fine — it produces a file a human pastes; it deploys nothing.
+    expect(scripts).toHaveProperty("build:mod");
+    expect(drivesBrowserOrDeploys.test(scripts["build:mod"])).toBe(false);
   });
 });

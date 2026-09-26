@@ -123,10 +123,11 @@ export function reportRelayVersion(
   // API console, which needs a browser and a logged-in human. This repo ships no deploy command —
   // `npm run release:mod` and `deploy_mod_script` are deleted — so this instruction names the
   // local build step, the manual paste, and the banner that CONFIRMS it; nothing in it drives a
-  // browser.
+  // browser. Relays are per-campaign, so it names WHICH campaign's copy is stale.
+  const where = campaignId ? `campaign ${campaignId}` : "the active campaign";
   console.error(
-    `[roll20] Roll20 relay is out of date — found ${found}, expected ${EXPECTED_RELAY_VERSION}. ` +
-    `The deployed Mod script (mod-scripts/ai-relay.js) doesn't match this server build — likely ` +
+    `[roll20] Roll20 relay is out of date in ${where} — found ${found}, expected ${EXPECTED_RELAY_VERSION}. ` +
+    `The Mod script deployed to ${where} (mod-scripts/ai-relay.js) doesn't match this server build — likely ` +
     `deployed from the wrong branch or working tree, or simply not re-pasted since it changed. ` +
     `Deploys are per-campaign, manual and attended: run "npm run build:mod" from the checkout ` +
     `with the build you intend to run, paste mod-scripts/.ai-relay.deploy.js into that campaign's ` +

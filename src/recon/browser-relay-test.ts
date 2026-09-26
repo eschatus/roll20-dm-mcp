@@ -11,10 +11,10 @@ import { getActiveCampaign } from "../registry/campaigns.js";
 async function main() {
   const camp = getActiveCampaign();
   console.error(`[browser-relay] campaign: ${camp.name} (${camp.roll20CampaignId})`);
-  console.error("[browser-relay] getPcHp (Mod round-trip via Playwright chat relay)...");
+  console.error("[browser-relay] getPcHp (Mod round-trip over RT)...");
   const t = Date.now();
   const res = await relayCommand<Record<string, unknown>>({ action: "getPcHp" });
-  console.error(`✅ Mod responded via browser relay in ${Date.now() - t}ms — Mod IS alive. keys=${res && typeof res === "object" ? Object.keys(res).length : "?"}`);
+  console.error(`✅ Mod responded over RT in ${Date.now() - t}ms — Mod IS alive. keys=${res && typeof res === "object" ? Object.keys(res).length : "?"}`);
 }
 
-main().then(() => process.exit(0), (e) => { console.error(`❌ browser relay also failed: ${e?.message || e}\n→ Mod sandbox is down in this campaign (not a transport bug).`); process.exit(1); });
+main().then(() => process.exit(0), (e) => { console.error(`❌ RT Mod round-trip failed: ${e?.message || e}\n→ Mod sandbox (or RT) is down in this campaign.`); process.exit(1); });

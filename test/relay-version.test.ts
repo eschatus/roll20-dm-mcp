@@ -93,4 +93,16 @@ describe("reportRelayVersion — clash detection and reporting", () => {
     expect(text).not.toMatch(/circuit.?breaker/i);
   });
 
+  it("names the campaign whose relay is stale — deploys are per-campaign (#175)", () => {
+    const errors: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args); };
+    try {
+      reportRelayVersion("2.1.0", "17884084");
+    } finally {
+      console.error = original;
+    }
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0][0])).toContain("campaign 17884084");
+  });
 });
