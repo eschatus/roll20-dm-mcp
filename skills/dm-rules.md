@@ -114,9 +114,14 @@ convenience would conflict with a rule below, the rule wins.
 - `concentrating` is a pseudo-condition marker (`Concentrating::4444313`) — DM-managed, applied/
   cleared via `set_token_marker`.
 - **Break cascade = `break_concentration`.** One call: removes the Concentrating marker, zeroes
-  the token's aura (`aura1_radius`), and deletes any zone whose `duration` is
+  the aura slot that effect owns, and deletes any zone whose `duration` is
   `{type:"concentration", caster}` linked to that token (see "Zone terrain/duration semantics").
-  Reports what it tore down.
+  Reports what it tore down, including which aura slot.
+- **A concentration aura must claim its slot.** Place it with `set_token_aura`
+  `concentration: true` (or `resolve_aoe draw:"aura"` with `auraConcentration: true`) — that records
+  the slot, so the break tears down the right ring. Without it the cascade falls back to slot 1, and
+  a spell parked on slot 2 survives its own teardown. A non-concentration aura (a permanent light
+  ring, a marching-order marker) leaves `concentration` false and is never torn down by a break.
 - Breaks arrive two ways:
   - **Declaratively** — the DM says the spell ends ("she loses Bless", "the guardians fade") or
     the save already happened at the table. Call `break_concentration` directly, no question asked.
@@ -198,6 +203,8 @@ Work out what a mob intends the same way you work out anything else, then write 
 
 - **Emanation** spells that move with a creature (Spirit Guardians, Aura of Vitality, etc.) →
   token **aura** (`set_token_aura` — radius in feet, `0` clears, player-visible by default), not a zone.
+  A concentration emanation passes `concentration: true` so the break cascade can find its slot;
+  `slot: 2` puts a second emanation on the same creature without overwriting the first.
 - **Fixed-area** spells (Web, Cloudkill, Spike Growth, Fireball footprint) → `create_zone`.
 - One-shot instantaneous spells (Fireball, Thunder Wave) need no persistent zone; clean up any
   pre-placed template token with `remove_object` after resolving.

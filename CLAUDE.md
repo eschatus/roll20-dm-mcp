@@ -264,6 +264,13 @@ Roll20 keeps the legacy `aura{n}_square` boolean in sync with it, so never write
 documents `"circle"`/`"square"`; the 2026-09-01 release added hex and outline-only variants whose
 property strings Roll20 hasn't published, so the schema takes a free string rather than a guessed
 enum. Emanations that move with a creature use an aura; fixed areas use `create_zone`.
+**A concentration aura must CLAIM its slot** (`concentration: true`, #210): the slot is recorded in
+`state.GM_AI_Bridge.concentrationAuras` (token id → 1|2) and `breakConcentration` tears down *that*
+slot — the aura analogue of a zone's `{type:'concentration', caster}` duration. Without a record the
+teardown falls back to slot 1, which is what the old always-slot-1 behaviour amounted to, so a
+slot-2 emanation outlived its own break. Both `set_token_aura` and `resolve_aoe draw:"aura"` go
+through the one `setTokenAura` relay action (write + bookkeeping in one step); a raw
+`set_token_props` aura write records nothing and is teardown-invisible by design.
 
 **Conditions/markers:** `set_token_marker` → `toggleCondition` → three-tier `resolveMarkerForState`
 (CONDITION → PSEUDO → hashed ad-hoc). Custom campaign marker set, IDs 4444311–4444352; default

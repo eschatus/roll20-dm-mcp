@@ -3,7 +3,8 @@
 //
 //  - set_pc_dying: prone + unconscious, token STAYS on the token layer (never
 //    dead, never map layer); rejects NPCs/sidekicks (use kill_token instead).
-//  - break_concentration: removes the Concentrating marker, zeroes aura1_radius,
+//  - break_concentration: removes the Concentrating marker, zeroes the aura slot the
+//    effect OWNS (issue #210 — slot 1 unless set_token_aura recorded slot 2),
 //    deletes only zones whose duration is {type:"concentration", caster}
 //    linked to that token — other zones untouched.
 //  - set_pc_dying auto-cascades break_concentration when the PC was concentrating
@@ -21,6 +22,7 @@ let pageId: string;
 const markers = (id: string) => String(h.emu.tokenProps(id).statusmarkers ?? "");
 const layer = (id: string) => String(h.emu.tokenProps(id).layer ?? "");
 const aura = (id: string) => Number(h.emu.tokenProps(id).aura1_radius ?? 0);
+const aura2 = (id: string) => Number(h.emu.tokenProps(id).aura2_radius ?? 0);
 
 function tokenId(name: string): string {
   const tokens = h.emu.relay<Array<{ id: string; name: string }>>({ action: "getTokens", pageId });
@@ -181,5 +183,141 @@ describe("kill_token — explicit death declaration still works for a PC", () =>
 
     expect(layer(id)).toBe("map");
     expect(markers(id)).toMatch(/Unconscious::4444317/); // "dead" shares the marker tag
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #210 — the teardown must know WHICH aura slot the concentration effect
+// owns. set_token_aura takes slot 1 or 2 precisely so two overlapping
+// emanations don't overwrite each other; a break that always zeroed slot 1 left
+// a slot-2 ring on the map (and wiped an unrelated slot-1 aura on the way).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("concentration aura slot ownership (#210)", () => {
+  it("tears down slot 2 when the concentration effect claimed it, leaving slot 1 alone", async () => {
+    h.emu.createToken({
+      pageid: pageId, name: "Sister Halder", controlledby: "player-halder",
+      bar1_value: 28, bar1_max: 28, statusmarkers: "Concentrating::4444313",
+    });
+    const id = tokenId("Sister Halder");
+
+    // Slot 1: an unrelated, permanent ring (a lantern's reach) — must survive.
+    await h.callTool("set_token_aura", { characterName: "Sister Halder", radiusFeet: 10, slot: 1, color: "#ffdd88" });
+    // Slot 2: the concentration spell itself.
+    await h.callTool("set_token_aura", {
+      characterName: "Sister Halder", radiusFeet: 15, slot: 2, color: "#66ccff",
+      shape: "circle", concentration: true,
+    });
+    expect(aura(id)).toBe(10);
+    expect(aura2(id)).toBe(15);
+
+    const result = await h.callTool("break_concentration", { characterName: "Sister Halder" });
+    const data = result.json as { auraCleared: boolean; auraSlot: number };
+
+    expect(data.auraSlot).toBe(2);
+    expect(data.auraCleared).toBe(true);
+    expect(aura2(id)).toBe(0);  // the spell's ring is gone
+    expect(aura(id)).toBe(10);  // the lantern is untouched
+    expect(markers(id)).not.toMatch(/Concentrating::4444313/);
+  });
+
+  it("still defaults to slot 1 for a token with no recorded slot", async () => {
+    h.emu.createToken({
+      pageid: pageId, name: "Old Rowan", controlledby: "player-rowan",
+      bar1_value: 20, bar1_max: 20, statusmarkers: "Concentrating::4444313",
+      aura1_radius: 30, aura2_radius: 5,
+    });
+    const id = tokenId("Old Rowan");
+
+    const result = await h.callTool("break_concentration", { characterName: "Old Rowan" });
+    const data = result.json as { auraCleared: boolean; auraSlot: number };
+
+    expect(data.auraSlot).toBe(1);
+    expect(data.auraCleared).toBe(true);
+    expect(aura(id)).toBe(0);
+    expect(aura2(id)).toBe(5); // never recorded as the spell's — left where it was
+  });
+
+  it("releases the slot when the aura is cleared, so a later break does not touch it", async () => {
+    h.emu.createToken({
+      pageid: pageId, name: "Fen Tallow", controlledby: "player-fen",
+      bar1_value: 18, bar1_max: 18, statusmarkers: "Concentrating::4444313",
+    });
+    const id = tokenId("Fen Tallow");
+
+    await h.callTool("set_token_aura", { characterName: "Fen Tallow", radiusFeet: 20, slot: 2, concentration: true });
+    await h.callTool("set_token_aura", { characterName: "Fen Tallow", radiusFeet: 0, slot: 2 });
+    // The DM repurposes slot 2 for something permanent afterwards.
+    await h.callTool("set_token_aura", { characterName: "Fen Tallow", radiusFeet: 7, slot: 2, color: "#ffffff" });
+
+    const result = await h.callTool("break_concentration", { characterName: "Fen Tallow" });
+    const data = result.json as { auraSlot: number };
+    expect(data.auraSlot).toBe(1);
+    expect(aura2(id)).toBe(7); // the repurposed ring survives
+  });
+
+  it("releases the slot when it is reused for a NON-concentration aura", async () => {
+    h.emu.createToken({
+      pageid: pageId, name: "Cobb Wexley", controlledby: "player-cobb",
+      bar1_value: 18, bar1_max: 18, statusmarkers: "Concentrating::4444313",
+    });
+    const id = tokenId("Cobb Wexley");
+
+    await h.callTool("set_token_aura", { characterName: "Cobb Wexley", radiusFeet: 20, slot: 2, concentration: true });
+    // Same slot, overwritten by a marching-order marker that is NOT the spell.
+    await h.callTool("set_token_aura", { characterName: "Cobb Wexley", radiusFeet: 5, slot: 2, concentration: false });
+
+    const result = await h.callTool("break_concentration", { characterName: "Cobb Wexley" });
+    expect((result.json as { auraSlot: number }).auraSlot).toBe(1);
+    expect(aura2(id)).toBe(5);
+  });
+
+  it("set_pc_dying cascades the teardown onto the recorded slot", async () => {
+    h.emu.createToken({
+      pageid: pageId, name: "Perrin Vale", controlledby: "player-perrin",
+      bar1_value: 0, bar1_max: 22, statusmarkers: "Concentrating::4444313",
+    });
+    const id = tokenId("Perrin Vale");
+    await h.callTool("set_token_aura", { characterName: "Perrin Vale", radiusFeet: 15, slot: 2, concentration: true });
+
+    const { text } = await h.callTool("set_pc_dying", { characterName: "Perrin Vale" });
+
+    expect(aura2(id)).toBe(0);
+    expect(text).toMatch(/aura 2 cleared=true/i);
+  });
+
+  it("set_token_aura writes shape and visibility through the relay", async () => {
+    h.emu.createToken({ pageid: pageId, name: "Shape Test", controlledby: "", bar1_value: 9, bar1_max: 9 });
+    const id = tokenId("Shape Test");
+
+    await h.callTool("set_token_aura", {
+      characterName: "Shape Test", radiusFeet: 10, slot: 2, color: "#00ff00",
+      shape: "square", visibleToPlayers: false,
+    });
+    const props = h.emu.tokenProps(id);
+    expect(Number(props.aura2_radius)).toBe(10);
+    expect(props.aura2_color).toBe("#00ff00");
+    expect(props.aura2_options).toBe("square");
+    expect(props.aura2_square).toBe(true);
+    expect(props.showplayers_aura2).toBe(false);
+  });
+
+  it("resolve_aoe draw:'aura' honours auraSlot/auraShape and can claim the slot for concentration", async () => {
+    h.emu.createToken({
+      pageid: pageId, name: "Dawn Caller", controlledby: "player-dawn",
+      bar1_value: 26, bar1_max: 26, statusmarkers: "Concentrating::4444313", left: 500, top: 500,
+    });
+    const id = tokenId("Dawn Caller");
+
+    await h.callTool("resolve_aoe", {
+      label: "Spirit Guardians", centerTokenName: "Dawn Caller", radiusFeet: 15,
+      draw: "aura", auraSlot: 2, auraShape: "circle", auraConcentration: true,
+      dryRun: false, damage: 0, pageId,
+    });
+    expect(aura2(id)).toBe(15);
+    expect(h.emu.tokenProps(id).aura2_options).toBe("circle");
+
+    const result = await h.callTool("break_concentration", { characterName: "Dawn Caller" });
+    expect((result.json as { auraSlot: number }).auraSlot).toBe(2);
+    expect(aura2(id)).toBe(0);
   });
 });

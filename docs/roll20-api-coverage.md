@@ -37,10 +37,10 @@ can be moved back to 1.0 by hand. `ACTIONS["ping"]` echoes `Campaign().sandboxVe
 surfaces them under `sandbox` — that is how you find out which one a campaign is on. A `sandbox` of
 `null` there means the *relay* is older than 2.7.0, not that the sandbox is old.
 
-Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.6). Relay version string: `2.8.0`
+Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.6). Relay version string: `2.9.0`
 (reported by the `ping` action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
-(`[GM_AI_Bridge] Relay script loaded (v2.8.0)`), not the save.
+(`[GM_AI_Bridge] Relay script loaded (v2.9.0)`), not the save.
 
 ---
 
@@ -168,14 +168,15 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `getSelection` | get_selection | combat | the DM's currently-selected tokens |
 | `findTokensInRange` | find_tokens_in_range, resolve_aoe | combat | range query (aura/zone) |
 | `getTokenById` | get_token, get/set_character_attribute, update_token_hp, kill_token, set_pc_dying, break_concentration, create_zone | both | full token read (direct-read path) |
-| `setTokenProps` | set_token_props, kill_token (→ map layer), resolve_aoe (aura), create_pc_token, batch_exec | both | arbitrary `.set(props)`; direct-write path |
+| `setTokenProps` | set_token_props, kill_token (→ map layer), create_pc_token, batch_exec | both | arbitrary `.set(props)`; direct-write path |
+| `setTokenAura` | set_token_aura, resolve_aoe (`draw:"aura"`) | combat | one aura slot (1\|2) set or cleared — radius/colour/shape/visibility — **plus** the record of which slot a concentration effect owns (`state.GM_AI_Bridge.concentrationAuras`, #210), so `breakConcentration` tears down that slot instead of assuming slot 1. Raw `setTokenProps` aura writes still work but record nothing. |
 | `setTokenBar` | update_token_hp (NPC/sidekick), update_hp_many, roll_initiative (`entries[].hp` seed), resolve_aoe | combat | bar1 HP; direct-write path |
 | `adjustPcHp` / `getPcHp` | update_token_hp, update_hp_many, resolve_aoe (all PC-routed writes) | combat | PC HP in a `%%PCHP={…}%%` block in the token's gmnotes, routed three ways by `classifyToken` (PC / NPC / sidekick). `getPcHp` has no tool of its own — it's the direct-read half of the same carrier. **Never write a PC's token bar.** |
 | `setStatusMarker` | (internal) | — | single marker add/remove by tag; direct-write path |
 | `setDefaultToken` | batch_exec (`set_default_token`) | combat | `setDefaultTokenForCharacter` (token↔sheet) |
 | `toggleCondition` | set_token_marker, update_token_hp, kill_token, set_pc_dying, batch_exec | combat | resolves via 3-tier `resolveMarkerForState`; +`active_conditions`; direct-write path |
 | `syncConditionsToToken` | update_token_hp (`replaceConditions`) | combat | replace all markers |
-| `breakConcentration` | break_concentration, set_pc_dying (auto-cascade) | combat | removes the `Concentrating` marker, zeroes `aura1_radius`, and deletes zones whose duration is `{type:'concentration', caster}` (#134/#135) |
+| `breakConcentration` | break_concentration, set_pc_dying (auto-cascade) | combat | removes the `Concentrating` marker, zeroes the aura slot the effect OWNS (`concentrationAuras`, default slot 1 — #210), and deletes zones whose duration is `{type:'concentration', caster}` (#134/#135) |
 | `getTokenMarkers` | get_token_markers | combat | campaign custom markers |
 | `getCustomStates` | list_custom_states | combat | tier-2 ad-hoc DM states + holders |
 | `createToken` | create_pc_token, create_npc_token, create_monster_token | maps | **does not set `represents`** (so no sheet, and `ac` is reported-back-only, never stored) and takes no `controlledby` — `create_pc_token` sets it from its `controlledBy` param via a follow-up `setTokenProps`. All three take **caller-supplied stats**; none performs a lookup (#171). |
@@ -219,7 +220,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `sendPing` | send_ping | maps | "look here" / pull player view to a spot |
 | `spawnFx` / `spawnFxBetweenPoints` | spawn_fx, spawn_fx_between_points | maps | explosions, beams, spell nova |
 | `toFront` / `toBack` | to_front, to_back | maps | z-order |
-| `ping` | (health check) | — | reports relay version (2.8.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
+| `ping` | (health check) | — | reports relay version (2.9.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
 | **event** `chat:message` | (passive) | — | buffers chat, parses `!dm`. Player `!`-commands are **forwarded, not answered** — `forwardChat` broadcasts them as an SSE `chat-message`; the gem decides what to do. |
 | **event** `change:campaign:turnorder` | (passive) | — | turn/round announcements |
 | **event** `add:graphic` | (passive) | — | auto-rolls initiative for NPC tokens dropped during combat |

@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.8.0";
+var AI_RELAY_VERSION = "2.9.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -342,12 +342,37 @@ function B() {
   // live here, keyed by the zone path's Roll20 id → { name, shape, pageId,
   // centerX, centerY, radiusFeet, color, terrain, duration }.
   if (!s.zones || typeof s.zones !== "object") s.zones = {};
+  // Which aura slot each concentration effect owns (issue #210), keyed by token id → 1 | 2.
+  // A token carries TWO independent aura slots and set_token_aura lets the DM pick, so the
+  // break cascade cannot assume slot 1 — it has to know which ring belongs to the spell it is
+  // tearing down. This is the aura analogue of the zone registry's {type:"concentration",
+  // caster} duration: ownership recorded at cast time, read at teardown time. Absent entry =
+  // slot 1, which is both the historical behaviour and the default slot.
+  if (!s.concentrationAuras || typeof s.concentrationAuras !== "object") s.concentrationAuras = {};
   return s;
 }
 
 // The zone metadata registry itself (see B() above).
 function zoneRegistry() {
   return B().zones;
+}
+
+// The concentration-aura ownership registry (see B() above): token id → aura slot (1|2).
+// RECONCILED on read, same discipline as liveZones(): a token deleted mid-concentration (killed
+// and cleaned off the map, a page rebuilt) would otherwise leave its slot claim in persistent
+// state forever.
+function concentrationAuras() {
+  let reg = B().concentrationAuras;
+  Object.keys(reg).forEach(function (id) { if (!getObj("graphic", id)) delete reg[id]; });
+  return reg;
+}
+
+// Aura slot the named token's concentration effect owns. Defaults to 1 for a token with no
+// recorded slot — an aura placed before this bookkeeping existed, or by a raw setTokenProps
+// write, is overwhelmingly on slot 1 (it was the only slot anything wrote).
+function concentrationAuraSlot(tokenId) {
+  let slot = Number(concentrationAuras()[tokenId]);
+  return slot === 2 ? 2 : 1;
 }
 
 // Registry entries for a page (or every page if pageId is omitted), RECONCILED
@@ -2058,6 +2083,54 @@ ACTIONS["setTokenProps"] = function (args, msg, nonce, senderPlayerId) {
         return;
       }
       };
+ACTIONS["setTokenAura"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // One aura slot, set or cleared, with its concentration ownership recorded (issue #210).
+        // The shape/visibility plumbing lives HERE rather than in the TS caller so that the write
+        // and the bookkeeping are one atomic step: a caller that builds raw aura props itself and
+        // sends setTokenProps can still do so, but then nothing knows the slot belongs to a spell.
+        let t = getObj("graphic", args.tokenId);
+        if (!t) throw new Error("Token not found: " + args.tokenId);
+        let slot = Number(args.slot) === 2 ? 2 : 1;
+        let radius = Number(args.radiusFeet);
+        if (!isFinite(radius) || radius < 0) {
+          throw new Error("setTokenAura: radiusFeet must be a finite number >= 0, got " + JSON.stringify(args.radiusFeet));
+        }
+        let props = {};
+        props["aura" + slot + "_radius"] = radius;
+        if (radius > 0) {
+          if (args.color) props["aura" + slot + "_color"] = args.color;
+          if (args.shape) {
+            // aura{n}_options is the authoritative shape field; Roll20 documents the legacy
+            // aura{n}_square boolean as kept in sync with it. Write both for the two shapes the
+            // boolean can express (belt-and-braces against a silently-dropped property, the
+            // #162/#164 class); hex and the border-only variants go through options alone.
+            props["aura" + slot + "_options"] = args.shape;
+            if (args.shape === "square") props["aura" + slot + "_square"] = true;
+            else if (args.shape === "circle") props["aura" + slot + "_square"] = false;
+          }
+          props["showplayers_aura" + slot] = args.visibleToPlayers !== false;
+        }
+        setSafe(t, props);
+
+        // Ownership bookkeeping. Claiming a slot for a concentration effect records it; clearing
+        // that slot, or reusing it for something that ISN'T concentration (a permanent light ring,
+        // a marching-order marker), releases the claim — otherwise the break cascade would later
+        // tear down an aura that no longer belongs to a spell.
+        let reg = concentrationAuras();
+        let owned = Number(reg[args.tokenId]) === slot;
+        if (args.concentration && radius > 0) reg[args.tokenId] = slot;
+        else if (owned) delete reg[args.tokenId];
+
+        writeResult(nonce, {
+          ok: true,
+          slot: slot,
+          radiusFeet: radius,
+          concentration: Number(reg[args.tokenId]) === slot,
+        });
+        return;
+      }
+      };
 ACTIONS["getRecentChat"] = function (args, msg, nonce, senderPlayerId) {
         {
         let n = Math.min(args.limit || 50, CHAT_BUFFER.length);
@@ -2717,7 +2790,7 @@ ACTIONS["removeObject"] = function (args, msg, nonce, senderPlayerId) {
 ACTIONS["breakConcentration"] = function (args, msg, nonce, senderPlayerId) {
         {
         // Concentration break cascade (issue #135): remove the Concentrating
-        // sticker, zero the token's aura (aura1_radius), and delete any zone whose
+        // sticker, zero the aura slot the effect owns (issue #210), and delete any zone whose
         // duration links to this token as caster ({type:"concentration", caster}
         // metadata from issue #134/createZone). caster linkage is matched
         // case-insensitively against BOTH the token's id and its display name (a
@@ -2740,9 +2813,18 @@ ACTIONS["breakConcentration"] = function (args, msg, nonce, senderPlayerId) {
         markerSet.delete(concTag);
         t.set("statusmarkers", Array.from(markerSet).join(","));
 
-        // 2) Zero the aura (emanation effects, e.g. Spirit Guardians).
-        let auraCleared = Number(t.get("aura1_radius")) > 0;
-        setSafe(t, { aura1_radius: 0 });
+        // 2) Zero the aura the effect OWNS (emanation effects, e.g. Spirit Guardians). Which
+        // slot that is comes from the concentration-aura registry (issue #210) — set_token_aura
+        // lets the DM park an emanation on slot 2, and tearing down slot 1 regardless both left
+        // the real ring on the map and wiped whatever unrelated aura sat in slot 1. No recorded
+        // slot means slot 1, the historical assumption and the default slot.
+        let auraSlot = concentrationAuraSlot(args.tokenId);
+        let auraRadiusProp = "aura" + auraSlot + "_radius";
+        let auraCleared = Number(t.get(auraRadiusProp)) > 0;
+        let auraProps = {};
+        auraProps[auraRadiusProp] = 0;
+        setSafe(t, auraProps);
+        delete concentrationAuras()[args.tokenId];
 
         // 3) Delete linked concentration zones.
         let zonesRemoved = [];
@@ -2763,6 +2845,7 @@ ACTIONS["breakConcentration"] = function (args, msg, nonce, senderPlayerId) {
           ok: true,
           markerRemoved: markerRemoved,
           auraCleared: auraCleared,
+          auraSlot: auraSlot,
           zonesRemoved: zonesRemoved,
         });
         return;
