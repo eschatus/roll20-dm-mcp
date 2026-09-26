@@ -24,6 +24,7 @@ interface Variant {
   anchorX: number;
   anchorY: number;
   pointCount: number;
+  offPage: boolean;
   created: boolean;
   error?: string;
   stored: Record<string, unknown>;
@@ -37,8 +38,19 @@ interface ProbeResult {
   hex8: string;
   radiusPx: number;
   rowY: number;
+  rowYs: number[];
+  pageWidthPx: number;
+  pageHeightPx: number;
   variants: Variant[];
+  stashedIds: string[];
   note: string;
+}
+interface ClearLast {
+  cleared: boolean;
+  stash: { pageId: string; ids: string[]; at: number } | null;
+  removed: string[];
+  alreadyGone: string[];
+  failed: Array<{ id: string; error: string }>;
 }
 
 let emu: Roll20Emulator;
@@ -59,9 +71,15 @@ function runProbe(extra: Record<string, unknown> = {}): ProbeResult {
 beforeEach(() => {
   emu = new Roll20Emulator({ seed: 208 });
   emu.load();
-  pageId = emu.createPage();
+  // Wide enough (60 units = 4200px) for all eight variants in one row at x=500.
+  pageId = emu.createPage("Probe", { width: 60, height: 40 });
   emu.setPlayerPage(pageId);
 });
+
+function probeStash(): { pageId: string; ids: string[]; at: number } | undefined {
+  return (emu.state.GM_AI_Bridge as { pathv2Probe?: { pageId: string; ids: string[]; at: number } } | undefined)
+    ?.pathv2Probe;
+}
 
 describe("pathv2ZoneProbe — variant coverage", () => {
   it("covers all three questions, with a control for each", () => {
@@ -84,6 +102,8 @@ describe("pathv2ZoneProbe — variant coverage", () => {
   it("is a left-to-right row at one y, so a human can compare the shapes side by side", () => {
     const res = runProbe();
     expect(res.rowY).toBe(400);
+    expect(res.rowYs).toEqual([400]);
+    expect(res.variants.every(v => !v.offPage)).toBe(true);
     expect(new Set(res.variants.map(v => v.centerY))).toEqual(new Set([400]));
     const xs = res.variants.map(v => v.centerX);
     const gaps = xs.slice(1).map((x, i) => x - xs[i]);
@@ -96,6 +116,45 @@ describe("pathv2ZoneProbe — variant coverage", () => {
     const withOpacity = res.variants.filter(v => v.sentFillOpacity !== undefined);
     expect(withOpacity.map(v => v.key)).toEqual(["eli-fillopacity"]);
     expect(withOpacity[0].sentFillOpacity).toBe(0.25);
+  });
+});
+
+describe("pathv2ZoneProbe — page fit (row wrap)", () => {
+  it("wraps onto a new row instead of drawing past the right edge of a default-size page", () => {
+    // Roll20's default page: 25 units wide/tall = 1750px (width/height are 70px UNITS).
+    const small = emu.createPage("Default", { width: 25, height: 25 });
+    const res = emu.relay<ProbeResult>({ action: "pathv2ZoneProbe", pageId: small });
+    expect(res.pageWidthPx).toBe(1750);
+    // Defaults: r=140 → shapes 280px across + 70px gutter = 350px step, first centre at 210.
+    for (const v of res.variants) {
+      expect(v.centerX + res.radiusPx, v.key).toBeLessThanOrEqual(1750);
+      expect(v.centerX - res.radiusPx, v.key).toBeGreaterThanOrEqual(0);
+      expect(v.offPage, v.key).toBe(false);
+    }
+    expect(res.rowYs.length).toBeGreaterThan(1);
+    expect(res.rowYs).toEqual([210, 560]);
+    // Every new row restarts at the left column, and rows never overlap.
+    expect(new Set(res.variants.filter(v => v.centerY === 560).map(v => v.centerX)).has(210)).toBe(true);
+  });
+
+  it("wraps the 30-unit (2100px) page Devin flagged", () => {
+    const p30 = emu.createPage("Thirty", { width: 30, height: 30 });
+    const res = emu.relay<ProbeResult>({ action: "pathv2ZoneProbe", pageId: p30 });
+    expect(res.variants.every(v => v.centerX + res.radiusPx <= 2100)).toBe(true);
+    expect(res.variants.every(v => !v.offPage)).toBe(true);
+  });
+
+  it("flags a shape that still cannot fit, rather than hiding it", () => {
+    const tiny = emu.createPage("Tiny", { width: 3, height: 3 });
+    const res = emu.relay<ProbeResult>({ action: "pathv2ZoneProbe", pageId: tiny });
+    expect(res.variants.some(v => v.offPage)).toBe(true);
+  });
+
+  it("falls back to Roll20's 25-unit default when the page size is unreadable", () => {
+    const bare = emu.createPage("No size");
+    const res = emu.relay<ProbeResult>({ action: "pathv2ZoneProbe", pageId: bare });
+    expect(res.pageWidthPx).toBe(1750);
+    expect(res.pageHeightPx).toBe(1750);
   });
 });
 
@@ -178,6 +237,50 @@ describe("pathv2ZoneProbe — housekeeping", () => {
     expect(() =>
       emu.relay({ action: "removeObject", objectType: "pathv2", objectId: res.variants[0].id! })
     ).toThrow(/not found/i);
+  });
+
+  it("stashes every created id in state BEFORE replying, so lost ids are recoverable", () => {
+    const res = runProbe();
+    const stash = probeStash()!;
+    expect(stash.pageId).toBe(pageId);
+    expect(stash.ids).toEqual(res.variants.map(v => v.id));
+    expect(typeof stash.at).toBe("number");
+    expect(res.stashedIds).toEqual(stash.ids);
+  });
+
+  it("accumulates across runs, so a second run never orphans the first", () => {
+    const a = runProbe();
+    const b = runProbe();
+    expect(probeStash()!.ids).toEqual([...a.variants, ...b.variants].map(v => v.id));
+  });
+
+  it("clearLast removes every stashed shape and clears the stash", () => {
+    const res = runProbe();
+    const r = emu.relay<ClearLast>({ action: "pathv2ZoneProbe", clearLast: true });
+    expect(r.cleared).toBe(true);
+    expect(r.removed).toEqual(res.variants.map(v => v.id));
+    expect(r.alreadyGone).toEqual([]);
+    expect(r.failed).toEqual([]);
+    expect(probeStash()).toBeUndefined();
+    for (const v of res.variants) {
+      expect(() => emu.relay({ action: "removeObject", objectType: "pathv2", objectId: v.id! })).toThrow(/not found/i);
+    }
+  });
+
+  it("clearLast reports ids already removed by hand as alreadyGone, not failures", () => {
+    const res = runProbe();
+    emu.relay({ action: "removeObject", objectType: "pathv2", objectId: res.variants[0].id! });
+    const r = emu.relay<ClearLast>({ action: "pathv2ZoneProbe", clearLast: true });
+    expect(r.cleared).toBe(true);
+    expect(r.alreadyGone).toEqual([res.variants[0].id]);
+    expect(r.removed).toHaveLength(res.variants.length - 1);
+    expect(probeStash()).toBeUndefined();
+  });
+
+  it("clearLast with nothing stashed says so and needs no page", () => {
+    const r = emu.relay<ClearLast>({ action: "pathv2ZoneProbe", clearLast: true });
+    expect(r.cleared).toBe(false);
+    expect(r.stash).toBeNull();
   });
 
   it("refuses an unknown page rather than drawing into the void", () => {

@@ -1703,13 +1703,43 @@ ACTIONS["drawLayerTest"] = function (args, msg, nonce, senderPlayerId) {
 //
 // Read-back answers storage only. Rendering needs eyes on the page, which is why
 // the objects are LEFT there on purpose — clean up afterwards with
-// removeObject { objectType: "pathv2", objectId }.
+// removeObject { objectType: "pathv2", objectId }, or { clearLast: true } below.
+//
+// Recovery: every id the probe creates is stashed in state.GM_AI_Bridge.pathv2Probe
+// ({ pageId, ids, at }) BEFORE the result goes back, so shapes whose ids were lost
+// (a dropped RTDB result, a closed terminal) are still findable. The stash
+// ACCUMULATES across runs until cleared, so a second run never orphans the first.
+// { clearLast: true } removes every stashed id and clears the stash; ids it fails
+// to remove stay stashed for a retry.
 //
 // Geometry: pathv2 re-anchors to its FIRST point regardless of the x/y passed, so
 // every variant is built first-point-as-anchor (same rule as walls). For "eli"/"rec"
 // the first two points are the bounding box, so the anchor is the box's top-left.
 ACTIONS["pathv2ZoneProbe"] = function (args, msg, nonce, senderPlayerId) {
         {
+        if (args.clearLast) {
+          let stash = B().pathv2Probe;
+          if (!stash || !Array.isArray(stash.ids) || !stash.ids.length) {
+            writeResult(nonce, { cleared: false, stash: null, removed: [], alreadyGone: [], failed: [] });
+            return;
+          }
+          let clRemoved = [], clGone = [], clFailed = [];
+          stash.ids.forEach(function (id) {
+            let o = getObj("pathv2", id);
+            if (!o) { clGone.push(id); return; }
+            try { o.remove(); clRemoved.push(id); } catch (e) { clFailed.push({ id: id, error: String(e).slice(0, 120) }); }
+          });
+          // Keep exactly the stragglers, so a retry targets only what is still on a page.
+          if (clFailed.length) {
+            B().pathv2Probe = { pageId: stash.pageId, ids: clFailed.map(function (f) { return f.id; }), at: stash.at };
+          } else {
+            delete B().pathv2Probe;
+          }
+          writeResult(nonce, { cleared: clFailed.length === 0, stash: stash, removed: clRemoved,
+                               alreadyGone: clGone, failed: clFailed });
+          return;
+        }
+
         let probePage = getObj("page", args.pageId);
         if (!probePage) throw new Error("Page not found: " + args.pageId);
 
@@ -1718,6 +1748,17 @@ ACTIONS["pathv2ZoneProbe"] = function (args, msg, nonce, senderPlayerId) {
         let probeCx = Number(args.centerX); if (!isFinite(probeCx)) probeCx = probeR + 70;
         let probeCy = Number(args.centerY); if (!isFinite(probeCy)) probeCy = probeR + 70;
         let probeStep = probeR * 2 + 70; // one empty cell of gutter between variants
+        // Page extent in px. Roll20 keeps page width/height in 70px UNITS, not cells. Eight
+        // variants at the default radius need ~3000px of row, and a default page is far
+        // narrower, so the row WRAPS rather than drawing the last shapes off the page.
+        // An unreadable size falls back to Roll20's 25-unit default page.
+        let probePageW = Number(probePage.get("width")) * 70;
+        if (!isFinite(probePageW) || probePageW <= 0) probePageW = 25 * 70;
+        let probePageH = Number(probePage.get("height")) * 70;
+        if (!isFinite(probePageH) || probePageH <= 0) probePageH = 25 * 70;
+        let probeNextX = probeCx;
+        let probeNextY = probeCy;
+        let probeRowYs = [];
 
         let probeHexMatch = typeof args.color === "string" ? /^#([0-9a-fA-F]{6})/.exec(args.color) : null;
         let probeHex6 = probeHexMatch ? "#" + probeHexMatch[1] : "#aa00ff";
@@ -1780,8 +1821,19 @@ ACTIONS["pathv2ZoneProbe"] = function (args, msg, nonce, senderPlayerId) {
         }
 
         let probeResults = probeVariants.map(function (v, vi) {
-          let cx = probeCx + vi * probeStep;
-          let cy = probeCy;
+          let cx = probeNextX;
+          let cy = probeNextY;
+          if (vi > 0 && cx + probeR > probePageW) {
+            // Next shape would cross the right edge: start a new row under this one.
+            probeNextY += probeStep;
+            cx = probeCx;
+            cy = probeNextY;
+          }
+          probeNextX = cx + probeStep;
+          if (probeRowYs.indexOf(cy) < 0) probeRowYs.push(cy);
+          // Still off the page (a start point or radius too large for the page to hold even
+          // one shape per row, or more rows than the page is tall): say so, don't hide it.
+          let offPage = cx - probeR < 0 || cy - probeR < 0 || cx + probeR > probePageW || cy + probeR > probePageH;
           let anchorX, anchorY, pts;
           if (v.shape === "pol") {
             // 36-gon, first point at angle 0 — anchor is that point, not the centre.
@@ -1832,7 +1884,7 @@ ACTIONS["pathv2ZoneProbe"] = function (args, msg, nonce, senderPlayerId) {
 
           let out = { key: v.key, asks: v.asks, id: obj.id, shape: v.shape, layer: v.layer,
                       sentFill: v.fill, sentFillOpacity: v.fillOpacity, centerX: cx, centerY: cy,
-                      anchorX: anchorX, anchorY: anchorY, pointCount: pts.length, created: true };
+                      anchorX: anchorX, anchorY: anchorY, pointCount: pts.length, offPage: offPage, created: true };
           let first = probeReadBack(obj);
           out.stored = first.stored;
           out.missing = first.missing;
@@ -1856,14 +1908,26 @@ ACTIONS["pathv2ZoneProbe"] = function (args, msg, nonce, senderPlayerId) {
           return out;
         });
 
+        // Stash the ids before replying: if the reply is lost, the shapes are still findable.
+        let probeIds = probeResults.filter(function (r) { return r.id; }).map(function (r) { return r.id; });
+        let probePrior = B().pathv2Probe;
+        let probePriorIds = probePrior && Array.isArray(probePrior.ids) ? probePrior.ids : [];
+        if (probeIds.length) {
+          B().pathv2Probe = { pageId: args.pageId, ids: probePriorIds.concat(probeIds), at: Date.now() };
+        }
+
         writeResult(nonce, {
           pageId: args.pageId,
           hex6: probeHex6,
           hex8: probeHex8,
           radiusPx: probeR,
           rowY: probeCy,
+          rowYs: probeRowYs,
+          pageWidthPx: probePageW,
+          pageHeightPx: probePageH,
           variants: probeResults,
-          note: "Objects left on the page deliberately — look at them, then remove each with removeObject { objectType: 'pathv2', objectId }."
+          stashedIds: (B().pathv2Probe && B().pathv2Probe.ids) || [],
+          note: "Objects left on the page deliberately — look at them, then remove them with { clearLast: true } (or removeObject { objectType: 'pathv2', objectId } each)."
         });
         return;
       }

@@ -192,7 +192,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `clearLayer` | clear_layer | maps | path+graphic+pathv2+wall |
 | `debugPage` | debug_page | maps | object-type census |
 | `drawLayerTest` | draw_layer_test | maps | creates `path` |
-| `pathv2ZoneProbe` | — (recon only: `src/recon/pathv2-zone-probe.ts`) | maps | **spike instrument, issue #208** — draws one `pathv2` per variant (`eli`/`rec`/`pol` × fill forms × layer) and reports what Roll20 stored, to settle whether `pathv2` should replace `path` as the zone primitive. Leaves the objects on the page on purpose; clean up with `removeObject { objectType: "pathv2" }`. See `docs/pathv2-zone-spike.md`. |
+| `pathv2ZoneProbe` | — (recon only: `src/recon/pathv2-zone-probe.ts`) | — | **spike instrument, issue #208** — draws one `pathv2` per variant (`eli`/`rec`/`pol` × fill forms × layer) and reports what Roll20 stored, to settle whether `pathv2` should replace `path` as the zone primitive. Leaves the objects on the page on purpose and stashes their ids in `state.GM_AI_Bridge.pathv2Probe`; `{ clearLast: true }` removes them. Registered by no server. Delete once the spike's Results are in. See `docs/pathv2-zone-spike.md`. |
 | `runUVTT` | run_uvtt_import | maps | drives external UniversalVTTImporter mod |
 | `listPages` | list_pages, get_current_page, setup_roll20_page, rename_roll20_page, batch_import_maps | both | page list (direct-read path) |
 | `setPageProps` | setup_roll20_page, rename_roll20_page, batch_import_maps | maps | name/size/scale/grid subset |

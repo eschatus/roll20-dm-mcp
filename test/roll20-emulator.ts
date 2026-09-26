@@ -414,9 +414,10 @@ export class Roll20Emulator {
     this.gmIds.add(playerId);
   }
 
-  /** Create a page-like id (Roll20 doesn't require a page object for our paths). */
-  createPage(name = "Test Map"): string {
-    const page = this.makeObj("page", { name });
+  /** Create a page-like id (Roll20 doesn't require a page object for our paths).
+   *  `props` sets extra page fields — e.g. `width`/`height`, which Roll20 keeps in 70px units. */
+  createPage(name = "Test Map", props: Record<string, unknown> = {}): string {
+    const page = this.makeObj("page", { name, ...props });
     return page.id;
   }
 

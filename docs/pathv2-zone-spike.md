@@ -37,7 +37,9 @@ question about which object draws the shape. Only the drawing primitive is in qu
 
 `ACTIONS["pathv2ZoneProbe"]` (relay ≥ **2.9.0**) draws one `pathv2` per variant in a
 left-to-right row on a page and reports, per variant, what it **sent** and what Roll20
-**stored**:
+**stored**. The row **wraps** onto a new row before a shape would cross the page's right
+edge (page `width` is in 70px units; an unreadable size is treated as Roll20's 25-unit
+default), and any shape that still cannot fit is flagged `offPage` in the report:
 
 | variant | shape | layer | fill | asks |
 |---|---|---|---|---|
@@ -57,21 +59,32 @@ Geometry follows the wall rule: **`pathv2` re-anchors to its first point regardl
 Two things the probe deliberately does NOT do:
 
 - It does not clean up after itself. The objects are the evidence — you have to look at them.
+- It does not score from the Mod's read-back. The Mod's `obj.get()` can echo a property the
+  persisted record never got, so the script scores Q1/Q3 from the **direct RTDB record** and
+  prints `MISMATCH` wherever the echo and the record disagree (no record → `UNKNOWN`).
 - It does not treat a non-empty read-back as proof. A sandbox that drops a write can hand
   back `""` instead of `undefined`, so the probe echoes the exact strings it wrote
   (`wrote.atCreate` / `wrote.afterSet`) and the caller compares.
 
-Offline coverage: `test/pathv2-zone-probe.test.ts` pins variant coverage, row layout,
-anchor geometry and colour derivation against the emulator. It deliberately asserts
+Offline coverage: `test/pathv2-zone-probe.test.ts` pins variant coverage, row layout and
+wrap, anchor geometry, colour derivation and the id stash against the emulator;
+`test/pathv2-zone-probe-script.test.ts` drives the recon script itself through
+`roll20.__setBridgeTestTransport` with a mocked `rtGet`, pinning RTDB-based verdicts,
+`MISMATCH`/`UNKNOWN` reporting and cleanup exit codes. It deliberately asserts
 *nothing* about Q1–Q3 — the emulator is permissive exactly where the real sandbox silently
 drops writes, which is how #162 and #164 shipped in the first place.
 
 ## Running it
 
-1. Paste `mod-scripts/ai-relay.js` into the campaign's API console and confirm the banner
+1. **Use a scratch CAMPAIGN, not a scratch page in a live one.** The probe creates shapes
+   Roll20 has never been sent from this relay (`eli`/`rec`, 8-digit fills, `fill_opacity`,
+   `name`/`gmnotes` on a `pathv2`). If one of them trips a deferred `_doSave` crash, it
+   fires asynchronously after the action returns — uncatchable — and **disables the whole
+   campaign's Mod sandbox**, not just that page. Don't find that out mid-session.
+2. Paste `mod-scripts/ai-relay.js` into that campaign's API console and confirm the banner
    reads `[GM_AI_Bridge] Relay script loaded (v2.9.0)`. (Mod deploys are human-attended and
    per-campaign — see CLAUDE.md.)
-2. Pick a scratch page with visible map art underneath, so translucency is obvious.
+3. Pick a page with visible map art underneath, so translucency is obvious.
 
 ```bash
 tsx src/recon/pathv2-zone-probe.ts <pageId> [--campaign slug] [--x N --y N] [--radius PX]
@@ -79,15 +92,23 @@ tsx src/recon/pathv2-zone-probe.ts <pageId> [--campaign slug] [--x N --y N] [--r
 
 The script prints, per variant: what was sent, what the Mod read back, and — via a direct
 RTDB read of `pathv2/page/<pageId>/<id>` — what Roll20 actually persisted with no Mod
-accessor in the way. It then scores Q1 and Q3, and tells you where on the page to look for
-Q2.
+accessor in the way. It then scores Q1 and Q3 **from that RTDB record**, and tells you where
+on the page to look for Q2.
 
-3. **Open the page and look at the row.** Record what you see under "Results" below.
-4. Clean up with the command the script prints:
+4. **Open the page and look at the row(s).** Record what you see under "Results" below.
+5. Clean up:
 
 ```bash
-tsx src/recon/pathv2-zone-probe.ts --rm <id,id,...> [--campaign slug]
+tsx src/recon/pathv2-zone-probe.ts --rm-last [--campaign slug]
 ```
+
+`--rm-last` needs no ids. The relay stashes every id it creates in
+`state.GM_AI_Bridge.pathv2Probe` (`{ pageId, ids, at }`) before it replies, so the shapes stay
+recoverable even if the result was lost or the terminal closed; the stash accumulates across
+runs until cleared. `--rm-last` removes every stashed id (ids already deleted by hand are
+reported as "already gone") and clears the stash; any id it fails to remove stays stashed for
+a retry. By hand, `--rm <id,id,...>` removes specific ids. Both exit non-zero if any removal
+failed.
 
 ## Results
 
@@ -103,6 +124,10 @@ _Not yet run. Fill in each row from a live pass, then decide._
 | Q3 carries `name`/`gmnotes` | TBD | |
 
 ## Decision
+
+**Once the Results table is filled, delete `ACTIONS["pathv2ZoneProbe"]`** (and its recon
+script and tests). It is a spike instrument, not a feature: it must not ship in relays
+indefinitely.
 
 _Pending results._ The shape of the call:
 
