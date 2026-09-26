@@ -5,15 +5,16 @@
 // `AIBRIDGE_RESULT:` whisper child — the Mod script (mod-scripts/ai-relay.js) is unchanged.
 //
 // Auth chain (see docs/roll20-realtime-protocol.md — NOTE: /editor/oauth_token returns a Roll20
-// OAuth token, NOT the Firebase custom token; we instead intercept the custom token from the
-// browser's signInWithCustomToken request body):
+// OAuth token, NOT the Firebase custom token; the custom token is intercepted from the browser's
+// signInWithCustomToken request body, by the harvester, not by this server):
 //   logged-in browser  ──intercept signInWithCustomToken request──▶  Firebase custom token
 //   custom token  ──firebase signInWithCustomToken──▶  ID token (RTDB cred, ~1h, SDK auto-refreshes)
 //
-// The session cookie is harvested ONCE via the existing browser bridge (which keeps a persistent
-// logged-in profile), cached to disk, and only re-harvested on 401. The browser is NOT held open
-// during operation — all traffic is the socket. RT is the only transport (#122/#179) — there is
-// no runtime switch for it.
+// The custom token is FURNISHED, never minted here (#177): read from ROLL20_RT_TOKEN or
+// <data dir>/roll20-rt-token.json, and a loud typed error when there is nothing usable. Whoever
+// harvests it does so in a first-party, human-attended session (the gem's Electron browser) —
+// there is no browser in this repo (#179) and no fallback that could open one. All traffic here
+// is the socket. RT is the only transport (#122/#179) — there is no runtime switch for it.
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import path from "path";
@@ -57,17 +58,25 @@ export class RtPreSendError extends Error {
   constructor(msg: string) { super(msg); this.name = "RtPreSendError"; }
 }
 const TOKEN_CACHE = dataPath("roll20-rt-token.json");
-// Firebase custom tokens are valid ~1h and re-exchangeable; cache below that so quick server
-// restarts skip the browser entirely. Only a cold start past the window touches Chromium.
+// Firebase custom tokens are valid ~1h and re-exchangeable, so a furnished one is reusable across
+// quick server restarts; past this window it is treated as spent and the caller is told to refresh
+// it. Nothing here can mint a replacement (#177) — the window governs what we ACCEPT, not a harvest.
 const TOKEN_MAX_AGE_MS = 50 * 60_000;
+// Stand-in harvest stamp for an env-furnished token that carries none (see readEnvToken).
+const PROCESS_START = Date.now();
 
-// --- Firebase custom-token harvest (browser touched once at cold start, then cached) ---
+// --- The furnished Firebase custom token (READ here, minted elsewhere) ---
 //
-// oauth_token returns a Roll20 OAuth token, NOT a Firebase custom token — the custom token is
-// minted opaquely by the editor bootstrap and handed to signInWithCustomToken. The modular SDK
-// only fires that call on a FRESH auth (otherwise it restores from IndexedDB), so to capture a
-// fresh, re-exchangeable custom token we intercept the request body — forcing a fresh sign-in by
-// clearing the firebase auth IndexedDB and reloading if the editor was already authenticated.
+// This server does NOT harvest (#177). It reads the credential from ROLL20_RT_TOKEN or from
+// <data dir>/roll20-rt-token.json, and when there is nothing usable it throws — there is no
+// browser here to reach for, and a server that could open one against a live account on its own
+// initiative is the capability the issue removed.
+//
+// For whoever does mint it (the gem's own Electron session, human present): oauth_token returns a
+// Roll20 OAuth token, NOT a Firebase custom token — the custom token is minted opaquely by the
+// editor bootstrap and handed to signInWithCustomToken, and the modular SDK only fires that call
+// on a FRESH auth (otherwise it restores from IndexedDB). Capturing a fresh, re-exchangeable one
+// therefore means intercepting that request body. See docs/roll20-realtime-protocol.md.
 
 // databaseURL is the campaign's actual Firebase RTDB instance. Roll20 shards campaigns across
 // multiple instances (roll20-99910, roll20-99922, …); a hardcoded URL only reads one shard, so
@@ -75,19 +84,54 @@ const TOKEN_MAX_AGE_MS = 50 * 60_000;
 interface TokenCache { campaignId: string; customToken: string; databaseURL: string; harvestedAt: number }
 interface RtCredential { customToken: string; databaseURL: string }
 
-function readTokenCache(): TokenCache | null {
-  try { return existsSync(TOKEN_CACHE) ? JSON.parse(readFileSync(TOKEN_CACHE, "utf-8")) : null; }
-  catch { return null; }
+// ROLL20_RT_TOKEN carries the SAME JSON object as roll20-rt-token.json — one documented shape,
+// not a second schema — for a caller that has the credential but no shared writable data dir
+// (a tsx script, a stdio maps server spawned for one job, a packaged install). It takes
+// precedence over the file: an explicitly furnished credential is the more deliberate act.
+//
+// Set-but-unusable throws rather than quietly falling through to the file. An operator who
+// exported this variable meant to use it, and a silent fallback to a different campaign's token
+// is precisely the kind of quiet divergence #177 was filed about.
+const TOKEN_ENV = "ROLL20_RT_TOKEN";
+const TOKEN_ENV_SHAPE =
+  `it takes the same {campaignId, customToken, databaseURL, harvestedAt} object as ` +
+  `roll20-rt-token.json; unset it to fall back to that file`;
+
+function readEnvToken(): TokenCache | null {
+  const raw = process.env[TOKEN_ENV]?.trim();
+  if (!raw) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); }
+  catch {
+    throw new Roll20TokenUnavailableError("(unknown)", `${TOKEN_ENV} is set but is not valid JSON — ${TOKEN_ENV_SHAPE}`);
+  }
+  const t = parsed as Partial<TokenCache> | null;
+  if (!t || typeof t !== "object" || Array.isArray(t)) {
+    throw new Roll20TokenUnavailableError("(unknown)", `${TOKEN_ENV} is set but is not a JSON object — ${TOKEN_ENV_SHAPE}`);
+  }
+  const missing = (["campaignId", "customToken", "databaseURL"] as const).filter((k) => !t[k]);
+  if (missing.length) {
+    throw new Roll20TokenUnavailableError(
+      String(t.campaignId ?? "(unknown)"),
+      `${TOKEN_ENV} is set but is missing ${missing.join("/")} — ${TOKEN_ENV_SHAPE}`,
+    );
+  }
+  return {
+    campaignId: String(t.campaignId),
+    customToken: String(t.customToken),
+    databaseURL: String(t.databaseURL),
+    // An env-furnished token may arrive without the harvest stamp (hand-assembled, or copied
+    // field-by-field). Fall back to when THIS process started rather than inventing a fresh
+    // "now" on every read, so the reported age still moves and an expiring token still says so.
+    harvestedAt: Number(t.harvestedAt) || PROCESS_START,
+  };
 }
 
-async function pollFor(get: () => string | null, ms: number): Promise<string | null> {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    const v = get();
-    if (v) return v;
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  return get();
+function readTokenCache(): TokenCache | null {
+  const env = readEnvToken();
+  if (env) return env;
+  try { return existsSync(TOKEN_CACHE) ? JSON.parse(readFileSync(TOKEN_CACHE, "utf-8")) : null; }
+  catch { return null; }
 }
 
 /**

@@ -127,8 +127,8 @@ function extractCdnUrl(body: unknown): string | null {
   return null;
 }
 
-// Attempt a direct HTTP upload using cached session credentials. Returns the CDN URL or
-// throws — caller must fall back to Playwright if this fails.
+// Upload over plain multipart HTTP with the furnished session credentials. Returns the CDN URL
+// or throws — there is no Playwright fallback behind this (#177); the caller surfaces the failure.
 async function uploadArtDirect(localAbsPath: string, cache: UploadCache): Promise<string> {
   const { readFileSync } = await import("fs");
 

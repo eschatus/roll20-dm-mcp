@@ -62,6 +62,7 @@ A `.env` file in the project root is optional — the defaults work. The setting
 | Variable | Default | What it does |
 |---|---|---|
 | `ROLL20_DATA_DIR` | `./data` | Where credentials and the campaign/character registries live. **Must be the same directory the Gem writes to** (see step 5). |
+| `ROLL20_RT_TOKEN` | *(unset)* | The realtime credential inline — the same `{campaignId, customToken, databaseURL, harvestedAt}` object as `roll20-rt-token.json`. Overrides the file; malformed or wrong-campaign fails loudly rather than falling back to it. |
 | `ROLL20_MCP_TOKEN` | auto-generated | Bearer token for the HTTP server. Written for you on first run. |
 | `ROLL20_HTTP_PORT` / `ROLL20_HTTP_HOST` | `39200` / `127.0.0.1` | Where the combat server listens. |
 | `ANTHROPIC_API_KEY` | — | Only read by the maps suite's `analyze_battlemap`. |
@@ -157,7 +158,7 @@ With the campaign's Roll20 **editor** open in Chrome/Edge:
 - **`databaseURL`** — `https://<ns>.firebaseio.com`, where `<ns>` is the `ns=` query parameter on the editor's `firebaseio.com` **websocket** (Network → WS). Equivalently, read `window.FIREBASE_ROOT` in the Console.
 - **`harvestedAt`** — `Date.now()`.
 
-Write those four fields to `<ROLL20_DATA_DIR>/roll20-rt-token.json` and start the server within the window.
+Write those four fields to `<ROLL20_DATA_DIR>/roll20-rt-token.json` and start the server within the window. Or pass the same object inline as **`ROLL20_RT_TOKEN`** — handy for a one-off script or a server started from a shell that has no writable data dir. It takes precedence over the file, and if it is set but malformed or scoped to another campaign the server says so instead of quietly reading the file; being an env var it is visible to anything that can see the process environment, so the file is still the better default for a long session.
 
 Once a connection is established it stays live for the session — the ~50-minute limit governs *making* a connection (server start, campaign switch), not holding one. A mid-session restart means a fresh harvest.
 

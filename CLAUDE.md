@@ -64,9 +64,10 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
   creation was rebuilt over RTDB (#178) and why `screenshot_roll20` left. The browser recon
   instruments live in the sibling `roll20-recon` repo; the wall-dataset harvesters live in
   `wall-seg`. Credentials are FURNISHED, never minted: the RT token is read from
-  `<data dir>/roll20-rt-token.json` (campaign-scoped) and art uploads from
-  `roll20-upload-cache.json`; both throw a typed error (`Roll20TokenUnavailableError`,
-  `Roll20UploadCredentialError`) naming what to refresh instead of harvesting. Art upload is a
+  `ROLL20_RT_TOKEN` or `<data dir>/roll20-rt-token.json` (same object either way, env wins,
+  campaign-scoped) and art uploads from `roll20-upload-cache.json`; both throw a typed error
+  (`Roll20TokenUnavailableError`, `Roll20UploadCredentialError`) naming what to refresh instead of
+  harvesting. A set-but-unusable `ROLL20_RT_TOKEN` throws rather than falling back to the file. Art upload is a
   plain multipart POST — browserless, credential furnished. Harvesting happens in the gem's own
   logged-in session, where a human is present. The legacy browser→chat relay is DELETED (#122/#179) —
   RT is the only transport, and an RT failure is a loud hard stop, never a quiet fallback. Harvest
