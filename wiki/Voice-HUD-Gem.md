@@ -28,15 +28,20 @@ The Gem's **Connect Roll20** button opens a login window, you sign in as normal,
 
 | File | What it's for | How long it lasts |
 |---|---|---|
-| `roll20-rt-token.json` | Everything. **Campaign-scoped** — a token for one game cannot read another. | ~50 minutes from harvest |
+| `roll20-rt-token.json` | Everything. **Campaign-scoped** — a token for one game cannot read another. | ~1 hour from harvest |
 | `roll20-upload-cache.json` | Uploading your own battlemap art | 8 hours |
 
 Practical consequences:
 
 - **Connect the Gem to the campaign you're about to run, before you press Connect.** Switching campaigns means
   reconnecting.
-- **Reconnect at the start of a session.** The ~50-minute limit governs *making* a connection, not holding one —
+- **Reconnect at the start of a session.** The ~1-hour limit governs *making* a connection, not holding one —
   once the server is connected it stays live all evening — but a restart mid-session needs a fresh harvest.
+- **A long-running Gem does not keep the token file warm.** The Gem harvests reactively, when its own server
+  hits a token failure — and a connected server never hits one. So after an hour the Gem still reports
+  `health: ok` on its live socket while the file on disk is spent, and anything *else* pointed at that data
+  dir (the `roll20-dm-maps` stdio server, a script) cannot sign in. `transport_status` now reports
+  `rtToken: {ageMinutes, stale, note}` so you can see this coming; pressing **Connect Roll20** clears it (#216).
 - **The Gem and the server must share one data directory.** `DMW_DATA_DIR` (the Gem, `%APPDATA%\DM Whisper` on
   Windows by default) and `ROLL20_DATA_DIR` (the server, `./data` by default) have to resolve to the same folder.
   Otherwise the Gem harvests into a directory the server never reads — and the two also keep separate campaign

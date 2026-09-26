@@ -58,12 +58,20 @@ export class RtPreSendError extends Error {
   constructor(msg: string) { super(msg); this.name = "RtPreSendError"; }
 }
 const TOKEN_CACHE = dataPath("roll20-rt-token.json");
-// Firebase custom tokens are valid ~1h and re-exchangeable, so a furnished one is reusable across
-// quick server restarts; past this window it is treated as spent and the caller is told to refresh
-// it. Nothing here can mint a replacement (#177) — the window governs what we ACCEPT, not a harvest.
-const TOKEN_MAX_AGE_MS = 50 * 60_000;
-// Stand-in harvest stamp for an env-furnished token that carries none (see readEnvToken).
-const PROCESS_START = Date.now();
+// A Firebase custom token is valid ~1h from mint and stays re-exchangeable until then.
+// `harvestedAt` is stamped at or after the mint, so the real deadline is at LEAST an hour past it.
+//
+// The age is ADVISORY — it is NOT a gate (#216). It used to be: a cached token older than 50
+// minutes was refused without ever being offered to Firebase. That locked out every other reader
+// of the data dir, because only the gem writes this file and it only rewrites it on a full
+// re-harvest, which it only performs when its OWN server hits a token failure. A gem holding a
+// live socket never fails, so the file never moves, so a second process (roll20-dm-maps over
+// stdio, a tsx script) died on local bookkeeping while the credential on disk was still good.
+// Firebase is the authority on whether a token is spent: offer it, and report what it says.
+const TOKEN_LIFETIME_MS = 60 * 60_000;
+// How old the file has to be before `transport_status` calls it stale. Short of the lifetime, so
+// the warning lands while there is still time to reconnect rather than after the fact.
+const TOKEN_STALE_MS = 50 * 60_000;
 
 // --- The furnished Firebase custom token (READ here, minted elsewhere) ---
 //
@@ -82,7 +90,7 @@ const PROCESS_START = Date.now();
 // multiple instances (roll20-99910, roll20-99922, …); a hardcoded URL only reads one shard, so
 // campaigns on another shard read empty and silently fall back to the Mod. Captured at harvest.
 interface TokenCache { campaignId: string; customToken: string; databaseURL: string; harvestedAt: number }
-interface RtCredential { customToken: string; databaseURL: string }
+interface RtCredential { customToken: string; databaseURL: string; harvestedAt: number }
 
 // ROLL20_RT_TOKEN carries the SAME JSON object as roll20-rt-token.json — one documented shape,
 // not a second schema — for a caller that has the credential but no shared writable data dir
@@ -121,10 +129,11 @@ function readEnvToken(): TokenCache | null {
     );
   }
   // An env-furnished token may arrive without the harvest stamp (hand-assembled, or copied
-  // field-by-field). Fall back to when THIS process started rather than inventing a fresh
-  // "now" on every read, so the reported age still moves and an expiring token still says so.
-  // A stamp that IS present must be a finite number; anything else is refused, not repaired.
-  let harvestedAt = PROCESS_START;
+  // field-by-field). Record that as 0 — "of unknown age", the same convention getRtTokenStatus
+  // applies to the file (#216) — rather than inventing a stamp: the age is advisory, and a made-up
+  // one would report a token of unknown provenance as fresh. A stamp that IS present must be a
+  // finite number; anything else is refused, not repaired.
+  let harvestedAt = 0;
   if (t.harvestedAt !== undefined && t.harvestedAt !== null) {
     if (typeof t.harvestedAt !== "number" || !Number.isFinite(t.harvestedAt)) {
       throw new Roll20TokenUnavailableError(
@@ -170,16 +179,14 @@ export class Roll20TokenUnavailableError extends Error {
   }
 }
 
-async function getCustomToken(campaignId: string, forceFresh = false): Promise<RtCredential> {
-  if (!forceFresh) {
-    const c = readTokenCache();
-    // Require databaseURL too: a pre-shard-fix cache entry lacks it, so treat that as a miss and
-    // re-harvest to capture the namespace (otherwise we'd reconnect to the wrong shard).
-    if (c && c.campaignId === campaignId && c.databaseURL && Date.now() - c.harvestedAt < TOKEN_MAX_AGE_MS) {
-      return { customToken: c.customToken, databaseURL: c.databaseURL };
-    }
-  }
-  // No harvest fallback by design (#177): read it or fail loudly.
+function tokenAgeMinutes(harvestedAt: number): number | null {
+  return harvestedAt > 0 ? Math.round((Date.now() - harvestedAt) / 60_000) : null;
+}
+
+// Read the furnished credential. No harvest fallback by design (#177): read it or fail loudly.
+// Only structural problems fail here — a missing file, the wrong campaign, a pre-shard-fix entry
+// with no databaseURL. Age does not (#216); the exchange in connect() settles that.
+function getCustomToken(campaignId: string): RtCredential {
   const c = readTokenCache();
   if (!c) throw new Roll20TokenUnavailableError(campaignId, "no token file — nothing has harvested one");
   if (c.campaignId !== campaignId) {
@@ -189,10 +196,74 @@ async function getCustomToken(campaignId: string, forceFresh = false): Promise<R
     );
   }
   if (!c.databaseURL) throw new Roll20TokenUnavailableError(campaignId, "cached token predates shard capture and has no databaseURL");
-  throw new Roll20TokenUnavailableError(
+  if (!c.customToken) throw new Roll20TokenUnavailableError(campaignId, "token file carries no customToken");
+  return { customToken: c.customToken, databaseURL: c.databaseURL, harvestedAt: Number(c.harvestedAt) || 0 };
+}
+
+// Test seam: the pre-flight credential read on its own, without the Firebase exchange that
+// follows it — so the age-is-advisory rule (#216) is provable without a network round trip.
+export const __readRtCredentialForTest = getCustomToken;
+
+/**
+ * State of the on-disk RT credential, for `transport_status` (#216).
+ *
+ * The gem is the sole harvester and only rewrites the token file on a full re-harvest, so a
+ * long-running gem reports perfect health on its own live socket while the file every OTHER
+ * reader of the data dir shares has gone cold. Nothing used to say so — the error surfaced only
+ * in the locked-out process, pointing the DM at the wrong component. This is that signal.
+ *
+ * `activeCampaignId` is the Roll20 campaign this server would connect to. Tokens are
+ * campaign-scoped, so a perfectly fresh token for a DIFFERENT campaign is as useless as an
+ * expired one — getCustomToken refuses it on every connect — and must not read as healthy.
+ * Pass null when no campaign is active; the mismatch check is then skipped (nothing to compare).
+ */
+export function getRtTokenStatus(activeCampaignId: string | null): {
+  present: boolean;
+  campaignId: string | null;
+  activeCampaignId: string | null;
+  campaignMismatch: boolean;
+  ageMinutes: number | null;
+  stale: boolean;
+  note?: string;
+} {
+  const c = readTokenCache();
+  if (!c) {
+    return {
+      present: false, campaignId: null, activeCampaignId, campaignMismatch: false, ageMinutes: null, stale: true,
+      note: `No ${path.basename(TOKEN_CACHE)} in the data dir — reconnect Roll20 in the gem to harvest one.`,
+    };
+  }
+  const campaignId = c.campaignId ?? null;
+  const campaignMismatch = activeCampaignId !== null && campaignId !== activeCampaignId;
+  const harvestedAt = Number(c.harvestedAt) || 0;
+  const ageMinutes = tokenAgeMinutes(harvestedAt);
+  const stale = harvestedAt <= 0 || Date.now() - harvestedAt >= TOKEN_STALE_MS;
+  const notes: string[] = [];
+  if (campaignMismatch) {
+    notes.push(
+      `The on-disk Roll20 token belongs to campaign ${campaignId ?? "(none recorded)"} but the active ` +
+      `campaign is ${activeCampaignId}; tokens are campaign-scoped, so every connect for the active ` +
+      `campaign will be refused. Reconnect Roll20 in the gem on the active campaign to harvest a matching one.`,
+    );
+  }
+  if (stale) {
+    const ageText = ageMinutes === null ? "of unknown age" : `${ageMinutes}m old`;
+    notes.push(
+      `The on-disk Roll20 token is ${ageText} and custom tokens last ~` +
+      `${Math.round(TOKEN_LIFETIME_MS / 60_000)}m. An already-connected server keeps working off its ` +
+      `live socket, but any OTHER process sharing this data dir — roll20-dm-maps over stdio, a CLI ` +
+      `script — cannot sign in once it expires. Reconnect Roll20 in the gem to refresh the file.`,
+    );
+  }
+  return {
+    present: true,
     campaignId,
-    `cached token is ${Math.round((Date.now() - c.harvestedAt) / 60000)}m old (max ${Math.round(TOKEN_MAX_AGE_MS / 60000)}m)`,
-  );
+    activeCampaignId,
+    campaignMismatch,
+    ageMinutes,
+    stale,
+    note: notes.length ? notes.join(" ") : undefined,
+  };
 }
 
 // --- Connection (singleton per campaign) ---
@@ -384,6 +455,10 @@ export const __handleChatChildForTest = handleChatChild;
 // arriving on /chat actually RESOLVES it. Without this the gate in tryResolveContent had no test
 // that ran it — the marker tests all called parseAibridge directly, past the gate, which is how
 // #213 shipped with a green suite.
+// Test seam: the sign-in step on its own, so the auth-rejection vs network-error split in
+// connect()'s catch is provable with a mocked firebase/auth (test/rt-token-connect.test.ts).
+export async function __connectForTest(): Promise<RtConn> { return connect(); }
+
 export function __seedPendingRelayForTest(nonce: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { pending.delete(nonce); reject(new Error("test pending timeout")); }, 5000);
@@ -395,23 +470,29 @@ export function __seedPendingRelayForTest(nonce: number): Promise<unknown> {
 async function connect(): Promise<RtConn> {
   const { roll20CampaignId } = getActiveCampaign();
 
-  // Sign in with the cached custom token; if it's stale/invalid, re-harvest fresh and retry once.
-  let app!: FirebaseApp;
-  let cred!: Awaited<ReturnType<typeof signInWithCustomToken>>;
-  let databaseURL = FIREBASE_CONFIG.databaseURL;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const harvested = await getCustomToken(roll20CampaignId, attempt > 0);
-    databaseURL = harvested.databaseURL;
-    app = initializeApp(FIREBASE_CONFIG, `roll20-rt-${roll20CampaignId}-${Date.now()}`);
-    try {
-      cred = await signInWithCustomToken(getAuth(app), harvested.customToken);
-      break;
-    } catch (err) {
-      await deleteApp(app).catch(() => {});
-      const code = (err as { code?: string })?.code || "";
-      if (attempt === 0 && /invalid-custom-token|custom-token|invalid-credential/.test(code)) continue;
-      throw err;
+  // Sign in with the furnished custom token. There is no retry: the old second attempt re-read
+  // the very same file (the browser re-harvest it was written for left with #177/#179), so it
+  // could only fail identically. Firebase — not a local clock check — decides whether the token
+  // is spent (#216); a rejection is re-thrown as the typed error naming the code AND the age, so
+  // the reason on screen is the real one and it points at the gem's Connect Roll20.
+  const harvested = getCustomToken(roll20CampaignId);
+  const databaseURL = harvested.databaseURL;
+  const app = initializeApp(FIREBASE_CONFIG, `roll20-rt-${roll20CampaignId}-${Date.now()}`);
+  let cred: Awaited<ReturnType<typeof signInWithCustomToken>>;
+  try {
+    cred = await signInWithCustomToken(getAuth(app), harvested.customToken);
+  } catch (err) {
+    await deleteApp(app).catch(() => {});
+    const code = (err as { code?: string })?.code || "";
+    if (/custom-token|invalid-credential|token-expired/.test(code)) {
+      const age = tokenAgeMinutes(harvested.harvestedAt);
+      throw new Roll20TokenUnavailableError(
+        roll20CampaignId,
+        `Firebase rejected the cached token (${code})` +
+        (age === null ? "" : `; it was harvested ${age}m ago`),
+      );
     }
+    throw err;
   }
 
   const tokenResult = await cred.user.getIdTokenResult();
