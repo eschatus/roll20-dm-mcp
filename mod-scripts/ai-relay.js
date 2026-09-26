@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.8.0";
+var AI_RELAY_VERSION = "2.9.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -2266,6 +2266,52 @@ ACTIONS["getCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) 
         return;
       }
       };
+ACTIONS["getSheetDefaultValues"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // The SHEET's default for a field, as opposed to a character's live value (#209).
+        // getCharacterAttributes cannot tell "never set" from "set to exactly the default" —
+        // an absent `attribute` object and one holding the default both read the same once a
+        // sheet worker has materialised it. This is the other half of that comparison, so a
+        // stat-block writer can skip fields it would only be rewriting with the default.
+        //
+        // getSheetDefaultValue(name, valtype?) is a GLOBAL keyed on the campaign's sheet, not on
+        // a character — there is no charId here by design.
+        if (!Array.isArray(args.names) || args.names.length === 0) {
+          throw new Error("getSheetDefaultValues requires names: [string, ...]");
+        }
+        let sdCtx = sheetContext();
+        if (typeof getSheetDefaultValue !== "function") {
+          throw new Error("getSheetDefaultValue is not available in this Mod sandbox (sandbox " +
+            (sdCtx.sandbox || "1.0") + ", sheet " + (sdCtx.sheetName || "?") + ")");
+        }
+        let sdSheet = { sandbox: sdCtx.sandbox, sheetName: sdCtx.sheetName, beacon: sdCtx.beacon };
+        let sdNames = args.names.map(String);
+        let sdRaw = sdNames.map(function (n) {
+          return args.valtype ? getSheetDefaultValue(n, args.valtype) : getSheetDefaultValue(n);
+        });
+        // Roll20 documents the sheet-aware getters (getSheetItem/setSheetItem) as async but does
+        // NOT say either way for this one, and the two shapes are indistinguishable from the
+        // outside. Resolve thenables rather than serialising a Promise as `{}` and calling it the
+        // sheet's default. Same async-writeResult pattern the dice path already uses.
+        let sdDeferred = sdRaw.some(function (v) { return v && typeof v.then === "function"; });
+        let sdPack = function (values) {
+          let defaults = {}, missing = [];
+          sdNames.forEach(function (n, i) {
+            let v = values[i];
+            if (v === undefined || v === null) { missing.push(n); return; }
+            defaults[n] = v;
+          });
+          return { defaults: defaults, missing: missing, valtype: args.valtype || null, sheet: sdSheet };
+        };
+        if (!sdDeferred) { writeResult(nonce, sdPack(sdRaw)); return; }
+        Promise.all(sdRaw).then(function (values) {
+          writeResult(nonce, sdPack(values));
+        }, function (err) {
+          writeResult(nonce, null, "getSheetDefaultValue rejected: " + (err && err.message ? err.message : String(err)));
+        });
+        return;
+      }
+      };
 ACTIONS["getRepeatingSection"] = function (args, msg, nonce, senderPlayerId) {
         {
         // Returns all rows of a repeating section from a character sheet.
@@ -2563,6 +2609,44 @@ ACTIONS["spawnFxBetweenPoints"] = function (args, msg, nonce, senderPlayerId) {
         return;
       }
       };
+// Precise z-order: put an object IMMEDIATELY above/below another one on the same layer.
+// toFront/toBack can only go all-the-way-front / all-the-way-back, so "slide this bloodstain just
+// under that token" was not expressible before (#209).
+//
+// SANDBOX v1.5 ONLY. On v1.0 the globals simply do not exist, so refuse with the campaign's
+// sandbox version named instead of letting a bare ReferenceError surface as "toAbove is not
+// defined" — the DM's fix is a per-campaign sandbox setting, and the message has to say so.
+// `typeof` on an undeclared identifier is safe; the && short-circuit keeps us from evaluating the
+// identifier itself when it is missing.
+function reorderRelative(which, args) {
+  var available = which === "toAbove" ? typeof toAbove === "function" : typeof toBelow === "function";
+  if (!available) {
+    var ctx = sheetContext();
+    throw new Error(which + " is not available on Mod Script Sandbox " + (ctx.sandbox || "1.0") +
+      " (it is v1.5 only). Switch the campaign's sandbox version to 1.5, or use " +
+      (which === "toAbove" ? "toFront" : "toBack") + " instead.");
+  }
+  var objType = args.objectType || "graphic";
+  var tgtType = args.targetType || objType;
+  var obj = getObj(objType, args.objectId);
+  if (!obj) throw new Error("Object not found: " + args.objectId);
+  var target = getObj(tgtType, args.targetId);
+  if (!target) throw new Error("Target object not found: " + args.targetId);
+  if (args.objectId === args.targetId) throw new Error("Cannot reorder an object relative to itself: " + args.objectId);
+  // Roll20 orders z WITHIN a layer, so a cross-layer pair has no defined answer and the global
+  // would silently do nothing. Say which layers, rather than report ok:true for a no-op.
+  var objLayer = obj.get("layer");
+  var tgtLayer = target.get("layer");
+  if (objLayer && tgtLayer && objLayer !== tgtLayer) {
+    throw new Error(which + " needs both objects on the same layer: " + args.objectId + " is on '" +
+      objLayer + "', " + args.targetId + " is on '" + tgtLayer + "'");
+  }
+  // Called by name, not through a captured reference — a Roll20 global is free to care about its
+  // own `this`, and there is no reason to find out the hard way.
+  if (which === "toAbove") { toAbove(obj, target); } else { toBelow(obj, target); }
+  return { ok: true, objectId: args.objectId, targetId: args.targetId, layer: objLayer || null };
+}
+
 ACTIONS["toFront"] = function (args, msg, nonce, senderPlayerId) {
         {
         let frontObj = getObj(args.objectType || "graphic", args.objectId);
@@ -2578,6 +2662,18 @@ ACTIONS["toBack"] = function (args, msg, nonce, senderPlayerId) {
         if (!backObj) throw new Error("Object not found: " + args.objectId);
         toBack(backObj);
         writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["toAbove"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        writeResult(nonce, reorderRelative("toAbove", args));
+        return;
+      }
+      };
+ACTIONS["toBelow"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        writeResult(nonce, reorderRelative("toBelow", args));
         return;
       }
       };

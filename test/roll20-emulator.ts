@@ -65,6 +65,18 @@ export interface R20Obj {
 export interface EmulatorOptions {
   seed?: number;
   gmPlayerId?: string;
+  /**
+   * Install the Mod Script Sandbox **v1.5**-only globals (`toAbove`/`toBelow`). Default false =
+   * a v1.0 sandbox, where those identifiers do not exist at all — which is the case the relay's
+   * typeof guard has to survive, so it must be the default here too.
+   */
+  sandbox15?: boolean;
+  /**
+   * Backing map for the `getSheetDefaultValue(name, valtype?)` global. Omit to model a sandbox/
+   * sheet that does not expose the function. A `valtype` is looked up as "name:valtype" first,
+   * then bare "name".
+   */
+  sheetDefaults?: Record<string, unknown>;
 }
 
 export class Roll20Emulator {
@@ -76,6 +88,15 @@ export class Roll20Emulator {
   private gmIds = new Set<string>();
   private rng: () => number;
   private vmRng: () => number;
+  private sandbox15: boolean;
+  private sheetDefaults?: Record<string, unknown>;
+
+  /**
+   * Every relative-z-order call the relay made, in order. The emulator does not model z-order (as
+   * with toFront/toBack), so this is what a test asserts on: that the relay resolved both objects
+   * and handed the right PAIR to the right v1.5 global.
+   */
+  readonly zOrderCalls: Array<{ fn: "toAbove" | "toBelow"; objectId: string; targetId: string }> = [];
 
   readonly chatLog: Array<{ who: string; content: string; options?: unknown }> = [];
   readonly logs: unknown[][] = [];
@@ -90,6 +111,8 @@ export class Roll20Emulator {
     this.rng = makeRng(seed);
     this.vmRng = makeRng(seed ^ 0x9e3779b9);
     this.gmPlayerId = opts.gmPlayerId ?? "gm-player-1";
+    this.sandbox15 = opts.sandbox15 ?? false;
+    this.sheetDefaults = opts.sheetDefaults;
     this.gmIds.add(this.gmPlayerId);
     this.campaignModel = this.makeObj("campaign", { turnorder: "", playerpageid: "" }, "campaign-singleton");
     // The campaign singleton is not part of findObjs results.
@@ -354,6 +377,25 @@ export class Roll20Emulator {
       setTimeout,
       clearTimeout,
     };
+    // v1.5-only globals. On v1.0 they are ABSENT, not stubs — the relay's `typeof toAbove ===
+    // "function"` guard is only exercised if the identifier is genuinely undeclared.
+    if (this.sandbox15) {
+      sandbox.toAbove = (obj: R20Obj, target: R20Obj) => {
+        this.zOrderCalls.push({ fn: "toAbove", objectId: obj.id, targetId: target.id });
+      };
+      sandbox.toBelow = (obj: R20Obj, target: R20Obj) => {
+        this.zOrderCalls.push({ fn: "toBelow", objectId: obj.id, targetId: target.id });
+      };
+    }
+    if (this.sheetDefaults) {
+      const defaults = this.sheetDefaults;
+      sandbox.getSheetDefaultValue = (name: string, valtype?: string): unknown => {
+        const keyed = valtype ? `${name}:${valtype}` : undefined;
+        if (keyed !== undefined && keyed in defaults) return defaults[keyed];
+        return defaults[name];
+      };
+    }
+
     vm.createContext(sandbox);
     vm.runInContext(code, sandbox, { filename: "ai-relay.js" });
     this.emit("ready");
@@ -386,6 +428,24 @@ export class Roll20Emulator {
     this.resultByNonce.delete(nonce);
     const content = "!ai-relay " + JSON.stringify({ ...cmd, nonce });
     this.dispatchChat(content, { playerid: opts.playerid });
+    const result = this.resultByNonce.get(nonce);
+    if (!result) {
+      throw new Error(`Relay produced no result for action '${cmd.action}' (nonce ${nonce})`);
+    }
+    if (result.error) throw new Error(`Relay error for '${cmd.action}': ${result.error}`);
+    return result.data as T;
+  }
+
+  /**
+   * Async twin of relay(), for the actions that resolve a Promise before writing their result
+   * (`getSheetDefaultValues` when the sheet's own getter turns out to be async — Roll20 does not
+   * document which). Dispatches, lets the microtask queue drain, then reads the same nonce.
+   */
+  async relayAsync<T = unknown>(cmd: Record<string, unknown>, opts: { playerid?: string } = {}): Promise<T> {
+    const nonce = ++this.nonceCounter;
+    this.resultByNonce.delete(nonce);
+    this.dispatchChat("!ai-relay " + JSON.stringify({ ...cmd, nonce }), { playerid: opts.playerid });
+    await new Promise((resolve) => setImmediate(resolve));
     const result = this.resultByNonce.get(nonce);
     if (!result) {
       throw new Error(`Relay produced no result for action '${cmd.action}' (nonce ${nonce})`);

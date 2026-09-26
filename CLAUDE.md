@@ -167,6 +167,12 @@ moved to beyond-mcp with the code.)
   fires-on-the-API reason. `createCharacter`'s relay action now derives `<ability>_mod` from the
   raw score at creation time (an explicitly-passed `_mod` is left untouched) — see
   `ACTIONS["createCharacter"]` in `ai-relay.js`.
+- **When the sandbox dies, read the Mod console callstack FIRST.** Both crash classes above (an
+  `undefined`/`NaN` value reaching `t.set()`, and `@{`/`[[` echoed back through chat) presented as
+  nothing but a dead sandbox, and cost days each. That is no longer the only symptom available: on
+  v1.5 `log` error messages carry a context object (e.g. `[Roll20 character -id]`), and the April
+  2026 Mod server release added per-script callstacks with script name, tab number, line and column,
+  plus attribution for "Possible Infinite Loop Detected" (#209).
 
 ## Where things live
 
