@@ -131,3 +131,36 @@ describe("create_npc_token / create_monster_token — caller-supplied stats", ()
     expect(Number(props(id).top)).toBe(4 * 70);
   });
 });
+
+// ── HP numbers hidden from players by default (#204) ──────────────────────────
+// "Never put HP numbers in front of players" was a narration rule the model had to
+// remember on every turn. bar1_num_permission makes it a property of the token: the
+// bar still renders for the table, the digits don't.
+describe("create_npc_token / create_monster_token — bar1_num_permission default", () => {
+  const numPermission = (id: string) => emu.getObj("graphic", id)!.get("bar1_num_permission");
+
+  it("hides the HP numbers from players by default, and says so", async () => {
+    const { text } = await callTool("create_npc_token", { name: "Hidden Ogre", hp: 59, pageId });
+    expect(numPermission(idFrom(text))).toBe("hidden");
+    expect(text).toMatch(/HP numbers hidden from players/);
+  });
+
+  it("shows them when the DM explicitly asks", async () => {
+    const { text } = await callTool("create_npc_token", {
+      name: "Open Book", hp: 12, pageId, showHpNumbersToPlayers: true,
+    });
+    expect(numPermission(idFrom(text))).toBe("everyone");
+    expect(text).toMatch(/HP numbers visible to players/);
+  });
+
+  it("create_monster_token has the same default", async () => {
+    const { text } = await callTool("create_monster_token", { monsterName: "Owlbear", hp: 59, pageId });
+    expect(numPermission(idFrom(text))).toBe("hidden");
+  });
+
+  it("leaves a PC token alone — a player's own numbers are theirs to read", async () => {
+    const { text } = await callTool("create_pc_token", { name: "Numeric", hp: 30, pageId, controlledBy: "player-n" });
+    const v = numPermission(idFrom(text));
+    expect(v === undefined || v === "").toBe(true);
+  });
+});

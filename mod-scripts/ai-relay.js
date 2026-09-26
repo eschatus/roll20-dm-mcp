@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.8.0";
+var AI_RELAY_VERSION = "2.9.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -450,21 +450,37 @@ function setDefaultTokenForChar(t, args) {
   var ch = getObj("character", charId);
   if (!ch) throw new Error("Character not found: " + charId);
   if (!t.get("represents")) t.set("represents", charId); // keep the link bidirectional
+  // A key missing from this list is a property SILENTLY LOST when the sheet's default token is
+  // applied — the same way the aura shape was lost before "aura1_options" was added here. Any
+  // property a creation path or a tool sets on a token belongs here.
   var KEYS = [
     "name", "imgsrc", "represents", "controlledby",
     "bar1_link", "bar2_link", "bar3_link",
     "bar1_value", "bar1_max", "bar2_value", "bar2_max", "bar3_value", "bar3_max",
+    "bar1_num_permission", "bar2_num_permission", "bar3_num_permission",
+    "bar_location", "compact_bar",
     "width", "height", "rotation", "statusmarkers", "tint_color",
     "aura1_radius", "aura1_color", "aura1_square", "aura1_options", "showplayers_aura1",
     "aura2_radius", "aura2_color", "aura2_square", "aura2_options", "showplayers_aura2",
     "showname", "showplayers_name", "showplayers_bar1", "showplayers_bar2", "showplayers_bar3",
     "light_radius", "light_dimradius", "light_otherplayers", "light_hassight",
-    "light_angle", "light_losangle", "sides", "currentside",
+    "light_angle", "light_losangle", "night_vision_effect",
+    "lockMovement", "renderAsScenery", "baseOpacity", "fadeOnOverlap", "fadeOpacity",
+    // camelCase, per the Objects doc — the lowercase "currentside" this list used to carry
+    // reads back undefined and was therefore never copied at all.
+    "sides", "currentSide",
   ];
+  // "" is a MEANINGFUL value for the bar-number permissions — it means "only players who can
+  // EDIT this token may read the number", which is a stricter setting than "everyone" and not
+  // the same as unset. Dropping it with the other empties would quietly loosen the default
+  // token. Everywhere else "" is genuinely "nothing to copy" (no name, no image, no tint).
+  var EMPTY_MEANINGFUL = ["bar1_num_permission", "bar2_num_permission", "bar3_num_permission"];
   var props = {};
   KEYS.forEach(function (k) {
     var v = t.get(k);
-    if (v !== undefined && v !== null && v !== "") props[k] = v;
+    if (v === undefined || v === null) return;
+    if (v === "" && EMPTY_MEANINGFUL.indexOf(k) === -1) return;
+    props[k] = v;
   });
   ch.set("defaulttoken", JSON.stringify(props));
   return { ok: true, charId: charId, character: ch.get("name"), fields: Object.keys(props).length };

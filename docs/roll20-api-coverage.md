@@ -37,10 +37,10 @@ can be moved back to 1.0 by hand. `ACTIONS["ping"]` echoes `Campaign().sandboxVe
 surfaces them under `sandbox` — that is how you find out which one a campaign is on. A `sandbox` of
 `null` there means the *relay* is older than 2.7.0, not that the sandbox is old.
 
-Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.6). Relay version string: `2.8.0`
+Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.6). Relay version string: `2.9.0`
 (reported by the `ping` action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
-(`[GM_AI_Bridge] Relay script loaded (v2.8.0)`), not the save.
+(`[GM_AI_Bridge] Relay script loaded (v2.9.0)`), not the save.
 
 ---
 
@@ -131,7 +131,8 @@ Persistent storage: the global **`state`** object (survives sandbox restarts).
 - `spawnFxBetweenPoints` beam types point at the end point (an angle bug is fixed).
 - `log` error messages carry a context object; the Apr 2026 server release added per-script
   callstacks with script name + line and attributed "Possible Infinite Loop Detected" reports.
-- Graphic `currentSide` — setting it auto-updates `imgsrc` for rollable tokens.
+- Graphic `currentSide` — setting it auto-updates `imgsrc` for rollable tokens. Exposed through
+  `set_token_props` as of #204; the write is harmless on v1.0, it just does nothing there.
 
 ### Campaign() direct properties (NOT behind `.get()`)
 `sandboxVersion` (`"1.0"`/`"1.5"`) · `nodeVersion` — both sandboxes.
@@ -219,7 +220,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `sendPing` | send_ping | maps | "look here" / pull player view to a spot |
 | `spawnFx` / `spawnFxBetweenPoints` | spawn_fx, spawn_fx_between_points | maps | explosions, beams, spell nova |
 | `toFront` / `toBack` | to_front, to_back | maps | z-order |
-| `ping` | (health check) | — | reports relay version (2.8.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
+| `ping` | (health check) | — | reports relay version (2.9.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
 | **event** `chat:message` | (passive) | — | buffers chat, parses `!dm`. Player `!`-commands are **forwarded, not answered** — `forwardChat` broadcasts them as an SSE `chat-message`; the gem decides what to do. |
 | **event** `change:campaign:turnorder` | (passive) | — | turn/round announcements |
 | **event** `add:graphic` | (passive) | — | auto-rolls initiative for NPC tokens dropped during combat |
@@ -268,6 +269,15 @@ Legend: ✅ exposed · 🟡 partial · ❌ API-reachable but **not exposed** (ad
 
 ### Strong (✅)
 - **Tokens/graphics** — full CRUD; `setTokenProps` passes arbitrary props (bars, auras, tint, light, position, layer, gmnotes…).
+  `set_token_props` validates the presentation/behaviour properties added in #204:
+  `bar{1,2,3}_num_permission` (`everyone` | `hidden` | `""` = editors only), `lockMovement`,
+  `renderAsScenery`, `baseOpacity` / `fadeOnOverlap` / `fadeOpacity`, `night_vision_effect`,
+  `bar_location` / `compact_bar`, `currentSide` (v1.5), `interactionManualReset` /
+  `interactionTriggered`. `create_npc_token` / `create_monster_token` create tokens with
+  `bar1_num_permission: "hidden"`, which turns "never put HP numbers in front of players"
+  from a narration rule into a property of the token; PC tokens are left alone.
+  **Anything a creation path sets must also appear in `setDefaultTokenForChar`'s KEYS list**
+  in `ai-relay.js`, or it is silently lost when the sheet's default token is applied.
 - **HP & conditions** — token bars + status markers + char `active_conditions`; `batch_exec` for bulk; three-way PC / NPC / sidekick routing.
 - **Initiative / turn order** — read, merge, advance, real-dice roll, auto announcements, round detection, epithets, per-combatant `entries[{match,bonus,hp}]` overrides.
 - **Dice** — real Roll20 engine via inline rolls, plus `post_roll_as_character` for results rolled elsewhere.

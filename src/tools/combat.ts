@@ -13,7 +13,7 @@ import {
   type TurnEntry, type BatchResult,
   text, fail, json, num, indexBatchResults, coerceStringArray, coerceBoolean, coerceObjectArray,
   tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId, renderRollCard,
-  renderMobPlanCard,
+  renderMobPlanCard, NUM_PERMISSION,
 } from "./combatHelpers.js";
 import { normalizeNameForMatch, isPunctuationOnlyInput } from "./nameMatch.js";
 
@@ -1025,7 +1025,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "set_token_props",
-    "Set one or more properties on a Roll20 token — name, position, aura, tint, bars, layer, etc. Use tint_color for colored overlays. Target with characterName (or tokenId) — same as every other token-mutation tool. For a spell EMANATION (Spirit Guardians, Aura of Protection — anything that moves with the creature) prefer set_token_aura: it is one call, defaults to player-visible, and takes the aura shape. The raw aura fields here stay for fine-grained edits.",
+    "Set one or more properties on a Roll20 token — name, position, aura, tint, bars, layer, bar-number visibility, movement lock, opacity/scenery flags, etc. Use tint_color for colored overlays. Use bar1_num_permission to control whether the table can read a token's HP digits, lockMovement to pin a token, renderAsScenery for map dressing that should not show through walls, and currentSide to flip a rollable token between its faces (sandbox v1.5 only). Target with characterName (or tokenId) — same as every other token-mutation tool. For a spell EMANATION (Spirit Guardians, Aura of Protection — anything that moves with the creature) prefer set_token_aura: it is one call, defaults to player-visible, and takes the aura shape. The raw aura fields here stay for fine-grained edits.",
     {
       characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Thorne'."),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
@@ -1053,6 +1053,20 @@ export function registerCombatTools(server: McpServer): void {
       bar3_max: z.number().optional(),
       controlledby: z.string().optional(),
       showname: z.boolean().optional(),
+      bar1_num_permission: NUM_PERMISSION.optional().describe("Who may read the NUMBER in bar 1 (the bar itself is governed by showplayers_bar1). 'everyone' = the table sees the digits; 'hidden' = nobody but the GM does; '' = only players who can EDIT the token. NPC tokens are created 'hidden', which is the narration rule ('never put HP numbers in front of players') as a property of the token rather than something the DM has to remember each turn."),
+      bar2_num_permission: NUM_PERMISSION.optional().describe("Who may read the number in bar 2 — see bar1_num_permission."),
+      bar3_num_permission: NUM_PERMISSION.optional().describe("Who may read the number in bar 3 — see bar1_num_permission."),
+      lockMovement: z.boolean().optional().describe("Pin the token in place — it can no longer be dragged on the map. Use for scenery and for a downed token that shouldn't get shoved around. Note the camelCase; Roll20 spells this one differently from the snake_case bar/aura fields."),
+      renderAsScenery: z.boolean().optional().describe("Treat the object as scenery: it is obscured by dynamic lighting and the Hide/Reveal mask, i.e. NOT visible through walls. The correct flag for map dressing placed on the object layer."),
+      baseOpacity: z.number().min(0).max(1).optional().describe("The object's own opacity, 0–1 (default 1). Works on any layer, not just foreground."),
+      fadeOnOverlap: z.boolean().optional().describe("Fade this object when a token overlaps it (default true) — the foreground-overlap fade."),
+      fadeOpacity: z.number().min(0).max(1).optional().describe("Opacity to fade to while overlapped, 0–1 (default 0.3). Only meaningful with fadeOnOverlap."),
+      night_vision_effect: z.string().optional().describe("UDL night-vision effect for this token's sight. Roll20 documents 'Dimming' and 'Nocturnal'; '' clears it. Free string, not an enum, so an effect name Roll20 adds later passes straight through."),
+      bar_location: z.string().optional().describe("Where the token's bars are drawn: 'overlap_top', 'overlap_bottom', 'bottom', or '' for the default (above the token). Useful on small tokens where the bars cover the art."),
+      compact_bar: z.string().optional().describe("Compact (thin) bar presentation: 'compact' to enable, '' for normal. A string, not a boolean — Roll20's own vocabulary."),
+      currentSide: z.number().int().min(0).optional().describe("SANDBOX v1.5 ONLY — index into the token's `sides` (rollable table token). Setting it auto-updates imgsrc, Marketplace art included, so it flips a token between forms (wildshape, a door's open/closed art) with no re-upload. On sandbox v1.0 the write lands and nothing happens. If the same write also carries a valid imgsrc, imgsrc wins."),
+      interactionManualReset: z.boolean().optional().describe("Interaction system: the object's triggered state must be reset by hand rather than automatically. Largely unexplored here — passed through as given."),
+      interactionTriggered: z.boolean().optional().describe("Interaction system: whether the object is currently in its triggered state. Largely unexplored here — passed through as given."),
     },
     async ({ characterName, tokenId, ...fields }) => {
       let resolvedTokenId = tokenId;

@@ -3,9 +3,21 @@
 // MCP response boilerplate live in one place instead of being copy-pasted across
 // ~25 tool handlers.
 
+import { z } from "zod";
 import * as registry from "../registry/characters.js";
 import * as roll20 from "../bridge/roll20.js";
 import { normalizeNameForMatch } from "./nameMatch.js";
+
+// ── Bar-number visibility (issue #204) ────────────────────────────────────────
+// Roll20 governs a token bar in two independent halves: `showplayers_bar{n}` decides
+// whether the BAR is drawn for players at all, and `bar{n}_num_permission` decides who
+// may read the NUMBER on it. The three values are Roll20's own, "" included — it means
+// "only players who can edit this token", which is a real setting and not "unset", so
+// anything that copies these around must carry "" rather than treating it as empty.
+// Shared because combat.ts writes them and tokens.ts sets one at creation time.
+export const BAR_NUM_PERMISSIONS = ["everyone", "hidden", ""] as const;
+export const NUM_PERMISSION = z.enum(BAR_NUM_PERMISSIONS);
+export type BarNumPermission = (typeof BAR_NUM_PERMISSIONS)[number];
 
 // ── MCP response builders ─────────────────────────────────────────────────────
 // Every tool returns { content: [{ type: "text", text }] }. These three trim the

@@ -226,6 +226,12 @@ vision/wall tooling is maps-only.)
 - `pathv2` re-anchors to the first point regardless of passed x/y — build paths first-point-as-center.
 - **Upload dedup:** `upload_and_place` reuses a stale art-library asset by filename — use a unique
   filename.
+- **NPC token HP numbers are hidden from players by default** (#204): `create_npc_token` /
+  `create_monster_token` set `bar1_num_permission: "hidden"` (pass `showHpNumbersToPlayers` to
+  opt out) — players see the bar move, not the digits. PC tokens are left alone. Anything a
+  creation path sets on a token must ALSO be listed in `setDefaultTokenForChar`'s `KEYS` in
+  `ai-relay.js`, or it is silently dropped when the sheet's default token is applied — that list
+  lost the aura shape exactly this way.
 - **Token creation takes CALLER-SUPPLIED STATS** (#171): `create_pc_token` / `create_npc_token` /
   `create_monster_token` perform no lookup — resolve HP/AC yourself (ddb-mcp, a module stat block,
   the DM) and pass them. `create_monster_token` is now identical to `create_npc_token` and kept only
