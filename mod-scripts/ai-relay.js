@@ -303,13 +303,24 @@ function cleanChat(raw) {
 // Why a createObj("pathv2") came back undefined. pathv2 is a supported createObj type, so the
 // realistic causes are a bad pageid or a campaign/page still on the Legacy VTT engine (no UDL,
 // hence no pathv2 barriers). Named here so both wall creators report the same thing (#207) —
-// there is no legacy-`path` fallback: a path on the walls layer is not a UDL barrier and would
-// draw in the wrong colour, silently.
-function pathv2Failure(pageId) {
+// there is no legacy-`path` fallback: it was hardcoded yellow, against the blue-wall
+// convention, and swapping object types on a failure would hide an engine problem instead of
+// naming it. `rolledBack` is how many objects placed earlier in the same call were removed.
+function pathv2Failure(pageId, rolledBack) {
   var c = Campaign();
   return "createObj('pathv2') returned undefined for page " + pageId
     + " — pathv2 walls need the Latest VTT Engine (UDL); check the page's engine and that the"
-    + " pageId is valid (sandbox " + (c && c.sandboxVersion ? c.sandboxVersion : "unknown") + ").";
+    + " pageId is valid (sandbox " + (c && c.sandboxVersion ? c.sandboxVersion : "unknown") + ")."
+    + (rolledBack ? " Rolled back " + rolledBack + " object(s) already placed by this call, so a"
+      + " retry will not duplicate them." : "");
+}
+
+// Wall batches are all-or-nothing. A throw mid-batch would otherwise lose the ids of the objects
+// already placed (the caller never sees them), and a retry would lay duplicates on top. So:
+// on a pathv2 miss, remove every object this call created, then throw.
+function rollbackCreated(created, pageId) {
+  created.forEach(function(o) { o.remove(); });
+  throw new Error(pathv2Failure(pageId, created.length));
 }
 
 // Cheap bounding box from a points array — handles v1 [x,y] and pathv2 [cmd,x,y] points.
@@ -1407,8 +1418,9 @@ ACTIONS["createWalls"] = function (args, msg, nonce, senderPlayerId) {
         // (x1,y1)→(x2,y2): center = midpoint; points = [[-dx/2,-dy/2],[dx/2,dy/2]].
         // "pathv2" IS createObj-able (Roll20 lists it in the Function Documentation type list,
         // and #178-era live work confirmed it), so a failure here is a real error — there is no
-        // legacy-path fallback to hide behind, and there must not be: a legacy path on the walls
-        // layer draws in the wrong colour and is not a UDL barrier (#207).
+        // legacy-path fallback to hide behind, and there must not be: it drew in hardcoded
+        // yellow, against the blue-wall convention (#207). A miss rolls the whole batch back.
+        let created = [];
         let wallResults = (args.walls || []).map(function(w) {
           let cx = (w.x1 + w.x2) / 2;
           let cy = (w.y1 + w.y2) / 2;
@@ -1425,7 +1437,8 @@ ACTIONS["createWalls"] = function (args, msg, nonce, senderPlayerId) {
             controlledby: "",
           };
           let wallObj = createObj("pathv2", pv2Props);
-          if (!wallObj) throw new Error(pathv2Failure(args.pageId));
+          if (!wallObj) rollbackCreated(created, args.pageId);
+          created.push(wallObj);
           return { id: wallObj.id, kind: "pathv2" };
         });
         writeResult(nonce, wallResults);
@@ -1713,6 +1726,9 @@ ACTIONS["createPolylines"] = function (args, msg, nonce, senderPlayerId) {
         // Create one path object per polyline from an ordered list of absolute-pixel points.
         // Walls layer → pathv2 UDL barrier (Latest VTT Engine). Other layers → legacy path.
         // Each polyline: { points: [[x,y], ...], stroke?, stroke_width?, closed?, layer? }
+        // Everything this call creates (walls AND other-layer paths), so a pathv2 miss rolls the
+        // whole call back rather than strand objects whose ids the caller never receives.
+        let created = [];
         let polylineResults = (args.polylines || []).map(function(pl) {
           let pts = pl.points || [];
           if (pts.length < 2) return { error: "Need at least 2 points" };
@@ -1742,7 +1758,8 @@ ACTIONS["createPolylines"] = function (args, msg, nonce, senderPlayerId) {
               stroke: pl.stroke || args.stroke || "#0044FF",
               controlledby: "",
             });
-            if (!wallObj) throw new Error(pathv2Failure(args.pageId));
+            if (!wallObj) rollbackCreated(created, args.pageId);
+            created.push(wallObj);
             return { id: wallObj.id, pointCount: pts.length };
           }
           let minX = Math.min.apply(null, pts.map(function(p) { return p[0]; }));
@@ -1769,6 +1786,7 @@ ACTIONS["createPolylines"] = function (args, msg, nonce, senderPlayerId) {
             scaleY: 1,
             controlledby: "",
           });
+          if (pathObj) created.push(pathObj);
           return pathObj ? { id: pathObj.id, pointCount: pts.length } : { error: "createObj('path') returned undefined" };
         });
         writeResult(nonce, polylineResults);

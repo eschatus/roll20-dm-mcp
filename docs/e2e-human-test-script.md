@@ -133,7 +133,7 @@ filename** — upload dedups by name.
 | 2.2 | Derive page size: `widthSquares = round((W − offsetX)/gridSizePx)`, `heightSquares = round((H − offsetY)/gridSizePx)` | sane integers | [ ] |
 | 2.3 | `setup_roll20_page { name: "E2E Arena", widthSquares, heightSquares, scaleNumber: 5, scaleUnits: "ft" }` ⚠ | page created **browserlessly** via `rtCreatePage` (RTDB write mirroring an existing page's schema — `createPageViaUI` is deleted, and `createObj("page")` is still unsupported in the sandbox); returns `pageId` | [ ] |
 | 2.4 | `upload_and_place_map_image { pageId, imagePath, widthSquares, heightSquares }` ⚠ | background on the **map** layer; returns `graphicId` | [ ] |
-| 2.5 | `auto_place_dl_walls { pageId, walls, doors, windows, sourceImageWidth: W, sourceImageHeight: H, pageWidthSquares, pageHeightSquares, strokeColor: "#0044FF" }` ⚠ | DL walls placed in **blue**. **GOTCHA: you MUST pass `#0044FF`** — the default is yellow `#FFFF00`. | [ ] |
+| 2.5 | `auto_place_dl_walls { pageId, walls, doors, windows, sourceImageWidth: W, sourceImageHeight: H, pageWidthSquares, pageHeightSquares }` ⚠ | DL walls placed in **blue** `#0044FF` — the `strokeColor` default (it was yellow `#FFFF00` before #207; a yellow wall now is a regression). | [ ] |
 | 2.6 | `decorate_openings { pageId, doors, windows, secretDoors, sourceImageWidth: W, sourceImageHeight: H, pageWidthSquares, pageHeightSquares }` ⚠ | native DL **doors #FF0000 / windows #00FFFF / secret #9932CC** | [ ] |
 | 2.7 | `get_walls { pageId, includePoints: true }` and `get_doors { pageId }` 🔒 | counts match what 2.5/2.6 reported; wall vertices land inside the page's pixel bounds. **`screenshot_roll20` is removed** — verification is now numeric here plus your own eyes on the Roll20 tab | [ ] |
 | 2.8 | Look at the page in Roll20 with the DL layer visible | walls + openings track the art | [ ] |
@@ -530,7 +530,7 @@ Output JSON:
   or stale. The gem harvests them.
 - **`ANTHROPIC_API_KEY`:** maps suite only (`analyze_battlemap`). The combat server
   reaches no Anthropic code.
-- **Wall color:** always pass `#0044FF` (default is yellow). Openings: doors
+- **Wall color:** blue `#0044FF` (the tools' default since #207). Openings: doors
   `#FF0000`, windows `#00FFFF` (cyan), secret `#9932CC`.
 - **HP routing (three-way):** true PC → `adjustPcHp` (tracked, never bar1);
   NPC → bar1; **sidekick** (player-controlled + registry override) → bar1, and dies

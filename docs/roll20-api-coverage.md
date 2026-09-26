@@ -85,8 +85,8 @@ Coverage = relay + direct RTDB.
 — plus `pageFolder` on **sandbox v1.5 only**.
 
 `pathv2` (DL barriers/walls), `door` and `window` are now first-class in that list, so the
-legacy-`path` fallback in the relay's `createWalls` is dead code (and it hardcodes a yellow stroke
-against the project's blue-wall convention — #207).
+relay's `createWalls` no longer carries a legacy-`path` fallback (it was dead code that hardcoded a
+yellow stroke against the project's blue-wall convention — removed in #207).
 
 **`pin` is a new object type this project does not use at all** (#203). Map pins: `shape`
 (teardrop/circle/diamond/square), a built-in `icon` set or a `pinImage`, `title`/`notes`/`gmNotes`,
@@ -279,7 +279,7 @@ Legend: ✅ exposed · 🟡 partial · ❌ API-reachable but **not exposed** (ad
 - **Art upload** — browserless multipart POST with a furnished credential.
 
 ### Partial (🟡)
-- **`pathv2` DL barriers** — *read* via `getWalls`; `createWalls` now *creates* native `pathv2` (falling back to legacy `path` only if `pathv2` returns undefined). `drawLayerTest` deliberately creates `path`.
+- **`pathv2` DL barriers** — *read* via `getWalls`; `createWalls` *creates* native `pathv2` only — no legacy-`path` fallback (#207); a `pathv2` miss throws and rolls back the walls that call already placed. `drawLayerTest` deliberately creates `path`.
 - **Door/window** — create/read/delete only; **no update** (open/close, lock, toggle secret) — all API-reachable.
 - **Repeating sections** — read only; **no write** (no row-id generation / `generateRowID` helper); read has a row cap (maxRows default 60, `__truncated` flag) but no field projection. Since tactics moved to the gem, `getRepeatingSection` has **no MCP tool calling it** — the relay action is live but unreachable from a tool. (Writing rows is also the `rollbase` minefield — see `CLAUDE.md`.)
 - **Page properties** — only name/size/scale/grid/bg; UDL lighting/fog/explorer-mode/grid-type/diagonal props not exposed (all API-reachable).
@@ -336,7 +336,7 @@ action**, and nothing here needs a browser.
 3. ~~**Handouts CRUD**~~ 🟡 partial — `create_handout` shipped; read/update/delete still missing.
 4. **`createToken represents`** — set `represents` on create (default-token linking exists; creation-time binding doesn't), so sheet HP/AC/abilities bind without a follow-up call. Now the highest-value item: with the DDB bridge gone, a bare token is the *only* stat carrier, and it can't hold AC.
 5. **Cards/decks** — `deck`/`card`/`hand` (e.g. the Tarokka deck for Curse of Strahd).
-6. **Door/window update** — open/close, lock, toggle secret. (`createWalls` already makes native `pathv2`, falling back to legacy `path` only when `createObj("pathv2")` returns undefined.)
+6. **Door/window update** — open/close, lock, toggle secret. (`createWalls` already makes native `pathv2`, with no legacy-`path` fallback — #207.)
 7. **Jukebox/audio + rollable tables** — ambiance and random tables.
 8. **Move the player ribbon** — `Campaign().set('playerpageid', id)`.
 

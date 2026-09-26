@@ -220,9 +220,10 @@ vision/wall tooling is maps-only.)
    objects** (not map-layer rectangles): doors `#FF0000`, windows `#00FFFF`, secret doors `#9932CC`.
 
 **Map gotchas:**
-- **Wall color:** `auto_place_dl_walls` and `place_polyline_walls` default `strokeColor` to yellow
-  `#FFFF00`. **Always pass `#0044FF`** (project convention: blue walls, cyan windows (#00FFFF)) — the default
-  violates it.
+- **Wall color:** `auto_place_dl_walls` and `place_polyline_walls` default `strokeColor` to blue
+  `#0044FF` (project convention: blue walls, cyan windows (#00FFFF)); the relay's wall creators
+  default to it too. They used to default to yellow `#FFFF00` — the source of yellow walls (#207);
+  a yellow wall now is a regression, not a missed argument.
 - `pathv2` re-anchors to the first point regardless of passed x/y — build paths first-point-as-center.
 - **Upload dedup:** `upload_and_place` reuses a stale art-library asset by filename — use a unique
   filename.
