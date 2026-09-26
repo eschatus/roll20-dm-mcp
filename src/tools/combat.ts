@@ -128,7 +128,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "revive_token",
-    "UNDO A KILL — the exact inverse of kill_token, atomically, in ONE call (issue #217). Restores HP, clears the dead marker, returns the token to the token layer, and puts it back in the turn order: its ORIGINAL initiative entry if the kill left one behind, else the `initiative` you pass, else a fresh silent 1d20+bonus roll through Roll20's roller. Use when a kill was WRONG — damage landed on the wrong creature and crossed 0 (the threshold automation kills at 0), or the DM retcons a death ('no wait, the ogre isn't dead', 'undo that kill', 'that goblin's still up'). Replaces the four-call unwind (update_token_hp setHp + set_token_marker dead:false + set_token_props layer:objects + roll_initiative). `hp` is REQUIRED — nothing on the board remembers the pre-kill value. HP routes exactly like update_token_hp (PC → tracked relay state, NPC/sidekick → bar1). NOT ordinary healing (use update_token_hp) and NOT for a downed PC getting back up (clear 'unconscious' with set_token_marker — a dying PC never left the token layer).",
+    "UNDO A KILL — the exact inverse of kill_token, in ONE call (issue #217). Restores HP, clears the dead marker, returns the token to the token layer, and puts it back in the turn order WITHOUT moving whoever is currently up: its ORIGINAL initiative entry if the kill left one behind, else the `initiative` you pass, else (NPC/sidekick only) a fresh silent 1d20+bonus roll through Roll20's roller. A true PC with no surviving entry and no `initiative` is revived but its row is left for the player to roll (initiativeSource:\"pending\") — PC initiative is never rolled server-side. The four steps commit one at a time; if one fails the error lists what landed and the repair call for each step that didn't. Use when a kill was WRONG — damage landed on the wrong creature and crossed 0 (the threshold automation kills at 0), or the DM retcons a death ('no wait, the ogre isn't dead', 'undo that kill', 'that goblin's still up'). Replaces the four-call unwind (update_token_hp setHp + set_token_marker dead:false + set_token_props layer:objects + roll_initiative). `hp` is REQUIRED — nothing on the board remembers the pre-kill value. HP routes exactly like update_token_hp (PC → tracked relay state, NPC/sidekick → bar1). NOT ordinary healing (use update_token_hp) and NOT for a downed PC getting back up (clear 'unconscious' with set_token_marker — a dying PC never left the token layer).",
     {
       characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Ogre', 'Goblin the Savage'."),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup. Do NOT invent one; use characterName if you have no real ID from a prior tool result."),
@@ -150,75 +150,115 @@ export function registerCombatTools(server: McpServer): void {
       const charId = tok.represents || undefined;
       const label = characterName ?? tok.name ?? resolvedTokenId;
 
+      // Each relay call commits on its own — there is no transaction across them. Track what
+      // landed so a failure part-way reports the committed steps and the repair call for
+      // each one that didn't, instead of an opaque error over a half-revived token.
+      const committed: string[] = [];
+      const repairs: Record<string, string> = {
+        hp: `update_token_hp setHp:${hp}`,
+        dead: `set_token_marker condition:"dead" active:false`,
+        layer: `set_token_props props:{layer:"objects"}`,
+        initiative: `roll_initiative names:["${label}"] clearFirst:false`,
+      };
+      const stepOrder = ["hp", "dead", "layer", "initiative"];
+      const step = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+        try {
+          const out = await fn();
+          committed.push(name);
+          return out;
+        } catch (e) {
+          const pending = stepOrder.filter((s) => !committed.includes(s));
+          const msg = e instanceof Error ? e.message : String(e);
+          throw new Error(
+            `${label}: revive_token failed at step '${name}' (${msg}). ` +
+            `Committed: ${committed.length ? committed.join(", ") : "nothing"}. ` +
+            `Still to do: ${pending.map((s) => `${s} → ${repairs[s]}`).join("; ")}.`
+          );
+        }
+      };
+
       // 1. HP first, and never to 0: the relay's own threshold automation re-kills a token
       //    written to 0 HP (marker + map layer), so a revive that set HP last — or to 0 —
       //    would undo itself. Routing is the same three-way split as update_token_hp: a
       //    true PC's bar is Beyond20's, so its HP goes to tracked state (issue #132).
       const isPc = isPcToken(tok, registry.listSidekickNames());
-      let hpStr: string;
-      if (isPc) {
-        const res = await roll20.relayCommand<{ current: number; max: number }>({
-          action: "adjustPcHp", tokenId: resolvedTokenId, setHp: hp,
-        });
-        hpStr = `${res.current}${res.max ? `/${res.max}` : ""} (tracked)`;
-      } else {
+      const hpStr = await step("hp", async () => {
+        if (isPc) {
+          const res = await roll20.relayCommand<{ current: number; max: number }>({
+            action: "adjustPcHp", tokenId: resolvedTokenId, setHp: hp,
+          });
+          return `${res.current}${res.max ? `/${res.max}` : ""} (tracked)`;
+        }
         // A dead NPC normally still has its bar1_max; if it has none, `hp` establishes one,
         // otherwise every later damage call would refuse for want of a bar.
         const maxHp = Number(tok.bar1_max) > 0 ? Number(tok.bar1_max) : hp;
         await roll20.relayCommand({ action: "setTokenBar", tokenId: resolvedTokenId, value: hp, max: maxHp });
-        hpStr = `${hp}/${maxHp}`;
-      }
+        return `${hp}/${maxHp}`;
+      });
 
       // 2. Clear the dead marker, then 3. back to the token layer — kill_token's two steps,
       //    in reverse.
-      await roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition: "dead", active: false });
-      await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props: { layer: "objects" } });
+      await step("dead", () => roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition: "dead", active: false }));
+      await step("layer", () => roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props: { layer: "objects" } }));
 
       // 4. Initiative. Leaving the token layer is what drops a combatant out of the tracker,
       //    so the entry may or may not have survived the kill — check before rolling anything.
-      //    Every write here is a mergeTurnOrder upsert: it can only touch THIS token's row,
-      //    never the players' (see the setTurnOrder warning in CLAUDE.md).
-      const pageId = await roll20.getCurrentPageId();
-      const order = await roll20.relayCommand<TurnEntry[]>({ action: "getTurnOrder" });
-      const surviving = (order ?? []).find((e) => e.id && String(e.id) === resolvedTokenId);
-      let initPr: number | string | null = null;
-      let initSource: "preserved" | "explicit" | "rolled" = "preserved";
-      let rollNote = "";
+      //    Every write here is a mergeTurnOrder upsert with keepTurn: it touches only THIS
+      //    token's row (never the players' — see the setTurnOrder warning in CLAUDE.md) and
+      //    splices into the live rotation, so whoever is up stays up and the turn hook is
+      //    not tripped. A true PC's initiative is player-rolled and read-only: with no
+      //    surviving entry and no explicit value there is nothing to restore, so the row is
+      //    left for the player and reported as pending rather than rolled server-side.
+      type InitSource = "preserved" | "explicit" | "rolled" | "pending";
+      const init = await step("initiative", async (): Promise<{ pr: number | string | null; source: InitSource; rollNote: string }> => {
+        const pageId = await roll20.getCurrentPageId();
+        const order = await roll20.relayCommand<TurnEntry[]>({ action: "getTurnOrder" });
+        const surviving = (order ?? []).find((e) => e.id && String(e.id) === resolvedTokenId);
+        let initPr: number | string | null = null;
+        let initSource: InitSource = "preserved";
+        let rollNote = "";
 
-      if (initiative !== undefined) {
-        initSource = "explicit";
-        initPr = initiative;
-      } else if (surviving) {
-        // The kill left the entry alone — the original pr is right there, so don't re-roll it.
-        initPr = num(surviving.pr) ?? surviving.pr;
-      } else {
-        // Gone with the layer move, and no pre-kill value to restore: roll it back in, the
-        // same way the manual unwind's roll_initiative did — but silently, since an undo is
-        // bookkeeping and not a moment the table needs a card for.
-        const rolls = await roll20.relayCommand<{ tokenId: string; name: string; d20: number; initBonus: number; total: number }[]>({
-          action: "rollInitiativeForTokens", tokenIds: [resolvedTokenId], rollPublic: false,
-        });
-        const rolled = (rolls ?? []).find((r) => r.tokenId === resolvedTokenId);
-        if (!rolled) throw new Error(`${label}: revived (HP ${hpStr}, dead cleared, back on the token layer) but the initiative roll returned nothing — re-add it with roll_initiative names:["${label}"] clearFirst:false.`);
-        initSource = "rolled";
-        initPr = rolled.total;
-        rollNote = `${rolled.d20}${rolled.initBonus >= 0 ? "+" : ""}${rolled.initBonus} = ${rolled.total}`;
-      }
+        if (initiative !== undefined) {
+          initSource = "explicit";
+          initPr = initiative;
+        } else if (surviving) {
+          // The kill left the entry alone — the original pr is right there, so don't re-roll it.
+          initPr = num(surviving.pr) ?? surviving.pr;
+        } else if (isPc) {
+          return { pr: null, source: "pending", rollNote: "" };
+        } else {
+          // Gone with the layer move, and no pre-kill value to restore: roll it back in, the
+          // same way the manual unwind's roll_initiative did — but silently, since an undo is
+          // bookkeeping and not a moment the table needs a card for.
+          const rolls = await roll20.relayCommand<{ tokenId: string; name: string; d20: number; initBonus: number; total: number }[]>({
+            action: "rollInitiativeForTokens", tokenIds: [resolvedTokenId], rollPublic: false,
+          });
+          const rolled = (rolls ?? []).find((r) => r.tokenId === resolvedTokenId);
+          if (!rolled) throw new Error("the initiative roll returned nothing");
+          initSource = "rolled";
+          initPr = rolled.total;
+          rollNote = `${rolled.d20}${rolled.initBonus >= 0 ? "+" : ""}${rolled.initBonus} = ${rolled.total}`;
+        }
 
-      if (initSource !== "preserved") {
-        const entry: TurnEntry = { id: resolvedTokenId, pr: String(initPr), custom: surviving?.custom ?? "", _pageid: pageId };
-        await roll20.relayCommand({ action: "mergeTurnOrder", entries: [entry] });
-      }
+        if (initSource !== "preserved") {
+          const entry: TurnEntry = { id: resolvedTokenId, pr: String(initPr), custom: surviving?.custom ?? "", _pageid: pageId };
+          await roll20.relayCommand({ action: "mergeTurnOrder", entries: [entry], keepTurn: true });
+        }
+        return { pr: initPr, source: initSource, rollNote };
+      });
 
+      const initSummary = init.source === "pending"
+        ? `no turn-order entry (${label} is a PC — the player rolls their own initiative, or pass initiative: to restore the pre-kill value)`
+        : `initiative ${init.pr} (${init.source})`;
       return json({
         target: label,
         hp: hpStr,
         deadCleared: true,
         layer: "objects",
-        initiative: initPr,
-        initiativeSource: initSource,
-        ...(rollNote ? { initiativeRoll: rollNote } : {}),
-        summary: `${label} revived at ${hpStr} — dead marker cleared, back on the token layer, initiative ${initPr} (${initSource}).`,
+        initiative: init.pr,
+        initiativeSource: init.source,
+        ...(init.rollNote ? { initiativeRoll: init.rollNote } : {}),
+        summary: `${label} revived at ${hpStr} — dead marker cleared, back on the token layer, ${initSummary}.`,
       });
     }
   );

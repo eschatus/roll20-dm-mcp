@@ -195,6 +195,98 @@ describe("revive_token — HP routes three ways, like update_token_hp", () => {
   });
 });
 
+describe("revive_token — a mid-round revive never rewinds the active turn", () => {
+  it("splices a re-rolled entry into the rotated order and leaves row 0 alone", async () => {
+    const goblin = newToken("Goblin", 7);
+    const fighter = newToken("Fighter", 30, "player-f");
+    const ogre = newToken("Ogre", 59);
+    const orc = newToken("Orc", 15);
+    // Two turns in: Goblin is up, Fighter and Ogre have acted. Orc was killed and its row dropped.
+    seedTurnOrder([{ id: goblin, pr: "8" }, { id: fighter, pr: "17" }, { id: ogre, pr: "11" }]);
+    await h.callTool("kill_token", { tokenId: orc });
+
+    const { json } = await h.callTool("revive_token", { tokenId: orc, hp: 9 });
+
+    const order = h.emu.turnOrder();
+    expect(order[0].id).toBe(goblin); // still Goblin's turn
+    expect(order.map((e) => e.id)).toHaveLength(4);
+    const pr = Number((json as { initiative: number }).initiative);
+    const idx = order.findIndex((e) => e.id === orc);
+    // Above Goblin → in the already-acted segment, sorted; else right after Goblin.
+    if (pr > 8) {
+      expect(idx).toBeGreaterThanOrEqual(1);
+      const acted = order.slice(1).map((e) => Number(e.pr));
+      expect(acted).toEqual([...acted].sort((a, b) => b - a));
+    } else {
+      expect(idx).toBe(1);
+    }
+    // Players' rows are untouched.
+    expect(order.find((e) => e.id === fighter)?.pr).toBe("17");
+  });
+
+  it("explicit initiative lands at its slot without changing row 0 (the reviewer's example)", async () => {
+    const goblin = newToken("Goblin B", 7);
+    const fighter = newToken("Fighter B", 30, "player-fb");
+    const ogre = newToken("Ogre B", 59);
+    const orc = newToken("Orc B", 15);
+    seedTurnOrder([{ id: goblin, pr: "8" }, { id: fighter, pr: "17" }, { id: ogre, pr: "11" }]);
+    await h.callTool("kill_token", { tokenId: orc });
+
+    await h.callTool("revive_token", { tokenId: orc, hp: 9, initiative: 6 });
+    expect(h.emu.turnOrder().map((e) => e.id)).toEqual([goblin, orc, fighter, ogre]);
+
+    await h.callTool("revive_token", { tokenId: orc, hp: 9, initiative: 15 });
+    expect(h.emu.turnOrder().map((e) => e.id)).toEqual([goblin, fighter, orc, ogre]);
+  });
+
+  it("relay mergeTurnOrder keepTurn: re-slots an existing row, keeps round markers, never sorts row 0 away", () => {
+    seedTurnOrder([
+      { id: "tok-ogre", pr: "11" },
+      { id: "tok-gob", pr: "8" },
+      { id: "-1", pr: "99", custom: "⏺ Round Start" },
+      { id: "tok-ftr", pr: "17" },
+    ]);
+    // A row that already exists moves to its new slot; row 0 stays.
+    h.emu.relay({ action: "mergeTurnOrder", keepTurn: true, entries: [{ id: "tok-gob", pr: "20", custom: "", _pageid: pageId }] });
+    expect(h.emu.turnOrder().map((e) => e.id)).toEqual(["tok-ogre", "-1", "tok-gob", "tok-ftr"]);
+    // Row 0 itself is replaced in place when re-slotted.
+    h.emu.relay({ action: "mergeTurnOrder", keepTurn: true, entries: [{ id: "tok-ogre", pr: "3", custom: "", _pageid: pageId }] });
+    const order = h.emu.turnOrder();
+    expect(order[0]).toMatchObject({ id: "tok-ogre", pr: "3" });
+    // Without keepTurn the legacy sort still applies (roll_initiative & co. depend on it).
+    h.emu.relay({ action: "mergeTurnOrder", entries: [{ id: "tok-new", pr: "50", custom: "", _pageid: pageId }] });
+    expect(h.emu.turnOrder().map((e) => e.id)).toEqual(["-1", "tok-new", "tok-gob", "tok-ftr", "tok-ogre"]);
+  });
+});
+
+describe("revive_token — PC initiative is player-owned", () => {
+  it("does not roll for a true PC whose row is gone; reports pending and writes no entry", async () => {
+    const pc = newToken("Thorne", 40, "player-thorne");
+    const npc = newToken("Cultist", 9);
+    seedTurnOrder([{ id: npc, pr: "12" }]);
+    await h.callTool("kill_token", { tokenId: pc });
+
+    const { json } = await h.callTool("revive_token", { tokenId: pc, hp: 25 });
+
+    expect(json).toMatchObject({ initiative: null, initiativeSource: "pending" });
+    expect((json as { summary: string }).summary).toMatch(/player rolls/);
+    expect(layer(pc)).toBe("objects");
+    expect(parsePcHp(gmnotes(pc))?.current).toBe(25);
+    expect(h.emu.turnOrder().some((e) => e.id === pc)).toBe(false);
+  });
+
+  it("still restores a PC's row when the DM passes the pre-kill initiative", async () => {
+    const pc = newToken("Mira", 40, "player-mira");
+    seedTurnOrder([{ id: newToken("Cultist 2", 9), pr: "12" }]);
+    await h.callTool("kill_token", { tokenId: pc });
+
+    const { json } = await h.callTool("revive_token", { tokenId: pc, hp: 25, initiative: 14 });
+
+    expect(json).toMatchObject({ initiative: 14, initiativeSource: "explicit" });
+    expect(h.emu.turnOrder().find((e) => e.id === pc)?.pr).toBe("14");
+  });
+});
+
 describe("revive_token — failure visibility", () => {
   it("surfaces a relay failure instead of reporting a revive that never happened", async () => {
     const id = newToken("Wight", 45);
@@ -206,6 +298,28 @@ describe("revive_token — failure visibility", () => {
       h.clearRelayFailures();
     }
     expect(layer(id)).toBe("map"); // still dead on the map layer — nothing pretended otherwise
+  });
+
+  it("a part-way failure names the committed steps and the repair call for each remaining one", async () => {
+    const id = newToken("Ghast", 36);
+    await h.callTool("kill_token", { tokenId: id });
+    h.failRelayAction("setTokenProps", "injected relay failure");
+    let message = "";
+    try {
+      await h.callTool("revive_token", { tokenId: id, hp: 20 });
+    } catch (e) {
+      message = (e as Error).message;
+    } finally {
+      h.clearRelayFailures();
+    }
+    expect(message).toMatch(/failed at step 'layer'/);
+    expect(message).toMatch(/Committed: hp, dead/);
+    expect(message).toMatch(/layer → set_token_props/);
+    expect(message).toMatch(/initiative → roll_initiative/);
+    // What the error says landed, did land.
+    expect(bar(id)).toBe(20);
+    expect(markers(id)).not.toMatch(/dead/);
+    expect(layer(id)).toBe("map");
   });
 
   it("errors on a target that resolves to nothing", async () => {

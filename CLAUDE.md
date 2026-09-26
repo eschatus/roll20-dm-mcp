@@ -263,8 +263,13 @@ registry override (`sidekick: true`, `src/registry/characters.ts`) is needed to 
 threshold re-kills the token), clear `dead`, back to the `objects` layer, turn-order entry restored.
 The entry comes back three ways, in this order: an explicit `initiative` argument, the entry that
 survived the kill (leaving the token layer is what drops a combatant from the tracker), else a
-silent `rollInitiativeForTokens` re-roll — always upserted with `mergeTurnOrder`, never a wholesale
-write. Nothing on the board remembers a pre-kill HP or `pr`: a stash at the layer-write seam would
+silent `rollInitiativeForTokens` re-roll — NPC/sidekick only; a true PC with neither reports
+`initiativeSource:"pending"` and the player rolls (PC initiative is read-only). Always upserted with
+`mergeTurnOrder keepTurn:true`, never a wholesale write: Roll20 marks the active turn by rotating
+the array, and the plain merge's pr-descending sort would rewind play to the top and trip the turn
+hook — `keepTurn` splices into the live rotation and leaves row 0 alone. The four steps commit one
+relay call at a time (no transaction); a failure part-way reports which steps landed and the repair
+call for each that didn't. Nothing on the board remembers a pre-kill HP or `pr`: a stash at the layer-write seam would
 have to be hand-synced across BOTH write paths (`roll20-rt.ts`'s direct write and `ai-relay.js`'s
 copy), which is why revive reads the live order instead of trusting a cache.
 

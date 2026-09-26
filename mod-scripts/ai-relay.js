@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.8.0";
+var AI_RELAY_VERSION = "2.9.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -1817,6 +1817,46 @@ ACTIONS["setTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
         // every player's initiative while reporting ok:true. Delegate; never re-fork this.
         writeResult(nonce, runBatchOp("setTurnOrder", args));
       };
+function turnPr(e) {
+  var p = Number(e && e.pr);
+  return isNaN(p) ? -Infinity : p;
+}
+
+// Upsert one entry into a live (rotated) turn order without changing row 0. The ring is
+// a rotation of a pr-descending list: rows 0..wrap-1 are still to act this round, rows
+// wrap..end already acted. An entry with pr above the active row goes into the acted
+// segment (so it acts next round in its slot); otherwise it lands in the pending segment
+// after the active row. If the id already sits at row 0 it is replaced in place.
+function insertKeepingTurn(order, entry) {
+  var id = entry.id != null ? String(entry.id) : null;
+  var out = [];
+  for (var i = 0; i < order.length; i++) {
+    var row = order[i];
+    if (id !== null && id !== "-1" && row && String(row.id) === id) {
+      if (i === 0) { out.push(entry); id = null; }
+      continue;
+    }
+    out.push(row);
+  }
+  if (id === null) return out;
+  if (out.length === 0) return [entry];
+  var p = turnPr(entry);
+  var wrap = out.length;
+  for (var w = 1; w < out.length; w++) {
+    if (turnPr(out[w]) > turnPr(out[w - 1])) { wrap = w; break; }
+  }
+  var at;
+  if (p > turnPr(out[0])) {
+    at = wrap;
+    while (at < out.length && turnPr(out[at]) >= p) at++;
+  } else {
+    at = 1;
+    while (at < wrap && turnPr(out[at]) >= p) at++;
+  }
+  out.splice(at, 0, entry);
+  return out;
+}
+
 ACTIONS["mergeTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
         {
         // Atomic upsert into the live turn order — read, merge, write in ONE
@@ -1831,6 +1871,12 @@ ACTIONS["mergeTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
         // Keeps player-controlled tokens (controlledby = a real player ID) and
         // custom rows (id "-1", e.g. round markers). Safe replacement for a full
         // setTurnOrder([]) wipe that would also erase player entries.
+        //
+        // keepTurn: true → mid-combat insert. Roll20 tracks the active turn by ROTATING
+        // the array (row 0 is whoever is up), so the pr-descending sort below would rewind
+        // play to the highest initiative and fire the turn hook. With keepTurn each entry
+        // is spliced into the rotated ring at its sorted slot relative to the current row 0,
+        // which never changes. Only a single entry per id is supported in this mode.
         let rawTO = Campaign().get("turnorder");
         let merged;
         try { merged = rawTO ? JSON.parse(rawTO) : []; } catch (e) { merged = []; }
@@ -1846,6 +1892,15 @@ ACTIONS["mergeTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
           });
         }
         let incoming = args.entries || [];
+        if (args.keepTurn) {
+          incoming.forEach(function (entry) {
+            if (!entry || typeof entry !== "object") return;
+            merged = insertKeepingTurn(merged, entry);
+          });
+          Campaign().set("turnorder", JSON.stringify(merged));
+          writeResult(nonce, { ok: true, turnorder: merged });
+          return;
+        }
         incoming.forEach(function (entry) {
           if (!entry || typeof entry !== "object") return;
           let id = entry.id;

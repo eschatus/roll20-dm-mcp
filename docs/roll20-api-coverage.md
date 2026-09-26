@@ -37,10 +37,10 @@ can be moved back to 1.0 by hand. `ACTIONS["ping"]` echoes `Campaign().sandboxVe
 surfaces them under `sandbox` — that is how you find out which one a campaign is on. A `sandbox` of
 `null` there means the *relay* is older than 2.7.0, not that the sandbox is old.
 
-Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.6). Relay version string: `2.8.0`
+Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.6). Relay version string: `2.9.0`
 (reported by the `ping` action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
-(`[GM_AI_Bridge] Relay script loaded (v2.8.0)`), not the save.
+(`[GM_AI_Bridge] Relay script loaded (v2.9.0)`), not the save.
 
 ---
 
@@ -199,8 +199,8 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `createZone`/`clearZone`/`listZones`/`findTokensInZone`/`processRoundEndZones` | create_zone, clear_zone, list_zones, process_round_end_zones, resolve_aoe | both | path on the map layer; **metadata lives in `state.GM_AI_Bridge.zones`, not on the path object** (path objects silently drop `name`/`gmnotes`/`fill_opacity` — #162/#164) |
 | `removeObject` | remove_object | combat | graphic or path |
 | `getTurnOrder`/`setTurnOrder`/`advanceTurn` | get_turn_order, clear_turn_order, advance_turn, update_turn_order, inject_round_marker, revive_token (read only), batch_exec | combat | `Campaign.turnorder`. **Never write `setTurnOrder` wholesale** — it erases player entries; only `clear_turn_order` does that deliberately. |
-| `mergeTurnOrder` | roll_initiative, inject_round_marker, update_turn_order, revive_token | combat | NPC-only upsert (preserves PC entries) |
-| `rollInitiativeForTokens` | roll_initiative, revive_token (silent re-roll when a kill took the entry) | combat | real dice + epithets; honours per-combatant `bonusOverrides` from `entries[].bonus` (#172) |
+| `mergeTurnOrder` | roll_initiative, inject_round_marker, update_turn_order, revive_token | combat | NPC-only upsert (preserves PC entries). `keepTurn:true` (relay 2.9.0, revive_token) splices into the live rotation without the pr-descending sort, so row 0 (the active turn) never changes |
+| `rollInitiativeForTokens` | roll_initiative, revive_token (silent re-roll when a kill took an NPC/sidekick entry; never for a true PC) | combat | real dice + epithets; honours per-combatant `bonusOverrides` from `entries[].bonus` (#172) |
 | `rollFormulas` | roll_dice, resolve_aoe | combat | real dice engine — all dice go through Roll20's roller, never a TS RNG |
 | `setTurnHook`/`getTurnHookState` | set_turn_hook, check_turn_hook | combat | enables the `change:campaign:turnorder` hook; `roll_initiative` arms it itself |
 | `sendNarration` | send_narration | combat | styled HTML to chat |
@@ -219,7 +219,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `sendPing` | send_ping | maps | "look here" / pull player view to a spot |
 | `spawnFx` / `spawnFxBetweenPoints` | spawn_fx, spawn_fx_between_points | maps | explosions, beams, spell nova |
 | `toFront` / `toBack` | to_front, to_back | maps | z-order |
-| `ping` | (health check) | — | reports relay version (2.8.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
+| `ping` | (health check) | — | reports relay version (2.9.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
 | **event** `chat:message` | (passive) | — | buffers chat, parses `!dm`. Player `!`-commands are **forwarded, not answered** — `forwardChat` broadcasts them as an SSE `chat-message`; the gem decides what to do. |
 | **event** `change:campaign:turnorder` | (passive) | — | turn/round announcements |
 | **event** `add:graphic` | (passive) | — | auto-rolls initiative for NPC tokens dropped during combat |
