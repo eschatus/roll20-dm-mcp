@@ -122,4 +122,57 @@ describe("setDefaultToken carries the new properties (#204)", () => {
     // carries no information and must not bloat the default token.
     expect(saved).not.toHaveProperty("tint_color");
   });
+
+  it("copies the interaction flags too", async () => {
+    const charId = h.emu.createCharacter("Lever");
+    await h.callTool("set_token_props", { tokenId, interactionManualReset: true, interactionTriggered: true });
+    h.emu.relay({ action: "setDefaultToken", tokenId, charId });
+
+    const saved = JSON.parse(String(h.emu.getObj("character", charId)!.get("defaulttoken"))) as Record<string, unknown>;
+    expect(saved.interactionManualReset).toBe(true);
+    expect(saved.interactionTriggered).toBe(true);
+  });
+});
+
+describe("get_token reads the new properties back (#204)", () => {
+  it("reports every newly exposed property, including '' and false", async () => {
+    await h.callTool("set_token_props", {
+      tokenId,
+      bar1_num_permission: "hidden",
+      bar2_num_permission: "",
+      lockMovement: false,
+      renderAsScenery: true,
+      baseOpacity: 0.5,
+      fadeOnOverlap: false,
+      fadeOpacity: 0.2,
+      night_vision_effect: "Nocturnal",
+      bar_location: "overlap_bottom",
+      compact_bar: "compact",
+      currentSide: 1,
+      interactionManualReset: true,
+      interactionTriggered: false,
+    });
+    const res = await h.callTool("get_token", { tokenId });
+    expect(res.isError).toBe(false);
+    const t = res.json as Record<string, unknown>;
+    expect(t.bar1_num_permission).toBe("hidden");
+    expect(t.bar2_num_permission).toBe("");
+    expect(t.lockMovement).toBe(false);
+    expect(t.renderAsScenery).toBe(true);
+    expect(t.baseOpacity).toBe(0.5);
+    expect(t.fadeOnOverlap).toBe(false);
+    expect(t.fadeOpacity).toBe(0.2);
+    expect(t.night_vision_effect).toBe("Nocturnal");
+    expect(t.bar_location).toBe("overlap_bottom");
+    expect(t.compact_bar).toBe("compact");
+    expect(t.currentSide).toBe(1);
+    expect(t.interactionManualReset).toBe(true);
+    expect(t.interactionTriggered).toBe(false);
+  });
+
+  it("reports the graphic default '' for an untouched bar-number permission rather than dropping it", async () => {
+    const res = await h.callTool("get_token", { tokenId });
+    const t = res.json as Record<string, unknown>;
+    expect(t).toHaveProperty("bar1_num_permission", "");
+  });
 });

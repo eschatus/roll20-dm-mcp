@@ -1016,7 +1016,7 @@ export function registerCombatTools(server: McpServer): void {
     { tokenId: z.string().describe("Roll20 token ID") },
     async ({ tokenId }) => {
       type TokenData = AoeToken & Record<string, unknown>;
-      const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId });
+      const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId, profile: "rich" });
       if (!token) return fail(`token not found: ${tokenId}`);
       const tokenClass = classifyToken(token, registry.listSidekickNames());
       return json({ ...token, tokenClass });

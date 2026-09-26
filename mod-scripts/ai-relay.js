@@ -263,6 +263,18 @@ function tokenRich(t) {
     if (p[0] === "rotation" && v === 0) return;
     s[p[0]] = v;
   });
+  // Properties where "" and false are real settings ("" = editors-only bar numbers,
+  // false = movement unlocked / no overlap fade), so they are reported whenever set.
+  [
+    "bar1_num_permission", "bar2_num_permission", "bar3_num_permission",
+    "bar_location", "compact_bar", "night_vision_effect",
+    "lockMovement", "renderAsScenery", "baseOpacity", "fadeOnOverlap", "fadeOpacity",
+    "sides", "currentSide", "interactionManualReset", "interactionTriggered",
+  ].forEach(function(k) {
+    var v = t.get(k);
+    if (v === null || v === undefined) return;
+    s[k] = v;
+  });
   return s;
 }
 
@@ -466,6 +478,7 @@ function setDefaultTokenForChar(t, args) {
     "light_radius", "light_dimradius", "light_otherplayers", "light_hassight",
     "light_angle", "light_losangle", "night_vision_effect",
     "lockMovement", "renderAsScenery", "baseOpacity", "fadeOnOverlap", "fadeOpacity",
+    "interactionManualReset", "interactionTriggered",
     // camelCase, per the Objects doc — the lowercase "currentside" this list used to carry
     // reads back undefined and was therefore never copied at all.
     "sides", "currentSide",
