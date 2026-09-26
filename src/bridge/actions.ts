@@ -13,5 +13,5 @@ export const READONLY_ACTIONS = new Set<string>([
   "getPaths", "getDoors", "listPages", "getTurnOrder", "getRecentChat",
   "getDmInbox", "getTurnHookState", "getCharacterAttributes", "getRepeatingSection",
   "getTokenMarkers", "getCustomStates", "listZones", "findTokensInZone",
-  "findTokensInRange", "getJournalFolder", "ping",
+  "findTokensInRange", "getJournalFolder", "getPins", "ping",
 ]);
