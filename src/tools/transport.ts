@@ -13,7 +13,12 @@ export function registerTransportTools(server: McpServer): void {
     {},
     async () => {
       let activeCampaign = "(none)";
-      try { activeCampaign = getActiveCampaign().slug; } catch { /* no active campaign */ }
+      let activeRoll20Id: string | null = null;
+      try {
+        const c = getActiveCampaign();
+        activeCampaign = c.slug;
+        activeRoll20Id = c.roll20CampaignId;
+      } catch { /* no active campaign */ }
       const mismatch = getRelayVersionMismatch();
       const sandbox = getRelaySandboxInfo();
       return {
@@ -33,8 +38,9 @@ export function registerTransportTools(server: McpServer): void {
             // Age of the furnished roll20-rt-token.json (#216). An already-connected server runs
             // off its live socket and stays healthy long after this file goes cold, which is
             // exactly when every OTHER reader of the data dir (roll20-dm-maps over stdio, a CLI
-            // script) gets locked out. Reporting it here is the only warning anyone gets.
-            rtToken: getRtTokenStatus(),
+            // script) gets locked out. Reporting it here is the only warning anyone gets. Also
+            // flags a token harvested for a different campaign than the active one.
+            rtToken: getRtTokenStatus(activeRoll20Id),
             relayVersion: {
               expected: EXPECTED_RELAY_VERSION,
               // null = no mismatch detected yet (either not probed, or the deployed relay matches).

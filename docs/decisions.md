@@ -176,6 +176,9 @@ This file records every non-obvious architectural choice made in this project. E
 > whether a test transport is installed, not on `ROLL20_TRANSPORT` — so removing it needed no
 > replacement seam.
 
+> **Superseded in part by decision 15 / #177:** this server no longer harvests the token (the gem
+> is the sole harvester), and there is no local ~50 min TTL — Firebase decides whether it is spent.
+
 **Choice:** Use a browserless Firebase Realtime Database transport as the **default**. `rtEnabled()` is true unless `ROLL20_TRANSPORT=browser` (i.e. unset → RT). The MCP server harvests Roll20's per-campaign Firebase custom token (intercepted from the browser's `signInWithCustomToken` request, cached in `data/roll20-rt-token.json`, TTL ~50 min), then pushes `!ai-relay {JSON}` commands into the campaign's RTDB chat node and reads `AIBRIDGE_RESULT` back over an RTDB child listener. The legacy Playwright browser→chat relay is now a dev opt-out reachable only under `ROLL20_TRANSPORT=browser`.
 
 **Why:** The Playwright chat-typing path is slow (~hundreds of ms) and requires a live browser window per command. RTDB is shard-aware and warm-path ~49ms. Critically, a packaged install ships no Playwright, so combat must be browserless and an RT failure must **surface** (prompting a token re-harvest in the gem) rather than silently reaching for a Chromium that isn't there. The combat RT relay therefore has **no Playwright fallback** — `relayCommand`'s RT branch (`src/bridge/roll20.ts`) re-throws on failure. The Mod handles every action regardless of transport, so RT serves reads and mutating writes alike.
@@ -231,7 +234,9 @@ This file records every non-obvious architectural choice made in this project. E
 matches, `databaseURL` and `customToken` present — and hands the token to `signInWithCustomToken`.
 A Firebase rejection is re-thrown as `Roll20TokenUnavailableError` naming the auth code *and* the
 token's age. The age survives as advisory state, reported by `transport_status` as
-`rtToken: {present, campaignId, ageMinutes, stale, note}`.
+`rtToken: {present, campaignId, activeCampaignId, campaignMismatch, ageMinutes, stale, note}` —
+`campaignMismatch` flags a token that is fresh but harvested for a different campaign than the
+active one, which every connect would refuse just as surely as an expired one.
 
 **Why:** the 50-minute window was local bookkeeping against a timestamp *we* stamped, guarding a
 credential whose real deadline only Firebase knows (~1 h from mint, and `harvestedAt` is stamped at
@@ -241,7 +246,9 @@ token failure. A gem holding a live socket never hits one: the Firebase SDK refr
 token in memory forever, so the file's mtime stops moving while `transport_status` reports
 `health: ok, failures: 0`. Every other reader of that data dir — `roll20-dm-maps` over stdio, a
 `tsx` script — then died on our own clock check with "cached token is 56m old (max 50m)" while the
-credential on disk was still perfectly exchangeable. Refusing to ask was the bug.
+credential on disk was possibly still exchangeable — Firebase is the authority, and we never asked it.
+(Unproven either way: a live check during this work saw a 56-minute token *rejected*.) Refusing to
+ask was the bug.
 
 **Trade-offs:** a genuinely expired token now costs one network round trip before it fails, instead
 of failing instantly on the clock. That buys a truthful reason: the auth code Firebase returned

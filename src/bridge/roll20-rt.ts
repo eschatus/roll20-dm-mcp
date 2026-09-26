@@ -154,10 +154,17 @@ export const __readRtCredentialForTest = getCustomToken;
  * long-running gem reports perfect health on its own live socket while the file every OTHER
  * reader of the data dir shares has gone cold. Nothing used to say so — the error surfaced only
  * in the locked-out process, pointing the DM at the wrong component. This is that signal.
+ *
+ * `activeCampaignId` is the Roll20 campaign this server would connect to. Tokens are
+ * campaign-scoped, so a perfectly fresh token for a DIFFERENT campaign is as useless as an
+ * expired one — getCustomToken refuses it on every connect — and must not read as healthy.
+ * Pass null when no campaign is active; the mismatch check is then skipped (nothing to compare).
  */
-export function getRtTokenStatus(): {
+export function getRtTokenStatus(activeCampaignId: string | null): {
   present: boolean;
   campaignId: string | null;
+  activeCampaignId: string | null;
+  campaignMismatch: boolean;
   ageMinutes: number | null;
   stale: boolean;
   note?: string;
@@ -165,24 +172,40 @@ export function getRtTokenStatus(): {
   const c = readTokenCache();
   if (!c) {
     return {
-      present: false, campaignId: null, ageMinutes: null, stale: true,
+      present: false, campaignId: null, activeCampaignId, campaignMismatch: false, ageMinutes: null, stale: true,
       note: `No ${path.basename(TOKEN_CACHE)} in the data dir — reconnect Roll20 in the gem to harvest one.`,
     };
   }
+  const campaignId = c.campaignId ?? null;
+  const campaignMismatch = activeCampaignId !== null && campaignId !== activeCampaignId;
   const harvestedAt = Number(c.harvestedAt) || 0;
   const ageMinutes = tokenAgeMinutes(harvestedAt);
   const stale = harvestedAt <= 0 || Date.now() - harvestedAt >= TOKEN_STALE_MS;
+  const notes: string[] = [];
+  if (campaignMismatch) {
+    notes.push(
+      `The on-disk Roll20 token belongs to campaign ${campaignId ?? "(none recorded)"} but the active ` +
+      `campaign is ${activeCampaignId}; tokens are campaign-scoped, so every connect for the active ` +
+      `campaign will be refused. Reconnect Roll20 in the gem on the active campaign to harvest a matching one.`,
+    );
+  }
+  if (stale) {
+    const ageText = ageMinutes === null ? "of unknown age" : `${ageMinutes}m old`;
+    notes.push(
+      `The on-disk Roll20 token is ${ageText} and custom tokens last ~` +
+      `${Math.round(TOKEN_LIFETIME_MS / 60_000)}m. An already-connected server keeps working off its ` +
+      `live socket, but any OTHER process sharing this data dir — roll20-dm-maps over stdio, a CLI ` +
+      `script — cannot sign in once it expires. Reconnect Roll20 in the gem to refresh the file.`,
+    );
+  }
   return {
     present: true,
-    campaignId: c.campaignId ?? null,
+    campaignId,
+    activeCampaignId,
+    campaignMismatch,
     ageMinutes,
     stale,
-    note: stale
-      ? `The on-disk Roll20 token is ${ageMinutes ?? "of unknown age"}m old and custom tokens last ~` +
-        `${Math.round(TOKEN_LIFETIME_MS / 60_000)}m. An already-connected server keeps working off its ` +
-        `live socket, but any OTHER process sharing this data dir — roll20-dm-maps over stdio, a CLI ` +
-        `script — cannot sign in once it expires. Reconnect Roll20 in the gem to refresh the file.`
-      : undefined,
+    note: notes.length ? notes.join(" ") : undefined,
   };
 }
 
@@ -375,6 +398,10 @@ export const __handleChatChildForTest = handleChatChild;
 // arriving on /chat actually RESOLVES it. Without this the gate in tryResolveContent had no test
 // that ran it — the marker tests all called parseAibridge directly, past the gate, which is how
 // #213 shipped with a green suite.
+// Test seam: the sign-in step on its own, so the auth-rejection vs network-error split in
+// connect()'s catch is provable with a mocked firebase/auth (test/rt-token-connect.test.ts).
+export async function __connectForTest(): Promise<RtConn> { return connect(); }
+
 export function __seedPendingRelayForTest(nonce: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { pending.delete(nonce); reject(new Error("test pending timeout")); }, 5000);

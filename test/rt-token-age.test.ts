@@ -5,7 +5,8 @@
 // so the file's mtime stops moving while the gem reports perfect health. The server used to
 // refuse any cached token older than 50 minutes WITHOUT offering it to Firebase, so every other
 // reader of that data dir (roll20-dm-maps over stdio, a tsx script) was locked out with
-// "cached token is 56m old (max 50m)" while the credential on disk was still perfectly good.
+// "cached token is 56m old (max 50m)" while the credential on disk was possibly still
+// exchangeable — Firebase is the authority, and our clock check never asked it.
 //
 // Firebase is the authority on whether a token is spent. These cases pin the pre-flight read —
 // the part that runs BEFORE the exchange — so they need no network: structural problems still
@@ -98,14 +99,14 @@ describe("the cached RT token's age is advisory, not a gate (#216)", () => {
 describe("transport_status can see the staleness the gem cannot (#216)", () => {
   it("reports a fresh token as present and not stale, with nothing to say", () => {
     writeToken({ harvestedAt: Date.now() - 5 * MIN });
-    const s = rt.getRtTokenStatus();
-    expect(s).toMatchObject({ present: true, campaignId: CAMPAIGN, stale: false, ageMinutes: 5 });
+    const s = rt.getRtTokenStatus(CAMPAIGN);
+    expect(s).toMatchObject({ present: true, campaignId: CAMPAIGN, campaignMismatch: false, stale: false, ageMinutes: 5 });
     expect(s.note).toBeUndefined();
   });
 
   it("flags a 56-minute-old token as stale and names the other readers it locks out", () => {
     writeToken({ harvestedAt: Date.now() - 56 * MIN });
-    const s = rt.getRtTokenStatus();
+    const s = rt.getRtTokenStatus(CAMPAIGN);
     expect(s.present).toBe(true);
     expect(s.stale).toBe(true);
     expect(s.ageMinutes).toBe(56);
@@ -114,8 +115,33 @@ describe("transport_status can see the staleness the gem cannot (#216)", () => {
   });
 
   it("flags a missing token file rather than reporting it as fine", () => {
-    const s = rt.getRtTokenStatus();
+    const s = rt.getRtTokenStatus(CAMPAIGN);
     expect(s).toMatchObject({ present: false, campaignId: null, ageMinutes: null, stale: true });
     expect(s.note).toMatch(/roll20-rt-token\.json/);
+  });
+
+  it("flags a FRESH token for the wrong campaign — every connect would be refused", () => {
+    writeToken({ campaignId: "21660022", harvestedAt: Date.now() - 5 * MIN });
+    const s = rt.getRtTokenStatus(CAMPAIGN);
+    expect(s).toMatchObject({ present: true, campaignId: "21660022", activeCampaignId: CAMPAIGN, campaignMismatch: true, stale: false });
+    expect(s.note).toContain("21660022");
+    expect(s.note).toContain(CAMPAIGN);
+    expect(s.note).toMatch(/campaign-scoped/);
+  });
+
+  it("skips the campaign check when no campaign is active", () => {
+    writeToken({ harvestedAt: Date.now() - 5 * MIN });
+    const s = rt.getRtTokenStatus(null);
+    expect(s.campaignMismatch).toBe(false);
+    expect(s.note).toBeUndefined();
+  });
+
+  it("says 'of unknown age' cleanly when harvestedAt is missing", () => {
+    writeToken({ harvestedAt: 0 });
+    const s = rt.getRtTokenStatus(CAMPAIGN);
+    expect(s.stale).toBe(true);
+    expect(s.ageMinutes).toBeNull();
+    expect(s.note).toContain("is of unknown age and");
+    expect(s.note).not.toMatch(/agem/);
   });
 });
