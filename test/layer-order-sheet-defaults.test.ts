@@ -11,8 +11,13 @@
 // is a per-campaign sandbox setting. The emulator therefore installs the v1.5 globals only when
 // asked, so the v1.0 path here runs against genuinely undeclared identifiers.
 // ─────────────────────────────────────────────────────────────────────────────
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
+import { z } from "zod";
 import { Roll20Emulator } from "./roll20-emulator.js";
+import * as roll20 from "../src/bridge/roll20.js";
+import { registerMapTools } from "../src/tools/maps.js";
+import { registerCombatTools } from "../src/tools/combat.js";
+import { FakeMcpServer } from "./harness.js";
 
 /** Attach the direct Campaign() properties a v1.5 sandbox exposes (same shim as sandbox-handshake). */
 function asSandbox(e: Roll20Emulator, props: Record<string, unknown>): void {
@@ -75,6 +80,21 @@ describe("toAbove / toBelow — relative z-order (sandbox v1.5)", () => {
 
     expect(() => emu.relay({ action: "toAbove", objectId: a.id, targetId: b.id }))
       .toThrow(/same layer.*'objects'.*'map'/s);
+    expect(emu.zOrderCalls).toEqual([]);
+  });
+
+  it("refuses a same-layer pair on DIFFERENT pages — z-order is page-local, so it would be a no-op", () => {
+    const emu = new Roll20Emulator({ seed: 3, sandbox15: true });
+    emu.load();
+    const p1 = emu.createPage();
+    const p2 = emu.createPage();
+    const a = emu.createToken({ pageid: p1, name: "Bloodstain", layer: "objects" });
+    const b = emu.createToken({ pageid: p2, name: "Ogre", layer: "objects" });
+
+    expect(() => emu.relay({ action: "toAbove", objectId: a.id, targetId: b.id }))
+      .toThrow(new RegExp(`same page.*'${p1}'.*'${p2}'`, "s"));
+    expect(() => emu.relay({ action: "toBelow", objectId: a.id, targetId: b.id }))
+      .toThrow(/same page/);
     expect(emu.zOrderCalls).toEqual([]);
   });
 
@@ -186,5 +206,75 @@ describe("getSheetDefaultValues — the sheet's default, not a character's value
       .toThrow(/requires names/);
     expect(() => emu.relay({ action: "getSheetDefaultValues", names: [] }))
       .toThrow(/requires names/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The TS tool layer: the relay tests above prove the Mod half; these prove the MCP tools map their
+// arguments onto the relay command correctly (objectType defaulting to "graphic", targetType passed
+// through untouched so the relay can default it to objectType) by running the real handlers.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("to_above / to_below / get_sheet_default_values — tool handlers", () => {
+  afterEach(() => { roll20.__setBridgeTestTransport(null as never); });
+
+  function wire(emu: Roll20Emulator) {
+    const sent: Array<Record<string, unknown>> = [];
+    roll20.__setBridgeTestTransport({
+      relay: <T>(cmd: Record<string, unknown>) => { sent.push(cmd); return Promise.resolve(emu.relay<T>(cmd)); },
+      evaluate: <T>(fn: (args?: unknown) => T, args?: unknown) => Promise.resolve(fn(args)),
+    });
+    const server = new FakeMcpServer();
+    registerMapTools(server as never);
+    registerCombatTools(server as never);
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const entry = server.handlers.get(name);
+      if (!entry) throw new Error(`No such tool registered: ${name}`);
+      const parsed = z.object(entry.schema).parse(args) as Record<string, unknown>;
+      const res = await entry.handler(parsed);
+      return JSON.parse(res?.content?.[0]?.text ?? "null");
+    };
+    return { sent, call, server };
+  }
+
+  it("to_above defaults objectType to graphic and leaves targetType unset for the relay to default", async () => {
+    const emu = new Roll20Emulator({ seed: 3, sandbox15: true });
+    emu.load();
+    const { a, b } = twoTokens(emu);
+    const { sent, call } = wire(emu);
+
+    const out = await call("to_above", { objectId: a.id, targetId: b.id });
+    expect(sent).toEqual([
+      { action: "toAbove", objectId: a.id, targetId: b.id, objectType: "graphic", targetType: undefined },
+    ]);
+    expect(out).toMatchObject({ ok: true, objectId: a.id, targetId: b.id, layer: "objects" });
+    expect(emu.zOrderCalls).toEqual([{ fn: "toAbove", objectId: a.id, targetId: b.id }]);
+  });
+
+  it("to_below passes an explicit targetType through, so a path orders against a token", async () => {
+    const emu = new Roll20Emulator({ seed: 3, sandbox15: true });
+    emu.load();
+    const pageId = emu.createPage();
+    const zone = emu.relay<{ id: string }>({
+      action: "createZone", pageId, name: "Web", centerX: 350, centerY: 350, radiusFeet: 20, shape: "circle",
+    });
+    const token = emu.createToken({ pageid: pageId, name: "Ogre", layer: "map" });
+    const { sent, call } = wire(emu);
+
+    await call("to_below", { objectId: zone.id, objectType: "path", targetId: token.id, targetType: "graphic" });
+    expect(sent).toEqual([
+      { action: "toBelow", objectId: zone.id, targetId: token.id, objectType: "path", targetType: "graphic" },
+    ]);
+    expect(emu.zOrderCalls).toEqual([{ fn: "toBelow", objectId: zone.id, targetId: token.id }]);
+  });
+
+  it("get_sheet_default_values accepts only Roll20's documented valtypes", () => {
+    const emu = new Roll20Emulator({ seed: 3 });
+    emu.load();
+    const { server } = wire(emu);
+    const schema = z.object(server.handlers.get("get_sheet_default_values")!.schema);
+    expect(schema.safeParse({ names: ["hp"], valtype: "max" }).success).toBe(true);
+    expect(schema.safeParse({ names: ["hp"], valtype: "current" }).success).toBe(true);
+    expect(schema.safeParse({ names: ["hp"] }).success).toBe(true);
+    expect(schema.safeParse({ names: ["hp"], valtype: "maximum" }).success).toBe(false);
   });
 });

@@ -805,7 +805,7 @@ export function registerCombatTools(server: McpServer): void {
     "Read the character SHEET's default value for one or more field names — not any character's live value. Use it to tell 'never set' from 'set to exactly the default' when writing a stat block, which read_character_attributes cannot do on its own. Campaign-wide (keyed on the sheet, not a character).",
     {
       names: z.array(z.string()).min(1).describe("Sheet field names, e.g. ['npc_ac', 'npc_speed']"),
-      valtype: z.string().optional().describe("Optional value type passed through to getSheetDefaultValue, e.g. 'max'"),
+      valtype: z.enum(["current", "max"]).optional().describe("Optional value type for getSheetDefaultValue: 'current' (Roll20's default) or 'max'"),
     },
     async ({ names, valtype }) => {
       const result = await roll20.relayCommand<{

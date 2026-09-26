@@ -2633,6 +2633,14 @@ function reorderRelative(which, args) {
   var target = getObj(tgtType, args.targetId);
   if (!target) throw new Error("Target object not found: " + args.targetId);
   if (args.objectId === args.targetId) throw new Error("Cannot reorder an object relative to itself: " + args.objectId);
+  // Z-order is PAGE-local: two objects on different pages have no relative order, and the global
+  // would silently do nothing even when the layer names match. Refuse, naming both pages.
+  var objPage = obj.get("_pageid");
+  var tgtPage = target.get("_pageid");
+  if (objPage && tgtPage && objPage !== tgtPage) {
+    throw new Error(which + " needs both objects on the same page: " + args.objectId + " is on page '" +
+      objPage + "', " + args.targetId + " is on page '" + tgtPage + "'");
+  }
   // Roll20 orders z WITHIN a layer, so a cross-layer pair has no defined answer and the global
   // would silently do nothing. Say which layers, rather than report ok:true for a no-op.
   var objLayer = obj.get("layer");

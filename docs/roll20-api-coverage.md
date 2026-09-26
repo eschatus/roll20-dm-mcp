@@ -28,12 +28,15 @@ is **out of scope here**, not "bridged with Playwright".
 > Read the page before trusting anything below it — §2 is transcribed from the live articles, but
 > Roll20 ships changes weekly and the Objects page visibly lags its own change log.
 >
-> **But do not assume the recipe still works.** As of **2026-09-26** that exact `curl` returns a
-> Cloudflare "Just a moment..." interstitial (~5.8 KB of JS challenge, HTTP 200) rather than the
-> article, so a headless session cannot re-read these pages at all. If you need a fresh
-> transcription, fetch it from a browser that has already cleared the challenge and save the HTML
-> under `data/` (gitignored) the way `data/Mod_Objects - Roll20 Wiki.html` used to be — the
-> emulator's property whitelist cites it.
+> **A Cloudflare challenge has been seen once.** On **2026-09-26** one fetch with the short UA
+> above came back as a "Just a moment..." interstitial (~5.8 KB of JS challenge, HTTP 200) instead
+> of the article. Later the same day all three articles fetched fine (HTTP 200, full article) with a
+> **full** Chrome UA plus `-H 'Accept: text/html'`. So if you hit the interstitial, retry with a
+> full Chrome UA string and an `Accept: text/html` header — or read the article through the
+> Zendesk JSON API (`https://help.roll20.net/api/v2/help_center/en-us/articles/<id>.json`, whose
+> `body` field is the article HTML) — before concluding the pages are unreachable. Save any fresh
+> transcription under `data/` (gitignored) the way `data/Mod_Objects - Roll20 Wiki.html` used to
+> be — the emulator's property whitelist cites it.
 
 **Mod Script Sandbox v1.0 vs v1.5 — read this before anything else.** On **2026-09-02** Roll20 made
 **v1.5 the default** for every game that had never explicitly picked a version (the old
@@ -44,7 +47,7 @@ can be moved back to 1.0 by hand. `ACTIONS["ping"]` echoes `Campaign().sandboxVe
 surfaces them under `sandbox` — that is how you find out which one a campaign is on. A `sandbox` of
 `null` there means the *relay* is older than 2.7.0, not that the sandbox is old.
 
-Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.6). Relay version string: `2.9.0`
+Last analyzed: **2026-09-26** (docs re-read live; repo v2.0.6). Relay version string: `2.9.0`
 (reported by the `ping` action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
 (`[GM_AI_Bridge] Relay script loaded (v2.9.0)`), not the save.
@@ -126,17 +129,11 @@ Persistent storage: the global **`state`** object (survives sandbox restarts).
   they wrap attributes; on v1.5 they also reach Beacon computed properties and `user.*` attrs.
 - `findObjs` options now include **`tagMatch: 'all' | 'any' | 'only'`** beside `caseInsensitive`
   and `startsWith` — `'all'` (default) means the object carries every listed tag, `'any'` at least
-  one, `'only'` exactly the listed set. **Not adopted, and deliberately so (#209):** it would be a
-  cheaper filter than `resolveToken`'s name matching only if Roll20 object *tags* are reachable from
-  the Mod API at all, and nothing supports that yet — §2's own transcription of the Objects page
-  lists no `tags` property on any object type, and nothing in this repo has ever read or written one.
-  That is a one-line live probe, not a design question; run it in the campaign's Mod console before
-  building anything on it:
-  ```js
-  log(JSON.stringify(findObjs({_type:"graphic"}).slice(0,3).map(function(o){ return o.get("tags"); })));
-  ```
-  A row of `""`/`undefined` means tokens carry no tags and `tagMatch` is inert here; anything else
-  means it is worth a `findTokensByTag` action. Record the answer here either way.
+  one, `'only'` exactly the listed set. **Not adopted, and deliberately so (#209):** the live
+  Objects page (re-read 2026-09-26) lists a `tags` property on **character** and **handout** only —
+  graphics, paths and text have none. So `tagMatch` is inert for token lookup, the one place it
+  could have replaced `resolveToken`'s name matching: tokens carry no tags to match. It could
+  filter characters or handouts if a use for that ever appears; nothing here needs one today.
 - Card/deck helpers: `shuffleDeck`, `cardInfo`, `recallCards`, `dealCardsToTurn`, `drawCard`,
   `pickUpCard`, `takeCardFromPlayer`, `playCardToTable`, `giveCardToPlayer`. Available on both
   sandboxes. **Not adopted (#209):** nothing at the table uses decks yet. This is the same gap as
@@ -150,8 +147,8 @@ Persistent storage: the global **`state`** object (survives sandbox restarts).
 - ~~`toAbove(obj, target)` / `toBelow(obj, target)`~~ ✅ **wired (relay 2.9.0)** as `to_above` /
   `to_below` — precise layer ordering, which `to_front`/`to_back` cannot express. The relay refuses
   on v1.0 with the campaign's sandbox version named rather than letting `toAbove is not defined`
-  surface, and refuses a cross-layer pair rather than reporting `ok:true` for a no-op (z-order is
-  per-layer). `toFront`/`toBack` are also "substantially faster" here, and graphics/paths/text gain
+  surface, and refuses a cross-page or cross-layer pair rather than reporting `ok:true` for a no-op
+  (z-order is per-page and per-layer). `toFront`/`toBack` are also "substantially faster" here, and graphics/paths/text gain
   `.toFront()` / `.toBack()` instance methods (the globals still work; nothing here needs changing).
 - `spawnFxBetweenPoints` beam types point at the end point (an angle bug is fixed).
 - `log` error messages carry a context object (e.g. `[Roll20 character -id]`); the Apr 2026 server
@@ -249,7 +246,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `sendPing` | send_ping | maps | "look here" / pull player view to a spot |
 | `spawnFx` / `spawnFxBetweenPoints` | spawn_fx, spawn_fx_between_points | maps | explosions, beams, spell nova |
 | `toFront` / `toBack` | to_front, to_back | maps | z-order (all-the-way front/back) |
-| `toAbove` / `toBelow` | to_above, to_below | maps | z-order **relative** to another object. **Sandbox v1.5 only** — refuses on v1.0 naming the version and the `toFront`/`toBack` fallback. Both objects must share a layer. |
+| `toAbove` / `toBelow` | to_above, to_below | maps | z-order **relative** to another object. **Sandbox v1.5 only** — refuses on v1.0 naming the version and the `toFront`/`toBack` fallback. Both objects must share a page **and** a layer (z-order is page- and layer-local; either mismatch is refused rather than reported as an `ok:true` no-op). **Maps server only**, matching `to_front`/`to_back` — z-order is map-prep work; a combat-side registration is a follow-up if the table ever needs it live. |
 | `ping` | (health check) | — | reports relay version (2.9.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
 | **event** `chat:message` | (passive) | — | buffers chat, parses `!dm`. Player `!`-commands are **forwarded, not answered** — `forwardChat` broadcasts them as an SSE `chat-message`; the gem decides what to do. |
 | **event** `change:campaign:turnorder` | (passive) | — | turn/round announcements |
