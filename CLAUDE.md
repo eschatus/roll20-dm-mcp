@@ -166,7 +166,11 @@ moved to beyond-mcp with the code.)
 - **Ability-score `_mod` attributes don't auto-derive either**, for the same sheet-worker-never-
   fires-on-the-API reason. `createCharacter`'s relay action now derives `<ability>_mod` from the
   raw score at creation time (an explicitly-passed `_mod` is left untouched) — see
-  `ACTIONS["createCharacter"]` in `ai-relay.js`.
+  `ACTIONS["createCharacter"]` in `ai-relay.js`. **Both this and the `rollbase` scaffolding above are under
+  test (#206):** Roll20 documents a `setAttrs` that defaults to `setWithWorker`, which may make the
+  sheet derive these itself. `ACTIONS["setAttrs"]` (relay ≥ 2.9.0) is the instrument; run
+  `npx tsx src/recon/setattrs-spike.ts` live and record the result in
+  `docs/roll20-api-coverage.md`. Until then nothing calls it and both workarounds stay.
 
 ## Where things live
 

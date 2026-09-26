@@ -1,0 +1,205 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// #206 — does an API-side `setAttrs` fire the sheet's own workers?
+//
+// Two workarounds in this repo exist because sheet workers never observe an attribute created
+// through `createObj("attribute")`:
+//   1. the hand-written `rollbase` + companion-field scaffolding for repeating_npcaction rows
+//      (attack_tohitrange, attack_onhit, damage_flag, attack_crit, attack_crit2), and
+//   2. the <ability>_mod derivation inside ACTIONS["createCharacter"].
+// Roll20 documents `setAttrs(charId, attrs, options)` on both sandbox versions, and it defaults to
+// `setWithWorker`. If the sheet's workers really do run, BOTH workarounds are dead weight.
+//
+// The emulator cannot answer this — it has no character sheet. So: run it against a live campaign.
+//
+// RUN:  npx tsx src/recon/setattrs-spike.ts [--keep]
+// Needs a deployed relay >= 2.9.0 (this is when ACTIONS["setAttrs"] landed) and a furnished
+// <data dir>/roll20-rt-token.json for the active campaign. --keep leaves the scratch character
+// behind for inspection; by default it is deleted.
+//
+// READBACK IS OFF RTDB, NOT OVER CHAT. `rollbase` is a macro template full of literal `@{` and
+// `[[`; Roll20 live-evaluates those on every outgoing chat message and a malformed one disables
+// the whole Mod sandbox asynchronously. Relay >= 2.7.0 percent-encodes its result payload, which
+// makes the chat path structurally safe again — but reading the RTDB `char-blobs` node never
+// touches chat at all, so that is what this uses. Do not "simplify" it to
+// getCharacterAttributes.
+// ─────────────────────────────────────────────────────────────────────────────
+import { relayCommand } from "../bridge/roll20.js";
+import { rtGet } from "../bridge/roll20-rt.js";
+
+const KEEP = process.argv.includes("--keep");
+
+/** The relay release that added ACTIONS["setAttrs"]. */
+const SETATTRS_SINCE = "2.9.0";
+
+/** Numeric semver compare — a lexicographic one would rank "2.10.0" below "2.9.0". */
+function atLeast(found: string, want: string): boolean {
+  const f = found.split(".").map((n) => parseInt(n, 10) || 0);
+  const w = want.split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(f.length, w.length); i++) {
+    const a = f[i] ?? 0, b = w[i] ?? 0;
+    if (a !== b) return a > b;
+  }
+  return true;
+}
+
+const SCORES: Record<string, number> = {
+  strength: 16, dexterity: 12, constitution: 15,
+  intelligence: 7, wisdom: 11, charisma: 9,
+};
+// Math.floor((score - 10) / 2) — what createCharacter currently computes by hand.
+const EXPECTED_MODS: Record<string, number> = {
+  strength: 3, dexterity: 1, constitution: 2,
+  intelligence: -2, wisdom: 0, charisma: -1,
+};
+
+// The fields the 5e OGL sheet's own worker is supposed to generate for an attack row. We write
+// NONE of them; if any appears, a worker ran.
+const COMPANION_FIELDS = [
+  "attack_tohitrange", "attack_onhit", "damage_flag",
+  "attack_crit", "attack_crit2", "rollbase",
+];
+
+type SetAttrsResult = {
+  written: string[];
+  silent: boolean;
+  workersExecuted: boolean | null;
+  note: string | null;
+  sheet: { sandbox: string | null; sheetName: string | null; beacon: boolean };
+};
+
+type Attr = { name?: string; current?: unknown; max?: unknown };
+
+/** Read every attribute off the RTDB char-blob. Chat-free, so a rollbase value is harmless. */
+async function readAttrs(charId: string): Promise<Map<string, Attr>> {
+  const blob = await rtGet<Record<string, unknown>>(`char-blobs/${charId}`).catch(() => null);
+  const raw = (blob?.attribs ?? blob?.attributes) as Record<string, Attr> | undefined;
+  const out = new Map<string, Attr>();
+  for (const [key, a] of Object.entries(raw ?? {})) {
+    // The node is keyed by attribute id and each entry carries its own `name`; fall back to the
+    // key if this campaign's backend shape differs (the schema was probed, not documented).
+    out.set(String(a?.name ?? key), a ?? {});
+  }
+  return out;
+}
+
+function cur(attrs: Map<string, Attr>, name: string): string | null {
+  const a = attrs.get(name);
+  if (!a) return null;
+  return a.current === undefined || a.current === null ? "" : String(a.current);
+}
+
+async function main() {
+  const ping = await relayCommand<Record<string, unknown>>({ action: "ping" });
+  console.error(`relay v${ping.version} · sandbox ${ping.sandbox ?? "?"} · node ${ping.node ?? "?"}`
+    + ` · sheet ${ping.sheetName ?? "?"} · beacon ${ping.beacon}`);
+  if (!atLeast(String(ping.version ?? "0.0.0"), SETATTRS_SINCE)) {
+    throw new Error(`this campaign is on relay ${ping.version}; ACTIONS["setAttrs"] landed in `
+      + `${SETATTRS_SINCE} — paste mod-scripts/ai-relay.js into the campaign API console first`);
+  }
+
+  const { id: charId } = await relayCommand<{ id: string }>({
+    action: "createCharacter",
+    name: `SETATTRS-SPIKE-${process.pid}`,
+    // NO attributes: createCharacter's own _mod derivation only fires for scores passed here, so
+    // an empty character leaves the derivation question entirely to setAttrs.
+    gmnotes: "#206 setAttrs spike — scratch character, safe to delete.",
+  });
+  console.error(`scratch character: ${charId}`);
+
+  let failures = 0;
+  try {
+    // ── Arm 1: ability scores, no _mod written ───────────────────────────────
+    const abilityWrite = await relayCommand<SetAttrsResult>({
+      action: "setAttrs",
+      charId,
+      attributes: { ...SCORES, npc: 1, npc_name: "Spike Dummy" },
+    });
+    console.error(`\nability write → workersExecuted=${abilityWrite.workersExecuted}`
+      + (abilityWrite.note ? ` (${abilityWrite.note})` : "")
+      + ` · beacon=${abilityWrite.sheet.beacon}`);
+
+    // ── Arm 2: one npcaction row, none of the companion fields ───────────────
+    const rowWrite = await relayCommand<SetAttrsResult>({
+      action: "setAttrs",
+      charId,
+      attributes: {
+        "repeating_npcaction_$0_name": "Greatclub",
+        "repeating_npcaction_$0_attack_tohit": 5,
+        "repeating_npcaction_$0_attack_damage": "2d8+3",
+        "repeating_npcaction_$0_attack_damagetype": "bludgeoning",
+        "repeating_npcaction_$0_npc_options-flag": 0,
+      },
+    });
+    console.error(`npcaction write → workersExecuted=${rowWrite.workersExecuted}`
+      + (rowWrite.note ? ` (${rowWrite.note})` : ""));
+
+    // Sheet workers are async even once the queue reports drained; give them room.
+    await new Promise((r) => setTimeout(r, 4000));
+
+    const attrs = await readAttrs(charId);
+    if (attrs.size === 0) {
+      console.error("\n❌ RTDB readback returned no attributes — cannot judge. Check char-blobs "
+        + `shape for this campaign (src/recon/rtdb-schema.ts) and inspect ${charId} by hand.`);
+      failures++;
+    }
+
+    // ── Verdict 1: <ability>_mod derivation ──────────────────────────────────
+    console.error("\n<ability>_mod derivation:");
+    let modsDerived = 0;
+    for (const ability of Object.keys(SCORES)) {
+      const got = cur(attrs, `${ability}_mod`);
+      const want = EXPECTED_MODS[ability];
+      const ok = got !== null && got !== "" && Number(got) === want;
+      if (ok) modsDerived++;
+      console.error(`  ${ability}_mod: ${got === null ? "<absent>" : JSON.stringify(got)} (want ${want}) ${ok ? "✅" : "❌"}`);
+    }
+
+    // ── Verdict 2: the rollbase scaffolding ──────────────────────────────────
+    // The row id setAttrs minted for $0 — everything under repeating_npcaction_<row>_.
+    const rowIds = new Set<string>();
+    for (const name of attrs.keys()) {
+      const m = /^repeating_npcaction_([^_]+)_/.exec(name);
+      if (m) rowIds.add(m[1]);
+    }
+    console.error(`\nnpcaction rows materialised: ${rowIds.size ? [...rowIds].join(", ") : "<none>"}`);
+    let companionsPresent = 0;
+    for (const rowId of rowIds) {
+      for (const field of COMPANION_FIELDS) {
+        const name = `repeating_npcaction_${rowId}_${field}`;
+        const got = cur(attrs, name);
+        const present = got !== null && got !== "";
+        if (present) companionsPresent++;
+        // Print rollbase's LENGTH, never its text — it is full of @{ and [[ and this output can
+        // end up pasted into places that evaluate them.
+        const shown = got === null ? "<absent>" : field === "rollbase" ? `<${got.length} chars>` : JSON.stringify(got);
+        console.error(`  ${field}: ${shown} ${present ? "✅" : "❌"}`);
+      }
+    }
+
+    // ── Conclusion ───────────────────────────────────────────────────────────
+    const modsWork = modsDerived === Object.keys(SCORES).length;
+    const rollbaseWorks = companionsPresent === COMPANION_FIELDS.length * Math.max(1, rowIds.size);
+    console.error("\n──────── verdict ────────");
+    console.error(`_mod derivation by sheet worker:  ${modsWork ? "YES ✅" : `NO ❌ (${modsDerived}/${Object.keys(SCORES).length})`}`);
+    console.error(`rollbase scaffolding by worker:   ${rollbaseWorks ? "YES ✅" : `NO ❌ (${companionsPresent}/${COMPANION_FIELDS.length * Math.max(1, rowIds.size)})`}`);
+    console.error(
+      modsWork && rollbaseWorks
+        ? "\n→ POSITIVE. Route createCharacter/setCharacterAttributes through setAttrs, delete the\n"
+          + "  ABILITY_NAMES derivation block and the rollbase template, and cut both CLAUDE.md gotchas."
+        : "\n→ NEGATIVE (or partial). Record this in docs/roll20-api-coverage.md under #206 with the\n"
+          + "  relay/sandbox/sheet versions printed above, and KEEP both workarounds."
+    );
+    console.error("\nReproduce the readback by hand: rtGet(`char-blobs/" + charId + "`)");
+  } finally {
+    if (KEEP) {
+      console.error(`\n--keep: scratch character ${charId} left in place.`);
+    } else {
+      await relayCommand({ action: "removeObject", objectType: "character", objectId: charId })
+        .then(() => console.error(`\ncleaned up scratch character ${charId}`))
+        .catch((e) => console.error(`\n⚠ could not delete scratch character ${charId}: ${e}`));
+    }
+  }
+  if (failures) process.exitCode = 1;
+}
+
+main().then(() => process.exit(process.exitCode || 0), (e) => { console.error("❌ spike FAILED:", e); process.exit(1); });
