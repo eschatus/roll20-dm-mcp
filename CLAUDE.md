@@ -258,6 +258,16 @@ registry override (`sidekick: true`, `src/registry/characters.ts`) is needed to 
   (`registry.listSidekickNames()`) so a sidekick routes as an NPC everywhere HP/death routing is
   decided. See issue #132.
 
+**Death and its undo:** `kill_token` is the one-call death procedure (dead marker + map layer);
+`revive_token` is its one-call inverse (#217) — HP (required, must be ≥ 1 or the auto-death
+threshold re-kills the token), clear `dead`, back to the `objects` layer, turn-order entry restored.
+The entry comes back three ways, in this order: an explicit `initiative` argument, the entry that
+survived the kill (leaving the token layer is what drops a combatant from the tracker), else a
+silent `rollInitiativeForTokens` re-roll — always upserted with `mergeTurnOrder`, never a wholesale
+write. Nothing on the board remembers a pre-kill HP or `pr`: a stash at the layer-write seam would
+have to be hand-synced across BOTH write paths (`roll20-rt.ts`'s direct write and `ai-relay.js`'s
+copy), which is why revive reads the live order instead of trusting a cache.
+
 **Auras (emanations):** `set_token_aura` is the one-call primitive — radius in feet, `0` clears,
 slot 1 or 2, player-visible by default. Shape goes to `aura{n}_options` (the authoritative field;
 Roll20 keeps the legacy `aura{n}_square` boolean in sync with it, so never write both). Roll20

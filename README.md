@@ -116,7 +116,7 @@ Two things worth knowing:
 
 ## What the servers expose
 
-**`roll20-dm`** — tokens and HP (`update_token_hp`, `update_hp_many`, `kill_token`, `set_pc_dying`),
+**`roll20-dm`** — tokens and HP (`update_token_hp`, `update_hp_many`, `kill_token`, `revive_token`, `set_pc_dying`),
 conditions and markers (`set_token_marker`, `break_concentration`), initiative
 (`roll_initiative` with explicit `entries`, `update_turn_order`, `inject_round_marker`,
 `advance_turn`), dice (`roll_dice`, `post_roll_as_character`), AoE (`resolve_aoe`) and zones,

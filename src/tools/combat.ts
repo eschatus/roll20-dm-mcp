@@ -127,6 +127,103 @@ export function registerCombatTools(server: McpServer): void {
   );
 
   server.tool(
+    "revive_token",
+    "UNDO A KILL — the exact inverse of kill_token, atomically, in ONE call (issue #217). Restores HP, clears the dead marker, returns the token to the token layer, and puts it back in the turn order: its ORIGINAL initiative entry if the kill left one behind, else the `initiative` you pass, else a fresh silent 1d20+bonus roll through Roll20's roller. Use when a kill was WRONG — damage landed on the wrong creature and crossed 0 (the threshold automation kills at 0), or the DM retcons a death ('no wait, the ogre isn't dead', 'undo that kill', 'that goblin's still up'). Replaces the four-call unwind (update_token_hp setHp + set_token_marker dead:false + set_token_props layer:objects + roll_initiative). `hp` is REQUIRED — nothing on the board remembers the pre-kill value. HP routes exactly like update_token_hp (PC → tracked relay state, NPC/sidekick → bar1). NOT ordinary healing (use update_token_hp) and NOT for a downed PC getting back up (clear 'unconscious' with set_token_marker — a dying PC never left the token layer).",
+    {
+      characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Ogre', 'Goblin the Savage'."),
+      tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup. Do NOT invent one; use characterName if you have no real ID from a prior tool result."),
+      hp: z.number().int().positive().describe("REQUIRED. HP to come back at, a bare NUMBER (hp:14, never hp:\"14\"). Must be at least 1 — reviving at 0 would immediately re-trigger the auto-death threshold and kill the token again."),
+      initiative: z.number().int().optional().describe("Initiative (pr) to restore the turn-order entry at, if you know the pre-kill value. Omit to keep the surviving entry, or to roll a fresh initiative when the kill took the entry with it."),
+    },
+    async ({ characterName, tokenId, hp, initiative }) => {
+      // Same id guard as update_token_hp: getTokenById on a hallucinated id hangs the
+      // relay for 30s instead of failing fast.
+      let resolvedTokenId = tokenId;
+      if (resolvedTokenId && !(await tokenIdExists(resolvedTokenId))) resolvedTokenId = undefined;
+      if (!resolvedTokenId) {
+        if (!characterName) throw new Error("Provide characterName or tokenId");
+        resolvedTokenId = await resolveTokenOrThrow(characterName);
+      }
+      type TokenData = { id: string; name: string; represents?: string; bar1_value?: number | string; bar1_max?: number | string; controlledby?: string };
+      const tok = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId: resolvedTokenId });
+      if (!tok) throw new Error(`Token not found: ${characterName ?? tokenId}`);
+      const charId = tok.represents || undefined;
+      const label = characterName ?? tok.name ?? resolvedTokenId;
+
+      // 1. HP first, and never to 0: the relay's own threshold automation re-kills a token
+      //    written to 0 HP (marker + map layer), so a revive that set HP last — or to 0 —
+      //    would undo itself. Routing is the same three-way split as update_token_hp: a
+      //    true PC's bar is Beyond20's, so its HP goes to tracked state (issue #132).
+      const isPc = isPcToken(tok, registry.listSidekickNames());
+      let hpStr: string;
+      if (isPc) {
+        const res = await roll20.relayCommand<{ current: number; max: number }>({
+          action: "adjustPcHp", tokenId: resolvedTokenId, setHp: hp,
+        });
+        hpStr = `${res.current}${res.max ? `/${res.max}` : ""} (tracked)`;
+      } else {
+        // A dead NPC normally still has its bar1_max; if it has none, `hp` establishes one,
+        // otherwise every later damage call would refuse for want of a bar.
+        const maxHp = Number(tok.bar1_max) > 0 ? Number(tok.bar1_max) : hp;
+        await roll20.relayCommand({ action: "setTokenBar", tokenId: resolvedTokenId, value: hp, max: maxHp });
+        hpStr = `${hp}/${maxHp}`;
+      }
+
+      // 2. Clear the dead marker, then 3. back to the token layer — kill_token's two steps,
+      //    in reverse.
+      await roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition: "dead", active: false });
+      await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props: { layer: "objects" } });
+
+      // 4. Initiative. Leaving the token layer is what drops a combatant out of the tracker,
+      //    so the entry may or may not have survived the kill — check before rolling anything.
+      //    Every write here is a mergeTurnOrder upsert: it can only touch THIS token's row,
+      //    never the players' (see the setTurnOrder warning in CLAUDE.md).
+      const pageId = await roll20.getCurrentPageId();
+      const order = await roll20.relayCommand<TurnEntry[]>({ action: "getTurnOrder" });
+      const surviving = (order ?? []).find((e) => e.id && String(e.id) === resolvedTokenId);
+      let initPr: number | string | null = null;
+      let initSource: "preserved" | "explicit" | "rolled" = "preserved";
+      let rollNote = "";
+
+      if (initiative !== undefined) {
+        initSource = "explicit";
+        initPr = initiative;
+      } else if (surviving) {
+        // The kill left the entry alone — the original pr is right there, so don't re-roll it.
+        initPr = num(surviving.pr) ?? surviving.pr;
+      } else {
+        // Gone with the layer move, and no pre-kill value to restore: roll it back in, the
+        // same way the manual unwind's roll_initiative did — but silently, since an undo is
+        // bookkeeping and not a moment the table needs a card for.
+        const rolls = await roll20.relayCommand<{ tokenId: string; name: string; d20: number; initBonus: number; total: number }[]>({
+          action: "rollInitiativeForTokens", tokenIds: [resolvedTokenId], rollPublic: false,
+        });
+        const rolled = (rolls ?? []).find((r) => r.tokenId === resolvedTokenId);
+        if (!rolled) throw new Error(`${label}: revived (HP ${hpStr}, dead cleared, back on the token layer) but the initiative roll returned nothing — re-add it with roll_initiative names:["${label}"] clearFirst:false.`);
+        initSource = "rolled";
+        initPr = rolled.total;
+        rollNote = `${rolled.d20}${rolled.initBonus >= 0 ? "+" : ""}${rolled.initBonus} = ${rolled.total}`;
+      }
+
+      if (initSource !== "preserved") {
+        const entry: TurnEntry = { id: resolvedTokenId, pr: String(initPr), custom: surviving?.custom ?? "", _pageid: pageId };
+        await roll20.relayCommand({ action: "mergeTurnOrder", entries: [entry] });
+      }
+
+      return json({
+        target: label,
+        hp: hpStr,
+        deadCleared: true,
+        layer: "objects",
+        initiative: initPr,
+        initiativeSource: initSource,
+        ...(rollNote ? { initiativeRoll: rollNote } : {}),
+        summary: `${label} revived at ${hpStr} — dead marker cleared, back on the token layer, initiative ${initPr} (${initSource}).`,
+      });
+    }
+  );
+
+  server.tool(
     "set_pc_dying",
     "Put a TRUE PC into the DYING state when they drop to 0 HP (issue #135) — applies prone + unconscious and the token STAYS on the token layer (never map layer, never dead). Death saves are player-owned (3 fails); only call kill_token when the DM explicitly declares the PC dead. If the PC was concentrating, the concentration teardown (marker + aura + linked zones) fires automatically — going down breaks it implicitly. NOT for NPCs or sidekicks (Tua, Salros Eventide, Amri, etc.) — those die immediately via kill_token, no dying state. Revival: clear 'unconscious' with set_token_marker (active:false) — prone STAYS until the DM says the PC stands up.",
     {

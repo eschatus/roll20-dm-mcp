@@ -106,6 +106,13 @@ convenience would conflict with a rule below, the rule wins.
   sidekicks skip this entirely — they die immediately via `kill_token`, same as always.
   - **Revival keeps prone.** Clear `unconscious` with `set_token_marker` (`active:false`) —
     `prone` stays on until the DM separately says the PC stands up.
+- **A wrong kill is undone with `revive_token`, in one call** (issue #217). It is the exact inverse
+  of `kill_token`: restores HP (required — nothing on the board remembers the pre-kill value),
+  clears `dead`, returns the token to the token layer, and puts its turn-order entry back (the
+  original `pr` if the kill left the entry behind, else an `initiative` you pass, else a fresh
+  silent roll). Use it when a damage number landed on the wrong creature and crossed 0, or the DM
+  retcons a death ("no, the ogre isn't dead") — never hand-unwind it with four separate calls, and
+  never revive to 0 HP. A downed PC getting back up is NOT this: that's clearing `unconscious`.
 - Apply the `Wounded::4444333` marker when a token drops below 50% max HP; remove it when healed
   back above half.
 

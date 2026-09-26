@@ -167,13 +167,13 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `getTokens` | list_tokens, get_map_graphics, get_turn_order (name resolution), roll_initiative, update_hp_many, resolve_aoe | both | page graphics (direct-read path) |
 | `getSelection` | get_selection | combat | the DM's currently-selected tokens |
 | `findTokensInRange` | find_tokens_in_range, resolve_aoe | combat | range query (aura/zone) |
-| `getTokenById` | get_token, get/set_character_attribute, update_token_hp, kill_token, set_pc_dying, break_concentration, create_zone | both | full token read (direct-read path) |
-| `setTokenProps` | set_token_props, kill_token (→ map layer), resolve_aoe (aura), create_pc_token, batch_exec | both | arbitrary `.set(props)`; direct-write path |
-| `setTokenBar` | update_token_hp (NPC/sidekick), update_hp_many, roll_initiative (`entries[].hp` seed), resolve_aoe | combat | bar1 HP; direct-write path |
-| `adjustPcHp` / `getPcHp` | update_token_hp, update_hp_many, resolve_aoe (all PC-routed writes) | combat | PC HP in a `%%PCHP={…}%%` block in the token's gmnotes, routed three ways by `classifyToken` (PC / NPC / sidekick). `getPcHp` has no tool of its own — it's the direct-read half of the same carrier. **Never write a PC's token bar.** |
+| `getTokenById` | get_token, get/set_character_attribute, update_token_hp, kill_token, revive_token, set_pc_dying, break_concentration, create_zone | both | full token read (direct-read path) |
+| `setTokenProps` | set_token_props, kill_token (→ map layer), revive_token (→ token layer), resolve_aoe (aura), create_pc_token, batch_exec | both | arbitrary `.set(props)`; direct-write path |
+| `setTokenBar` | update_token_hp (NPC/sidekick), update_hp_many, revive_token (NPC/sidekick), roll_initiative (`entries[].hp` seed), resolve_aoe | combat | bar1 HP; direct-write path |
+| `adjustPcHp` / `getPcHp` | update_token_hp, update_hp_many, revive_token, resolve_aoe (all PC-routed writes) | combat | PC HP in a `%%PCHP={…}%%` block in the token's gmnotes, routed three ways by `classifyToken` (PC / NPC / sidekick). `getPcHp` has no tool of its own — it's the direct-read half of the same carrier. **Never write a PC's token bar.** |
 | `setStatusMarker` | (internal) | — | single marker add/remove by tag; direct-write path |
 | `setDefaultToken` | batch_exec (`set_default_token`) | combat | `setDefaultTokenForCharacter` (token↔sheet) |
-| `toggleCondition` | set_token_marker, update_token_hp, kill_token, set_pc_dying, batch_exec | combat | resolves via 3-tier `resolveMarkerForState`; +`active_conditions`; direct-write path |
+| `toggleCondition` | set_token_marker, update_token_hp, kill_token, revive_token, set_pc_dying, batch_exec | combat | resolves via 3-tier `resolveMarkerForState`; +`active_conditions`; direct-write path |
 | `syncConditionsToToken` | update_token_hp (`replaceConditions`) | combat | replace all markers |
 | `breakConcentration` | break_concentration, set_pc_dying (auto-cascade) | combat | removes the `Concentrating` marker, zeroes `aura1_radius`, and deletes zones whose duration is `{type:'concentration', caster}` (#134/#135) |
 | `getTokenMarkers` | get_token_markers | combat | campaign custom markers |
@@ -198,9 +198,9 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `setPageBackground` | (internal) | — | bg color only |
 | `createZone`/`clearZone`/`listZones`/`findTokensInZone`/`processRoundEndZones` | create_zone, clear_zone, list_zones, process_round_end_zones, resolve_aoe | both | path on the map layer; **metadata lives in `state.GM_AI_Bridge.zones`, not on the path object** (path objects silently drop `name`/`gmnotes`/`fill_opacity` — #162/#164) |
 | `removeObject` | remove_object | combat | graphic or path |
-| `getTurnOrder`/`setTurnOrder`/`advanceTurn` | get_turn_order, clear_turn_order, advance_turn, update_turn_order, inject_round_marker, batch_exec | combat | `Campaign.turnorder`. **Never write `setTurnOrder` wholesale** — it erases player entries; only `clear_turn_order` does that deliberately. |
-| `mergeTurnOrder` | roll_initiative, inject_round_marker, update_turn_order | combat | NPC-only upsert (preserves PC entries) |
-| `rollInitiativeForTokens` | roll_initiative | combat | real dice + epithets; honours per-combatant `bonusOverrides` from `entries[].bonus` (#172) |
+| `getTurnOrder`/`setTurnOrder`/`advanceTurn` | get_turn_order, clear_turn_order, advance_turn, update_turn_order, inject_round_marker, revive_token (read only), batch_exec | combat | `Campaign.turnorder`. **Never write `setTurnOrder` wholesale** — it erases player entries; only `clear_turn_order` does that deliberately. |
+| `mergeTurnOrder` | roll_initiative, inject_round_marker, update_turn_order, revive_token | combat | NPC-only upsert (preserves PC entries) |
+| `rollInitiativeForTokens` | roll_initiative, revive_token (silent re-roll when a kill took the entry) | combat | real dice + epithets; honours per-combatant `bonusOverrides` from `entries[].bonus` (#172) |
 | `rollFormulas` | roll_dice, resolve_aoe | combat | real dice engine — all dice go through Roll20's roller, never a TS RNG |
 | `setTurnHook`/`getTurnHookState` | set_turn_hook, check_turn_hook | combat | enables the `change:campaign:turnorder` hook; `roll_initiative` arms it itself |
 | `sendNarration` | send_narration | combat | styled HTML to chat |
