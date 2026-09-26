@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.8.0";
+var AI_RELAY_VERSION = "2.9.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -1683,6 +1683,188 @@ ACTIONS["drawLayerTest"] = function (args, msg, nonce, senderPlayerId) {
           return { layer: t.layer, stroke: t.stroke, id: obj ? obj.id : null };
         });
         writeResult(nonce, results);
+        return;
+      }
+      };
+// ── pathv2 zone-primitive probe (issue #208) ─────────────────────────────────
+// SPIKE INSTRUMENT, not a production drawing path. Zones today are legacy `path`
+// objects (ACTIONS["createZone"]) with two known limits: no working fill_opacity
+// (so tint is baked into the fill colour, #162) and no name/gmnotes (so metadata
+// lives in state.GM_AI_Bridge.zones, #164). pathv2 documents a `fill` property and
+// shapes "eli"/"rec", which would make a spell area a real ellipse/rectangle.
+//
+// This draws one pathv2 per variant in a left-to-right row and reports what Roll20
+// actually STORED for each, so three questions can be settled on a live table:
+//   Q1  does `fill` honour an 8-digit #RRGGBBAA — i.e. real translucency?
+//       (and does pathv2 have a working `fill_opacity`, unlike legacy path?)
+//   Q2  does shape "eli"/"rec" render a proper ellipse/rectangle off the WALLS
+//       layer — on "objects", and on "map"?
+//   Q3  does pathv2 carry name/gmnotes (the Objects doc doesn't list them)?
+//
+// Read-back answers storage only. Rendering needs eyes on the page, which is why
+// the objects are LEFT there on purpose — clean up afterwards with
+// removeObject { objectType: "pathv2", objectId }.
+//
+// Geometry: pathv2 re-anchors to its FIRST point regardless of the x/y passed, so
+// every variant is built first-point-as-anchor (same rule as walls). For "eli"/"rec"
+// the first two points are the bounding box, so the anchor is the box's top-left.
+ACTIONS["pathv2ZoneProbe"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        let probePage = getObj("page", args.pageId);
+        if (!probePage) throw new Error("Page not found: " + args.pageId);
+
+        let probeR = Number(args.radiusPx);
+        if (!isFinite(probeR) || probeR <= 0) probeR = 140; // two 70px cells across by default
+        let probeCx = Number(args.centerX); if (!isFinite(probeCx)) probeCx = probeR + 70;
+        let probeCy = Number(args.centerY); if (!isFinite(probeCy)) probeCy = probeR + 70;
+        let probeStep = probeR * 2 + 70; // one empty cell of gutter between variants
+
+        let probeHexMatch = typeof args.color === "string" ? /^#([0-9a-fA-F]{6})/.exec(args.color) : null;
+        let probeHex6 = probeHexMatch ? "#" + probeHexMatch[1] : "#aa00ff";
+        let probeAlpha = typeof args.alphaHex === "string" && /^[0-9a-fA-F]{2}$/.test(args.alphaHex)
+          ? args.alphaHex : ZONE_FILL_ALPHA_HEX;
+        let probeHex8 = probeHex6 + probeAlpha;
+
+        // One variant per question. `asks` is carried through to the report so the
+        // human reading the page knows what each shape in the row is for.
+        let probeVariants = [
+          { key: "eli-fill8",       shape: "eli", layer: "objects", fill: probeHex8,      asks: "Q1+Q2: ellipse with 8-digit #RRGGBBAA fill — the candidate zone primitive" },
+          { key: "eli-fill6",       shape: "eli", layer: "objects", fill: probeHex6,      asks: "Q1 control: same ellipse, opaque 6-digit fill" },
+          { key: "eli-fillopacity", shape: "eli", layer: "objects", fill: probeHex6, fillOpacity: 0.25, asks: "Q1 alt: 6-digit fill + fill_opacity 0.25 (legacy path drops this, #162)" },
+          { key: "eli-transparent", shape: "eli", layer: "objects", fill: "transparent",  asks: "Q2 control: outline only, no fill" },
+          { key: "rec-fill8",       shape: "rec", layer: "objects", fill: probeHex8,      asks: "Q2: rectangle shape" },
+          { key: "pol-fill8",       shape: "pol", layer: "objects", fill: probeHex8,      asks: "Q2 control: today's 36-gon circle approximation, drawn as pathv2" },
+          { key: "eli-map-layer",   shape: "eli", layer: "map",     fill: probeHex8,      asks: "Q2: does it render on the map layer as well as objects?" },
+          { key: "eli-meta",        shape: "eli", layer: "objects", fill: probeHex8, meta: true, asks: "Q3: name/gmnotes at create AND via a later set()" }
+        ];
+
+        // Every property worth knowing about. Roll20 returns undefined for a property an
+        // object type does not have, which is exactly the Q3 signal — so undefined is
+        // reported as a name in `missing`, never silently flattened to null.
+        let probeReadProps = ["shape", "fill", "fill_opacity", "stroke", "stroke_width", "layer",
+          "x", "y", "width", "height", "rotation", "barrierType", "name", "gmnotes", "controlledby"];
+
+        // The stored `points` string can be ~500 chars for the 36-gon control, which is pure
+        // bloat on the RTDB result payload. Report a preview plus the bounding box computed
+        // from the FULL array — the bbox is what actually says whether the geometry landed
+        // where it should, relative to the anchor.
+        function probeReadBack(obj) {
+          let stored = {};
+          let missing = [];
+          probeReadProps.forEach(function (p) {
+            let v;
+            try { v = obj.get(p); } catch (e) { stored[p] = "<threw: " + String(e).slice(0, 60) + ">"; return; }
+            if (v === undefined) { missing.push(p); return; }
+            stored[p] = v;
+          });
+          let pts;
+          try { pts = obj.get("points"); } catch (e) { pts = "<threw>"; }
+          if (typeof pts === "string") {
+            stored.pointsPreview = pts.slice(0, 160);
+            stored.pointsTruncated = pts.length > 160;
+            let parsed = null;
+            try { parsed = JSON.parse(pts); } catch (e) { parsed = null; }
+            if (parsed && parsed.length) {
+              let xs = parsed.map(function (pt) { return pt[0]; });
+              let ys = parsed.map(function (pt) { return pt[1]; });
+              stored.pointsBBox = {
+                minX: Math.min.apply(null, xs), maxX: Math.max.apply(null, xs),
+                minY: Math.min.apply(null, ys), maxY: Math.max.apply(null, ys)
+              };
+            }
+          } else {
+            stored.pointsPreview = pts;
+            stored.pointsTruncated = false;
+          }
+          return { stored: stored, missing: missing };
+        }
+
+        let probeResults = probeVariants.map(function (v, vi) {
+          let cx = probeCx + vi * probeStep;
+          let cy = probeCy;
+          let anchorX, anchorY, pts;
+          if (v.shape === "pol") {
+            // 36-gon, first point at angle 0 — anchor is that point, not the centre.
+            anchorX = cx + probeR;
+            anchorY = cy;
+            pts = [];
+            for (let i = 0; i <= 36; i++) {
+              let a = (i / 36) * 2 * Math.PI;
+              pts.push([Math.round((probeR * Math.cos(a) - probeR) * 100) / 100,
+                        Math.round((probeR * Math.sin(a)) * 100) / 100]);
+            }
+          } else {
+            // eli/rec: first two points are the bounding box; anchor at its top-left.
+            anchorX = cx - probeR;
+            anchorY = cy - probeR;
+            pts = [[0, 0], [probeR * 2, probeR * 2]];
+          }
+
+          let props = {
+            pageid: args.pageId,
+            layer: v.layer,
+            x: anchorX,
+            y: anchorY,
+            width: probeR * 2,
+            height: probeR * 2,
+            shape: v.shape,
+            points: JSON.stringify(pts),
+            stroke: probeHex6,
+            stroke_width: 5,
+            fill: v.fill,
+            controlledby: ""
+          };
+          if (v.fillOpacity !== undefined) props.fill_opacity = v.fillOpacity;
+          // Plain ASCII, no chat triggers — this round-trips back through writeResult.
+          let metaAtCreate = { name: "ZONE PROBE " + v.key, gmnotes: "probe gmnotes at create" };
+          let metaAfterSet = { name: "ZONE PROBE set-after", gmnotes: "probe gmnotes after set" };
+          if (v.meta) { props.name = metaAtCreate.name; props.gmnotes = metaAtCreate.gmnotes; }
+
+          let obj;
+          try { obj = createObj("pathv2", props); } catch (e) {
+            return { key: v.key, asks: v.asks, shape: v.shape, layer: v.layer, sentFill: v.fill,
+                     created: false, error: String(e).slice(0, 200) };
+          }
+          if (!obj) {
+            return { key: v.key, asks: v.asks, shape: v.shape, layer: v.layer, sentFill: v.fill,
+                     created: false, error: "createObj('pathv2') returned undefined" };
+          }
+
+          let out = { key: v.key, asks: v.asks, id: obj.id, shape: v.shape, layer: v.layer,
+                      sentFill: v.fill, sentFillOpacity: v.fillOpacity, centerX: cx, centerY: cy,
+                      anchorX: anchorX, anchorY: anchorY, pointCount: pts.length, created: true };
+          let first = probeReadBack(obj);
+          out.stored = first.stored;
+          out.missing = first.missing;
+
+          if (v.meta) {
+            // Second half of Q3: a later set() is the write path setCharacterAttributes-style
+            // callers would use, and legacy `path` swallows it silently (#164).
+            try {
+              setSafe(obj, metaAfterSet);
+            } catch (e) {
+              out.setAfterError = String(e).slice(0, 200);
+            }
+            let second = probeReadBack(obj);
+            // Echo what was WRITTEN alongside what came back: a sandbox that drops the
+            // write may hand back "" rather than undefined, so the caller has to compare
+            // against the exact string rather than test for presence.
+            out.wrote = { atCreate: metaAtCreate, afterSet: metaAfterSet };
+            out.storedAfterSet = { name: second.stored.name, gmnotes: second.stored.gmnotes };
+            out.missingAfterSet = second.missing;
+          }
+          return out;
+        });
+
+        writeResult(nonce, {
+          pageId: args.pageId,
+          hex6: probeHex6,
+          hex8: probeHex8,
+          radiusPx: probeR,
+          rowY: probeCy,
+          variants: probeResults,
+          note: "Objects left on the page deliberately — look at them, then remove each with removeObject { objectType: 'pathv2', objectId }."
+        });
         return;
       }
       };
