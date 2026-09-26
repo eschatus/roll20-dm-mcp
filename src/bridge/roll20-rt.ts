@@ -715,6 +715,9 @@ async function tryDirectWrite(cmd: Record<string, unknown>): Promise<unknown | t
       case "setTokenProps": {
         const p = cmd.props as Record<string, unknown> | undefined;
         if (!p || typeof p !== "object" || !Object.keys(p).length) return NOT_HANDLED; // flattened shape → Mod
+        // Aura radius writes go through the Mod: it owns the concentration-aura slot registry
+        // (#210) and must release a claim when the DM overwrites that slot's ring by hand.
+        if (Object.keys(p).some((k) => /^aura[12]_radius$/.test(k))) return NOT_HANDLED;
         const pid = await rtFindTokenPage(cmd.tokenId as string, cmd.pageId as string | undefined);
         if (!pid) return NOT_HANDLED;
         await rtUpdate(`graphics/page/${pid}/${cmd.tokenId}`, p);

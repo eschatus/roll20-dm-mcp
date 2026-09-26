@@ -237,21 +237,25 @@ describe("concentration aura slot ownership (#210)", () => {
     expect(aura2(id)).toBe(5); // never recorded as the spell's — left where it was
   });
 
-  it("releases the slot when the aura is cleared, so a later break does not touch it", async () => {
+  it("releases the slot when the aura is cleared, so a later break touches NEITHER slot", async () => {
     h.emu.createToken({
       pageid: pageId, name: "Fen Tallow", controlledby: "player-fen",
       bar1_value: 18, bar1_max: 18, statusmarkers: "Concentrating::4444313",
     });
     const id = tokenId("Fen Tallow");
 
+    // Slot 1: an unrelated permanent light ring — a released claim must NOT fall back onto it.
+    await h.callTool("set_token_aura", { characterName: "Fen Tallow", radiusFeet: 10, slot: 1 });
     await h.callTool("set_token_aura", { characterName: "Fen Tallow", radiusFeet: 20, slot: 2, concentration: true });
     await h.callTool("set_token_aura", { characterName: "Fen Tallow", radiusFeet: 0, slot: 2 });
     // The DM repurposes slot 2 for something permanent afterwards.
     await h.callTool("set_token_aura", { characterName: "Fen Tallow", radiusFeet: 7, slot: 2, color: "#ffffff" });
 
     const result = await h.callTool("break_concentration", { characterName: "Fen Tallow" });
-    const data = result.json as { auraSlot: number };
-    expect(data.auraSlot).toBe(1);
+    const data = result.json as { auraSlot: number | null; auraCleared: boolean };
+    expect(data.auraSlot).toBeNull();
+    expect(data.auraCleared).toBe(false);
+    expect(aura(id)).toBe(10); // the light ring survives
     expect(aura2(id)).toBe(7); // the repurposed ring survives
   });
 
@@ -267,8 +271,58 @@ describe("concentration aura slot ownership (#210)", () => {
     await h.callTool("set_token_aura", { characterName: "Cobb Wexley", radiusFeet: 5, slot: 2, concentration: false });
 
     const result = await h.callTool("break_concentration", { characterName: "Cobb Wexley" });
-    expect((result.json as { auraSlot: number }).auraSlot).toBe(1);
+    expect((result.json as { auraSlot: number | null }).auraSlot).toBeNull();
     expect(aura2(id)).toBe(5);
+  });
+
+  it("recasting onto the other slot clears the ring the spell used to own", async () => {
+    h.emu.createToken({
+      pageid: pageId, name: "Ilse Marrow", controlledby: "player-ilse",
+      bar1_value: 24, bar1_max: 24, statusmarkers: "Concentrating::4444313",
+    });
+    const id = tokenId("Ilse Marrow");
+
+    await h.callTool("set_token_aura", { characterName: "Ilse Marrow", radiusFeet: 15, slot: 1, concentration: true });
+    await h.callTool("set_token_aura", { characterName: "Ilse Marrow", radiusFeet: 20, slot: 2, concentration: true });
+    expect(aura(id)).toBe(0);   // the old ring went with the claim
+    expect(aura2(id)).toBe(20);
+
+    const result = await h.callTool("break_concentration", { characterName: "Ilse Marrow" });
+    expect((result.json as { auraSlot: number }).auraSlot).toBe(2);
+    expect(aura2(id)).toBe(0);
+  });
+
+  it("a raw set_token_props write over the claimed slot releases the claim", async () => {
+    h.emu.createToken({
+      pageid: pageId, name: "Tobin Ashe", controlledby: "player-tobin",
+      bar1_value: 20, bar1_max: 20, statusmarkers: "Concentrating::4444313",
+    });
+    const id = tokenId("Tobin Ashe");
+
+    await h.callTool("set_token_aura", { characterName: "Tobin Ashe", radiusFeet: 15, slot: 2, concentration: true });
+    // The DM replaces the spell's ring with a permanent 5 ft one through the raw props route.
+    await h.callTool("set_token_props", { characterName: "Tobin Ashe", aura2_radius: 5 });
+    expect(aura2(id)).toBe(5);
+
+    const result = await h.callTool("break_concentration", { characterName: "Tobin Ashe" });
+    expect((result.json as { auraSlot: number | null }).auraSlot).toBeNull();
+    expect(aura2(id)).toBe(5); // the permanent ring is left alone
+  });
+
+  it("a second break after a teardown does not fall back onto slot 1", async () => {
+    h.emu.createToken({
+      pageid: pageId, name: "Wren Hollis", controlledby: "player-wren",
+      bar1_value: 20, bar1_max: 20, statusmarkers: "Concentrating::4444313", aura1_radius: 10,
+    });
+    const id = tokenId("Wren Hollis");
+
+    await h.callTool("set_token_aura", { characterName: "Wren Hollis", radiusFeet: 15, slot: 2, concentration: true });
+    await h.callTool("break_concentration", { characterName: "Wren Hollis" });
+    expect(aura2(id)).toBe(0);
+
+    const again = await h.callTool("break_concentration", { characterName: "Wren Hollis" });
+    expect((again.json as { auraSlot: number | null }).auraSlot).toBeNull();
+    expect(aura(id)).toBe(10);
   });
 
   it("set_pc_dying cascades the teardown onto the recorded slot", async () => {

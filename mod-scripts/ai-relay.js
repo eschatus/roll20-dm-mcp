@@ -342,12 +342,13 @@ function B() {
   // live here, keyed by the zone path's Roll20 id → { name, shape, pageId,
   // centerX, centerY, radiusFeet, color, terrain, duration }.
   if (!s.zones || typeof s.zones !== "object") s.zones = {};
-  // Which aura slot each concentration effect owns (issue #210), keyed by token id → 1 | 2.
+  // Which aura slot each concentration effect owns (issue #210), keyed by token id → 1 | 2 | 0.
   // A token carries TWO independent aura slots and set_token_aura lets the DM pick, so the
   // break cascade cannot assume slot 1 — it has to know which ring belongs to the spell it is
   // tearing down. This is the aura analogue of the zone registry's {type:"concentration",
-  // caster} duration: ownership recorded at cast time, read at teardown time. Absent entry =
-  // slot 1, which is both the historical behaviour and the default slot.
+  // caster} duration: ownership recorded at cast time, read at teardown time. 0 = tracked but
+  // released (the spell's ring was cleared or repurposed; nothing to tear down). Absent entry =
+  // never tracked → slot 1, which is both the historical behaviour and the default slot.
   if (!s.concentrationAuras || typeof s.concentrationAuras !== "object") s.concentrationAuras = {};
   return s;
 }
@@ -367,12 +368,32 @@ function concentrationAuras() {
   return reg;
 }
 
-// Aura slot the named token's concentration effect owns. Defaults to 1 for a token with no
-// recorded slot — an aura placed before this bookkeeping existed, or by a raw setTokenProps
-// write, is overwhelmingly on slot 1 (it was the only slot anything wrote).
+// Aura slot the named token's concentration effect owns: 1 | 2, or 0 when the claim was
+// released (the spell's ring cleared or repurposed) so there is nothing to tear down. Defaults
+// to 1 for a token that was NEVER tracked — an aura placed before this bookkeeping existed is
+// overwhelmingly on slot 1 (it was the only slot anything wrote). A released claim is
+// deliberately distinguishable from that legacy case: otherwise a break after the DM cleared
+// slot 2 would fall back to slot 1 and wipe whatever unrelated ring sits there.
 function concentrationAuraSlot(tokenId) {
-  let slot = Number(concentrationAuras()[tokenId]);
-  return slot === 2 ? 2 : 1;
+  let reg = concentrationAuras();
+  if (!Object.prototype.hasOwnProperty.call(reg, tokenId)) return 1;
+  let slot = Number(reg[tokenId]);
+  return slot === 2 ? 2 : slot === 1 ? 1 : 0;
+}
+
+// Mark a token's concentration-aura claim as released (see concentrationAuraSlot).
+function releaseConcentrationAura(tokenId) {
+  concentrationAuras()[tokenId] = 0;
+}
+
+// A raw aura-radius write onto the slot a concentration effect claims means that slot no
+// longer belongs to the spell (the DM replaced or cleared the ring by hand via setTokenProps).
+// Release the claim so the break cascade leaves the new ring alone.
+function releaseConcentrationAuraIfOverwritten(tokenId, props) {
+  let reg = concentrationAuras();
+  let slot = Number(reg[tokenId]);
+  if (slot !== 1 && slot !== 2) return;
+  if (Object.prototype.hasOwnProperty.call(props, "aura" + slot + "_radius")) reg[tokenId] = 0;
 }
 
 // Registry entries for a page (or every page if pageId is omitted), RECONCILED
@@ -1033,6 +1054,7 @@ function runBatchOp(action, args) {
       let keys = Object.keys(props);
       if (keys.length === 0) throw new Error("setTokenProps: no properties to set — pass props:{...} (or top-level fields)");
       setSafe(t, props);
+      releaseConcentrationAuraIfOverwritten(args.tokenId, props);
       return { ok: true, set: keys };
     }
     case "toggleCondition": {
@@ -2096,8 +2118,17 @@ ACTIONS["setTokenAura"] = function (args, msg, nonce, senderPlayerId) {
         if (!isFinite(radius) || radius < 0) {
           throw new Error("setTokenAura: radiusFeet must be a finite number >= 0, got " + JSON.stringify(args.radiusFeet));
         }
+        let reg = concentrationAuras();
+        let prior = Number(reg[args.tokenId]);
         let props = {};
         props["aura" + slot + "_radius"] = radius;
+        // A recast onto the OTHER slot moves the claim; the ring the spell used to own has to
+        // go with it, or the break cascade (which reads one slot) would orphan it on the map.
+        let movedFrom = null;
+        if (args.concentration && radius > 0 && (prior === 1 || prior === 2) && prior !== slot) {
+          props["aura" + prior + "_radius"] = 0;
+          movedFrom = prior;
+        }
         if (radius > 0) {
           if (args.color) props["aura" + slot + "_color"] = args.color;
           if (args.shape) {
@@ -2117,16 +2148,15 @@ ACTIONS["setTokenAura"] = function (args, msg, nonce, senderPlayerId) {
         // that slot, or reusing it for something that ISN'T concentration (a permanent light ring,
         // a marching-order marker), releases the claim — otherwise the break cascade would later
         // tear down an aura that no longer belongs to a spell.
-        let reg = concentrationAuras();
-        let owned = Number(reg[args.tokenId]) === slot;
         if (args.concentration && radius > 0) reg[args.tokenId] = slot;
-        else if (owned) delete reg[args.tokenId];
+        else if (prior === slot) releaseConcentrationAura(args.tokenId);
 
         writeResult(nonce, {
           ok: true,
           slot: slot,
           radiusFeet: radius,
           concentration: Number(reg[args.tokenId]) === slot,
+          movedFromSlot: movedFrom,
         });
         return;
       }
@@ -2817,14 +2847,18 @@ ACTIONS["breakConcentration"] = function (args, msg, nonce, senderPlayerId) {
         // slot that is comes from the concentration-aura registry (issue #210) — set_token_aura
         // lets the DM park an emanation on slot 2, and tearing down slot 1 regardless both left
         // the real ring on the map and wiped whatever unrelated aura sat in slot 1. No recorded
-        // slot means slot 1, the historical assumption and the default slot.
+        // slot means slot 1, the historical assumption and the default slot; a RELEASED claim
+        // (slot 0 — the ring was already cleared or repurposed) means no aura to touch at all.
         let auraSlot = concentrationAuraSlot(args.tokenId);
-        let auraRadiusProp = "aura" + auraSlot + "_radius";
-        let auraCleared = Number(t.get(auraRadiusProp)) > 0;
-        let auraProps = {};
-        auraProps[auraRadiusProp] = 0;
-        setSafe(t, auraProps);
-        delete concentrationAuras()[args.tokenId];
+        let auraCleared = false;
+        if (auraSlot) {
+          let auraRadiusProp = "aura" + auraSlot + "_radius";
+          auraCleared = Number(t.get(auraRadiusProp)) > 0;
+          let auraProps = {};
+          auraProps[auraRadiusProp] = 0;
+          setSafe(t, auraProps);
+        }
+        releaseConcentrationAura(args.tokenId);
 
         // 3) Delete linked concentration zones.
         let zonesRemoved = [];
@@ -2845,7 +2879,7 @@ ACTIONS["breakConcentration"] = function (args, msg, nonce, senderPlayerId) {
           ok: true,
           markerRemoved: markerRemoved,
           auraCleared: auraCleared,
-          auraSlot: auraSlot,
+          auraSlot: auraSlot || null,
           zonesRemoved: zonesRemoved,
         });
         return;

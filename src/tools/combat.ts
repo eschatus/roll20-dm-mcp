@@ -155,7 +155,7 @@ export function registerCombatTools(server: McpServer): void {
       await roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition: "unconscious", active: true });
 
       // Auto-cascade: going down breaks concentration implicitly (issue #135).
-      let teardown: { markerRemoved: boolean; auraCleared: boolean; auraSlot?: number; zonesRemoved: { id: string; name: string }[] } | null = null;
+      let teardown: { markerRemoved: boolean; auraCleared: boolean; auraSlot?: number | null; zonesRemoved: { id: string; name: string }[] } | null = null;
       const markers = String(tok.statusmarkers || "").split(",");
       const wasConcentrating = markers.some((m) => m.startsWith("Concentrating::"));
       if (wasConcentrating) {
@@ -167,7 +167,7 @@ export function registerCombatTools(server: McpServer): void {
       }
 
       const cascadeNote = teardown
-        ? ` Concentration broken (was concentrating): aura ${teardown.auraSlot ?? 1} cleared=${teardown.auraCleared}, zones removed=${teardown.zonesRemoved.map((z) => z.name).join(", ") || "none"}.`
+        ? ` Concentration broken (was concentrating): ${teardown.auraSlot ? `aura ${teardown.auraSlot} cleared=${teardown.auraCleared}` : "no aura owned"}, zones removed=${teardown.zonesRemoved.map((z) => z.name).join(", ") || "none"}.`
         : "";
       return text(
         `${characterName ?? resolvedTokenId} marked dying — prone + unconscious, stays on the token layer.${cascadeNote} Death saves are player-owned; call kill_token only on 3 failed saves.`
@@ -190,7 +190,7 @@ export function registerCombatTools(server: McpServer): void {
       }
       const tok = await roll20.relayCommand<{ name?: string } | null>({ action: "getTokenById", tokenId: resolvedTokenId });
       const casterRef = characterName ?? tok?.name ?? resolvedTokenId;
-      const result = await roll20.relayCommand<{ ok: boolean; markerRemoved: boolean; auraCleared: boolean; auraSlot?: number; zonesRemoved: { id: string; name: string }[] }>({
+      const result = await roll20.relayCommand<{ ok: boolean; markerRemoved: boolean; auraCleared: boolean; auraSlot?: number | null; zonesRemoved: { id: string; name: string }[] }>({
         action: "breakConcentration",
         tokenId: resolvedTokenId,
         casterRef,
@@ -199,8 +199,9 @@ export function registerCombatTools(server: McpServer): void {
         target: characterName ?? resolvedTokenId,
         markerRemoved: result.markerRemoved,
         auraCleared: result.auraCleared,
-        // Which slot the teardown actually touched — 1 unless the effect claimed slot 2 (#210).
-        auraSlot: result.auraSlot ?? 1,
+        // Which slot the teardown actually touched (#210): 1 unless the effect claimed slot 2;
+        // null when the claim had already been released, so no aura was touched.
+        auraSlot: result.auraSlot === undefined ? 1 : result.auraSlot,
         zonesRemoved: result.zonesRemoved,
       });
     }
