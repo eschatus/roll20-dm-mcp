@@ -129,6 +129,19 @@ describe("transport_status can see the staleness the gem cannot (#216)", () => {
     expect(s.note).toMatch(/campaign-scoped/);
   });
 
+  it("flags a FRESH token missing databaseURL or customToken — connect refuses it regardless of age", () => {
+    writeToken({ harvestedAt: Date.now() - 5 * MIN, databaseURL: "" });
+    let s = rt.getRtTokenStatus(CAMPAIGN);
+    expect(s.present).toBe(true);
+    expect(s.stale).toBe(false);
+    expect(s.missingFields).toEqual(["databaseURL"]);
+    expect(s.note).toMatch(/missing databaseURL/);
+    writeToken({ harvestedAt: Date.now() - 5 * MIN, customToken: "" });
+    s = rt.getRtTokenStatus(CAMPAIGN);
+    expect(s.missingFields).toEqual(["customToken"]);
+    expect(s.note).toMatch(/missing customToken/);
+  });
+
   it("skips the campaign check when no campaign is active", () => {
     writeToken({ harvestedAt: Date.now() - 5 * MIN });
     const s = rt.getRtTokenStatus(null);

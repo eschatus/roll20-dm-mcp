@@ -267,6 +267,8 @@ export function getRtTokenStatus(activeCampaignId: string | null): {
   campaignId: string | null;
   activeCampaignId: string | null;
   campaignMismatch: boolean;
+  /** Missing fields that make getCustomToken refuse this credential regardless of age. */
+  missingFields: string[];
   ageMinutes: number | null;
   stale: boolean;
   note?: string;
@@ -280,13 +282,13 @@ export function getRtTokenStatus(activeCampaignId: string | null): {
   } catch (err) {
     if (!(err instanceof Roll20TokenUnavailableError)) throw err;
     return {
-      present: false, source: "env", campaignId: null, activeCampaignId, campaignMismatch: false,
+      present: false, source: "env", campaignId: null, activeCampaignId, campaignMismatch: false, missingFields: [],
       ageMinutes: null, stale: true, note: err.message,
     };
   }
   if (!c) {
     return {
-      present: false, source: null, campaignId: null, activeCampaignId, campaignMismatch: false, ageMinutes: null, stale: true,
+      present: false, source: null, campaignId: null, activeCampaignId, campaignMismatch: false, missingFields: [], ageMinutes: null, stale: true,
       note: `${TOKEN_ENV} is unset and there is no ${path.basename(TOKEN_CACHE)} in the data dir — reconnect Roll20 in the gem to harvest one.`,
     };
   }
@@ -299,6 +301,15 @@ export function getRtTokenStatus(activeCampaignId: string | null): {
   const ageMinutes = tokenAgeMinutes(harvestedAt);
   const stale = harvestedAt <= 0 || Date.now() - harvestedAt >= TOKEN_STALE_MS;
   const notes: string[] = [];
+  // The same structural checks getCustomToken refuses on. A fresh-but-malformed credential must
+  // not read as healthy here while every connect fails on it (Devin, #233).
+  const missingFields = (["databaseURL", "customToken"] as const).filter((k) => !c![k]);
+  if (missingFields.length) {
+    notes.push(
+      `The Roll20 token (${describeSource(c.source)}) is missing ${missingFields.join(" and ")}, so every ` +
+      `connect will refuse it regardless of age. ${refresh}`,
+    );
+  }
   if (campaignMismatch) {
     notes.push(
       `The Roll20 token (${describeSource(c.source)}) belongs to campaign ${campaignId ?? "(none recorded)"} but the active ` +
@@ -324,6 +335,7 @@ export function getRtTokenStatus(activeCampaignId: string | null): {
     campaignId,
     activeCampaignId,
     campaignMismatch,
+    missingFields,
     ageMinutes,
     stale,
     note: notes.length ? notes.join(" ") : undefined,

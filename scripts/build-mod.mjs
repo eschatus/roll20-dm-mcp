@@ -31,15 +31,6 @@ const versionOf = (code, what) => {
 const srcCode = readFileSync(SRC, "utf8");
 const srcVersion = versionOf(srcCode, "source");
 
-// esbuild's JS API, not its CLI: node on Windows refuses to spawn a .cmd shim without a shell
-// (EINVAL since the CVE-2024-27980 fix), and esbuild is already a devDependency here.
-//
-// tsconfigRaw "{}": without it esbuild reads the REPO's tsconfig.json, sees "strict": true
-// (which implies alwaysStrict), and prepends a "use strict" directive the source never had —
-// silently changing the semantics of every function in the sandbox. The relay is plain sandbox
-// JS; the server's TypeScript settings have no business shaping it.
-buildSync({ entryPoints: [SRC], outfile: OUT, minify: true, target: "es2019", tsconfigRaw: "{}", logLevel: "info" });
-
 // Every gate below rejects the artifact. A rejected artifact must not survive at the documented
 // paste path, where a human would paste it anyway — so a failed gate deletes it before exiting.
 const reject = (why) => {
@@ -48,6 +39,23 @@ const reject = (why) => {
   console.error(`[build:mod] deleted ${OUT}; nothing to paste.`);
   process.exit(1);
 };
+
+// Clear the previous artifact FIRST. If esbuild throws on changed source, the old build would
+// otherwise survive at the paste path looking current (Devin, #233).
+rmSync(OUT, { force: true });
+
+// esbuild's JS API, not its CLI: node on Windows refuses to spawn a .cmd shim without a shell
+// (EINVAL since the CVE-2024-27980 fix), and esbuild is already a devDependency here.
+//
+// tsconfigRaw "{}": without it esbuild reads the REPO's tsconfig.json, sees "strict": true
+// (which implies alwaysStrict), and prepends a "use strict" directive the source never had —
+// silently changing the semantics of every function in the sandbox. The relay is plain sandbox
+// JS; the server's TypeScript settings have no business shaping it.
+try {
+  buildSync({ entryPoints: [SRC], outfile: OUT, minify: true, target: "es2019", tsconfigRaw: "{}", logLevel: "info" });
+} catch (e) {
+  reject(`esbuild failed: ${String((e && e.message) || e).split("\n")[0]}`);
+}
 
 // A bad minify must never reach a live campaign: a syntax error in the Mod editor takes the whole
 // sandbox down, and the editor will happily accept it.
