@@ -1494,7 +1494,7 @@ ACTIONS["getWalls"] = function (args, msg, nonce, senderPlayerId) {
 ACTIONS["debugPage"] = function (args, msg, nonce, senderPlayerId) {
         {
         // Enumerate what types of objects exist on a page — helps diagnose object storage.
-        let types = ["path", "pathv2", "graphic", "wall", "text", "door", "window"];
+        let types = ["path", "pathv2", "graphic", "wall", "text", "door", "window", "pin"];
         let summary = {};
         types.forEach(function(t) {
           let objs = findObjs({ _type: t, _pageid: args.pageId });

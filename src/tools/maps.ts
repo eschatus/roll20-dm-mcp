@@ -4,6 +4,7 @@ import { readFileSync, statSync } from "fs";
 import path from "path";
 import * as roll20 from "../bridge/roll20.js";
 import { rtCreatePage } from "../bridge/roll20-rt.js";
+import { createPin, deletePin, listPins, toPinFields, updatePin } from "../bridge/pins.js";
 
 // --- Local-asset confinement ---------------------------------------------------
 // import_map_file / upload_and_place_map_image read arbitrary local paths handed
@@ -471,6 +472,112 @@ export function registerMapTools(server: McpServer): void {
     async ({ pageId, x1, y1, x2, y2, type }) => {
       await roll20.relayCommand({ action: "spawnFxBetweenPoints", pageId, x1, y1, x2, y2, type });
       return { content: [{ type: "text", text: JSON.stringify({ ok: true, from: [x1, y1], to: [x2, y2], type }) }] };
+    }
+  );
+
+  // ── Map pins (#203) ─────────────────────────────────────────────────────────
+  // Roll20's native point-of-interest marker: an icon or image on the page with a tooltip, notes,
+  // GM notes, an optional handout link, and per-audience visibility on each of those. The
+  // Roll20-native way to express a module's keyed locations, and a "reveal the shrine once they
+  // find it" marker (create it with visibleTo "", flip it to "all" when they find it).
+  //
+  // Pins are plain RTDB nodes (`pins/page/<pageId>/<pinId>`), read and written directly like doors
+  // and windows — no relay action, no Mod redeploy (src/bridge/pins.ts).
+  //
+  // NB the property names are camelCase — `gmNotes`, `bgColor`, `pinImage` — unlike `gmnotes`
+  // everywhere else in the Roll20 API. The MCP SDK validates tool args against a raw shape and
+  // STRIPS unknown keys before the handler runs, so a misspelled field (`gmnotes`) is dropped, not
+  // rejected. Both write tools echo the exact key list they wrote so a dropped field is visible.
+  const PIN_AUDIENCE = z.enum(["all", ""]);
+  const pinAudience = (what: string) =>
+    PIN_AUDIENCE.describe(`Who sees ${what}: "all" for everyone, "" for the GM only.`);
+
+  // Shared between create_map_pin and update_map_pin. No zod defaults here on purpose: an unset
+  // field is left to Roll20 on create and left UNTOUCHED on update, so an update can't silently
+  // reset a look. (create_map_pin applies the one deliberate default, gmNotesVisibleTo "".)
+  const PIN_FIELDS = {
+    title: z.string().optional().describe("Pin title, shown on the nameplate/tooltip."),
+    notes: z.string().optional().describe("Player-visible notes (HTML). The Roll20 UI truncates pasted notes at 750 characters; that is a UI limit, not a storage one — this tool stores the full text."),
+    gmNotes: z.string().optional().describe("GM-only notes (HTML). Note the camelCase. Same 750-char UI cap does not apply here."),
+    scale: z.number().min(0.25).max(2).optional().describe("Pin size, 0.25–2.0."),
+    shape: z.enum(["teardrop", "circle", "diamond", "square"]).optional(),
+    bgColor: z.string().optional().describe("#RRGGBB, #RRGGBBAA, or 'transparent'."),
+    customizationType: z.enum(["icon", "image"]).optional().describe("Whether the pin shows `icon` or `pinImage`."),
+    icon: z.string().optional().describe("Built-in icon name, e.g. base-dot, base-castle, base-skullSimple, base-chest, base-village."),
+    pinImage: z.string().optional().describe("Roll20 art-library URL, used when customizationType is 'image'."),
+    useTextIcon: z.boolean().optional().describe("Show iconText instead of an icon/image."),
+    iconText: z.string().optional().describe("Text for useTextIcon — Roll20 renders only the first 3 characters."),
+    tooltipImage: z.string().optional().describe("Roll20 art-library URL shown in the tooltip."),
+    tooltipImageSize: z.enum(["small", "medium", "large", "xl"]).optional(),
+    autoNotesType: z.enum(["", "blockquote"]).optional(),
+    link: z.string().optional().describe("Handout id to link this pin to."),
+    linkType: z.enum(["handout", ""]).optional(),
+    subLink: z.string().optional(),
+    subLinkType: z.enum(["headerPlayer", "headerGM", ""]).optional(),
+    visibleTo: pinAudience("the pin itself").optional(),
+    tooltipVisibleTo: pinAudience("the tooltip").optional(),
+    tooltipTitleVisibleTo: pinAudience("the tooltip title").optional(),
+    nameplateVisibleTo: pinAudience("the nameplate").optional(),
+    imageVisibleTo: pinAudience("the pin image").optional(),
+    notesVisibleTo: pinAudience("the notes").optional(),
+    gmNotesVisibleTo: pinAudience("the GM notes").optional().describe(
+      'Who sees the GM notes. Roll20 documents the default as "all" — create_map_pin therefore writes "" (GM only) unless you say otherwise.'
+    ),
+    desynced: z.boolean().optional().describe(
+      "Override a linked handout's content with this pin's own title/notes/image. Roll20 keeps imageDesynced/notesDesynced/gmNotesDesynced as ONE coupled flag — setting any one sets all three — so this is a single boolean."
+    ),
+  };
+  const PIN_XY = {
+    x: z.number().describe("X position in Roll20 page pixels (70px per grid square), verified live"),
+    y: z.number().describe("Y position in Roll20 page pixels (70px per grid square), verified live"),
+  };
+
+  server.tool(
+    "create_map_pin",
+    "Place a Roll20 map pin — an interactive point-of-interest marker with a title, notes, GM notes, an optional handout link, and per-audience visibility. Use for module keyed locations, and for markers revealed later (create with visibleTo '', then update_map_pin to 'all'). Notes are NOT subject to the Roll20 UI's 750-character paste cap — a full keyed-area description fits. Pin properties are camelCase (gmNotes, bgColor, pinImage); an unknown or misspelled field is silently dropped by input validation, so check the `wrote` list in the response.",
+    { pageId: z.string(), ...PIN_XY, ...PIN_FIELDS },
+    async ({ pageId, ...rest }) => {
+      const fields = toPinFields({ ...rest, gmNotesVisibleTo: rest.gmNotesVisibleTo ?? "" });
+      const pin = await createPin(pageId, fields);
+      return {
+        content: [{ type: "text", text: JSON.stringify({ pinId: pin.id, pageId: pin.pageId, x: pin.x, y: pin.y, wrote: Object.keys(fields) }) }],
+      };
+    }
+  );
+
+  server.tool(
+    "list_map_pins",
+    "Read back Roll20 map pins with all their properties (position in page pixels, look, content, visibility) — enough to rebuild the set on another page. Omit pageId to list every pin in the campaign.",
+    { pageId: z.string().optional() },
+    async ({ pageId }) => {
+      const pins = await listPins(pageId);
+      return { content: [{ type: "text", text: JSON.stringify(pins) }] };
+    }
+  );
+
+  server.tool(
+    "update_map_pin",
+    "Change an existing Roll20 map pin. Only the fields you pass are written — everything else is left alone. Flipping visibleTo to 'all' is how a hidden point of interest gets revealed. pageId is optional but saves a campaign-wide scan. An unknown or misspelled field is silently dropped by input validation, so check the `updated` list in the response.",
+    {
+      pinId: z.string(),
+      pageId: z.string().optional().describe("Page the pin is on, if known."),
+      x: PIN_XY.x.optional(),
+      y: PIN_XY.y.optional(),
+      ...PIN_FIELDS,
+    },
+    async ({ pinId, pageId, ...rest }) => {
+      const result = await updatePin(pinId, toPinFields(rest), pageId);
+      return { content: [{ type: "text", text: JSON.stringify({ pinId: result.id, pageId: result.pageId, updated: result.updated }) }] };
+    }
+  );
+
+  server.tool(
+    "delete_map_pin",
+    "Delete a Roll20 map pin by id. pageId is optional but saves a campaign-wide scan.",
+    { pinId: z.string(), pageId: z.string().optional() },
+    async ({ pinId, pageId }) => {
+      const result = await deletePin(pinId, pageId);
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, pinId: result.id, pageId: result.pageId }) }] };
     }
   );
 
