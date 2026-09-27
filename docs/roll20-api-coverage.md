@@ -188,7 +188,8 @@ Persistent storage: the global **`state`** object (survives sandbox restarts).
 `findObjs({_type:"attribute"})` cannot see it and `createObj("attribute")` cannot reach it — the
 object is created, and the sheet never reads it. That is NOT the same as attributes being dead on a
 Beacon sheet: the live `setAttrs` spike in #225 wrote attributes, fired sheet workers and
-materialised `rollbase`/`attack_onhit` on a sandbox 1.5 `ogl5e` campaign. As
+materialised `rollbase`/`attack_onhit` on a sandbox 1.5 `ogl5e` campaign, and the RTDB probe (#230)
+found plain `createObj("attribute")` records landing in `char-attribs` there too. As
 of relay 2.7.0 `setCharacterAttributes` refuses that write and reports it under `failed` with a
 reason, rather than reporting `created` for a write that did nothing
 (`test/sandbox-handshake.test.ts`). Relay **2.10.0** adds the carriers that actually reach the data

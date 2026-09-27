@@ -12,7 +12,8 @@ import { fail, failJson, json, resolveCharSheetId } from "./combatHelpers.js";
 // set_character_attribute refuses such a write rather than reporting a success that did nothing.
 // It is NOT true that attributes are dead on a Beacon sheet: a live spike (#225) saw `setAttrs`
 // write attributes, fire sheet workers and materialise `rollbase`/`attack_onhit` on a sandbox 1.5
-// ogl5e campaign. These are the carriers that reach the computed-property side:
+// ogl5e campaign, and the RTDB probe (#230) found plain createObj("attribute") records landing in
+// char-attribs there too. These are the carriers that reach the computed-property side:
 //
 //   get_sheet_item / set_sheet_item   — work on BOTH sandbox versions (on v1.0 they wrap
 //                                       attributes), so they are the version-agnostic pair and the
@@ -147,7 +148,7 @@ export function registerSheetTools(server: McpServer): void {
 
   server.tool(
     "perform_sheet_action",
-    "Run a Beacon sheet ACTION on a character — this is how a monster's attack is triggered on a Beacon sheet, where the repeating_npcaction attributes do not exist (Mod Script Sandbox v1.5 only). List the available names with get_sheet_summary. The roll lands in Roll20 chat; the tool result reports that the sheet accepted the call, not what it rolled. `known` in the result: true = the name is in the sheet's action list; null = the sheet lists actions but their names could not be read, so the call went through unverified (check chat); false = not a Beacon action. In the false case Roll20 falls back to running a character ABILITY of that name as a chat macro — that is a sendChat outside the relay's chat-safety chokepoint, so it is REFUSED unless you pass allowAbilityFallback:true, and the result then flags abilityFallback:true. If neither an action nor an ability exists the call is refused rather than dispatched to nowhere.",
+    "Run a Beacon sheet ACTION on a character — this is how a monster's attack is triggered when the sheet defines it as a Beacon action held in computed data rather than as repeating_npcaction attribute rows (Mod Script Sandbox v1.5 only). If get_sheet_summary lists no actions but the character has repeating_npcaction rows, those rows are ordinary attributes and the attribute tools still reach them. List the available names with get_sheet_summary. The roll lands in Roll20 chat; the tool result reports that the sheet accepted the call, not what it rolled. `known` in the result: true = the name is in the sheet's action list; null = the sheet lists actions but their names could not be read, so the call went through unverified (check chat); false = not a Beacon action. In the false case Roll20 falls back to running a character ABILITY of that name as a chat macro — that is a sendChat outside the relay's chat-safety chokepoint, so it is REFUSED unless you pass allowAbilityFallback:true, and the result then flags abilityFallback:true. If neither an action nor an ability exists the call is refused rather than dispatched to nowhere.",
     {
       actionName: z.string().describe("Beacon action name, as listed by get_sheet_summary"),
       args: z.record(z.string(), z.unknown()).optional().describe("Beacon's args payload for this action, if it takes one"),

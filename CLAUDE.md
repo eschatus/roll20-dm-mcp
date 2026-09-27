@@ -124,7 +124,8 @@ moved to beyond-mcp with the code.)
   that way is not reachable as an attribute — `findObjs` can't see it and `createObj("attribute")`
   can't reach it, so an attribute write aimed at it is created, unread, and looks successful.
   Attributes are NOT dead there in general: the live spike in #225 saw `setAttrs` write attributes,
-  fire sheet workers and materialise `rollbase`/`attack_onhit` on a sandbox 1.5 `ogl5e` campaign.
+  fire sheet workers and materialise `rollbase`/`attack_onhit` on a sandbox 1.5 `ogl5e` campaign,
+  and the RTDB probe (#230) found plain `createObj("attribute")` records landing in `char-attribs` there.
   `setCharacterAttributes` refuses the computed-held case and returns a reason; the real
   carriers are wired as of relay **2.10.0** (#205) and live in `src/tools/sheet.ts`:
   **`get_sheet_item`/`set_sheet_item`** (version-agnostic — on v1.0 they wrap attributes, so prefer
@@ -156,7 +157,10 @@ moved to beyond-mcp with the code.)
   so every `esc()` call site is covered. `esc()` is NOT idempotent; apply it once. Deliberate
   exceptions, both server-composed and GM-only: `postChat` (must emit real roll-template syntax)
   and the `[[1d20…]]` the initiative builders send — there, escape the *token name*, never the
-  whole message. Pinned by `test/chat-trigger-safety.test.ts`.
+  whole message. Pinned by `test/chat-trigger-safety.test.ts`. One path escapes the chokepoint by
+  construction: `performAction`'s ability fallback, where Roll20 itself runs a same-named ability's
+  macro through its own `sendChat`. The relay refuses it unless the caller passes
+  `allowAbilityFallback:true` (see the Beacon gotcha above).
 - **The Mod sandbox cannot import TS.** Tables that must agree are kept in **hand-synced copies** —
   most importantly the condition→marker map lives in three places (`src/tools/combat.ts` array,
   `src/bridge/markers.ts` Record, `mod-scripts/ai-relay.js`) and they are **not identical**
