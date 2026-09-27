@@ -46,6 +46,33 @@ export function toPinFields(args: Record<string, unknown>): PinProps {
 
 // The id is the node's KEY, never the stored `id` field: every write addresses the key, so a record
 // whose stored id disagreed with it would be found by one and written through the other.
+// Roll20 treats a pin's notes, GM notes and image as SYNCED from its linked handout unless the
+// desynced flags are set — and with no handout there is nothing to sync from, so the pin shows no
+// notes to ANYONE, GM included (#237, seen live on 8th Street: the notes appeared only after the GM
+// toggled them on in the pin editor, which set the desynced triple). A caller who writes the pin's
+// own content without a link means that content, so it is desynced for them.
+const OWN_CONTENT_KEYS = ["notes", "gmNotes", "pinImage"] as const;
+
+/**
+ * Add the desynced triple when `fields` writes the pin's own content, no handout link is involved
+ * (neither in `fields` nor on the `existing` pin), and the caller said nothing about desync. An
+ * explicit `desynced` (already expanded into the triple) always wins, and a pin that is already
+ * desynced is left alone. Returns the fields to write and whether the default was applied.
+ */
+export function withOwnContentDesync(
+  fields: PinProps,
+  existing?: Record<string, unknown> | null,
+): { fields: PinProps; autoDesynced: boolean } {
+  const writesOwnContent = OWN_CONTENT_KEYS.some((k) => fields[k] !== undefined && fields[k] !== "");
+  const callerChose = DESYNC_KEYS.some((k) => fields[k] !== undefined);
+  const linked = Boolean(fields.link) || Boolean(existing?.link);
+  const alreadyDesynced = DESYNC_KEYS.some((k) => existing?.[k] === true);
+  if (!writesOwnContent || callerChose || linked || alreadyDesynced) return { fields, autoDesynced: false };
+  const out: PinProps = { ...fields };
+  for (const k of DESYNC_KEYS) out[k] = true;
+  return { fields: out, autoDesynced: true };
+}
+
 function toRecord(pageId: string, pinId: string, raw: Record<string, unknown>): PinRecord {
   return { ...raw, id: pinId, pageId };
 }
@@ -85,13 +112,14 @@ export async function updatePin(
   pinId: string,
   fields: PinProps,
   pageId?: string,
-): Promise<{ id: string; pageId: string; updated: string[] }> {
-  const updated = Object.keys(fields);
-  if (updated.length === 0) throw new Error("update_map_pin: nothing to write — pass at least one pin field");
+): Promise<{ id: string; pageId: string; updated: string[]; autoDesynced: boolean }> {
+  if (Object.keys(fields).length === 0) throw new Error("update_map_pin: nothing to write — pass at least one pin field");
   const existing = await findPin(pinId, pageId);
   if (!existing) throw new Error(`Pin not found: ${pinId}${pageId ? ` on page ${pageId}` : ""}`);
-  await rtUpdate(pinPath(existing.pageId, pinId), fields);
-  return { id: pinId, pageId: existing.pageId, updated };
+  // Judged against the STORED pin: adding notes to a linked or already-desynced pin changes nothing.
+  const { fields: toWrite, autoDesynced } = withOwnContentDesync(fields, existing);
+  await rtUpdate(pinPath(existing.pageId, pinId), toWrite);
+  return { id: pinId, pageId: existing.pageId, updated: Object.keys(toWrite), autoDesynced };
 }
 
 export async function deletePin(pinId: string, pageId?: string): Promise<{ id: string; pageId: string }> {

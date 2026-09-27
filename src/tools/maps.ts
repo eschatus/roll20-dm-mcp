@@ -4,7 +4,7 @@ import { readFileSync, statSync } from "fs";
 import path from "path";
 import * as roll20 from "../bridge/roll20.js";
 import { rtCreatePage } from "../bridge/roll20-rt.js";
-import { createPin, deletePin, listPins, toPinFields, updatePin } from "../bridge/pins.js";
+import { createPin, deletePin, listPins, toPinFields, updatePin, withOwnContentDesync } from "../bridge/pins.js";
 
 // --- Local-asset confinement ---------------------------------------------------
 // import_map_file / upload_and_place_map_image read arbitrary local paths handed
@@ -524,7 +524,7 @@ export function registerMapTools(server: McpServer): void {
       'Who sees the GM notes. Roll20 documents the default as "all" — create_map_pin therefore writes "" (GM only) unless you say otherwise.'
     ),
     desynced: z.boolean().optional().describe(
-      "Override a linked handout's content with this pin's own title/notes/image. Roll20 keeps imageDesynced/notesDesynced/gmNotesDesynced as ONE coupled flag — setting any one sets all three — so this is a single boolean."
+      "Show this pin's OWN notes/GM notes/image instead of a linked handout's. Roll20 hides a pin's own content from everyone, GM included, unless this is set — so when you write notes, gmNotes or pinImage on a pin with no handout link and leave this unset, the tool sets it for you (reported as autoDesynced). Pass false to keep a linked handout's content. Roll20 keeps imageDesynced/notesDesynced/gmNotesDesynced as ONE coupled flag, so this is a single boolean."
     ),
   };
   const PIN_XY = {
@@ -537,10 +537,12 @@ export function registerMapTools(server: McpServer): void {
     "Place a Roll20 map pin — an interactive point-of-interest marker with a title, notes, GM notes, an optional handout link, and per-audience visibility. Use for module keyed locations, and for markers revealed later (create with visibleTo '', then update_map_pin to 'all'). Notes are NOT subject to the Roll20 UI's 750-character paste cap — a full keyed-area description fits. Pin properties are camelCase (gmNotes, bgColor, pinImage); an unknown or misspelled field is silently dropped by input validation, so check the `wrote` list in the response.",
     { pageId: z.string(), ...PIN_XY, ...PIN_FIELDS },
     async ({ pageId, ...rest }) => {
-      const fields = toPinFields({ ...rest, gmNotesVisibleTo: rest.gmNotesVisibleTo ?? "" });
+      const { fields, autoDesynced } = withOwnContentDesync(
+        toPinFields({ ...rest, gmNotesVisibleTo: rest.gmNotesVisibleTo ?? "" }),
+      );
       const pin = await createPin(pageId, fields);
       return {
-        content: [{ type: "text", text: JSON.stringify({ pinId: pin.id, pageId: pin.pageId, x: pin.x, y: pin.y, wrote: Object.keys(fields) }) }],
+        content: [{ type: "text", text: JSON.stringify({ pinId: pin.id, pageId: pin.pageId, x: pin.x, y: pin.y, wrote: Object.keys(fields), autoDesynced }) }],
       };
     }
   );
@@ -567,7 +569,7 @@ export function registerMapTools(server: McpServer): void {
     },
     async ({ pinId, pageId, ...rest }) => {
       const result = await updatePin(pinId, toPinFields(rest), pageId);
-      return { content: [{ type: "text", text: JSON.stringify({ pinId: result.id, pageId: result.pageId, updated: result.updated }) }] };
+      return { content: [{ type: "text", text: JSON.stringify({ pinId: result.id, pageId: result.pageId, updated: result.updated, autoDesynced: result.autoDesynced }) }] };
     }
   );
 

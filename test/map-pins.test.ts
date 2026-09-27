@@ -155,6 +155,57 @@ describe("create_map_pin", () => {
   });
 });
 
+// #237, seen live on 8th Street: without the desynced triple Roll20 treats a pin's notes/GM notes/
+// image as synced from a linked handout, so an UNLINKED pin shows its own notes to nobody, GM
+// included. Writing own content with no link therefore desyncs by default; an explicit choice wins.
+describe("own-content desync default (#237)", () => {
+  const TRIPLE = { imageDesynced: true, notesDesynced: true, gmNotesDesynced: true };
+
+  it("create with notes/gmNotes and no link sets the desynced triple and says so", async () => {
+    for (const content of [{ gmNotes: "GM eyes only" }, { notes: "player notes" }, { pinImage: "https://s3.amazonaws.com/x.png" }]) {
+      const { json } = await callTool("create_map_pin", { pageId: PAGE, x: 350, y: 350, title: "Probe", ...content });
+      const r = json as Created & { autoDesynced: boolean };
+      expect(r.autoDesynced).toBe(true);
+      expect(rt.store.get(`${PAGE}/${r.pinId}`)).toMatchObject(TRIPLE);
+    }
+  });
+
+  it("leaves a pin with no own content alone", async () => {
+    const { json } = await callTool("create_map_pin", { pageId: PAGE, x: 0, y: 0, title: "Just a marker" });
+    const r = json as Created & { autoDesynced: boolean };
+    expect(r.autoDesynced).toBe(false);
+    expect(rt.store.get(`${PAGE}/${r.pinId}`)).not.toHaveProperty("notesDesynced");
+  });
+
+  it("does not desync a pin linked to a handout — the handout's content is meant", async () => {
+    const { json } = await callTool("create_map_pin", { pageId: PAGE, x: 0, y: 0, notes: "n", link: "-Handout1", linkType: "handout" });
+    const r = json as Created & { autoDesynced: boolean };
+    expect(r.autoDesynced).toBe(false);
+    expect(rt.store.get(`${PAGE}/${r.pinId}`)).not.toHaveProperty("notesDesynced");
+  });
+
+  it("an explicit desynced:false wins over the default", async () => {
+    const { json } = await callTool("create_map_pin", { pageId: PAGE, x: 0, y: 0, gmNotes: "g", desynced: false });
+    const r = json as Created & { autoDesynced: boolean };
+    expect(r.autoDesynced).toBe(false);
+    expect(rt.store.get(`${PAGE}/${r.pinId}`)).toMatchObject({ imageDesynced: false, notesDesynced: false, gmNotesDesynced: false });
+  });
+
+  it("update adding GM notes to a plain pin desyncs it; to a linked or already-desynced pin it does not", async () => {
+    const plain = ((await callTool("create_map_pin", { pageId: PAGE, x: 0, y: 0, title: "t" })).json as Created).pinId;
+    const { json: u1 } = await callTool("update_map_pin", { pinId: plain, pageId: PAGE, gmNotes: "later" });
+    expect(u1).toMatchObject({ autoDesynced: true });
+    expect(rt.store.get(`${PAGE}/${plain}`)).toMatchObject(TRIPLE);
+
+    const linked = ((await callTool("create_map_pin", { pageId: PAGE, x: 0, y: 0, link: "-Handout1" })).json as Created).pinId;
+    const { json: u2 } = await callTool("update_map_pin", { pinId: linked, pageId: PAGE, notes: "n" });
+    expect(u2).toMatchObject({ autoDesynced: false, updated: ["notes"] });
+
+    const { json: u3 } = await callTool("update_map_pin", { pinId: plain, pageId: PAGE, notes: "more" });
+    expect(u3).toMatchObject({ autoDesynced: false, updated: ["notes"] });
+  });
+});
+
 describe("list_map_pins", () => {
   it("lists only the requested page and returns id + pageId on each pin", async () => {
     await callTool("create_map_pin", { pageId: PAGE, x: 1, y: 1, title: "A" });
@@ -187,7 +238,7 @@ describe("update_map_pin", () => {
     const { json: c } = await callTool("create_map_pin", { pageId: PAGE, x: 10, y: 20, title: "Hidden Shrine", visibleTo: "", icon: "base-dot" });
     const id = (c as Created).pinId;
     const { json } = await callTool("update_map_pin", { pinId: id, pageId: PAGE, visibleTo: "all" });
-    expect(json).toEqual({ pinId: id, pageId: PAGE, updated: ["visibleTo"] });
+    expect(json).toEqual({ pinId: id, pageId: PAGE, updated: ["visibleTo"], autoDesynced: false });
     expect(rt.store.get(`${PAGE}/${id}`)).toMatchObject({ x: 10, y: 20, title: "Hidden Shrine", visibleTo: "all", icon: "base-dot" });
   });
 

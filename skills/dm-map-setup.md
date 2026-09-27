@@ -93,6 +93,10 @@ If the map has keyed locations — a module's numbered rooms, a shrine, a stash 
   location on the map.
 - `gmNotes` stays GM-only: `create_map_pin` writes `gmNotesVisibleTo: ""` for you (Roll20's own
   default would show GM notes to everyone). Don't pass `gmNotesVisibleTo: "all"` unless the DM asks.
+- A pin's own `notes`/`gmNotes` only show — to anyone, the GM included — when the pin is
+  **desynced** from a handout. The tools set that for you whenever you write notes or GM notes on a
+  pin with no `link` (the response says `autoDesynced: true`). Don't pass `desynced: false` on an
+  unlinked pin, or its notes vanish for everyone.
 - A full keyed-area description fits in `notes` — the 750-character limit is the Roll20 editor's,
   not the pin's; the tool stores the whole text.
 - Pin properties are **camelCase** (`gmNotes`, `bgColor`, `pinImage`) unlike everything else in the
