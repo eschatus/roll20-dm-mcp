@@ -62,6 +62,7 @@ A `.env` file in the project root is optional — the defaults work. The setting
 | Variable | Default | What it does |
 |---|---|---|
 | `ROLL20_DATA_DIR` | `./data` | Where credentials and the campaign/character registries live. **Must be the same directory the Gem writes to** (see step 5). |
+| `ROLL20_RT_TOKEN` | *(unset)* | The realtime credential inline — the same `{campaignId, customToken, databaseURL, harvestedAt}` object as `roll20-rt-token.json`. Overrides the file; malformed or wrong-campaign fails loudly rather than falling back to it. |
 | `ROLL20_MCP_TOKEN` | auto-generated | Bearer token for the HTTP server. Written for you on first run. |
 | `ROLL20_HTTP_PORT` / `ROLL20_HTTP_HOST` | `39200` / `127.0.0.1` | Where the combat server listens. |
 | `ANTHROPIC_API_KEY` | — | Only read by the maps suite's `analyze_battlemap`. |
@@ -80,16 +81,18 @@ The Mod script is the server's hands inside Roll20. It receives commands from th
 1. Open your Roll20 campaign
 2. Go to **Settings → API Scripts**
 3. Click **New Script**
-4. Open `mod-scripts/ai-relay.js` from this repo, copy all of it, paste it in
+4. Run `npm run build:mod` in this repo, then open `mod-scripts/.ai-relay.deploy.js`, copy all of it, paste it in
 5. Click **Save Script**
+
+`build:mod` minifies `mod-scripts/ai-relay.js` (~156KB of code and comments) down to ~63KB, which is what fits the Mod editor comfortably; it fails the build rather than emitting a script that would not parse, and `npm run build:mod -- --verify` additionally runs the emulator suite against the minified bytes. Pasting `mod-scripts/ai-relay.js` itself works too — it is what the DM Whisper gem pastes; the minified artifact is the same relay, just smaller, and prints the same load banner.
 
 **Verify the load, not the save.** A saved script can still fail to start. Check the API Output Console for:
 
 ```
-[GM_AI_Bridge] Relay script loaded (v2.8.0)
+[GM_AI_Bridge] Relay script loaded (v2.9.0)
 ```
 
-The current version is **2.8.0**, and it must match `EXPECTED_RELAY_VERSION` in `src/bridge/relay-version.ts`. A mismatch warns once and shows up in `transport_status`; it never throws, so a stale deploy fails in confusing ways rather than loudly. Check the banner.
+The current version is **2.9.0**, and it must match `EXPECTED_RELAY_VERSION` in `src/bridge/relay-version.ts`. A mismatch warns once and shows up in `transport_status`; it never throws, so a stale deploy fails in confusing ways rather than loudly. Check the banner.
 
 **Deploys are per-campaign.** Each Roll20 game carries its own copy of the script, so one campaign can be running an older relay than another. Re-paste after every update to `ai-relay.js`, in every campaign you run.
 
@@ -135,7 +138,7 @@ Roll20 access is **furnished, never minted**. The server reads two files out of 
 
 | File | Shape | Life | Needed for |
 |---|---|---|---|
-| `roll20-rt-token.json` | `{campaignId, customToken, databaseURL, harvestedAt}` | ~50 min from harvest | Everything. The token is **campaign-scoped** and carries that campaign's RTDB shard. |
+| `roll20-rt-token.json` | `{campaignId, customToken, databaseURL, harvestedAt}` | ~1 h from harvest (Firebase decides, not us) | Everything. The token is **campaign-scoped** and carries that campaign's RTDB shard. |
 | `roll20-upload-cache.json` | `{endpoint, cookies, harvestedAt}` | 8 h | Art upload only (`upload_and_place_map_image`). |
 
 ### The supported path — the Gem harvests
@@ -148,7 +151,7 @@ Harvest is **per-campaign**: point the Gem at the campaign you're about to run *
 
 ### Without the Gem — the honest gap
 
-If you run this server on its own (plain Claude Code, no Gem), **there is currently no built-in way to obtain a token.** Your two options are to run the Gem once purely to harvest, or to build the file by hand. The manual route works but is fiddly, and the ~50-minute window means you do it right before starting the server.
+If you run this server on its own (plain Claude Code, no Gem), **there is currently no built-in way to obtain a token.** Your two options are to run the Gem once purely to harvest, or to build the file by hand. The manual route works but is fiddly, and the ~1-hour window means you do it right before starting the server.
 
 With the campaign's Roll20 **editor** open in Chrome/Edge:
 
@@ -157,9 +160,11 @@ With the campaign's Roll20 **editor** open in Chrome/Edge:
 - **`databaseURL`** — `https://<ns>.firebaseio.com`, where `<ns>` is the `ns=` query parameter on the editor's `firebaseio.com` **websocket** (Network → WS). Equivalently, read `window.FIREBASE_ROOT` in the Console.
 - **`harvestedAt`** — `Date.now()`.
 
-Write those four fields to `<ROLL20_DATA_DIR>/roll20-rt-token.json` and start the server within the window.
+Write those four fields to `<ROLL20_DATA_DIR>/roll20-rt-token.json` and start the server within the window. Or pass the same object inline as **`ROLL20_RT_TOKEN`** — handy for a one-off script or a server started from a shell that has no writable data dir. It takes precedence over the file, and if it is set but malformed or scoped to another campaign the server says so instead of quietly reading the file; being an env var it is visible to anything that can see the process environment, so the file is still the better default for a long session.
 
-Once a connection is established it stays live for the session — the ~50-minute limit governs *making* a connection (server start, campaign switch), not holding one. A mid-session restart means a fresh harvest.
+Once a connection is established it stays live for the session — the token's lifetime governs *making* a connection (server start, campaign switch), not holding one. A mid-session restart means a fresh harvest.
+
+> ⚠️ **A live server does not keep this file warm (#216).** Nothing in this repo ever writes `roll20-rt-token.json`; only the Gem's harvest does, and the Gem harvests reactively — when its *own* server hits a token failure. A connected server never hits one, so a Gem that has been up an hour reports `health: ok` while the file on disk has gone cold. The moment that bites is when you start a **second** reader of the same data dir — `roll20-dm-maps` over stdio, or a `tsx` script — and it cannot sign in at all. The server no longer refuses a token on age alone (Firebase is asked, and its answer is reported), and `transport_status` now carries an `rtToken: {ageMinutes, stale, note}` block so the staleness is visible before it bites. The fix is the same either way: press **Connect Roll20** in the Gem.
 
 There is no practical hand-built equivalent for `roll20-upload-cache.json`; without it, art upload fails cleanly and nothing else is affected.
 
@@ -205,7 +210,7 @@ The Gem is an Electron overlay that floats on your screen. It shows a glowing fa
 
 What matters from *this* side of the relationship:
 
-- The Gem pins this repository as a dependency by tag (currently `#v2.0.6`) and builds it in the clone, so you do not need a separate checkout of roll20-dm-mcp for the Gem to run. Changes here reach the Gem only when it re-pins.
+- The Gem pins this repository as a dependency by tag (currently `#v2.1.0`) and builds it in the clone, so you do not need a separate checkout of roll20-dm-mcp for the Gem to run. Changes here reach the Gem only when it re-pins.
 - It bundles `skills/dm-rules.md` and `mod-scripts/ai-relay.js` from this repo into its installer.
 - It furnishes the two credential files from step 5, and it is the only supported harvester.
 - It consumes the `/events` SSE stream, and it owns the two responsibilities this server gave up: deciding tactical plans (storing them via `set_mob_plan`) and answering player `!`-commands (off `chat-message` events).
@@ -227,7 +232,7 @@ With the server running and Claude Code (or the Gem) connected:
 
 If `list_tokens` fails, work down this list:
 
-- **"No usable Roll20 realtime token…"** — the credential from step 5 is missing, older than ~50 minutes, or belongs to another campaign; the message says which. Reconnect Roll20 in the Gem (pointed at *this* campaign), or redo the manual build.
+- **"No usable Roll20 realtime token…"** — the credential from step 5 is missing, spent (Firebase refused it — custom tokens last about an hour), or belongs to another campaign; the message says which. Reconnect Roll20 in the Gem (pointed at *this* campaign), or redo the manual build. Check `transport_status.rtToken` first: a `stale: true` there means the Gem has been up long enough that its harvest has gone cold, even though the Gem itself looks fine (#216).
 - **Timeout / "sandbox unreachable"** — the Mod script isn't running. Check the campaign's API Output Console for the load banner (step 3) and re-paste if it's absent or the version is stale.
 - **Relay version mismatch in `transport_status`** — re-paste `mod-scripts/ai-relay.js` into that campaign.
 - **Map tools missing or failing to load** — run `npm run build`; `roll20-dm-maps` runs the compiled `dist/`.

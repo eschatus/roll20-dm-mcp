@@ -62,7 +62,8 @@ Extract (see dm-rules.md for the condition/death/wound and voice-to-text rules):
 - **HP directly stated** — set HP to that value.
 - **Deaths/unconscious** — NPCs and sidekicks: `kill_token` (dead marker + map layer). A true PC
   at 0 HP is **dying, not dead**: `set_pc_dying` (prone + unconscious, token *stays* on the token
-  layer). Only `kill_token` a PC when the DM explicitly declares them dead. See dm-rules.md.
+  layer). Only `kill_token` a PC when the DM explicitly declares them dead. See dm-rules.md. A
+  kill the DM takes back (wrong target, retcon) is undone by `revive_token` — one call, not four.
 - **AoE template cleanup** — one-shot spells: `remove_object` the template. Persistent effects
   (Web, Cloudkill, Spike Growth, Wall of Fire): move template to map layer + rename ("Cloudkill
   — Round N").
