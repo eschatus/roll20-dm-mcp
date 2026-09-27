@@ -50,6 +50,12 @@ export interface Harness {
    */
   failRelayAction(action: string, message?: string): void;
   clearRelayFailures(): void;
+  /**
+   * Answer one relay action with a fixed result instead of the emulator's, standing in for a
+   * differently-versioned deployed relay (e.g. a stale `ping` version). Cleared with
+   * clearRelayFailures() too.
+   */
+  stubRelayAction(action: string, result: unknown): void;
   /** Every relay action ATTEMPTED, in order — lets a test prove a side effect never ran. */
   readonly relayLog: string[];
   clearRelayLog(): void;
@@ -73,6 +79,7 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
   // Failure injection for the swallowed-failure regressions: an action named here rejects
   // instead of reaching the emulator, standing in for a transport blip / auth expiry.
   const failingActions = new Map<string, string>();
+  const stubbedActions = new Map<string, unknown>();
   const relayLog: string[] = [];
 
   roll20.__setBridgeTestTransport({
@@ -80,6 +87,7 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
       relayLog.push(String(cmd.action));
       const injected = failingActions.get(String(cmd.action));
       if (injected) return Promise.reject(new Error(injected));
+      if (stubbedActions.has(String(cmd.action))) return Promise.resolve(stubbedActions.get(String(cmd.action)) as T);
       return Promise.resolve(emu.relay<T>(cmd));
     },
     evaluate: <T>(fn: (args?: unknown) => T, args?: unknown) => {
@@ -109,7 +117,8 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
     emu, server, callTool,
     failRelayAction: (action: string, message?: string) =>
       void failingActions.set(action, message ?? `injected relay failure: ${action}`),
-    clearRelayFailures: () => failingActions.clear(),
+    clearRelayFailures: () => { failingActions.clear(); stubbedActions.clear(); },
+    stubRelayAction: (action: string, result: unknown) => void stubbedActions.set(action, result),
     relayLog,
     clearRelayLog: () => { relayLog.length = 0; },
     teardown: () => {

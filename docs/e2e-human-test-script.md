@@ -261,6 +261,7 @@ Fixed AoEs that stay put → **zones**.
 |---|---|---|---|
 | 5F.1 | "The ogre drops." | **`kill_token { characterName: "Ogre" }`** ⚠ — one call does the whole death procedure (dead marker + move to the **map** layer). It replaces the old `set_token_marker(dead)` + `set_token_props(layer:"map")` pair, and it is **not** an HP edit — don't set HP to 0 | [ ] |
 | 5F.1b | "Thorne is down." (a **true PC** at 0 HP) | **`set_pc_dying { characterName: "Thorne" }`** ⚠ — prone + unconscious, token **stays on the token layer**, never dead, never map layer. Death saves are player-owned. If Thorne was concentrating, the teardown (marker + aura + linked zones) cascades automatically. `kill_token` only on the DM's explicit declaration of death | [ ] |
+| 5F.1b2 | "No wait — that was the wrong goblin, it's still up at 4." (right after 5F.1) | **`revive_token { characterName: "Ogre", hp: 4 }`** ⚠ — ONE call undoes the kill: HP back (never 0), `dead` cleared, token back on the **objects** layer, turn-order entry restored (original `pr` if it survived, else a fresh roll — reported as `initiativeSource`) **without changing whose turn it is** — the tracker's top row is the same combatant before and after, and no turn-hook whisper fires. It must NOT hand-unwind this with `update_token_hp` + `set_token_marker` + `set_token_props` + `roll_initiative`, and the players' initiative entries must all still be there afterwards | [ ] |
 | 5F.1c | "She loses the spell." | `break_concentration { characterName: … }` ⚠ — removes the Concentrating marker, zeroes `aura1_radius`, deletes zones whose duration is `{type:'concentration', caster}`. Returns what it tore down | [ ] |
 | 5F.2 | Any public line | `send_narration` contains **no numbers** (no "39/59", no totals) — damage/effects in words only; ASCII/Wounded receipt OK ⚠ | [ ] |
 | 5F.3 | Per-turn report | a **markdown report**: one-line summary + **Changes** + **Actions/tools**; GM-facing so exact HP is fine here | [ ] |
@@ -540,6 +541,8 @@ Output JSON:
   like an NPC. Set with `set_token_class`.
 - **Death:** `kill_token` (NPC/sidekick, or a DM-declared PC death) — one call, marker
   + map layer, not an HP edit. A true PC at 0 HP → `set_pc_dying`.
+- **Undo a death:** `revive_token { characterName, hp }` — one call, the inverse of
+  `kill_token` (HP ≥ 1, clears `dead`, objects layer, turn-order entry back).
 - **AoE vs emanation vs zone:** `resolve_aoe` for the AoE event; **aura** for
   emanations (move with caster); **`create_zone`** for fixed areas.
 - **SSE `/events` emits:** `combat-update`, `mob-plan` (`plan: null` = cleared),

@@ -291,6 +291,26 @@ registry override (`sidekick: true`, `src/registry/characters.ts`) is needed to 
   (`registry.listSidekickNames()`) so a sidekick routes as an NPC everywhere HP/death routing is
   decided. See issue #132.
 
+**Death and its undo:** `kill_token` is the one-call death procedure (dead marker + map layer);
+`revive_token` is its one-call inverse (#217) — HP (required, must be ≥ 1 or the auto-death
+threshold re-kills the token), clear `dead`, back to the `objects` layer, turn-order entry restored.
+The entry comes back three ways, in this order: an explicit `initiative` argument, the entry that
+survived the kill (leaving the token layer is what drops a combatant from the tracker), else a
+silent `rollInitiativeForTokens` re-roll — NPC/sidekick only; a true PC with neither reports
+`initiativeSource:"pending"` and the player rolls (PC initiative is read-only). Always upserted with
+`mergeTurnOrder keepTurn:true`, never a wholesale write: Roll20 marks the active turn by rotating
+the array, and the plain merge's pr-descending sort would rewind play to the top and trip the turn
+hook — `keepTurn` splices into the live rotation and leaves row 0 alone. `keepTurn` exists only from relay 2.9.0 — an older relay drops the flag and
+re-sorts — so before any turn-order write revive pings the relay and, if it is older than 2.9.0
+or reports no version, skips the write and returns `initiativeSource:"pending"` with an
+`initiativeNote` to redeploy (unknown is treated as stale on purpose: a skipped write costs one
+re-run, a wrong one rewinds a live turn). The four steps commit one relay call at a time (no
+transaction); a failure part-way reports which steps landed, and the repair is to re-run
+`revive_token` — it is idempotent. Never hint `roll_initiative` as a repair: its legacy sort
+rewinds the turn and it would roll a PC's initiative. Nothing on the board remembers a pre-kill HP or `pr`: a stash at the layer-write seam would
+have to be hand-synced across BOTH write paths (`roll20-rt.ts`'s direct write and `ai-relay.js`'s
+copy), which is why revive reads the live order instead of trusting a cache.
+
 **Auras (emanations):** `set_token_aura` is the one-call primitive — radius in feet, `0` clears,
 slot 1 or 2, player-visible by default. Shape goes to `aura{n}_options` (the authoritative field;
 Roll20 keeps the legacy `aura{n}_square` boolean in sync with it, so never write both). Roll20
