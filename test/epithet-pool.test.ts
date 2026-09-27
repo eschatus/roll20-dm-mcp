@@ -7,22 +7,20 @@
 // relay's logic here.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as fs from "fs";
-import * as path from "path";
-import { fileURLToPath } from "url";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 
 import { setupHarness, type Harness } from "./harness.js";
+import { AI_RELAY_PATH } from "./roll20-emulator.js";
 import * as characters from "../src/registry/characters.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const AI_RELAY_PATH = path.resolve(__dirname, "../mod-scripts/ai-relay.js");
 const CELL = 70;
 
-// Reads the CURRENT GENERIC_EPITHETS pool straight out of the real relay source, so
-// this suite tracks the actual pool rather than a hand-copied (and driftable) list.
+// Reads the CURRENT GENERIC_EPITHETS pool straight out of the relay the emulator loads (the
+// minified artifact under `build:mod -- --verify`), so this suite tracks the actual pool rather
+// than a hand-copied (and driftable) list. Whitespace-tolerant to match `GENERIC_EPITHETS=[…]`.
 function readGenericEpithets(): string[] {
   const src = fs.readFileSync(AI_RELAY_PATH, "utf8");
-  const m = /const GENERIC_EPITHETS = \[([\s\S]*?)\];/.exec(src);
+  const m = /GENERIC_EPITHETS\s*=\s*\[([\s\S]*?)\]/.exec(src);
   if (!m) throw new Error("Could not locate GENERIC_EPITHETS in ai-relay.js — did it get renamed?");
   return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
 }

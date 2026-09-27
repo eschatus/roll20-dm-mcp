@@ -3,16 +3,22 @@ import { getStats } from "../bridge/transport-health.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
 import { EXPECTED_RELAY_VERSION } from "../bridge/relay-version.js";
 import { getRelayVersionMismatch, getRelaySandboxInfo } from "../bridge/relay-version-check.js";
+import { getRtTokenStatus } from "../bridge/roll20-rt.js";
 import { BUILD_VERSION } from "../build-version.js";
 
 export function registerTransportTools(server: McpServer): void {
   server.tool(
     "transport_status",
-    "Show this server's build version, RT transport health, circuit-breaker state, counters, active campaign, and the deployed Mod relay's version handshake",
+    "Show this server's build version, RT transport health, circuit-breaker state, counters, active campaign, the age of the on-disk Roll20 realtime token, and the deployed Mod relay's version handshake",
     {},
     async () => {
       let activeCampaign = "(none)";
-      try { activeCampaign = getActiveCampaign().slug; } catch { /* no active campaign */ }
+      let activeRoll20Id: string | null = null;
+      try {
+        const c = getActiveCampaign();
+        activeCampaign = c.slug;
+        activeRoll20Id = c.roll20CampaignId;
+      } catch { /* no active campaign */ }
       const mismatch = getRelayVersionMismatch();
       const sandbox = getRelaySandboxInfo();
       return {
@@ -29,12 +35,19 @@ export function registerTransportTools(server: McpServer): void {
             // the default on 2026-09-02). null = not probed yet, or the deployed relay is older
             // than 2.6.0 and doesn't echo it.
             sandbox,
+            // Age and source (ROLL20_RT_TOKEN or the data-dir file) of the furnished RT token
+            // (#216). An already-connected server runs
+            // off its live socket and stays healthy long after this file goes cold, which is
+            // exactly when every OTHER reader of the data dir (roll20-dm-maps over stdio, a CLI
+            // script) gets locked out. Reporting it here is the only warning anyone gets. Also
+            // flags a token harvested for a different campaign than the active one.
+            rtToken: getRtTokenStatus(activeRoll20Id),
             relayVersion: {
               expected: EXPECTED_RELAY_VERSION,
               // null = no mismatch detected yet (either not probed, or the deployed relay matches).
               mismatch,
               note: mismatch
-                ? `Roll20 relay is out of date — found ${mismatch.found}, expected ${mismatch.expected}. Paste mod-scripts/ai-relay.js into this campaign's Roll20 API console (Settings → API Scripts) and save, then confirm the Mod console prints "Relay script loaded (v${mismatch.expected})". Deploys are per-campaign.`
+                ? `Roll20 relay is out of date — found ${mismatch.found}, expected ${mismatch.expected}. Run "npm run build:mod", paste mod-scripts/.ai-relay.deploy.js into this campaign's Settings → API Scripts and save, then confirm the Mod console prints "[GM_AI_Bridge] Relay script loaded (v${mismatch.expected})". Deploys are per-campaign.`
                 : undefined,
             },
           }),

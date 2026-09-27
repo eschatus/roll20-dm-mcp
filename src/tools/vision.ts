@@ -952,7 +952,7 @@ export function registerVisionTools(server: McpServer): void {
       cornerOverlapPx: z.number().default(4),
       cornerThresholdPx: z.number().default(10),
       maxSegmentPx: z.number().default(200),
-      strokeColor: z.string().default("#FFFF00"),
+      strokeColor: z.string().default("#0044FF").describe("DL wall stroke colour. Project convention is blue #0044FF."),
     },
     async ({ walls, doors, windows, pageId, sourceImageWidth, sourceImageHeight, pageWidthSquares, pageHeightSquares, endpointInsetPx, cornerOverlapPx, cornerThresholdPx, maxSegmentPx, strokeColor }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
@@ -1027,7 +1027,7 @@ export function registerVisionTools(server: McpServer): void {
       sourceImageHeight: z.number().optional(),
       pageWidthSquares: z.number().optional(),
       pageHeightSquares: z.number().optional(),
-      strokeColor: z.string().default("#FFFF00"),
+      strokeColor: z.string().default("#0044FF").describe("DL wall stroke colour. Project convention is blue #0044FF."),
     },
     async ({ points, closed, pageId, sourceImageWidth, sourceImageHeight, pageWidthSquares, pageHeightSquares, strokeColor }) => {
       if (points.length < 2) throw new Error("Need at least 2 points");

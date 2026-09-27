@@ -1,11 +1,12 @@
 {
   "name": "roll20-dm-mcp",
-  "version": "2.0.6",
+  "version": "2.1.0",
   "description": "MCP servers for driving a Roll20 table — combat and map prep primitives, no browser",
   "main": "dist/index-combat.js",
   "scripts": {
     "start": "node dist/index-combat.js",
     "build": "tsc",
+    "build:mod": "node scripts/build-mod.mjs",
     "prepare": "tsc",
     "dev": "tsx watch src/index-combat.ts",
     "serve": "tsx src/index-http.ts",
@@ -25,13 +26,16 @@
     "output would have been discarded, and the consumer would get no server entry at all.",
     "Everything listed here is consumed by the gem: dist/ (supervised spawn), src/ (its",
     "esbuild bundle:server step), skills/ + mod-scripts/ + LICENSE (electron-builder",
-    "extraResources). Nothing else is."
+    "extraResources), and scripts/build-mod.mjs so `npm run build:mod` — the documented way",
+    "to produce the paste-ready relay — works from an installed copy too (it needs esbuild,",
+    "which the gem already has for bundle:server). Nothing else is."
   ],
   "files": [
     "dist",
     "src",
     "skills",
     "mod-scripts",
+    "scripts/build-mod.mjs",
     "LICENSE",
     "NOTICE"
   ],

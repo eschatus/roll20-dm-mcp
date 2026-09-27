@@ -9,7 +9,10 @@
 // the relay, read it back via the relay).
 // ─────────────────────────────────────────────────────────────────────────────
 import { describe, it, expect, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { Roll20Emulator } from "./roll20-emulator.js";
+import { setupHarness } from "./harness.js";
+import { registerVisionTools } from "../src/tools/vision.js";
 
 let emu: Roll20Emulator;
 let pid: string;
@@ -57,6 +60,119 @@ describe("path / wall writes", () => {
     expect(Array.isArray(res)).toBe(true);
     const walls = emu.relay<unknown[]>({ action: "getWalls", pageId: pid });
     expect(walls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  // #207: createWalls used to fall back to a legacy `path` object hardcoded to yellow
+  // (#FFFF00) when createObj("pathv2") came back undefined. pathv2 is createObj-able on the
+  // supported engine, so the fallback was dead code that would have broken the blue-wall
+  // convention if it ever fired. Walls are pathv2, blue by default, and nothing lands on the
+  // walls layer as a legacy path.
+  it("createWalls makes blue pathv2 barriers with no legacy-path fallback", () => {
+    const res = emu.relay<Array<{ id: string; kind: string }>>({
+      action: "createWalls", pageId: pid,
+      walls: [{ x1: 0, y1: 0, x2: 140, y2: 0 }, { x1: 0, y1: 0, x2: 0, y2: 140 }],
+    });
+    expect(res.map((r) => r.kind)).toEqual(["pathv2", "pathv2"]);
+    for (const r of res) {
+      const obj = emu.getObj("pathv2", r.id);
+      expect(obj).toBeTruthy();
+      expect(obj!.get("stroke")).toBe("#0044FF");
+      expect(obj!.get("shape")).toBe("pol");
+    }
+    // No legacy path objects on the walls layer — getWalls reports those with kind "path".
+    const walls = emu.relay<Array<{ kind: string }>>({ action: "getWalls", pageId: pid });
+    expect(walls.filter((w) => w.kind === "path")).toEqual([]);
+  });
+
+  // The emulator's createObj never returns undefined, so the behavioral test above cannot reach
+  // the removed branch. Pin it at the source level instead (same approach as
+  // test/chat-trigger-safety.test.ts): no wall creator may create a legacy `path` on the walls
+  // layer, and no yellow may be hardcoded there.
+  it("no wall creator in ai-relay.js carries a legacy-path / yellow fallback", () => {
+    const src = readFileSync("mod-scripts/ai-relay.js", "utf8");
+    const handlerBody = (action: string) => {
+      const start = src.indexOf(`ACTIONS["${action}"]`);
+      expect(start, `${action} handler not found`).toBeGreaterThan(-1);
+      const next = src.indexOf('ACTIONS["', start + 1);
+      return src.slice(start, next === -1 ? undefined : next);
+    };
+
+    // createWalls only ever creates walls: nothing legacy, no yellow anywhere in it.
+    const walls = handlerBody("createWalls");
+    expect(walls).not.toContain("#FFFF00");
+    expect(walls).not.toContain('createObj("path"');
+    expect(walls).toContain("rollbackCreated");
+
+    // createPolylines also draws on non-wall layers with legacy paths (yellow default is fine
+    // there), so check only the walls branch — everything up to its pathv2 failure throw.
+    const polylines = handlerBody("createPolylines");
+    expect(polylines).toContain("rollbackCreated");
+    expect(polylines.slice(0, polylines.indexOf("rollbackCreated(created"))).not.toContain("#FFFF00");
+  });
+
+  // Wall batches are all-or-nothing: a pathv2 miss partway through used to throw away the ids of
+  // the walls already placed (the caller never saw them) and a retry laid duplicates on top.
+  // The emulator's createObj never fails, so swap it for one that returns undefined on the Nth
+  // pathv2 (the Roll20 behaviour on a page without UDL) and assert nothing is left behind.
+  function emulatorFailingPathv2On(n: number): { emu: Roll20Emulator; pid: string } {
+    const e = new Roll20Emulator({ seed: 11 });
+    const inner = e as unknown as { createObj: (type: string, props?: Record<string, unknown>) => unknown };
+    const real = inner.createObj;
+    let pathv2Calls = 0;
+    inner.createObj = (type, props) => {
+      if (type === "pathv2" && ++pathv2Calls === n) return undefined;
+      return real(type, props);
+    };
+    e.load(); // load() hands the sandbox whatever createObj is installed now
+    return { emu: e, pid: e.createPage("Legacy-engine page") };
+  }
+
+  it("createWalls rolls back the walls it already placed when a later pathv2 fails", () => {
+    const { emu: e, pid: p } = emulatorFailingPathv2On(3);
+    expect(() => e.relay({
+      action: "createWalls", pageId: p,
+      walls: [
+        { x1: 0, y1: 0, x2: 140, y2: 0 }, { x1: 0, y1: 0, x2: 0, y2: 140 },
+        { x1: 140, y1: 0, x2: 140, y2: 140 }, { x1: 0, y1: 140, x2: 140, y2: 140 },
+      ],
+    })).toThrow(/Rolled back 2 object\(s\)/);
+    expect(e.relay<unknown[]>({ action: "getWalls", pageId: p })).toEqual([]);
+  });
+
+  it("createPolylines rolls back everything it placed when a later walls pathv2 fails", () => {
+    const { emu: e, pid: p } = emulatorFailingPathv2On(2);
+    expect(() => e.relay({
+      action: "createPolylines", pageId: p,
+      polylines: [
+        { points: [[0, 0], [140, 0], [140, 140]] },
+        { points: [[0, 0], [70, 70]], layer: "map" },
+        { points: [[0, 140], [140, 140]] },
+      ],
+    })).toThrow(/Rolled back 2 object\(s\)/);
+    expect(e.relay<unknown[]>({ action: "getWalls", pageId: p })).toEqual([]);
+    expect(e.relay<unknown[]>({ action: "getPaths", pageId: p, layer: "map" })).toEqual([]);
+  });
+
+  // #207 root cause: the TOOLS defaulted strokeColor to yellow #FFFF00, and
+  // place_polyline_walls hands it to the relay as the polyline's own stroke, which wins over
+  // the relay's blue default. The default is blue now; call the real tool with no strokeColor.
+  it("place_polyline_walls with no strokeColor places a blue #0044FF pathv2 wall", async () => {
+    const h = setupHarness({ seed: 11 });
+    try {
+      registerVisionTools(h.server as never);
+      const page = h.emu.createPage("Polyline page");
+      const res = await h.callTool("place_polyline_walls", {
+        points: [[0, 0], [140, 0], [140, 140]], pageId: page,
+      });
+      const id = (res.json as { id?: string }).id;
+      expect(id).toBeTruthy();
+      const wall = h.emu.getObj("pathv2", id!);
+      expect(wall).toBeTruthy();
+      expect(wall!.get("layer")).toBe("walls");
+      expect(wall!.get("stroke")).toBe("#0044FF");
+    } finally {
+      h.teardown();
+    }
   });
 
   it("clearLayer removes everything on the walls layer", () => {

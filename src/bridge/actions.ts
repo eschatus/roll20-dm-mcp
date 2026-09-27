@@ -11,7 +11,8 @@ export const newNonce = (): number => ++_nonce;
 export const READONLY_ACTIONS = new Set<string>([
   "getTokens", "getSelection", "getTokenById", "getWalls", "debugPage",
   "getPaths", "getDoors", "listPages", "getTurnOrder", "getRecentChat",
-  "getDmInbox", "getTurnHookState", "getCharacterAttributes", "getRepeatingSection",
+  "getDmInbox", "getTurnHookState", "getCharacterAttributes", "getSheetDefaultValues",
+  "getRepeatingSection",
   "getTokenMarkers", "getCustomStates", "listZones", "findTokensInZone",
   "findTokensInRange", "getJournalFolder", "ping",
 ]);
