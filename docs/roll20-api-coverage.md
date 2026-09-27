@@ -47,7 +47,7 @@ can be moved back to 1.0 by hand. `ACTIONS["ping"]` echoes `Campaign().sandboxVe
 surfaces them under `sandbox` — that is how you find out which one a campaign is on. A `sandbox` of
 `null` there means the *relay* is older than 2.7.0, not that the sandbox is old.
 
-Last analyzed: **2026-09-26** (docs re-read live; repo v2.2.0). Relay version string: `2.10.0`
+Last analyzed: **2026-09-26** (docs re-read live; repo v2.2.1). Relay version string: `2.10.0`
 (reported by the `ping` action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
 (`[GM_AI_Bridge] Relay script loaded (v2.10.0)`), not the save.
@@ -117,11 +117,16 @@ the page is the path — there is no `pageid` in the payload. Map pins carry `sh
 - **750 chars is a UI cap, not a storage one** — the Roll20 pin editor truncates pasted notes, but
   RTDB accepted and returned 8.6k-char notes intact.
 
-Still unverified live, all covered by steps 2.9/2.10 of `docs/e2e-human-test-script.md`: an open
-client rendering an RTDB-side pin write without a reload; a bare pin (no icon/shape) rendering;
-delete propagating; `visibleTo`/`gmNotesVisibleTo` actually hiding from a player (the `"all"`
-default comes from the docs, never observed); and a whole-`pins/page` read, which every
-pageId-less call (`list_map_pins {}`, update/delete without a pageId) depends on.
+**Verified live on 8th Street (2026-09-27, #237):** an open GM client renders an RTDB-side pin write
+without a reload, and `visibleTo`/`gmNotesVisibleTo:""` really do hide the pin and its GM notes from
+a player. **A pin's own `notes`/`gmNotes`/`pinImage` are shown to nobody — GM included — unless the
+desynced triple is set**: Roll20 treats them as synced from a linked handout, and with no `link`
+there is nothing to sync from. When the GM enabled the notes in the pin editor, the client set the
+triple (and dropped `gmNotesVisibleTo`). So `create_map_pin`/`update_map_pin` set the triple by
+default when they write own content with no link and the caller didn't choose (`autoDesynced` in
+the response). Still unverified live: a bare pin (no icon/shape) rendering, delete propagating, and
+a whole-`pins/page` read, which every pageId-less call (`list_map_pins {}`, update/delete without a
+pageId) depends on.
 
 **Read/queryable but still NOT createObj-creatable:** `page`, `campaign`, `player`, `hand`,
 `jukeboxtrack`. `page`'s absence is what justifies `rtCreatePage` (#178) — the RTDB write is the
