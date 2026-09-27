@@ -157,7 +157,8 @@ Persistent storage: the global **`state`** object (survives sandbox restarts).
   the sandbox dies: both crash classes this repo has burned days on — an `undefined`/`NaN` value
   reaching `t.set()`, and `@{`/`[[` echoed back through chat — presented as nothing but a dead
   sandbox, and are now attributable in one look (#209).
-- Graphic `currentSide` — setting it auto-updates `imgsrc` for rollable tokens.
+- Graphic `currentSide` — setting it auto-updates `imgsrc` for rollable tokens. Exposed through
+  `set_token_props` as of #204; the write is harmless on v1.0, it just does nothing there.
 
 ### Campaign() direct properties (NOT behind `.get()`)
 `sandboxVersion` (`"1.0"`/`"1.5"`) · `nodeVersion` — both sandboxes.
@@ -296,6 +297,18 @@ Legend: ✅ exposed · 🟡 partial · ❌ API-reachable but **not exposed** (ad
 
 ### Strong (✅)
 - **Tokens/graphics** — full CRUD; `setTokenProps` passes arbitrary props (bars, auras, tint, light, position, layer, gmnotes…).
+  `set_token_props` validates the presentation/behaviour properties added in #204:
+  `bar{1,2,3}_num_permission` (`everyone` | `hidden` | `""` = editors only), `lockMovement`,
+  `renderAsScenery`, `baseOpacity` / `fadeOnOverlap` / `fadeOpacity`, `night_vision_effect`,
+  `bar_location` / `compact_bar`, `currentSide` (v1.5), `interactionManualReset` (an action —
+  `true` resets the object's interactions) / `interactionTriggered` (state Roll20 sets when the
+  interaction fires; read it back via `get_token`). NPC HP digits are editor-only by Roll20's
+  default (`""`; an NPC token has no controllers, so only the GM reads them) — the creation tools
+  write nothing unless `showHpNumbersToPlayers: true` opts a token into `"everyone"`.
+  **Anything a creation path sets must also appear in `setDefaultTokenForChar`'s KEYS list**
+  in `ai-relay.js`, or it is silently lost when the sheet's default token is applied. The two
+  interaction flags are deliberately excluded (a default token must not replay a reset).
+  Roll20 now also documents a **4th bar** (`bar4_*`); it is not yet exposed by any tool.
 - **HP & conditions** — token bars + status markers + char `active_conditions`; `batch_exec` for bulk; three-way PC / NPC / sidekick routing.
 - **Initiative / turn order** — read, merge, advance, real-dice roll, auto announcements, round detection, epithets, per-combatant `entries[{match,bonus,hp}]` overrides.
 - **Dice** — real Roll20 engine via inline rolls, plus `post_roll_as_character` for results rolled elsewhere.

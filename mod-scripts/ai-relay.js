@@ -263,6 +263,18 @@ function tokenRich(t) {
     if (p[0] === "rotation" && v === 0) return;
     s[p[0]] = v;
   });
+  // Properties where "" and false are real settings ("" = editors-only bar numbers,
+  // false = movement unlocked / no overlap fade), so they are reported whenever set.
+  [
+    "bar1_num_permission", "bar2_num_permission", "bar3_num_permission",
+    "bar_location", "compact_bar", "night_vision_effect",
+    "lockMovement", "renderAsScenery", "baseOpacity", "fadeOnOverlap", "fadeOpacity",
+    "sides", "currentSide", "interactionManualReset", "interactionTriggered",
+  ].forEach(function(k) {
+    var v = t.get(k);
+    if (v === null || v === undefined) return;
+    s[k] = v;
+  });
   return s;
 }
 
@@ -473,21 +485,43 @@ function setDefaultTokenForChar(t, args) {
   var ch = getObj("character", charId);
   if (!ch) throw new Error("Character not found: " + charId);
   if (!t.get("represents")) t.set("represents", charId); // keep the link bidirectional
+  // A key missing from this list is a property SILENTLY LOST when the sheet's default token is
+  // applied — the same way the aura shape was lost before "aura1_options" was added here. Any
+  // property a creation path or a tool sets on a token belongs here, unless re-applying it on
+  // every drag would itself be wrong (see the interaction flags below).
   var KEYS = [
     "name", "imgsrc", "represents", "controlledby",
     "bar1_link", "bar2_link", "bar3_link",
     "bar1_value", "bar1_max", "bar2_value", "bar2_max", "bar3_value", "bar3_max",
+    "bar1_num_permission", "bar2_num_permission", "bar3_num_permission",
+    "bar_location", "compact_bar",
     "width", "height", "rotation", "statusmarkers", "tint_color",
     "aura1_radius", "aura1_color", "aura1_square", "aura1_options", "showplayers_aura1",
     "aura2_radius", "aura2_color", "aura2_square", "aura2_options", "showplayers_aura2",
     "showname", "showplayers_name", "showplayers_bar1", "showplayers_bar2", "showplayers_bar3",
     "light_radius", "light_dimradius", "light_otherplayers", "light_hassight",
-    "light_angle", "light_losangle", "sides", "currentside",
+    "light_angle", "light_losangle", "night_vision_effect",
+    "lockMovement", "renderAsScenery", "baseOpacity", "fadeOnOverlap", "fadeOpacity",
+    // interactionManualReset / interactionTriggered are deliberately NOT here. Setting
+    // interactionManualReset:true is an ACTION (it resets the object's interactions), and
+    // interactionTriggered is state Roll20 sets when the object fires — copying either into a
+    // default token would replay a reset, or a stale triggered state, every time the sheet is
+    // dragged out. They stay readable on a live token (tokenRich / the RT read).
+    // camelCase, per the Objects doc — the lowercase "currentside" this list used to carry
+    // reads back undefined and was therefore never copied at all.
+    "sides", "currentSide",
   ];
+  // "" is a MEANINGFUL value for the bar-number permissions — it means "only players who can
+  // EDIT this token may read the number", which is a stricter setting than "everyone" and not
+  // the same as unset. Dropping it with the other empties would quietly loosen the default
+  // token. Everywhere else "" is genuinely "nothing to copy" (no name, no image, no tint).
+  var EMPTY_MEANINGFUL = ["bar1_num_permission", "bar2_num_permission", "bar3_num_permission"];
   var props = {};
   KEYS.forEach(function (k) {
     var v = t.get(k);
-    if (v !== undefined && v !== null && v !== "") props[k] = v;
+    if (v === undefined || v === null) return;
+    if (v === "" && EMPTY_MEANINGFUL.indexOf(k) === -1) return;
+    props[k] = v;
   });
   ch.set("defaulttoken", JSON.stringify(props));
   return { ok: true, charId: charId, character: ch.get("name"), fields: Object.keys(props).length };

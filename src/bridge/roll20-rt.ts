@@ -721,6 +721,12 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
           aura2_radius: t.aura2_radius, aura2_color: t.aura2_color, aura2_square: t.aura2_square, aura2_options: t.aura2_options,
           tint_color: t.tint_color, light_radius: t.light_radius, light_dimradius: t.light_dimradius,
           gmnotes: t.gmnotes || "",
+          bar1_num_permission: t.bar1_num_permission, bar2_num_permission: t.bar2_num_permission, bar3_num_permission: t.bar3_num_permission,
+          bar_location: t.bar_location, compact_bar: t.compact_bar, night_vision_effect: t.night_vision_effect,
+          lockMovement: t.lockMovement, renderAsScenery: t.renderAsScenery,
+          baseOpacity: t.baseOpacity, fadeOnOverlap: t.fadeOnOverlap, fadeOpacity: t.fadeOpacity,
+          sides: t.sides, currentSide: t.currentSide,
+          interactionManualReset: t.interactionManualReset, interactionTriggered: t.interactionTriggered,
         };
       }
       case "getDoors": {
