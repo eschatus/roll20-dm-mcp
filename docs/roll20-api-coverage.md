@@ -47,7 +47,7 @@ can be moved back to 1.0 by hand. `ACTIONS["ping"]` echoes `Campaign().sandboxVe
 surfaces them under `sandbox` — that is how you find out which one a campaign is on. A `sandbox` of
 `null` there means the *relay* is older than 2.7.0, not that the sandbox is old.
 
-Last analyzed: **2026-09-26** (docs re-read live; repo v2.1.0). Relay version string: `2.10.0`
+Last analyzed: **2026-09-26** (docs re-read live; repo v2.1.1). Relay version string: `2.10.0`
 (reported by the `ping` action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
 (`[GM_AI_Bridge] Relay script loaded (v2.10.0)`), not the save.
@@ -98,10 +98,30 @@ Coverage = relay + direct RTDB.
 relay's `createWalls` no longer carries a legacy-`path` fallback (it was dead code that hardcoded a
 yellow stroke against the project's blue-wall convention — removed in #207).
 
-**`pin` is a new object type this project does not use at all** (#203). Map pins: `shape`
+**`pin` is now exposed over direct RTDB** (#203) — `create_map_pin`, `list_map_pins`,
+`update_map_pin`, `delete_map_pin` in the maps suite, no relay action. A pin is a plain node at
+`<storagePath>/pins/page/<pageId>/<pinId>` (`src/bridge/pins.ts`): `push()` mints the id, `update()`
+merges a partial, `rtGet` reads it back — the doors/windows pattern, so **no Mod redeploy**. Verified
+live on Three Families: `x`/`y` are page **pixels** (70/square, like a graphic's `left`/`top`) and
+the page is the path — there is no `pageid` in the payload. Map pins carry `shape`
 (teardrop/circle/diamond/square), a built-in `icon` set or a `pinImage`, `title`/`notes`/`gmNotes`,
 `link` + `linkType:"handout"`, and per-audience visibility (`visibleTo`, `tooltipVisibleTo`,
-`gmNotesVisibleTo`, …). Note the camelCase — `gmNotes` on a pin, not `gmnotes` as everywhere else.
+`gmNotesVisibleTo`, …). Traps, all silent:
+- **camelCase** — `gmNotes` on a pin, not `gmnotes` as everywhere else. The MCP SDK strips an
+  unknown key during Zod validation, so a typo is dropped, never written, and never errors; both
+  write tools echo the exact key list they wrote (`wrote` / `updated`).
+- **`gmNotesVisibleTo` defaults to `"all"` on Roll20's side** (as do the other `*VisibleTo`).
+  `create_map_pin` writes `""` unless told otherwise, so GM notes stay GM-only.
+- **`imageDesynced`/`notesDesynced`/`gmNotesDesynced` are ONE flag wearing three names** — the tools
+  expose a single `desynced` boolean and write all three.
+- **750 chars is a UI cap, not a storage one** — the Roll20 pin editor truncates pasted notes, but
+  RTDB accepted and returned 8.6k-char notes intact.
+
+Still unverified live, all covered by steps 2.9/2.10 of `docs/e2e-human-test-script.md`: an open
+client rendering an RTDB-side pin write without a reload; a bare pin (no icon/shape) rendering;
+delete propagating; `visibleTo`/`gmNotesVisibleTo` actually hiding from a player (the `"all"`
+default comes from the docs, never observed); and a whole-`pins/page` read, which every
+pageId-less call (`list_map_pins {}`, update/delete without a pageId) depends on.
 
 **Read/queryable but still NOT createObj-creatable:** `page`, `campaign`, `player`, `hand`,
 `jukeboxtrack`. `page`'s absence is what justifies `rtCreatePage` (#178) — the RTDB write is the
@@ -420,6 +440,7 @@ These are the "stop hitting the wall" items. None need the browser.
 - **Sheet defaults** — `getSheetDefaultValue` → `get_sheet_default_values` (relay 2.9.0), the
   "unset vs. default" comparison `getCharacterAttributes` cannot make on its own.
 - **Handouts** — `createHandout` → `create_handout`.
+- **Map pins** — direct RTDB at `pins/page/<pageId>/<pinId>` → `create_map_pin`, `list_map_pins`, `update_map_pin`, `delete_map_pin` (#203, no relay action). The Roll20-native primitive for module points of interest and for a marker revealed once the party finds it (`visibleTo: ""` → `"all"`).
 - **Character stubs** — `createCharacter` → `create_character_stub`.
 - **Token↔sheet default token** — `setDefaultTokenForCharacter` → `setDefaultToken` / `batch_exec`.
 - **`add:graphic` hook** — auto-rolls initiative for NPC tokens dropped mid-combat.

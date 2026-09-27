@@ -80,6 +80,26 @@ After placing DL walls, immediately call `decorate_openings` with the `doors`, `
 
 This is automatic — do not ask the DM before doing it.
 
+### 4b. Mark points of interest (optional)
+
+If the map has keyed locations — a module's numbered rooms, a shrine, a stash — drop a
+`create_map_pin` per location: `{ pageId, x, y, title, notes, gmNotes, icon, customizationType:
+"icon" }`. `x`/`y` are page pixels (70 per square), same as a token's.
+
+- Something the party should not see yet goes in with `visibleTo: ""` and is revealed later with
+  `update_map_pin { pinId, visibleTo: "all" }`. That is the whole "reveal the shrine once they find
+  it" flow — no deleting and re-creating.
+- `link` + `linkType: "handout"` ties a pin to a journal handout, so the pin *is* the handout's
+  location on the map.
+- `gmNotes` stays GM-only: `create_map_pin` writes `gmNotesVisibleTo: ""` for you (Roll20's own
+  default would show GM notes to everyone). Don't pass `gmNotesVisibleTo: "all"` unless the DM asks.
+- A full keyed-area description fits in `notes` — the 750-character limit is the Roll20 editor's,
+  not the pin's; the tool stores the whole text.
+- Pin properties are **camelCase** (`gmNotes`, `bgColor`, `pinImage`) unlike everything else in the
+  Roll20 API. A misspelled field is silently dropped, so check the `wrote` list `create_map_pin`
+  reports back — if a field you passed isn't in it, it was a typo.
+- Pins write straight to the campaign database; no relay deploy is needed.
+
 ### 5. Report back
 
 Report:
