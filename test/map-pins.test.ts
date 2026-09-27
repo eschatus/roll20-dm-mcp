@@ -204,6 +204,28 @@ describe("own-content desync default (#237)", () => {
     const { json: u3 } = await callTool("update_map_pin", { pinId: plain, pageId: PAGE, notes: "more" });
     expect(u3).toMatchObject({ autoDesynced: false, updated: ["notes"] });
   });
+
+  it("unlinking in the same call that writes notes desyncs (Devin, #238)", async () => {
+    const id = ((await callTool("create_map_pin", { pageId: PAGE, x: 0, y: 0, link: "-Handout1", linkType: "handout" })).json as Created).pinId;
+    const { json } = await callTool("update_map_pin", { pinId: id, pageId: PAGE, link: "", linkType: "", notes: "own now" });
+    expect(json).toMatchObject({ autoDesynced: true });
+    expect(rt.store.get(`${PAGE}/${id}`)).toMatchObject(TRIPLE);
+  });
+
+  it("newly linking a handout re-syncs an auto-desynced pin so the handout shows (Devin, #238)", async () => {
+    const id = ((await callTool("create_map_pin", { pageId: PAGE, x: 0, y: 0, notes: "Old room" })).json as Created).pinId;
+    expect(rt.store.get(`${PAGE}/${id}`)).toMatchObject(TRIPLE);
+    const { json } = await callTool("update_map_pin", { pinId: id, pageId: PAGE, link: "-Handout1", linkType: "handout" });
+    expect(json).toMatchObject({ autoResynced: true, autoDesynced: false });
+    expect(rt.store.get(`${PAGE}/${id}`)).toMatchObject({ imageDesynced: false, notesDesynced: false, gmNotesDesynced: false });
+  });
+
+  it("an explicit desynced:true in the linking call keeps the pin's own content", async () => {
+    const id = ((await callTool("create_map_pin", { pageId: PAGE, x: 0, y: 0, notes: "Keep me" })).json as Created).pinId;
+    const { json } = await callTool("update_map_pin", { pinId: id, pageId: PAGE, link: "-Handout1", desynced: true });
+    expect(json).toMatchObject({ autoResynced: false });
+    expect(rt.store.get(`${PAGE}/${id}`)).toMatchObject(TRIPLE);
+  });
 });
 
 describe("list_map_pins", () => {
@@ -238,7 +260,7 @@ describe("update_map_pin", () => {
     const { json: c } = await callTool("create_map_pin", { pageId: PAGE, x: 10, y: 20, title: "Hidden Shrine", visibleTo: "", icon: "base-dot" });
     const id = (c as Created).pinId;
     const { json } = await callTool("update_map_pin", { pinId: id, pageId: PAGE, visibleTo: "all" });
-    expect(json).toEqual({ pinId: id, pageId: PAGE, updated: ["visibleTo"], autoDesynced: false });
+    expect(json).toEqual({ pinId: id, pageId: PAGE, updated: ["visibleTo"], autoDesynced: false, autoResynced: false });
     expect(rt.store.get(`${PAGE}/${id}`)).toMatchObject({ x: 10, y: 20, title: "Hidden Shrine", visibleTo: "all", icon: "base-dot" });
   });
 

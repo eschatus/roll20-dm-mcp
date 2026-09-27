@@ -309,7 +309,8 @@ vision/wall tooling is maps-only.)
   **A pin's own notes/GM notes/image show to NOBODY, GM included, unless the desynced triple is set**
   — Roll20 treats them as synced from a linked handout, and with no link there is nothing to show.
   The pin tools therefore desync by default when they write own content with no `link` (reported as
-  `autoDesynced`); an explicit `desynced` wins. Still unverified: a bare pin (no icon/shape)
+  `autoDesynced`), and re-sync when an update newly links a handout without own content
+  (`autoResynced`); an explicit `desynced` always wins. Still unverified: a bare pin (no icon/shape)
   rendering, delete propagating, and a whole-`pins/page` read, which every pageId-less call needs.
 
 ## Combat development

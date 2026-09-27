@@ -524,7 +524,7 @@ export function registerMapTools(server: McpServer): void {
       'Who sees the GM notes. Roll20 documents the default as "all" — create_map_pin therefore writes "" (GM only) unless you say otherwise.'
     ),
     desynced: z.boolean().optional().describe(
-      "Show this pin's OWN notes/GM notes/image instead of a linked handout's. Roll20 hides a pin's own content from everyone, GM included, unless this is set — so when you write notes, gmNotes or pinImage on a pin with no handout link and leave this unset, the tool sets it for you (reported as autoDesynced). Pass false to keep a linked handout's content. Roll20 keeps imageDesynced/notesDesynced/gmNotesDesynced as ONE coupled flag, so this is a single boolean."
+      "Show this pin's OWN notes/GM notes/image instead of a linked handout's. Roll20 hides a pin's own content from everyone, GM included, unless this is set — so when you write notes, gmNotes or pinImage on a pin with no handout link and leave this unset, the tool sets it for you (autoDesynced). When an update newly links a handout without writing own content, the tool clears it so the handout's content shows (autoResynced) — pass true in that call to keep the pin's own content instead. Roll20 keeps imageDesynced/notesDesynced/gmNotesDesynced as ONE coupled flag, so this is a single boolean."
     ),
   };
   const PIN_XY = {
@@ -569,7 +569,7 @@ export function registerMapTools(server: McpServer): void {
     },
     async ({ pinId, pageId, ...rest }) => {
       const result = await updatePin(pinId, toPinFields(rest), pageId);
-      return { content: [{ type: "text", text: JSON.stringify({ pinId: result.id, pageId: result.pageId, updated: result.updated, autoDesynced: result.autoDesynced }) }] };
+      return { content: [{ type: "text", text: JSON.stringify({ pinId: result.id, pageId: result.pageId, updated: result.updated, autoDesynced: result.autoDesynced, autoResynced: result.autoResynced }) }] };
     }
   );
 
