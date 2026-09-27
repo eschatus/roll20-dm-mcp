@@ -76,7 +76,7 @@ ID `17491327`) is the project's control campaign (no real PCs) — skip Phase 1'
 | 0.1 | `node --version` | ≥ v20 | [ ] |
 | 0.2 | `npm install` (repo root) | clean install. **No `npx playwright install` step** — confirm `playwright` is absent from `package.json` dependencies | [ ] |
 | 0.3 | Confirm `.env` has `ANTHROPIC_API_KEY` | Needed **only** by the maps suite's `analyze_battlemap` (`src/tools/vision.ts` is the sole `@anthropic-ai/sdk` importer). The combat server reaches no Anthropic code — skip this if you skip Phase 2. **No DDB credential is needed or used.** | [ ] |
-| 0.4 | Confirm the data dir holds a **current** `roll20-rt-token.json` for the campaign you're about to test | `{campaignId, customToken, databaseURL, harvestedAt}`, < 50 min old, **matching this campaign** (tokens are campaign-scoped). The server never harvests one — refresh it from the gem. Data dir = `./data` unless `ROLL20_DATA_DIR` is set. | [ ] |
+| 0.4 | Confirm the data dir holds a **current** `roll20-rt-token.json` for the campaign you're about to test | `{campaignId, customToken, databaseURL, harvestedAt}`, well under an hour old, **matching this campaign** (tokens are campaign-scoped). The server never harvests one — refresh it from the gem. Data dir = `./data` unless `ROLL20_DATA_DIR` is set. | [ ] |
 | 0.5 | If you'll run Phase 2: confirm `roll20-upload-cache.json` too | `{endpoint, cookies, harvestedAt}`, < 8 h old. Missing/stale → `Roll20UploadCredentialError` on any upload. | [ ] |
 | 0.6 | `npm run build` | `tsc` exits 0 (required for the stdio maps server + `npm start`) | [ ] |
 | 0.7 | `npm test` | suite green — **34 files, 400 tests passing, 0 skipped** as of v2.0.0 | [ ] |
@@ -339,6 +339,7 @@ Type these as a **player** in Roll20 chat. Watch the `/events` SSE stream (e.g.
 | 7.2 | Open the **Setup** tab | status shows dataDir, **API key**, **RT token**, campaign count, active slug; a `!` badge until essentials done, then a green "You're all set" | [ ] |
 | 7.3 | If needed: enter Anthropic key; **Connect Roll20** (first-party token harvest in the gem's own Electron session — not OAuth); optionally pick a larger STT model / enable GPU; **copy the Mod** to clipboard | each step flips its status green | [ ] |
 | 7.4 | **The harvest contract:** confirm Connect Roll20 refreshes `roll20-rt-token.json` (and the upload cache) in the dir this server reads | the gem is the **sole harvester**; this server only reads those files and raises `Roll20TokenUnavailableError` / `Roll20UploadCredentialError` when they're absent or stale. Whether the gem also connects D&D Beyond (for beyond-mcp) is **dm-whisper's business, not this repo's** | [ ] |
+| 7.4a | **The stale-file trap (#216):** with the gem up for ≥ 50 min, call `transport_status` | `rtToken.stale` is `true` with a note naming the other readers it locks out, even though `rt.health` is `ok`. The gem's own socket is fine; a second reader of the data dir is not. Press **Connect Roll20** → `rtToken.ageMinutes` drops and `stale` clears | [ ] |
 | 7.5 | Say/type "list my campaigns" → switch to **e2e-test** | active campaign = e2e-test | [ ] |
 
 ### 7B — A voice turn + confirm flow
@@ -524,10 +525,12 @@ Output JSON:
   (`npm run release:mod` and `deploy_mod_script` are deleted.)
 - **Transport:** RT (Firebase RTDB) only. No browser, no Playwright, no chromium step.
 - **Credentials:** furnished, never minted — the server reads
-  `roll20-rt-token.json` (campaign-scoped, ~50 min) and `roll20-upload-cache.json`
+  `roll20-rt-token.json` (campaign-scoped, ~1 h) and `roll20-upload-cache.json`
   (8 h) from the data dir (`ROLL20_DATA_DIR`, default `./data`) and raises
   `Roll20TokenUnavailableError` / `Roll20UploadCredentialError` when they're missing
-  or stale. The gem harvests them.
+  or stale. The gem harvests them — reactively, only when its own server fails, so a
+  long-up gem leaves the file cold and locks out every other reader of the dir
+  (#216). `transport_status.rtToken` is the warning.
 - **`ANTHROPIC_API_KEY`:** maps suite only (`analyze_battlemap`). The combat server
   reaches no Anthropic code.
 - **Wall color:** blue `#0044FF` (the tools' default since #207). Openings: doors
