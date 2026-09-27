@@ -27,6 +27,16 @@ is **out of scope here**, not "bridged with Playwright".
 >
 > Read the page before trusting anything below it — §2 is transcribed from the live articles, but
 > Roll20 ships changes weekly and the Objects page visibly lags its own change log.
+>
+> **A Cloudflare challenge has been seen once.** On **2026-09-26** one fetch with the short UA
+> above came back as a "Just a moment..." interstitial (~5.8 KB of JS challenge, HTTP 200) instead
+> of the article. Later the same day all three articles fetched fine (HTTP 200, full article) with a
+> **full** Chrome UA plus `-H 'Accept: text/html'`. So if you hit the interstitial, retry with a
+> full Chrome UA string and an `Accept: text/html` header — or read the article through the
+> Zendesk JSON API (`https://help.roll20.net/api/v2/help_center/en-us/articles/<id>.json`, whose
+> `body` field is the article HTML) — before concluding the pages are unreachable. Save any fresh
+> transcription under `data/` (gitignored) the way `data/Mod_Objects - Roll20 Wiki.html` used to
+> be — the emulator's property whitelist cites it.
 
 **Mod Script Sandbox v1.0 vs v1.5 — read this before anything else.** On **2026-09-02** Roll20 made
 **v1.5 the default** for every game that had never explicitly picked a version (the old
@@ -37,10 +47,10 @@ can be moved back to 1.0 by hand. `ACTIONS["ping"]` echoes `Campaign().sandboxVe
 surfaces them under `sandbox` — that is how you find out which one a campaign is on. A `sandbox` of
 `null` there means the *relay* is older than 2.7.0, not that the sandbox is old.
 
-Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.6). Relay version string: `2.8.0`
+Last analyzed: **2026-09-26** (docs re-read live; repo v2.0.6). Relay version string: `2.9.0`
 (reported by the `ping` action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
-(`[GM_AI_Bridge] Relay script loaded (v2.8.0)`), not the save.
+(`[GM_AI_Bridge] Relay script loaded (v2.9.0)`), not the save.
 
 ---
 
@@ -61,7 +71,7 @@ Claude → MCP tool (TS) → roll20.relayCommand({action,...})
 ```
 
 **Two layers of "can do":**
-1. **Relay actions** (73 action handlers in the `ACTIONS` dispatch map in `ai-relay.js`, plus `batchExec` sub-actions) — the real Roll20 API surface this project uses.
+1. **Relay actions** (76 action handlers in the `ACTIONS` dispatch map in `ai-relay.js`, plus `batchExec` sub-actions) — the real Roll20 API surface this project uses.
 2. **Direct RTDB paths** (`tryDirectRead` / `tryDirectWrite` in `src/bridge/roll20-rt.ts`) — a faster
    route to a *subset* of the same actions off the socket, plus the two things the sandbox genuinely
    can't do (`rtCreatePage`, and art upload via a furnished-credential multipart POST).
@@ -117,20 +127,36 @@ Persistent storage: the global **`state`** object (survives sandbox restarts).
   `createCharacter` exist to work around. Untested against a live sheet; #206.
 - `getSheetItem` / `setSheetItem` (async, Promise) — the sheet-aware attribute carriers. On v1.0
   they wrap attributes; on v1.5 they also reach Beacon computed properties and `user.*` attrs.
-- `getSheetDefaultValue(name, valtype?)` — the sheet's default for a field, not the live value.
 - `findObjs` options now include **`tagMatch: 'all' | 'any' | 'only'`** beside `caseInsensitive`
-  and `startsWith`. (#209 covers this and the rest of the small unused surface.)
+  and `startsWith` — `'all'` (default) means the object carries every listed tag, `'any'` at least
+  one, `'only'` exactly the listed set. **Not adopted, and deliberately so (#209):** the live
+  Objects page (re-read 2026-09-26) lists a `tags` property on **character** and **handout** only —
+  graphics, paths and text have none. So `tagMatch` is inert for token lookup, the one place it
+  could have replaced `resolveToken`'s name matching: tokens carry no tags to match. It could
+  filter characters or handouts if a use for that ever appears; nothing here needs one today.
 - Card/deck helpers: `shuffleDeck`, `cardInfo`, `recallCards`, `dealCardsToTurn`, `drawCard`,
-  `pickUpCard`, `takeCardFromPlayer`, `playCardToTable`, `giveCardToPlayer`.
+  `pickUpCard`, `takeCardFromPlayer`, `playCardToTable`, `giveCardToPlayer`. Available on both
+  sandboxes. **Not adopted (#209):** nothing at the table uses decks yet. This is the same gap as
+  §5 item 5 (the Tarokka deck for Curse of Strahd) and belongs to that item, not to a speculative
+  wrapper per helper — a deck feature wants the `deck`/`card`/`hand` object CRUD *and* these
+  helpers designed together.
 
 **Sandbox v1.5 only:**
 - `getComputed` / `setComputed` / `performAction` — Beacon sheet computed properties and sheet
   actions. Enumerate them with `Campaign().computedSummary` / `actionSummary`.
-- `toAbove(obj, target)` / `toBelow(obj, target)` — precise layer ordering; `toFront`/`toBack` are
-  also "substantially faster" here, and graphics/paths/text gain `.toFront()` / `.toBack()` methods.
+- ~~`toAbove(obj, target)` / `toBelow(obj, target)`~~ ✅ **wired (relay 2.9.0)** as `to_above` /
+  `to_below` — precise layer ordering, which `to_front`/`to_back` cannot express. The relay refuses
+  on v1.0 with the campaign's sandbox version named rather than letting `toAbove is not defined`
+  surface, and refuses a cross-page or cross-layer pair rather than reporting `ok:true` for a no-op
+  (z-order is per-page and per-layer). `toFront`/`toBack` are also "substantially faster" here, and graphics/paths/text gain
+  `.toFront()` / `.toBack()` instance methods (the globals still work; nothing here needs changing).
 - `spawnFxBetweenPoints` beam types point at the end point (an angle bug is fixed).
-- `log` error messages carry a context object; the Apr 2026 server release added per-script
-  callstacks with script name + line and attributed "Possible Infinite Loop Detected" reports.
+- `log` error messages carry a context object (e.g. `[Roll20 character -id]`); the Apr 2026 server
+  release added per-script callstacks with script name, tab number, line and column, plus
+  attribution for "Possible Infinite Loop Detected". **Read the Mod console callstack FIRST** when
+  the sandbox dies: both crash classes this repo has burned days on — an `undefined`/`NaN` value
+  reaching `t.set()`, and `@{`/`[[` echoed back through chat — presented as nothing but a dead
+  sandbox, and are now attributable in one look (#209).
 - Graphic `currentSide` — setting it auto-updates `imgsrc` for rollable tokens.
 
 ### Campaign() direct properties (NOT behind `.get()`)
@@ -210,6 +236,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `getDmInbox`/`clearDmInbox` | get_dm_inbox, clear_dm_inbox | combat | `!dm` queue |
 | `setMobPlan`/`getMobPlans`/`clearMobPlans` | set_mob_plan, get_mob_plans, clear_mob_plans | combat | **storage only.** The server no longer *plans* anything — the tactics tools (`plan_tactics`, `plan_all_tactics`, `record_tactic_outcome`, `get/clear_tactic_memory`) are removed and the gem owns tactical planning; this is just where it parks the resulting whisper cards. |
 | `setCharacterAttributes`/`getCharacterAttributes` | set_character_attribute, get_character_attribute, read_character_attributes | combat | sheet attrs. **Never read a field containing literal `@{`/`[[`** (e.g. `rollbase`) — Roll20's chat pipeline live-evaluates it on echo. |
+| `getSheetDefaultValues` | get_sheet_default_values | combat | `getSheetDefaultValue(name, valtype?)` per requested name — the **sheet's** default, not a character's value, so a stat-block writer can tell "never set" from "set to exactly the default". Campaign-wide (no `charId`). Unknown names come back under `missing`, never as a default of `null`. Roll20 doesn't document whether the getter is sync or async, so a thenable return is resolved rather than serialised as `{}`. |
 | `getRepeatingSection` | *(none)* | — | **read-only** (e.g. npcaction); row cap (maxRows default 60, `__truncated` flag); no field projection. Orphaned since tactics moved to the gem — the action still exists but no MCP tool calls it. |
 | `editCharacter` | set_character_props | combat | edit top-level character fields (name/bio/avatar/controlledby/archived/inplayerjournals) |
 | `batchExec` | batch_exec, update_hp_many, resolve_aoe, roll_initiative (HP seeding) | combat | runs N token actions in one relay round-trip |
@@ -218,8 +245,9 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `createCharacter` | create_character_stub | combat | `createObj('character')` stub; derives `<ability>_mod` from the raw score at creation (sheet workers never fire on API-created attrs) |
 | `sendPing` | send_ping | maps | "look here" / pull player view to a spot |
 | `spawnFx` / `spawnFxBetweenPoints` | spawn_fx, spawn_fx_between_points | maps | explosions, beams, spell nova |
-| `toFront` / `toBack` | to_front, to_back | maps | z-order |
-| `ping` | (health check) | — | reports relay version (2.8.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
+| `toFront` / `toBack` | to_front, to_back | maps | z-order (all-the-way front/back) |
+| `toAbove` / `toBelow` | to_above, to_below | maps | z-order **relative** to another object. **Sandbox v1.5 only** — refuses on v1.0 naming the version and the `toFront`/`toBack` fallback. Both objects must share a page **and** a layer (z-order is page- and layer-local; either mismatch is refused rather than reported as an `ok:true` no-op). **Maps server only**, matching `to_front`/`to_back` — z-order is map-prep work; a combat-side registration is a follow-up if the table ever needs it live. |
+| `ping` | (health check) | — | reports relay version (2.9.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
 | **event** `chat:message` | (passive) | — | buffers chat, parses `!dm`. Player `!`-commands are **forwarded, not answered** — `forwardChat` broadcasts them as an SSE `chat-message`; the gem decides what to do. |
 | **event** `change:campaign:turnorder` | (passive) | — | turn/round announcements |
 | **event** `add:graphic` | (passive) | — | auto-rolls initiative for NPC tokens dropped during combat |
@@ -304,7 +332,10 @@ These are the "stop hitting the wall" items. None need the browser.
 ### Shipped since this doc's first draft (✅ — no longer gaps)
 - **Visual FX** — `spawnFx` / `spawnFxBetweenPoints` → `spawn_fx`, `spawn_fx_between_points`.
 - **Pings** — `sendPing` → `send_ping`.
-- **Z-order** — `toFront`/`toBack` → `to_front`, `to_back`.
+- **Z-order** — `toFront`/`toBack` → `to_front`, `to_back`; `toAbove`/`toBelow` → `to_above`,
+  `to_below` (relay 2.9.0, **sandbox v1.5 only**).
+- **Sheet defaults** — `getSheetDefaultValue` → `get_sheet_default_values` (relay 2.9.0), the
+  "unset vs. default" comparison `getCharacterAttributes` cannot make on its own.
 - **Handouts** — `createHandout` → `create_handout`.
 - **Character stubs** — `createCharacter` → `create_character_stub`.
 - **Token↔sheet default token** — `setDefaultTokenForCharacter` → `setDefaultToken` / `batch_exec`.

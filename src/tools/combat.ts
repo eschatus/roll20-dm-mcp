@@ -801,6 +801,24 @@ export function registerCombatTools(server: McpServer): void {
   );
 
   server.tool(
+    "get_sheet_default_values",
+    "Read the character SHEET's default value for one or more field names — not any character's live value. Use it to tell 'never set' from 'set to exactly the default' when writing a stat block, which read_character_attributes cannot do on its own. Campaign-wide (keyed on the sheet, not a character).",
+    {
+      names: z.array(z.string()).min(1).describe("Sheet field names, e.g. ['npc_ac', 'npc_speed']"),
+      valtype: z.enum(["current", "max"]).optional().describe("Optional value type for getSheetDefaultValue: 'current' (Roll20's default) or 'max'"),
+    },
+    async ({ names, valtype }) => {
+      const result = await roll20.relayCommand<{
+        defaults: Record<string, unknown>;
+        missing: string[];
+        valtype: string | null;
+        sheet: { sandbox: string | null; sheetName: string | null; beacon: boolean };
+      }>({ action: "getSheetDefaultValues", names, valtype });
+      return json(result);
+    }
+  );
+
+  server.tool(
     "update_token_hp",
     "The SINGLE HP primitive — replaces the old apply_damage and heal_character tools. Apply damage (clamps at 0), healing (clamps at max), or set HP to an exact value on ANY Roll20 token. Routes automatically by controlledby: a player-controlled token (PC) has its HP tracked in relay state (a block in the token's gmnotes) and its visible token bar is NEVER touched (Beyond20 owns it) — reported as '(tracked)'; an NPC's HP is its token bar1. Resolve by characterName (fuzzy/registry) or tokenId. Roll20-only — D&D Beyond is read-only and is NOT written. For CONDITIONS (poisoned, prone, dead, etc.) use set_token_marker instead — not this. (The condition args here are legacy/bulk-only.) EXAMPLE — 'the ogre takes 39': {\"characterName\":\"Ogre\",\"damage\":39}. 'heal Thorne 12': {\"characterName\":\"Thorne\",\"heal\":12}. damage/heal/setHp are bare NUMBERS (39), NEVER quoted strings (\"39\").",
     {
