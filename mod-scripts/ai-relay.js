@@ -300,6 +300,29 @@ function cleanChat(raw) {
     .slice(0, 240);                               // cleaned text is dense; 240 >> 600 raw
 }
 
+// Why a createObj("pathv2") came back undefined. pathv2 is a supported createObj type, so the
+// realistic causes are a bad pageid or a campaign/page still on the Legacy VTT engine (no UDL,
+// hence no pathv2 barriers). Named here so both wall creators report the same thing (#207) —
+// there is no legacy-`path` fallback: it was hardcoded yellow, against the blue-wall
+// convention, and swapping object types on a failure would hide an engine problem instead of
+// naming it. `rolledBack` is how many objects placed earlier in the same call were removed.
+function pathv2Failure(pageId, rolledBack) {
+  var c = Campaign();
+  return "createObj('pathv2') returned undefined for page " + pageId
+    + " — pathv2 walls need the Latest VTT Engine (UDL); check the page's engine and that the"
+    + " pageId is valid (sandbox " + (c && c.sandboxVersion ? c.sandboxVersion : "unknown") + ")."
+    + (rolledBack ? " Rolled back " + rolledBack + " object(s) already placed by this call, so a"
+      + " retry will not duplicate them." : "");
+}
+
+// Wall batches are all-or-nothing. A throw mid-batch would otherwise lose the ids of the objects
+// already placed (the caller never sees them), and a retry would lay duplicates on top. So:
+// on a pathv2 miss, remove every object this call created, then throw.
+function rollbackCreated(created, pageId) {
+  created.forEach(function(o) { o.remove(); });
+  throw new Error(pathv2Failure(pageId, created.length));
+}
+
 // Cheap bounding box from a points array — handles v1 [x,y] and pathv2 [cmd,x,y] points.
 function bboxOf(points) {
   if (!Array.isArray(points) || !points.length) return null;
@@ -1268,8 +1291,11 @@ ACTIONS["createToken"] = function (args, msg, nonce, senderPlayerId) {
       };
 ACTIONS["createPage"] = function (args, msg, nonce, senderPlayerId) {
         {
-        // Roll20 API does not support createObj("page") — pages must be created manually in the UI.
-        throw new Error("Roll20 API does not allow creating pages programmatically. Create the page manually in the Roll20 page navigator, then pass its pageId.");
+        // createObj("page") is unsupported in the Mod sandbox — but that is a MOD limitation, not a
+        // Roll20 one: the TS side creates pages browserlessly by writing the RTDB `pages` node
+        // directly (rtCreatePage in src/bridge/roll20-rt.ts, proved live in #178), then sets the
+        // handful of MOD-only page fields over this relay via setPageProps.
+        throw new Error("The Mod sandbox cannot create pages (createObj('page') is unsupported). Create it over RTDB instead (rtCreatePage / setup_roll20_page), or add the page in the Roll20 page navigator and pass its pageId.");
       }
       };
 ACTIONS["createPath"] = function (args, msg, nonce, senderPlayerId) {
@@ -1390,18 +1416,12 @@ ACTIONS["createWalls"] = function (args, msg, nonce, senderPlayerId) {
         // Create DL barriers. Latest Engine UDL → pathv2 with shape:"pol".
         // Points are relative to the object center (x,y). For a two-point wall from
         // (x1,y1)→(x2,y2): center = midpoint; points = [[-dx/2,-dy/2],[dx/2,dy/2]].
-        // If createObj("pathv2") returns undefined, fall back to legacy path.
-        let firstWall = (args.walls || [])[0];
-        if (firstWall) {
-          let probeCx = (firstWall.x1 + firstWall.x2) / 2;
-          let probeCy = (firstWall.y1 + firstWall.y2) / 2;
-          log("[GM_AI_Bridge] createWalls probe — pageId=" + args.pageId
-            + " wall[0]: x1=" + firstWall.x1 + " y1=" + firstWall.y1
-            + " x2=" + firstWall.x2 + " y2=" + firstWall.y2
-            + " cx=" + probeCx + " cy=" + probeCy
-            + " points=" + JSON.stringify([[firstWall.x1 - probeCx, firstWall.y1 - probeCy], [firstWall.x2 - probeCx, firstWall.y2 - probeCy]]));
-        }
-        let wallResults = (args.walls || []).map(function(w, wi) {
+        // "pathv2" IS createObj-able (Roll20 lists it in the Function Documentation type list,
+        // and #178-era live work confirmed it), so a failure here is a real error — there is no
+        // legacy-path fallback to hide behind, and there must not be: it drew in hardcoded
+        // yellow, against the blue-wall convention (#207). A miss rolls the whole batch back.
+        let created = [];
+        let wallResults = (args.walls || []).map(function(w) {
           let cx = (w.x1 + w.x2) / 2;
           let cy = (w.y1 + w.y2) / 2;
           let pv2Props = {
@@ -1416,29 +1436,10 @@ ACTIONS["createWalls"] = function (args, msg, nonce, senderPlayerId) {
             stroke_width: 5,
             controlledby: "",
           };
-          let wallObj;
-          try { wallObj = createObj("pathv2", pv2Props); } catch(e) {
-            log("[GM_AI_Bridge] createWalls pathv2 threw: " + String(e));
-          }
-          if (wi === 0) log("[GM_AI_Bridge] createWalls pathv2 result[0]: " + (wallObj ? "id=" + wallObj.id : "undefined — falling back"));
-          if (wallObj) return { id: wallObj.id, kind: "pathv2" };
-          // Fall back to legacy path on walls layer
-          let minX = Math.min(w.x1, w.x2), minY = Math.min(w.y1, w.y2);
-          let legacyObj = createObj("path", {
-            pageid: args.pageId,
-            layer: "walls",
-            path: JSON.stringify([["M", w.x1 - minX, w.y1 - minY], ["L", w.x2 - minX, w.y2 - minY]]),
-            left: cx, top: cy,
-            width: Math.max(Math.abs(w.x2 - w.x1), 1),
-            height: Math.max(Math.abs(w.y2 - w.y1), 1),
-            barrierType: args.barrierType || "wall",
-            stroke: "#FFFF00",
-            stroke_width: 5,
-            fill: "transparent",
-            rotation: 0, scaleX: 1, scaleY: 1, controlledby: "",
-          });
-          if (wi === 0) log("[GM_AI_Bridge] createWalls path-fallback result[0]: " + (legacyObj ? "id=" + legacyObj.id : "undefined"));
-          return legacyObj ? { id: legacyObj.id, kind: "path-fallback" } : { error: "createObj failed for both pathv2 and path" };
+          let wallObj = createObj("pathv2", pv2Props);
+          if (!wallObj) rollbackCreated(created, args.pageId);
+          created.push(wallObj);
+          return { id: wallObj.id, kind: "pathv2" };
         });
         writeResult(nonce, wallResults);
         return;
@@ -1725,6 +1726,9 @@ ACTIONS["createPolylines"] = function (args, msg, nonce, senderPlayerId) {
         // Create one path object per polyline from an ordered list of absolute-pixel points.
         // Walls layer → pathv2 UDL barrier (Latest VTT Engine). Other layers → legacy path.
         // Each polyline: { points: [[x,y], ...], stroke?, stroke_width?, closed?, layer? }
+        // Everything this call creates (walls AND other-layer paths), so a pathv2 miss rolls the
+        // whole call back rather than strand objects whose ids the caller never receives.
+        let created = [];
         let polylineResults = (args.polylines || []).map(function(pl) {
           let pts = pl.points || [];
           if (pts.length < 2) return { error: "Need at least 2 points" };
@@ -1754,7 +1758,9 @@ ACTIONS["createPolylines"] = function (args, msg, nonce, senderPlayerId) {
               stroke: pl.stroke || args.stroke || "#0044FF",
               controlledby: "",
             });
-            return wallObj ? { id: wallObj.id, pointCount: pts.length } : { error: "createObj('pathv2') returned undefined" };
+            if (!wallObj) rollbackCreated(created, args.pageId);
+            created.push(wallObj);
+            return { id: wallObj.id, pointCount: pts.length };
           }
           let minX = Math.min.apply(null, pts.map(function(p) { return p[0]; }));
           let minY = Math.min.apply(null, pts.map(function(p) { return p[1]; }));
@@ -1780,6 +1786,7 @@ ACTIONS["createPolylines"] = function (args, msg, nonce, senderPlayerId) {
             scaleY: 1,
             controlledby: "",
           });
+          if (pathObj) created.push(pathObj);
           return pathObj ? { id: pathObj.id, pointCount: pts.length } : { error: "createObj('path') returned undefined" };
         });
         writeResult(nonce, polylineResults);
