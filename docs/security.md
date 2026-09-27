@@ -31,7 +31,8 @@ MCP server that a model can call on its own initiative.
 
 ## 1. The furnished Roll20 realtime credential (`roll20-rt-token.json`)
 
-**What it is:** `<data dir>/roll20-rt-token.json` — `{ campaignId, customToken, databaseURL, harvestedAt }`.
+**What it is:** `<data dir>/roll20-rt-token.json` — `{ campaignId, customToken, databaseURL, harvestedAt }`,
+or the same object inline in **`ROLL20_RT_TOKEN`** (which takes precedence; see below).
 The Firebase custom token for **one specific campaign**, plus that campaign's RTDB shard URL (Roll20
 shards campaigns across `roll20-99910`, `roll20-99922`, …). It is the credential every relay command
 rides on. The data dir is `./data` by default, overridable with `ROLL20_DATA_DIR` (the packaged gem
@@ -43,13 +44,27 @@ exchangeable.
 **Mitigations:**
 - **The server never harvests it.** `getCustomToken` (`src/bridge/roll20-rt.ts`) reads the cache or
   throws — there is no harvest fallback by design (#177). The gem (dm-whisper) is the sole harvester.
+- **Two furnish sources, one shape.** `ROLL20_RT_TOKEN` carries the same JSON object as the file, for
+  a caller with the credential but no shared writable data dir; it wins over the file. A set-but-
+  unusable variable **throws instead of falling through** — a silent fallback to a different
+  campaign's token is the quiet divergence #177 was filed about. Env vars are readable to anything
+  that can see the process environment and land in shell history, so the file remains the default;
+  prefer the variable only for a short-lived process (a `tsx` script, a one-job stdio server).
 - **Campaign-scoped.** A token for campaign A is refused for campaign B rather than silently used.
 - **Short-lived.** A Firebase custom token is spent ~1 h after mint, and the exchange is what
   enforces that — Firebase's rejection, not a local clock check. (The clock check used to be the
   gate; it refused tokens without ever asking Firebase, locking out every other reader of the data
   dir on a credential that was possibly still exchangeable, so it is now advisory only and surfaces via `transport_status.rtToken` — #216.)
-- **Fails loudly and actionably.** Absent, stale, wrong-campaign, or shard-less → a typed
-  `Roll20TokenUnavailableError` naming exactly what to refresh ("reconnect Roll20 in the gem"). A
+- **Env precedence is loud, not silent.** When `ROLL20_RT_TOKEN` is set it is the ONLY source read —
+  the file is not consulted, even if the variable's token is stale or for another campaign. Export it
+  in the shell for one short-lived process; don't put a live token in `.env`: the server loads `.env`
+  on every start, so a line there silently beats every fresh token the gem harvests into the file.
+- **Fails loudly and actionably, naming the source.** Absent, Firebase-rejected, wrong-campaign, or
+  shard-less → a typed `Roll20TokenUnavailableError` (`.source` = `"env"` | `"file"` | `null`) whose
+  message says which source it read and what to refresh: for the file, "reconnect Roll20 in the gem";
+  for the env var, update or unset `ROLL20_RT_TOKEN` — reconnecting in the gem would only rewrite the
+  file the variable overrides. With neither present it says both were checked. `transport_status.rtToken`
+  carries the same `source`, and reports a malformed `ROLL20_RT_TOKEN` rather than failing. A
   silent fallback is precisely the failure mode #83 closed on the relay path; the same reasoning
   applies to the credential the relay runs on.
 - Under `data/`, which is gitignored, so it is never committed.

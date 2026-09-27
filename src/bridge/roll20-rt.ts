@@ -1,21 +1,22 @@
 // Roll20 realtime transport — browserless relay over Firebase RTDB.
 //
-// Replaces the Playwright chat-typing relay (roll20.ts) with a direct Firebase connection:
+// Replaced the (deleted) Playwright chat-typing relay with a direct Firebase connection:
 // we PUSH the `!ai-relay {…}` command as a chat child and LISTEN for the Mod's
 // `AIBRIDGE_RESULT:` whisper child — the Mod script (mod-scripts/ai-relay.js) is unchanged.
 //
 // Auth chain (see docs/roll20-realtime-protocol.md — NOTE: /editor/oauth_token returns a Roll20
-// OAuth token, NOT the Firebase custom token; we instead intercept the custom token from the
-// browser's signInWithCustomToken request body):
+// OAuth token, NOT the Firebase custom token; the custom token is intercepted from the browser's
+// signInWithCustomToken request body, by the harvester, not by this server):
 //   logged-in browser  ──intercept signInWithCustomToken request──▶  Firebase custom token
 //   custom token  ──firebase signInWithCustomToken──▶  ID token (RTDB cred, ~1h, SDK auto-refreshes)
 //
-// The session cookie is harvested ONCE via the existing browser bridge (which keeps a persistent
-// logged-in profile), cached to disk, and only re-harvested on 401. The browser is NOT held open
-// during operation — all traffic is the socket. RT is the only transport (#122/#179) — there is
-// no runtime switch for it.
+// The custom token is FURNISHED, never minted here (#177): read from ROLL20_RT_TOKEN or
+// <data dir>/roll20-rt-token.json, and a loud typed error when there is nothing usable. Whoever
+// harvests it does so in a first-party, human-attended session (the gem's Electron browser) —
+// there is no browser in this repo (#179) and no fallback that could open one. All traffic here
+// is the socket. RT is the only transport (#122/#179) — there is no runtime switch for it.
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import path from "path";
 import { dataPath } from "../dataDir.js";
 import { initializeApp, deleteApp, type FirebaseApp } from "firebase/app";
@@ -72,33 +73,101 @@ const TOKEN_LIFETIME_MS = 60 * 60_000;
 // the warning lands while there is still time to reconnect rather than after the fact.
 const TOKEN_STALE_MS = 50 * 60_000;
 
-// --- Firebase custom-token harvest (browser touched once at cold start, then cached) ---
+// --- The furnished Firebase custom token (READ here, minted elsewhere) ---
 //
-// oauth_token returns a Roll20 OAuth token, NOT a Firebase custom token — the custom token is
-// minted opaquely by the editor bootstrap and handed to signInWithCustomToken. The modular SDK
-// only fires that call on a FRESH auth (otherwise it restores from IndexedDB), so to capture a
-// fresh, re-exchangeable custom token we intercept the request body — forcing a fresh sign-in by
-// clearing the firebase auth IndexedDB and reloading if the editor was already authenticated.
+// This server does NOT harvest (#177). It reads the credential from ROLL20_RT_TOKEN or from
+// <data dir>/roll20-rt-token.json, and when there is nothing usable it throws — there is no
+// browser here to reach for, and a server that could open one against a live account on its own
+// initiative is the capability the issue removed.
+//
+// For whoever does mint it (the gem's own Electron session, human present): oauth_token returns a
+// Roll20 OAuth token, NOT a Firebase custom token — the custom token is minted opaquely by the
+// editor bootstrap and handed to signInWithCustomToken, and the modular SDK only fires that call
+// on a FRESH auth (otherwise it restores from IndexedDB). Capturing a fresh, re-exchangeable one
+// therefore means intercepting that request body. See docs/roll20-realtime-protocol.md.
 
 // databaseURL is the campaign's actual Firebase RTDB instance. Roll20 shards campaigns across
 // multiple instances (roll20-99910, roll20-99922, …); a hardcoded URL only reads one shard, so
-// campaigns on another shard read empty and silently fall back to the Mod. Captured at harvest.
-interface TokenCache { campaignId: string; customToken: string; databaseURL: string; harvestedAt: number }
-interface RtCredential { customToken: string; databaseURL: string; harvestedAt: number }
+// campaigns on another shard read empty. Recorded by whoever harvested the token.
+//
+// `source` records WHICH furnish path the credential came from. Every refusal names it, because
+// the remedy differs: a bad file is fixed by reconnecting in the gem (which rewrites it), but a bad
+// ROLL20_RT_TOKEN is not — the gem's re-harvest rewrites the very file the variable overrides.
+type TokenSource = "env" | "file";
+interface TokenCache { campaignId: string; customToken: string; databaseURL: string; harvestedAt: number; source: TokenSource }
+interface RtCredential { customToken: string; databaseURL: string; harvestedAt: number; source: TokenSource }
 
-function readTokenCache(): TokenCache | null {
-  try { return existsSync(TOKEN_CACHE) ? JSON.parse(readFileSync(TOKEN_CACHE, "utf-8")) : null; }
-  catch { return null; }
+// ROLL20_RT_TOKEN carries the SAME JSON object as roll20-rt-token.json — one documented shape,
+// not a second schema — for a caller that has the credential but no shared writable data dir
+// (a tsx script, a stdio maps server spawned for one job, a packaged install). It takes
+// precedence over the file: an explicitly furnished credential is the more deliberate act.
+//
+// Set-but-unusable throws rather than quietly falling through to the file. An operator who
+// exported this variable meant to use it, and a silent fallback to a different campaign's token
+// is precisely the kind of quiet divergence #177 was filed about.
+const TOKEN_ENV = "ROLL20_RT_TOKEN";
+const TOKEN_ENV_SHAPE =
+  `it takes the same {campaignId, customToken, databaseURL, harvestedAt} object as ` +
+  `roll20-rt-token.json; unset it to fall back to that file`;
+
+function readEnvToken(): TokenCache | null {
+  const value = process.env[TOKEN_ENV];
+  if (value === undefined) return null;
+  const raw = value.trim();
+  if (!raw) {
+    throw new Roll20TokenUnavailableError("(unknown)", `${TOKEN_ENV} is set but is empty — ${TOKEN_ENV_SHAPE}`, "env");
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); }
+  catch {
+    throw new Roll20TokenUnavailableError("(unknown)", `${TOKEN_ENV} is set but is not valid JSON — ${TOKEN_ENV_SHAPE}`, "env");
+  }
+  const t = parsed as Partial<TokenCache> | null;
+  if (!t || typeof t !== "object" || Array.isArray(t)) {
+    throw new Roll20TokenUnavailableError("(unknown)", `${TOKEN_ENV} is set but is not a JSON object — ${TOKEN_ENV_SHAPE}`, "env");
+  }
+  const missing = (["campaignId", "customToken", "databaseURL"] as const).filter((k) => !t[k]);
+  if (missing.length) {
+    throw new Roll20TokenUnavailableError(
+      String(t.campaignId ?? "(unknown)"),
+      `${TOKEN_ENV} is set but is missing ${missing.join("/")} — ${TOKEN_ENV_SHAPE}`,
+      "env",
+    );
+  }
+  // An env-furnished token may arrive without the harvest stamp (hand-assembled, or copied
+  // field-by-field). Record that as 0 — "of unknown age", the same convention getRtTokenStatus
+  // applies to the file (#216) — rather than inventing a stamp: the age is advisory, and a made-up
+  // one would report a token of unknown provenance as fresh. A stamp that IS present must be a
+  // finite number; anything else is refused, not repaired.
+  let harvestedAt = 0;
+  if (t.harvestedAt !== undefined && t.harvestedAt !== null) {
+    if (typeof t.harvestedAt !== "number" || !Number.isFinite(t.harvestedAt)) {
+      throw new Roll20TokenUnavailableError(
+        String(t.campaignId),
+        `${TOKEN_ENV} is set but harvestedAt is not a finite epoch-ms number — ${TOKEN_ENV_SHAPE}`,
+        "env",
+      );
+    }
+    harvestedAt = t.harvestedAt;
+  }
+  return {
+    campaignId: String(t.campaignId),
+    customToken: String(t.customToken),
+    databaseURL: String(t.databaseURL),
+    harvestedAt,
+    source: "env",
+  };
 }
 
-async function pollFor(get: () => string | null, ms: number): Promise<string | null> {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    const v = get();
-    if (v) return v;
-    await new Promise((r) => setTimeout(r, 200));
+function readTokenCache(): TokenCache | null {
+  const env = readEnvToken();
+  if (env) return env;
+  try {
+    if (!existsSync(TOKEN_CACHE)) return null;
+    const c = JSON.parse(readFileSync(TOKEN_CACHE, "utf-8")) as Omit<TokenCache, "source">;
+    return { ...c, source: "file" };
   }
-  return get();
+  catch { return null; }
 }
 
 /**
@@ -111,15 +180,40 @@ async function pollFor(get: () => string | null, ms: number): Promise<string | n
  * relay path, and the same reasoning applies to the credential the relay runs on.
  */
 export class Roll20TokenUnavailableError extends Error {
-  constructor(readonly campaignId: string, reason: string) {
+  /**
+   * `source` is the furnish path the refused credential came from — "env" (ROLL20_RT_TOKEN),
+   * "file" (<data dir>/roll20-rt-token.json), or null when neither held one. It picks the remedy.
+   * The message always opens "No usable Roll20 realtime token" — dm-whisper matches that prefix.
+   */
+  constructor(readonly campaignId: string, reason: string, readonly source: TokenSource | null = null) {
     super(
-      `No usable Roll20 realtime token for campaign ${campaignId} (${reason}). ` +
-      `This server reads the token but never harvests one — reconnect Roll20 in the gem to ` +
-      `re-harvest, or point ROLL20_DATA_DIR at the data dir holding a current ` +
-      `roll20-rt-token.json for THIS campaign (the token is campaign-scoped).`
+      `No usable Roll20 realtime token for campaign ${campaignId} (${describeSource(source)}: ${reason}). ` +
+      remedyFor(source)
     );
     this.name = "Roll20TokenUnavailableError";
   }
+}
+
+function describeSource(source: TokenSource | null): string {
+  if (source === "env") return `from ${TOKEN_ENV}`;
+  if (source === "file") return `from ${TOKEN_CACHE}`;
+  return `checked ${TOKEN_ENV} and ${TOKEN_CACHE}`;
+}
+
+function remedyFor(source: TokenSource | null): string {
+  if (source === "env") {
+    return (
+      `The token came from ${TOKEN_ENV}, which overrides the data dir's roll20-rt-token.json — ` +
+      `update ${TOKEN_ENV} with a current token for THIS campaign (the token is campaign-scoped), ` +
+      `or unset it to read the file. Reconnecting Roll20 in the gem will not help while it is set: ` +
+      `a re-harvest rewrites the file this variable overrides. This server never harvests a token.`
+    );
+  }
+  return (
+    `This server reads the token but never harvests one — reconnect Roll20 in the gem to ` +
+    `re-harvest, or point ROLL20_DATA_DIR at the data dir holding a current ` +
+    `roll20-rt-token.json for THIS campaign (the token is campaign-scoped).`
+  );
 }
 
 function tokenAgeMinutes(harvestedAt: number): number | null {
@@ -131,16 +225,22 @@ function tokenAgeMinutes(harvestedAt: number): number | null {
 // with no databaseURL. Age does not (#216); the exchange in connect() settles that.
 function getCustomToken(campaignId: string): RtCredential {
   const c = readTokenCache();
-  if (!c) throw new Roll20TokenUnavailableError(campaignId, "no token file — nothing has harvested one");
+  if (!c) {
+    throw new Roll20TokenUnavailableError(
+      campaignId,
+      `${TOKEN_ENV} is unset and there is no token file — nothing has harvested one`,
+    );
+  }
   if (c.campaignId !== campaignId) {
     throw new Roll20TokenUnavailableError(
       campaignId,
-      `the cached token belongs to campaign ${c.campaignId}; tokens are campaign-scoped`,
+      `the token belongs to campaign ${c.campaignId}; tokens are campaign-scoped`,
+      c.source,
     );
   }
-  if (!c.databaseURL) throw new Roll20TokenUnavailableError(campaignId, "cached token predates shard capture and has no databaseURL");
-  if (!c.customToken) throw new Roll20TokenUnavailableError(campaignId, "token file carries no customToken");
-  return { customToken: c.customToken, databaseURL: c.databaseURL, harvestedAt: Number(c.harvestedAt) || 0 };
+  if (!c.databaseURL) throw new Roll20TokenUnavailableError(campaignId, "the token predates shard capture and has no databaseURL", c.source);
+  if (!c.customToken) throw new Roll20TokenUnavailableError(campaignId, "the token carries no customToken", c.source);
+  return { customToken: c.customToken, databaseURL: c.databaseURL, harvestedAt: Number(c.harvestedAt) || 0, source: c.source };
 }
 
 // Test seam: the pre-flight credential read on its own, without the Firebase exchange that
@@ -162,6 +262,8 @@ export const __readRtCredentialForTest = getCustomToken;
  */
 export function getRtTokenStatus(activeCampaignId: string | null): {
   present: boolean;
+  /** Which furnish path was read: ROLL20_RT_TOKEN ("env") or the data-dir file ("file"). */
+  source: TokenSource | null;
   campaignId: string | null;
   activeCampaignId: string | null;
   campaignMismatch: boolean;
@@ -169,13 +271,28 @@ export function getRtTokenStatus(activeCampaignId: string | null): {
   stale: boolean;
   note?: string;
 } {
-  const c = readTokenCache();
-  if (!c) {
+  // A set-but-unusable ROLL20_RT_TOKEN throws from readEnvToken — correctly, on the connect path.
+  // Here it must be REPORTED, not raised: transport_status is the tool a DM runs to find out what
+  // is wrong, and failing outright on the very fault it should describe would hide it.
+  let c: TokenCache | null;
+  try {
+    c = readTokenCache();
+  } catch (err) {
+    if (!(err instanceof Roll20TokenUnavailableError)) throw err;
     return {
-      present: false, campaignId: null, activeCampaignId, campaignMismatch: false, ageMinutes: null, stale: true,
-      note: `No ${path.basename(TOKEN_CACHE)} in the data dir — reconnect Roll20 in the gem to harvest one.`,
+      present: false, source: "env", campaignId: null, activeCampaignId, campaignMismatch: false,
+      ageMinutes: null, stale: true, note: err.message,
     };
   }
+  if (!c) {
+    return {
+      present: false, source: null, campaignId: null, activeCampaignId, campaignMismatch: false, ageMinutes: null, stale: true,
+      note: `${TOKEN_ENV} is unset and there is no ${path.basename(TOKEN_CACHE)} in the data dir — reconnect Roll20 in the gem to harvest one.`,
+    };
+  }
+  const refresh = c.source === "env"
+    ? `Update ${TOKEN_ENV} (it overrides the data-dir file, so reconnecting in the gem will not change what this server reads), or unset it.`
+    : `Reconnect Roll20 in the gem to refresh the file.`;
   const campaignId = c.campaignId ?? null;
   const campaignMismatch = activeCampaignId !== null && campaignId !== activeCampaignId;
   const harvestedAt = Number(c.harvestedAt) || 0;
@@ -184,22 +301,26 @@ export function getRtTokenStatus(activeCampaignId: string | null): {
   const notes: string[] = [];
   if (campaignMismatch) {
     notes.push(
-      `The on-disk Roll20 token belongs to campaign ${campaignId ?? "(none recorded)"} but the active ` +
+      `The Roll20 token (${describeSource(c.source)}) belongs to campaign ${campaignId ?? "(none recorded)"} but the active ` +
       `campaign is ${activeCampaignId}; tokens are campaign-scoped, so every connect for the active ` +
-      `campaign will be refused. Reconnect Roll20 in the gem on the active campaign to harvest a matching one.`,
+      `campaign will be refused. ` +
+      (c.source === "env"
+        ? `Update or unset ${TOKEN_ENV}.`
+        : `Reconnect Roll20 in the gem on the active campaign to harvest a matching one.`),
     );
   }
   if (stale) {
     const ageText = ageMinutes === null ? "of unknown age" : `${ageMinutes}m old`;
     notes.push(
-      `The on-disk Roll20 token is ${ageText} and custom tokens last ~` +
+      `The Roll20 token (${describeSource(c.source)}) is ${ageText} and custom tokens last ~` +
       `${Math.round(TOKEN_LIFETIME_MS / 60_000)}m. An already-connected server keeps working off its ` +
-      `live socket, but any OTHER process sharing this data dir — roll20-dm-maps over stdio, a CLI ` +
-      `script — cannot sign in once it expires. Reconnect Roll20 in the gem to refresh the file.`,
+      `live socket, but any OTHER process sharing this credential — roll20-dm-maps over stdio, a CLI ` +
+      `script — cannot sign in once it expires. ${refresh}`,
     );
   }
   return {
     present: true,
+    source: c.source,
     campaignId,
     activeCampaignId,
     campaignMismatch,
@@ -416,8 +537,8 @@ async function connect(): Promise<RtConn> {
   // Sign in with the furnished custom token. There is no retry: the old second attempt re-read
   // the very same file (the browser re-harvest it was written for left with #177/#179), so it
   // could only fail identically. Firebase — not a local clock check — decides whether the token
-  // is spent (#216); a rejection is re-thrown as the typed error naming the code AND the age, so
-  // the reason on screen is the real one and it points at the gem's Connect Roll20.
+  // is spent (#216); a rejection is re-thrown as the typed error naming the code, the age AND the
+  // source, so the reason on screen is the real one and the remedy fits where the token came from.
   const harvested = getCustomToken(roll20CampaignId);
   const databaseURL = harvested.databaseURL;
   const app = initializeApp(FIREBASE_CONFIG, `roll20-rt-${roll20CampaignId}-${Date.now()}`);
@@ -432,7 +553,8 @@ async function connect(): Promise<RtConn> {
       throw new Roll20TokenUnavailableError(
         roll20CampaignId,
         `Firebase rejected the cached token (${code})` +
-        (age === null ? "" : `; it was harvested ${age}m ago`),
+        (age === null ? "; its age is unknown" : `; it was harvested ${age}m ago`),
+        harvested.source,
       );
     }
     throw err;
@@ -445,7 +567,7 @@ async function connect(): Promise<RtConn> {
   const userid = String(claims.userid || "");
   if (!storagePath || !playerid) throw new Error("roll20-rt: auth token missing currentcampaign/playerid claims");
 
-  // Connect to the campaign's actual RTDB shard (captured at harvest), not the config default.
+  // Connect to the campaign's actual RTDB shard (recorded with the token), not the config default.
   const db = getDatabase(app, databaseURL);
   const chatRef = ref(db, `${storagePath}/chat`);
 
