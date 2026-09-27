@@ -27,6 +27,7 @@ const saved = {
   dataDir: process.env.ROLL20_DATA_DIR,
   roll20: process.env.ROLL20_CAMPAIGN_ID,
   ddb: process.env.DDB_CAMPAIGN_ID,
+  rtToken: process.env.ROLL20_RT_TOKEN,
 };
 const restore = (key: keyof typeof saved, name: string) => {
   if (saved[key] === undefined) delete process.env[name];
@@ -45,6 +46,7 @@ beforeAll(async () => {
   process.env.ROLL20_DATA_DIR = tmp;
   process.env.ROLL20_CAMPAIGN_ID = CAMPAIGN;
   process.env.DDB_CAMPAIGN_ID = "5201061";
+  delete process.env.ROLL20_RT_TOKEN;
   fs.writeFileSync(path.join(tmp, "roll20-rt-token.json"), JSON.stringify({
     campaignId: CAMPAIGN,
     customToken: "eyJhbGciOiJSUzI1NiJ9.fake-custom-token",
@@ -58,10 +60,11 @@ afterAll(() => {
   restore("dataDir", "ROLL20_DATA_DIR");
   restore("roll20", "ROLL20_CAMPAIGN_ID");
   restore("ddb", "DDB_CAMPAIGN_ID");
+  restore("rtToken", "ROLL20_RT_TOKEN");
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-beforeEach(() => { signInWithCustomToken.mockReset(); });
+beforeEach(() => { signInWithCustomToken.mockReset(); delete process.env.ROLL20_RT_TOKEN; });
 
 describe("connect() — Firebase decides, and its reason reaches the DM (#216)", () => {
   it.each(["auth/invalid-custom-token", "auth/invalid-credential", "auth/user-token-expired"])(
@@ -94,5 +97,24 @@ describe("connect() — Firebase decides, and its reason reaches the DM (#216)",
     signInWithCustomToken.mockRejectedValueOnce(boom);
     const err = await rt.__connectForTest().then(() => null, (e: unknown) => e);
     expect(err).toBe(boom);
+  });
+
+  it("a rejection of an ROLL20_RT_TOKEN-furnished token names the env source and its remedy", async () => {
+    // No harvestedAt: an unknown age is reported as unknown, never invented.
+    process.env.ROLL20_RT_TOKEN = JSON.stringify({
+      campaignId: CAMPAIGN,
+      customToken: "eyJhbGciOiJSUzI1NiJ9.env-custom-token",
+      databaseURL: "https://roll20-9997.firebaseio.com/",
+    });
+    signInWithCustomToken.mockRejectedValueOnce(firebaseError("auth/invalid-custom-token"));
+    const err = await rt.__connectForTest().then(() => null, (e: unknown) => e);
+    expect(signInWithCustomToken.mock.calls[0][1]).toContain("env-custom-token");
+    expect(err).toBeInstanceOf(rt.Roll20TokenUnavailableError);
+    expect((err as InstanceType<typeof rt.Roll20TokenUnavailableError>).source).toBe("env");
+    const msg = (err as Error).message;
+    expect(msg).toMatch(/^No usable Roll20 realtime token/i);
+    expect(msg).toContain("from ROLL20_RT_TOKEN: Firebase rejected the cached token (auth/invalid-custom-token); its age is unknown");
+    expect(msg).toMatch(/update ROLL20_RT_TOKEN/);
+    expect(msg).not.toMatch(/reconnect Roll20 in the gem to re-harvest/);
   });
 });

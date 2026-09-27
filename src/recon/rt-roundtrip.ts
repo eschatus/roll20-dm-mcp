@@ -3,7 +3,8 @@
 // Uses only READ-ONLY Mod actions (getTurnOrder, getPcHp) — nothing in the campaign is modified.
 //
 // Run:  npx tsx src/recon/rt-roundtrip.ts
-// First run launches the browser ONCE to harvest the session cookie, then operates over the socket.
+// Needs a FURNISHED token for the active campaign — ROLL20_RT_TOKEN or <data dir>/roll20-rt-token.json
+// (this repo never harvests one, #177); everything then runs over the socket.
 
 import { rtRelayCommand } from "../bridge/roll20-rt.js";
 import { getActiveCampaign } from "../registry/campaigns.js";

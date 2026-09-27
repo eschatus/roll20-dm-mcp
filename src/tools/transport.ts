@@ -35,7 +35,8 @@ export function registerTransportTools(server: McpServer): void {
             // the default on 2026-09-02). null = not probed yet, or the deployed relay is older
             // than 2.6.0 and doesn't echo it.
             sandbox,
-            // Age of the furnished roll20-rt-token.json (#216). An already-connected server runs
+            // Age and source (ROLL20_RT_TOKEN or the data-dir file) of the furnished RT token
+            // (#216). An already-connected server runs
             // off its live socket and stays healthy long after this file goes cold, which is
             // exactly when every OTHER reader of the data dir (roll20-dm-maps over stdio, a CLI
             // script) gets locked out. Reporting it here is the only warning anyone gets. Also

@@ -55,8 +55,16 @@ exchangeable.
   enforces that — Firebase's rejection, not a local clock check. (The clock check used to be the
   gate; it refused tokens without ever asking Firebase, locking out every other reader of the data
   dir on a credential that was possibly still exchangeable, so it is now advisory only and surfaces via `transport_status.rtToken` — #216.)
-- **Fails loudly and actionably.** Absent, stale, wrong-campaign, or shard-less → a typed
-  `Roll20TokenUnavailableError` naming exactly what to refresh ("reconnect Roll20 in the gem"). A
+- **Env precedence is loud, not silent.** When `ROLL20_RT_TOKEN` is set it is the ONLY source read —
+  the file is not consulted, even if the variable's token is stale or for another campaign. Export it
+  in the shell for one short-lived process; don't put a live token in `.env`: the server loads `.env`
+  on every start, so a line there silently beats every fresh token the gem harvests into the file.
+- **Fails loudly and actionably, naming the source.** Absent, Firebase-rejected, wrong-campaign, or
+  shard-less → a typed `Roll20TokenUnavailableError` (`.source` = `"env"` | `"file"` | `null`) whose
+  message says which source it read and what to refresh: for the file, "reconnect Roll20 in the gem";
+  for the env var, update or unset `ROLL20_RT_TOKEN` — reconnecting in the gem would only rewrite the
+  file the variable overrides. With neither present it says both were checked. `transport_status.rtToken`
+  carries the same `source`, and reports a malformed `ROLL20_RT_TOKEN` rather than failing. A
   silent fallback is precisely the failure mode #83 closed on the relay path; the same reasoning
   applies to the credential the relay runs on.
 - Under `data/`, which is gitignored, so it is never committed.
