@@ -62,11 +62,15 @@ const ROW_INPUTS: Record<string, string | number> = {
 };
 
 // The fields the 5e OGL sheet's own worker is supposed to generate for an attack row. We write
-// NONE of them; if any appears, a worker ran.
+// NONE of them; if any appears, a worker ran. `attack_crit2` is only generated when the row has
+// an `attack_damage2` to crit, so it is judged only if ROW_INPUTS carries one (live run
+// 2026-09-27: the worker left it "" for a single-damage row, which is correct sheet behaviour).
 const COMPANION_FIELDS = [
   "attack_tohitrange", "attack_onhit", "damage_flag",
   "attack_crit", "attack_crit2", "rollbase",
 ];
+const REQUIRED_COMPANIONS = COMPANION_FIELDS.filter((f) =>
+  f !== "attack_crit2" || "attack_damage2" in ROW_INPUTS);
 
 type SetAttrsResult = {
   written: string[];
@@ -108,6 +112,7 @@ async function main() {
     + ` · sheet ${ping.sheetName ?? "?"} · beacon ${ping.beacon}`);
   // Capability probe: a relay without the action answers "Unknown action"; one with it answers
   // "charId is required". Neither touches any character.
+  console.error("capability probe: a `setAttrs: charId is required` relay error next is EXPECTED — it is the pass signal");
   try {
     await relayCommand({ action: "setAttrs" });
     throw new Error("setAttrs probe unexpectedly succeeded with no charId");
@@ -197,6 +202,11 @@ async function main() {
     console.error(`\ninputs landed: ${Object.keys(SCORES).length} scores · npcaction row ${rowIds.join(", ")}`);
 
     // ── Verdict 1: <ability>_mod derivation ──────────────────────────────────
+    // On a Beacon sheet derived values are computed properties, not `attribute` objects, so a
+    // missing `_mod` attribute is expected there whether or not anything derived it. Combined with
+    // a `workersExecuted:null` (callback never fired) this arm cannot be judged — only a
+    // non-Beacon campaign can answer it.
+    const beacon = abilityWrite.sheet.beacon;
     console.error("\n<ability>_mod derivation:");
     let modsDerived = 0;
     for (const ability of Object.keys(SCORES)) {
@@ -215,27 +225,35 @@ async function main() {
         const name = `repeating_npcaction_${rowId}_${field}`;
         const got = cur(attrs, name);
         const present = got !== null && got !== "";
-        if (present) companionsPresent++;
+        const required = REQUIRED_COMPANIONS.includes(field);
+        if (present && required) companionsPresent++;
         // Print rollbase's LENGTH, never its text — it is full of @{ and [[ and this output can
         // end up pasted into places that evaluate them.
         const shown = got === null ? "<absent>" : field === "rollbase" ? `<${got.length} chars>` : JSON.stringify(got);
-        console.error(`  ${field}: ${shown} ${present ? "✅" : "❌"}`);
+        const mark = !required ? "➖ (not judged: no attack_damage2 in the row)" : present ? "✅" : "❌";
+        console.error(`  ${field}: ${shown} ${mark}`);
       }
     }
 
-    // ── Conclusion ───────────────────────────────────────────────────────────
+    // ── Conclusion — one verdict PER ARM; they are independent questions ─────
     const modsWork = modsDerived === Object.keys(SCORES).length;
-    const rollbaseWorks = companionsPresent === COMPANION_FIELDS.length * rowIds.length;
+    const modsInconclusive = !modsWork && beacon && abilityWrite.workersExecuted !== false;
+    const companionsWanted = REQUIRED_COMPANIONS.length * rowIds.length;
+    const rollbaseWorks = companionsPresent === companionsWanted;
     console.error("\n──────── verdict ────────");
-    console.error(`_mod derivation by sheet worker:  ${modsWork ? "YES ✅" : `NO ❌ (${modsDerived}/${Object.keys(SCORES).length})`}`);
-    console.error(`rollbase scaffolding by worker:   ${rollbaseWorks ? "YES ✅" : `NO ❌ (${companionsPresent}/${COMPANION_FIELDS.length * rowIds.length})`}`);
-    console.error(
-      modsWork && rollbaseWorks
-        ? "\n→ POSITIVE. Route createCharacter/setCharacterAttributes through setAttrs, delete the\n"
-          + "  ABILITY_NAMES derivation block and the rollbase template, and cut both CLAUDE.md gotchas."
-        : "\n→ NEGATIVE (or partial). Record this in docs/roll20-api-coverage.md under #206 with the\n"
-          + "  relay/sandbox/sheet versions printed above, and KEEP both workarounds."
-    );
+    console.error(`arm 1 · _mod derivation by sheet worker:  ${
+      modsWork ? "POSITIVE ✅"
+        : modsInconclusive ? `INCONCLUSIVE ⚠ (${modsDerived}/${Object.keys(SCORES).length}; Beacon sheet keeps derived values as`
+          + ` computed properties, and workersExecuted=${abilityWrite.workersExecuted} — re-run on a non-Beacon campaign)`
+        : `NEGATIVE ❌ (${modsDerived}/${Object.keys(SCORES).length})`}`);
+    console.error(`arm 2 · rollbase scaffolding by worker:   ${rollbaseWorks ? "POSITIVE ✅" : `NEGATIVE ❌ (${companionsPresent}/${companionsWanted})`}`);
+    console.error("\nRecord each arm in docs/roll20-api-coverage.md under #206 with the relay/sandbox/sheet/beacon"
+      + " printed above.");
+    if (modsWork) console.error("  arm 1 POSITIVE → route createCharacter's scores through setAttrs and delete the ABILITY_NAMES derivation block.");
+    else if (modsInconclusive) console.error("  arm 1 INCONCLUSIVE → keep the _mod derivation until a non-Beacon run answers it.");
+    else console.error("  arm 1 NEGATIVE → keep the _mod derivation.");
+    if (rollbaseWorks) console.error("  arm 2 POSITIVE → route npcaction rows through setAttrs and delete the rollbase template (relay + CLAUDE.md).");
+    else console.error("  arm 2 NEGATIVE → keep the rollbase scaffolding.");
     console.error("\nReproduce the readback by hand: rtGet(`" + attribsNode(charId) + "`)");
   } finally {
     if (KEEP) {

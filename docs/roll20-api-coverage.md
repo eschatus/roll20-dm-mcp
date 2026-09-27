@@ -133,12 +133,22 @@ Persistent storage: the global **`state`** object (survives sandbox restarts).
   repeating rows flat as `repeating_<section>_<rowId>_<field>`, and push ids may contain `_`
   (probed live in #230; `char-blobs/<id>` is only bio/defaulttoken/gmnotes). (The issue
   suggested `scripts/dump-character-attrs.ts` for the readback; that script imports Playwright, which this repo has not depended on since #179, so the RTDB path replaces it.)
-  Record the outcome HERE when it is known, positive or negative, so nobody re-spikes it:
-  - positive → route `createCharacter`/`setCharacterAttributes` through `setAttrs`, delete the
-    `ABILITY_NAMES` derivation block in `ai-relay.js` and the `rollbase` template, and cut the two
-    corresponding CLAUDE.md gotchas.
-  - negative → say so below, with the relay/sandbox/sheet versions it was measured on, and keep both
-    workarounds.
+  The two arms are judged **independently** (`attack_crit2` only counts when the row carries an
+  `attack_damage2` — the sheet correctly leaves it empty otherwise).
+  **Outcome so far (live run 2026-09-27, cos-test 21660022, relay 2.9.0-spike206, sandbox 1.5,
+  sheet ogl5e, Beacon: true):**
+  - **Arm 2 (npcaction row) — POSITIVE.** `workersExecuted=true`; from the five inputs alone the
+    sheet generated `attack_tohitrange` (`+5`), `attack_onhit`, `damage_flag`, `attack_crit`
+    (`2d8`) and a 324-char `rollbase`. Routing npcaction rows through `setAttrs` makes the
+    hand-written rollbase/companion scaffolding unnecessary on this sheet — a follow-up can
+    reroute the writes and delete the template from `ai-relay.js` and CLAUDE.md.
+  - **Arm 1 (`<ability>_mod`) — INCONCLUSIVE.** `workersExecuted=null` (callback never fired
+    within 5s) and no `_mod` attribute appeared — but on a Beacon sheet derived values are
+    computed properties, so a missing attribute is expected either way. Re-run on a **non-Beacon**
+    campaign before touching `createCharacter`'s `_mod` derivation.
+  - Operational: the capability probe deliberately triggers a `setAttrs: charId is required` relay
+    error at startup (the script announces it); a freshly pasted sandbox can time out the first
+    8s ping — retry (#234).
   Caveat that survives either outcome: on a **Beacon** sheet the data lives in computed properties,
   not `attribute` objects, so `setAttrs` is no more likely to land than `createObj` — the action
   echoes `sheet.beacon` for exactly that reason (#205).

@@ -170,7 +170,10 @@ moved to beyond-mcp with the code.)
   test (#206):** Roll20 documents a `setAttrs` that defaults to `setWithWorker`, which may make the
   sheet derive these itself. `ACTIONS["setAttrs"]` (unreleased until the next relay roll-up) is the instrument; run
   `npx tsx src/recon/setattrs-spike.ts` live and record the result in
-  `docs/roll20-api-coverage.md`. Until then nothing calls it and both workarounds stay.
+  `docs/roll20-api-coverage.md`. **First live result (2026-09-27, ogl5e/Beacon):** the npcaction
+  arm is POSITIVE — `setAttrs` made the sheet generate `rollbase` and the companions itself; the
+  `_mod` arm is INCONCLUSIVE on a Beacon sheet and needs a non-Beacon re-run. Nothing calls it yet
+  and both workarounds stay until a follow-up reroutes the writes.
 
 ## Where things live
 
