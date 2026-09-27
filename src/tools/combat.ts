@@ -9,11 +9,12 @@ import {
   classifyToken,
 } from "./aoe.js";
 import { getLastPing, publishMobPlan } from "../bridge/roll20-rt.js";
+import { KEEP_TURN_MIN_RELAY_VERSION, relayVersionAtLeast } from "../bridge/relay-version.js";
 import {
   type TurnEntry, type BatchResult,
   text, fail, json, num, indexBatchResults, coerceStringArray, coerceBoolean, coerceObjectArray,
   tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId, renderRollCard,
-  renderMobPlanCard,
+  renderMobPlanCard, NUM_PERMISSION,
 } from "./combatHelpers.js";
 import { normalizeNameForMatch, isPunctuationOnlyInput } from "./nameMatch.js";
 
@@ -127,6 +128,173 @@ export function registerCombatTools(server: McpServer): void {
   );
 
   server.tool(
+    "revive_token",
+    "UNDO A KILL — the exact inverse of kill_token, in ONE call (issue #217). Restores HP, clears the dead marker, returns the token to the token layer, and puts it back in the turn order WITHOUT moving whoever is currently up: the `initiative` you pass, else its ORIGINAL initiative entry if the kill left one behind, else (NPC/sidekick only) a fresh silent 1d20+bonus roll through Roll20's roller. A true PC with no surviving entry and no `initiative` is revived but its row is left for the player to roll (initiativeSource:\"pending\") — PC initiative is never rolled server-side. The four steps commit one at a time; if one fails the error lists what landed, and the repair is to re-run revive_token (it is idempotent). Re-slotting initiative needs relay 2.9.0+: against an older deployed relay the token is still revived but its row is left alone (initiativeSource:\"pending\" plus an initiativeNote to redeploy the relay). Use when a kill was WRONG — damage landed on the wrong creature and crossed 0 (the threshold automation kills at 0), or the DM retcons a death ('no wait, the ogre isn't dead', 'undo that kill', 'that goblin's still up'). Replaces the four-call unwind (update_token_hp setHp + set_token_marker dead:false + set_token_props layer:objects + roll_initiative). `hp` is REQUIRED — nothing on the board remembers the pre-kill value. HP routes exactly like update_token_hp (PC → tracked relay state, NPC/sidekick → bar1). NOT ordinary healing (use update_token_hp) and NOT for a downed PC getting back up (clear 'unconscious' with set_token_marker — a dying PC never left the token layer).",
+    {
+      characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Ogre', 'Goblin the Savage'."),
+      tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup. Do NOT invent one; use characterName if you have no real ID from a prior tool result."),
+      hp: z.number().int().positive().describe("REQUIRED. HP to come back at, a bare NUMBER (hp:14, never hp:\"14\"). Must be at least 1 — reviving at 0 would immediately re-trigger the auto-death threshold and kill the token again."),
+      initiative: z.number().int().optional().describe("Initiative (pr) to restore the turn-order entry at, if you know the pre-kill value. Omit to keep the surviving entry, or to roll a fresh initiative when the kill took the entry with it."),
+    },
+    async ({ characterName, tokenId, hp, initiative }) => {
+      // Same id guard as update_token_hp: getTokenById on a hallucinated id hangs the
+      // relay for 30s instead of failing fast.
+      let resolvedTokenId = tokenId;
+      if (resolvedTokenId && !(await tokenIdExists(resolvedTokenId))) resolvedTokenId = undefined;
+      if (!resolvedTokenId) {
+        if (!characterName) throw new Error("Provide characterName or tokenId");
+        resolvedTokenId = await resolveTokenOrThrow(characterName);
+      }
+      type TokenData = { id: string; name: string; represents?: string; bar1_value?: number | string; bar1_max?: number | string; controlledby?: string };
+      const tok = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId: resolvedTokenId });
+      if (!tok) throw new Error(`Token not found: ${characterName ?? tokenId}`);
+      const charId = tok.represents || undefined;
+      const label = characterName ?? tok.name ?? resolvedTokenId;
+
+      // Each relay call commits on its own — there is no transaction across them. Track what
+      // landed so a failure part-way reports the committed steps and what is still to do,
+      // instead of an opaque error over a half-revived token. The repair is always the same
+      // call: revive_token is idempotent (every step writes an absolute value, and the
+      // initiative step upserts only this token's row), so re-running it finishes the job.
+      // Never point at the per-step tools instead: roll_initiative clearFirst:false uses the
+      // legacy sort (rewinds the active turn) and would roll a PC's initiative server-side.
+      const committed: string[] = [];
+      const rerun = `re-run revive_token tokenId:"${resolvedTokenId}" hp:${hp}` +
+        (initiative !== undefined ? ` initiative:${initiative}` : " (add initiative:N if the pre-kill value is known)");
+      const stepOrder = ["hp", "dead", "layer", "initiative"];
+      const step = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+        try {
+          const out = await fn();
+          committed.push(name);
+          return out;
+        } catch (e) {
+          const pending = stepOrder.filter((s) => !committed.includes(s));
+          const msg = e instanceof Error ? e.message : String(e);
+          throw new Error(
+            `${label}: revive_token failed at step '${name}' (${msg}). ` +
+            `Committed: ${committed.length ? committed.join(", ") : "nothing"}. ` +
+            `Still to do: ${pending.join(", ")}. Repair: ${rerun}; it is idempotent.`
+          );
+        }
+      };
+
+      // 1. HP first, and never to 0: the relay's own threshold automation re-kills a token
+      //    written to 0 HP (marker + map layer), so a revive that set HP last — or to 0 —
+      //    would undo itself. Routing is the same three-way split as update_token_hp: a
+      //    true PC's bar is Beyond20's, so its HP goes to tracked state (issue #132).
+      const isPc = isPcToken(tok, registry.listSidekickNames());
+      const hpStr = await step("hp", async () => {
+        if (isPc) {
+          const res = await roll20.relayCommand<{ current: number; max: number }>({
+            action: "adjustPcHp", tokenId: resolvedTokenId, setHp: hp,
+          });
+          return `${res.current}${res.max ? `/${res.max}` : ""} (tracked)`;
+        }
+        // A dead NPC normally still has its bar1_max; if it has none, `hp` establishes one,
+        // otherwise every later damage call would refuse for want of a bar.
+        const maxHp = Number(tok.bar1_max) > 0 ? Number(tok.bar1_max) : hp;
+        await roll20.relayCommand({ action: "setTokenBar", tokenId: resolvedTokenId, value: hp, max: maxHp });
+        return `${hp}/${maxHp}`;
+      });
+
+      // 2. Clear the dead marker, then 3. back to the token layer — kill_token's two steps,
+      //    in reverse.
+      await step("dead", () => roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition: "dead", active: false }));
+      await step("layer", () => roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props: { layer: "objects" } }));
+
+      // 4. Initiative. Leaving the token layer is what drops a combatant out of the tracker,
+      //    so the entry may or may not have survived the kill — check before rolling anything.
+      //    Every write here is a mergeTurnOrder upsert with keepTurn: it touches only THIS
+      //    token's row (never the players' — see the setTurnOrder warning in CLAUDE.md) and
+      //    splices into the live rotation, so whoever is up stays up and the turn hook is
+      //    not tripped. A true PC's initiative is player-rolled and read-only: with no
+      //    surviving entry and no explicit value there is nothing to restore, so the row is
+      //    left for the player and reported as pending rather than rolled server-side.
+      type InitSource = "preserved" | "explicit" | "rolled" | "pending";
+      type InitResult = { pr: number | string | null; source: InitSource; rollNote: string; note?: string };
+      const init = await step("initiative", async (): Promise<InitResult> => {
+        const pageId = await roll20.getCurrentPageId();
+        const order = await roll20.relayCommand<TurnEntry[]>({ action: "getTurnOrder" });
+        const surviving = (order ?? []).find((e) => e.id && String(e.id) === resolvedTokenId);
+
+        // No explicit override and a surviving row: nothing to write, so no version check.
+        if (initiative === undefined && surviving) {
+          // The kill left the entry alone — the original pr is right there, so don't re-roll it.
+          return { pr: num(surviving.pr) ?? surviving.pr, source: "preserved", rollNote: "" };
+        }
+        if (initiative === undefined && isPc) {
+          return { pr: null, source: "pending", rollNote: "" };
+        }
+
+        // Every remaining path WRITES the turn order, and that write is only safe with keepTurn,
+        // which exists from relay 2.9.0. An older relay ignores the flag and re-sorts: play
+        // rewinds to the top of the order and the turn hook fires for whoever lands there. So
+        // ask the relay what it is, here, rather than trusting the background handshake in
+        // relay-version-check.ts: that probe is fire-and-forget (it may not have landed yet) and
+        // latches its mismatch for the life of the process, so a DM who redeploys mid-session
+        // would stay "stale" until a restart. One ping is ~50ms on a bookkeeping call.
+        // UNKNOWN counts as stale, deliberately. A relay that answers ping without a readable
+        // `version` predates the handshake, so it is older than 2.9.0 anyway; and the costs are
+        // lopsided — skipping the write costs the DM one re-run after a redeploy, a wrong write
+        // rewinds a live turn in front of the table. A ping that FAILS is not "unknown": it
+        // propagates and fails this step loudly, like any other relay error.
+        const ping = await roll20.relayCommand<{ version?: unknown } | null>({ action: "ping" });
+        const deployed = typeof ping?.version === "string" ? ping.version : null;
+        if (!relayVersionAtLeast(deployed, KEEP_TURN_MIN_RELAY_VERSION)) {
+          return {
+            pr: null, source: "pending", rollNote: "",
+            note: `the deployed Roll20 relay is ${deployed ? `v${deployed}` : "an unknown version"}, older than ` +
+              `v${KEEP_TURN_MIN_RELAY_VERSION}, and re-slotting initiative on it would rewind the active turn, so ` +
+              `the turn order was left alone. Redeploy the relay (mod-scripts/ai-relay.js) to this campaign, ` +
+              `then re-run revive_token${initiative !== undefined ? ` with initiative:${initiative}` : ""} to put ${label} back in the order`,
+          };
+        }
+
+        let initPr: number | string;
+        let initSource: InitSource;
+        let rollNote = "";
+        if (initiative !== undefined) {
+          initSource = "explicit";
+          initPr = initiative;
+        } else {
+          // Gone with the layer move, and no pre-kill value to restore: roll it back in, the
+          // same way the manual unwind's roll_initiative did — but silently, since an undo is
+          // bookkeeping and not a moment the table needs a card for.
+          const rolls = await roll20.relayCommand<{ tokenId: string; name: string; d20: number; initBonus: number; total: number }[]>({
+            action: "rollInitiativeForTokens", tokenIds: [resolvedTokenId], rollPublic: false,
+          });
+          const rolled = (rolls ?? []).find((r) => r.tokenId === resolvedTokenId);
+          if (!rolled) throw new Error("the initiative roll returned nothing");
+          initSource = "rolled";
+          initPr = rolled.total;
+          rollNote = `${rolled.d20}${rolled.initBonus >= 0 ? "+" : ""}${rolled.initBonus} = ${rolled.total}`;
+        }
+
+        const entry: TurnEntry = { id: resolvedTokenId, pr: String(initPr), custom: surviving?.custom ?? "", _pageid: pageId };
+        await roll20.relayCommand({ action: "mergeTurnOrder", entries: [entry], keepTurn: true });
+        return { pr: initPr, source: initSource, rollNote };
+      });
+
+      const initSummary = init.note
+        ? `turn order NOT updated — ${init.note}`
+        : init.source === "pending"
+          ? `no turn-order entry (${label} is a PC — the player rolls their own initiative, or pass initiative: to restore the pre-kill value)`
+          : `initiative ${init.pr} (${init.source})`;
+      return json({
+        target: label,
+        hp: hpStr,
+        deadCleared: true,
+        layer: "objects",
+        initiative: init.pr,
+        initiativeSource: init.source,
+        ...(init.rollNote ? { initiativeRoll: init.rollNote } : {}),
+        ...(init.note ? { initiativeNote: init.note } : {}),
+        summary: `${label} revived at ${hpStr} — dead marker cleared, back on the token layer, ${initSummary}.`,
+      });
+    }
+  );
+
+  server.tool(
     "set_pc_dying",
     "Put a TRUE PC into the DYING state when they drop to 0 HP (issue #135) — applies prone + unconscious and the token STAYS on the token layer (never map layer, never dead). Death saves are player-owned (3 fails); only call kill_token when the DM explicitly declares the PC dead. If the PC was concentrating, the concentration teardown (marker + aura + linked zones) fires automatically — going down breaks it implicitly. NOT for NPCs or sidekicks (Tua, Salros Eventide, Amri, etc.) — those die immediately via kill_token, no dying state. Revival: clear 'unconscious' with set_token_marker (active:false) — prone STAYS until the DM says the PC stands up.",
     {
@@ -155,7 +323,7 @@ export function registerCombatTools(server: McpServer): void {
       await roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition: "unconscious", active: true });
 
       // Auto-cascade: going down breaks concentration implicitly (issue #135).
-      let teardown: { markerRemoved: boolean; auraCleared: boolean; zonesRemoved: { id: string; name: string }[] } | null = null;
+      let teardown: { markerRemoved: boolean; auraCleared: boolean; auraSlot?: number | null; zonesRemoved: { id: string; name: string }[] } | null = null;
       const markers = String(tok.statusmarkers || "").split(",");
       const wasConcentrating = markers.some((m) => m.startsWith("Concentrating::"));
       if (wasConcentrating) {
@@ -167,7 +335,7 @@ export function registerCombatTools(server: McpServer): void {
       }
 
       const cascadeNote = teardown
-        ? ` Concentration broken (was concentrating): aura cleared=${teardown.auraCleared}, zones removed=${teardown.zonesRemoved.map((z) => z.name).join(", ") || "none"}.`
+        ? ` Concentration broken (was concentrating): ${teardown.auraSlot ? `aura ${teardown.auraSlot} cleared=${teardown.auraCleared}` : "no aura owned"}, zones removed=${teardown.zonesRemoved.map((z) => z.name).join(", ") || "none"}.`
         : "";
       return text(
         `${characterName ?? resolvedTokenId} marked dying — prone + unconscious, stays on the token layer.${cascadeNote} Death saves are player-owned; call kill_token only on 3 failed saves.`
@@ -177,7 +345,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "break_concentration",
-    "Tear down a concentration effect on a token (issue #135): removes the Concentrating marker, zeroes its aura (aura1_radius=0), and deletes any zone whose duration is {type:'concentration', caster} linked to this token (zone metadata from issue #134). Returns what was torn down. Use when the DM declares the break directly ('she loses the spell', 'the guardians fade'), when a concentration save fails after damage (ask the DM a one-word question first per skills/dm-rules.md — don't call this unasked), or via the automatic cascade in set_pc_dying. Never call this on a 'Passed' concentration save.",
+    "Tear down a concentration effect on a token (issue #135): removes the Concentrating marker, zeroes the aura slot that effect OWNS (the slot recorded by set_token_aura concentration:true — slot 1 when nothing was recorded, issue #210), and deletes any zone whose duration is {type:'concentration', caster} linked to this token (zone metadata from issue #134). Returns what was torn down. Use when the DM declares the break directly ('she loses the spell', 'the guardians fade'), when a concentration save fails after damage (ask the DM a one-word question first per skills/dm-rules.md — don't call this unasked), or via the automatic cascade in set_pc_dying. Never call this on a 'Passed' concentration save.",
     {
       characterName: z.string().optional().describe("The concentrating token/character's name exactly as on the map, e.g. 'Glint'."),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
@@ -190,7 +358,7 @@ export function registerCombatTools(server: McpServer): void {
       }
       const tok = await roll20.relayCommand<{ name?: string } | null>({ action: "getTokenById", tokenId: resolvedTokenId });
       const casterRef = characterName ?? tok?.name ?? resolvedTokenId;
-      const result = await roll20.relayCommand<{ ok: boolean; markerRemoved: boolean; auraCleared: boolean; zonesRemoved: { id: string; name: string }[] }>({
+      const result = await roll20.relayCommand<{ ok: boolean; markerRemoved: boolean; auraCleared: boolean; auraSlot?: number | null; zonesRemoved: { id: string; name: string }[] }>({
         action: "breakConcentration",
         tokenId: resolvedTokenId,
         casterRef,
@@ -199,6 +367,9 @@ export function registerCombatTools(server: McpServer): void {
         target: characterName ?? resolvedTokenId,
         markerRemoved: result.markerRemoved,
         auraCleared: result.auraCleared,
+        // Which slot the teardown actually touched (#210): 1 unless the effect claimed slot 2;
+        // null when the claim had already been released, so no aura was touched.
+        auraSlot: result.auraSlot === undefined ? 1 : result.auraSlot,
         zonesRemoved: result.zonesRemoved,
       });
     }
@@ -801,6 +972,24 @@ export function registerCombatTools(server: McpServer): void {
   );
 
   server.tool(
+    "get_sheet_default_values",
+    "Read the character SHEET's default value for one or more field names — not any character's live value. Use it to tell 'never set' from 'set to exactly the default' when writing a stat block, which read_character_attributes cannot do on its own. Campaign-wide (keyed on the sheet, not a character).",
+    {
+      names: z.array(z.string()).min(1).describe("Sheet field names, e.g. ['npc_ac', 'npc_speed']"),
+      valtype: z.enum(["current", "max"]).optional().describe("Optional value type for getSheetDefaultValue: 'current' (Roll20's default) or 'max'"),
+    },
+    async ({ names, valtype }) => {
+      const result = await roll20.relayCommand<{
+        defaults: Record<string, unknown>;
+        missing: string[];
+        valtype: string | null;
+        sheet: { sandbox: string | null; sheetName: string | null; beacon: boolean };
+      }>({ action: "getSheetDefaultValues", names, valtype });
+      return json(result);
+    }
+  );
+
+  server.tool(
     "update_token_hp",
     "The SINGLE HP primitive — replaces the old apply_damage and heal_character tools. Apply damage (clamps at 0), healing (clamps at max), or set HP to an exact value on ANY Roll20 token. Routes automatically by controlledby: a player-controlled token (PC) has its HP tracked in relay state (a block in the token's gmnotes) and its visible token bar is NEVER touched (Beyond20 owns it) — reported as '(tracked)'; an NPC's HP is its token bar1. Resolve by characterName (fuzzy/registry) or tokenId. Roll20-only — D&D Beyond is read-only and is NOT written. For CONDITIONS (poisoned, prone, dead, etc.) use set_token_marker instead — not this. (The condition args here are legacy/bulk-only.) EXAMPLE — 'the ogre takes 39': {\"characterName\":\"Ogre\",\"damage\":39}. 'heal Thorne 12': {\"characterName\":\"Thorne\",\"heal\":12}. damage/heal/setHp are bare NUMBERS (39), NEVER quoted strings (\"39\").",
     {
@@ -1016,7 +1205,7 @@ export function registerCombatTools(server: McpServer): void {
     { tokenId: z.string().describe("Roll20 token ID") },
     async ({ tokenId }) => {
       type TokenData = AoeToken & Record<string, unknown>;
-      const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId });
+      const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId, profile: "rich" });
       if (!token) return fail(`token not found: ${tokenId}`);
       const tokenClass = classifyToken(token, registry.listSidekickNames());
       return json({ ...token, tokenClass });
@@ -1025,7 +1214,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "set_token_props",
-    "Set one or more properties on a Roll20 token — name, position, aura, tint, bars, layer, etc. Use tint_color for colored overlays. Target with characterName (or tokenId) — same as every other token-mutation tool. For a spell EMANATION (Spirit Guardians, Aura of Protection — anything that moves with the creature) prefer set_token_aura: it is one call, defaults to player-visible, and takes the aura shape. The raw aura fields here stay for fine-grained edits.",
+    "Set one or more properties on a Roll20 token — name, position, aura, tint, bars, layer, bar-number visibility, movement lock, opacity/scenery flags, etc. Use tint_color for colored overlays. Use bar1_num_permission to control whether the table can read a token's HP digits, lockMovement to pin a token, renderAsScenery for map dressing that should not show through walls, and currentSide to flip a rollable token between its faces (sandbox v1.5 only). Target with characterName (or tokenId) — same as every other token-mutation tool. For a spell EMANATION (Spirit Guardians, Aura of Protection — anything that moves with the creature) prefer set_token_aura: it is one call, defaults to player-visible, and takes the aura shape. The raw aura fields here stay for fine-grained edits.",
     {
       characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Thorne'."),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
@@ -1053,6 +1242,20 @@ export function registerCombatTools(server: McpServer): void {
       bar3_max: z.number().optional(),
       controlledby: z.string().optional(),
       showname: z.boolean().optional(),
+      bar1_num_permission: NUM_PERMISSION.optional().describe("Who may read the NUMBER in bar 1 (the bar itself is governed by showplayers_bar1). Roll20's values: '' (the default) = only the token's editors (the GM and anyone in controlledby); 'hidden' = hidden; 'everyone' = all players. An NPC token has no controllers, so under the default its digits are already GM-only; set 'everyone' to show them to the table."),
+      bar2_num_permission: NUM_PERMISSION.optional().describe("Who may read the number in bar 2 — see bar1_num_permission."),
+      bar3_num_permission: NUM_PERMISSION.optional().describe("Who may read the number in bar 3 — see bar1_num_permission."),
+      lockMovement: z.boolean().optional().describe("Pin the token in place — it can no longer be dragged on the map. Use for scenery and for a downed token that shouldn't get shoved around. Note the camelCase; Roll20 spells this one differently from the snake_case bar/aura fields."),
+      renderAsScenery: z.boolean().optional().describe("Treat the object as scenery: it is obscured by dynamic lighting and the Hide/Reveal mask, i.e. NOT visible through walls. The correct flag for map dressing placed on the object layer."),
+      baseOpacity: z.number().min(0).max(1).optional().describe("The object's own opacity, 0–1 (default 1). Works on any layer, not just foreground."),
+      fadeOnOverlap: z.boolean().optional().describe("Fade this object when a token overlaps it (default true) — the foreground-overlap fade."),
+      fadeOpacity: z.number().min(0).max(1).optional().describe("Opacity to fade to while overlapped, 0–1 (default 0.3). Only meaningful with fadeOnOverlap."),
+      night_vision_effect: z.string().optional().describe("UDL night-vision effect for this token's sight. Roll20 documents 'Dimming' and 'Nocturnal'; '' clears it. Free string, not an enum, so an effect name Roll20 adds later passes straight through."),
+      bar_location: z.string().optional().describe("Where the token's bars are drawn: 'overlap_top', 'overlap_bottom', 'bottom', or '' for the default (above the token). Useful on small tokens where the bars cover the art."),
+      compact_bar: z.string().optional().describe("Compact (thin) bar presentation: 'compact' to enable, '' for normal. A string, not a boolean — Roll20's own vocabulary."),
+      currentSide: z.number().int().min(0).optional().describe("SANDBOX v1.5 ONLY — index into the token's `sides` (rollable table token). Setting it auto-updates imgsrc, Marketplace art included, so it flips a token between forms (wildshape, a door's open/closed art) with no re-upload. On sandbox v1.0 the write lands and nothing happens. If the same write also carries a valid imgsrc, imgsrc wins."),
+      interactionManualReset: z.boolean().optional().describe("Interaction system ACTION: setting this true RESETS the object's interactions (Roll20 docs). It is a one-shot trigger, not a persistent mode — which is why it is NOT copied into a character's default token. Largely unexplored here — passed through as given."),
+      interactionTriggered: z.boolean().optional().describe("Interaction system STATE: Roll20 sets this when the object's interaction is triggered — read it back via get_token. Writing it here overrides Roll20's own bookkeeping; to reset, prefer interactionManualReset:true. Not copied into default tokens. Largely unexplored here — passed through as given."),
     },
     async ({ characterName, tokenId, ...fields }) => {
       let resolvedTokenId = tokenId;
@@ -1071,7 +1274,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "set_token_aura",
-    "Set or clear a token's aura — the table's visual for an EMANATION, i.e. an effect centred on a creature that MOVES WITH IT (Spirit Guardians, Aura of Protection, a dragon's Frightful Presence). A fixed area that stays where it was cast uses create_zone instead, never this. Auras are player-visible by default, because their whole job is showing the table where the effect reaches. Pass radiusFeet 0 to clear one. Slot 2 is a second, independent aura on the same token — use it for a creature carrying two overlapping effects rather than overwriting the first.",
+    "Set or clear a token's aura — the table's visual for an EMANATION, i.e. an effect centred on a creature that MOVES WITH IT (Spirit Guardians, Aura of Protection, a dragon's Frightful Presence). A fixed area that stays where it was cast uses create_zone instead, never this. Auras are player-visible by default, because their whole job is showing the table where the effect reaches. Pass radiusFeet 0 to clear one. Slot 2 is a second, independent aura on the same token — use it for a creature carrying two overlapping effects rather than overwriting the first. Pass concentration:true when the aura IS the visual for a concentration spell — that records which slot the spell owns, so break_concentration (and the set_pc_dying cascade) tears down THAT ring instead of assuming slot 1 (issue #210), exactly as a concentration zone records its caster.",
     {
       characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Brie Mossfrond'."),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
@@ -1080,38 +1283,29 @@ export function registerCombatTools(server: McpServer): void {
       color: z.string().optional().describe("Aura color as #hex, e.g. '#cc0000'. Left alone when omitted, so re-radiusing an existing aura keeps its color."),
       shape: z.string().optional().describe("Aura shape. Roll20 documents 'circle' (default) and 'square'; the 2026-09-01 release added hex and outline-only (border) variants whose property strings are not yet documented — passed through verbatim."),
       visibleToPlayers: z.boolean().default(true).describe("Show the aura to players. Defaults true — an emanation the table cannot see defeats the point."),
+      concentration: z.boolean().default(false).describe("true = this aura is the visual for a CONCENTRATION spell, so the slot is recorded as owned by that concentration effect and break_concentration tears down this slot specifically (issue #210). Leave false for an aura that is not concentration (a permanent light ring, Aura of Protection, a marching-order marker) — that also RELEASES the slot if a concentration effect had claimed it."),
     },
-    async ({ characterName, tokenId, radiusFeet, slot, color, shape, visibleToPlayers }) => {
+    async ({ characterName, tokenId, radiusFeet, slot, color, shape, visibleToPlayers, concentration }) => {
       let resolvedTokenId = tokenId;
       if (!resolvedTokenId) {
         if (!characterName) throw new Error("Provide characterName or tokenId");
         resolvedTokenId = await resolveTokenOrThrow(characterName);
       }
-      const props: Record<string, unknown> = { [`aura${slot}_radius`]: radiusFeet };
-      // Clearing is radius-only on purpose: colour and shape survive, so the next cast of the same
-      // effect on the same creature comes back looking the way the DM set it up.
-      // NB break_concentration tears down aura slot 1 ONLY, so a concentration effect parked on
-      // slot 2 currently outlives its own teardown — issue #210.
-      if (radiusFeet > 0) {
-        if (color) props[`aura${slot}_color`] = color;
-        if (shape) {
-          // aura{n}_options is the authoritative shape field and Roll20 documents the legacy
-          // aura{n}_square boolean as "kept in sync" with it. That sync is Roll20's claim, not
-          // something verified here, and a graphic silently DROPS a property it doesn't recognise
-          // (the #162/#164 class) — so for the two shapes the boolean can express, write it too.
-          // They mean the same thing, so this is belt-and-braces, not two sources of truth. Shapes
-          // the boolean cannot express (hex, the border-only variants) go through options alone.
-          props[`aura${slot}_options`] = shape;
-          if (shape === "square") props[`aura${slot}_square`] = true;
-          else if (shape === "circle") props[`aura${slot}_square`] = false;
-        }
-        props[`showplayers_aura${slot}`] = visibleToPlayers;
-      }
-      await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props });
+      // The relay owns the whole write (setTokenAura): radius/colour/shape/visibility AND the
+      // record of which slot a concentration effect owns, in one atomic step. Clearing is
+      // radius-only on purpose: colour and shape survive, so the next cast of the same effect on
+      // the same creature comes back looking the way the DM set it up.
+      await roll20.relayCommand({
+        action: "setTokenAura",
+        tokenId: resolvedTokenId,
+        slot, radiusFeet, color, shape,
+        visibleToPlayers,
+        concentration,
+      });
       const who = characterName ?? resolvedTokenId;
       return text(
         radiusFeet > 0
-          ? `Aura ${slot} on ${who}: ${radiusFeet} ft${shape ? `, ${shape}` : ""}${color ? `, ${color}` : ""}, ${visibleToPlayers ? "visible to players" : "GM-only"}. It moves with the token — clear it with radiusFeet 0 when the effect ends.${slot === 2 ? " NOTE: break_concentration only tears down slot 1 (#210), so a concentration effect on slot 2 must be cleared by hand." : ""}`
+          ? `Aura ${slot} on ${who}: ${radiusFeet} ft${shape ? `, ${shape}` : ""}${color ? `, ${color}` : ""}, ${visibleToPlayers ? "visible to players" : "GM-only"}. It moves with the token — clear it with radiusFeet 0 when the effect ends.${concentration ? ` Slot ${slot} is recorded as this concentration effect's, so break_concentration will tear it down.` : ""}`
           : `Aura ${slot} cleared on ${who}.`
       );
     }
@@ -1129,7 +1323,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "find_tokens_in_range",
-    "Find all Roll20 tokens within radiusFeet of a center token. Use for AoE targeting — find who's in range of a spell or effect. Returns token names, HP, layer, and distance sorted nearest-first. After targeting, place a visual marker with set_token_props (aura1_radius + aura1_color) on the caster and create_zone to track the persistent AoE area.",
+    "Find all Roll20 tokens within radiusFeet of a center token. Use for AoE targeting — find who's in range of a spell or effect. Returns token names, HP, layer, and distance sorted nearest-first. After targeting, show an emanation that moves with the caster with set_token_aura (concentration:true when it is a concentration spell), or a fixed persistent area with create_zone.",
     {
       centerTokenId: z.string().describe("Roll20 token ID of the caster / effect origin"),
       radiusFeet: z.number().describe("Effect radius in feet, e.g. 15 for Spiritual Guardians, 20 for Fireball"),
@@ -1174,8 +1368,13 @@ export function registerCombatTools(server: McpServer): void {
       healing: z.boolean().default(false).describe("true = restore HP instead of dealing it. The formula/flat amount is applied as POSITIVE HP to every resolved target (PCs route through adjustPcHp; NPCs write bar1). No saving throws, no conditions; downed creatures ARE included so you can heal them up. Use targetNames to hand-pick the allies you're healing (e.g. Mass Cure Wounds)."),
       halfOnSave: z.boolean().default(true).describe("true = save takes half (Fireball); false = save negates"),
       onFailCondition: z.string().optional().describe("Condition applied to NPCs that FAIL, e.g. 'restrained', 'prone'"),
-      draw: z.enum(["zone", "aura", "none"]).default("zone").describe("Visual for the area: 'zone' (default) draws a circle on the map at the blast point — clear with clear_zone when it ends; 'aura' (token-centered mode only) sets a player-visible aura on the center token instead — right for emanations like Spirit Guardians that move with the caster; 'none' skips the visual. Ignored for zoneName/targetNames modes (nothing new to draw)."),
+      draw: z.enum(["zone", "aura", "none"]).default("zone").describe("Visual for the area: 'zone' (default) draws a circle on the map at the blast point — clear with clear_zone when it ends; 'aura' (token-centered mode only) sets a player-visible aura on the center token instead — right for emanations like Spirit Guardians that move with the caster (pass auraConcentration:true for concentration emanations — Spirit Guardians, Moonbeam… — so a break tears the ring down); 'none' skips the visual. Ignored for zoneName/targetNames modes (nothing new to draw)."),
       color: z.string().default("#cc0000").describe("Zone/aura color as #hex"),
+      // draw:"aura" goes through the same relay action as set_token_aura, so an AoE-placed aura and
+      // a hand-placed one are the same object with the same lifecycle (issue #210).
+      auraSlot: z.union([z.literal(1), z.literal(2)]).default(1).describe("draw:'aura' only — which of the center token's two aura slots to use. Default 1. Use 2 when the caster already carries an unrelated aura on slot 1 rather than overwriting it."),
+      auraShape: z.string().optional().describe("draw:'aura' only — aura shape, same values as set_token_aura ('circle' default, 'square', and the undocumented hex/outline variants passed through verbatim)."),
+      auraConcentration: z.boolean().default(false).describe("draw:'aura' only — true when the emanation is a CONCENTRATION spell (Spirit Guardians, Moonbeam): records the slot as owned by that concentration effect so break_concentration tears down this exact aura (issue #210)."),
       dryRun: z.boolean().default(false).describe("Preview targets only — no rolls, no damage (atPing still draws its zone so you can see the spot)"),
       pageId: z.string().optional(),
     },
@@ -1255,10 +1454,12 @@ export function registerCombatTools(server: McpServer): void {
           drawNote = `Zone '${zone.name}' drawn at ${center.name}'s position — clear_zone when the effect ends.`;
         } else if (args.draw === "aura" && !args.dryRun) {
           await roll20.relayCommand({
-            action: "setTokenProps", tokenId: centerId,
-            props: { aura1_radius: args.radiusFeet, aura1_color: args.color, showplayers_aura1: true },
+            action: "setTokenAura", tokenId: centerId,
+            slot: args.auraSlot, radiusFeet: args.radiusFeet, color: args.color,
+            shape: args.auraShape, visibleToPlayers: true,
+            concentration: args.auraConcentration,
           });
-          drawNote = `Aura set on ${center?.name ?? "the center token"} (moves with the token) — clear with set_token_props aura1_radius 0.`;
+          drawNote = `Aura ${args.auraSlot} set on ${center?.name ?? "the center token"} (moves with the token) — clear with set_token_aura radiusFeet 0${args.auraConcentration ? ", or let break_concentration tear it down" : ""}.`;
         }
       } else {
         throw new Error("Target via atPing, centerTokenName/centerTokenId + radiusFeet, zoneName/zoneId, or targetNames");

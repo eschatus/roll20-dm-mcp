@@ -61,7 +61,10 @@ credential and never mints one:
    editor restored from IndexedDB, `firebaseLocalStorageDb` is deleted and the page reloaded to
    force a fresh sign-in. The harvester writes `<data dir>/roll20-rt-token.json`
    (`{campaignId, customToken, databaseURL, harvestedAt}`).
-2. **Read (here).** `getCustomToken` in `roll20-rt.ts` reads that file and validates three things —
+2. **Read (here).** `getCustomToken` in `roll20-rt.ts` reads that file — or the same object inline in
+   **`ROLL20_RT_TOKEN`**, which takes precedence and is meant for a caller with no shared writable
+   data dir; a set-but-unusable variable throws rather than falling back to the file — and validates
+   three things —
    it is for **this** campaign (tokens are campaign-scoped), it carries a `databaseURL` (pre-shard-
    fix caches don't, and would reconnect to the wrong shard), and it is inside the max age. Any miss
    throws `Roll20TokenUnavailableError` naming which of the three failed. **There is no harvest

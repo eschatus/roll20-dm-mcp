@@ -106,6 +106,18 @@ convenience would conflict with a rule below, the rule wins.
   sidekicks skip this entirely — they die immediately via `kill_token`, same as always.
   - **Revival keeps prone.** Clear `unconscious` with `set_token_marker` (`active:false`) —
     `prone` stays on until the DM separately says the PC stands up.
+- **A wrong kill is undone with `revive_token`, in one call** (issue #217). It is the exact inverse
+  of `kill_token`: restores HP (required — nothing on the board remembers the pre-kill value),
+  clears `dead`, returns the token to the token layer, and puts its turn-order entry back (an
+  `initiative` you pass, else the original `pr` if the kill left the entry behind, else a fresh
+  silent roll — NPCs and sidekicks only) without changing whose turn it is. A true PC whose entry
+  is gone comes back with `initiativeSource:"pending"`: the player rolls, or you pass the pre-kill
+  `initiative`. If the call errors part-way, the message lists what landed — re-run `revive_token`;
+  it is idempotent (add `initiative:N` if you know the pre-kill value). If the result says the
+  turn order was NOT updated because the relay is out of date, the token is revived but has no
+  row: tell the DM the relay needs redeploying, then re-run `revive_token` afterwards. Use it when a damage number landed on the wrong creature and crossed 0, or the DM
+  retcons a death ("no, the ogre isn't dead") — never hand-unwind it with four separate calls, and
+  never revive to 0 HP. A downed PC getting back up is NOT this: that's clearing `unconscious`.
 - Apply the `Wounded::4444333` marker when a token drops below 50% max HP; remove it when healed
   back above half.
 
@@ -114,9 +126,17 @@ convenience would conflict with a rule below, the rule wins.
 - `concentrating` is a pseudo-condition marker (`Concentrating::4444313`) — DM-managed, applied/
   cleared via `set_token_marker`.
 - **Break cascade = `break_concentration`.** One call: removes the Concentrating marker, zeroes
-  the token's aura (`aura1_radius`), and deletes any zone whose `duration` is
+  the aura slot that effect owns, and deletes any zone whose `duration` is
   `{type:"concentration", caster}` linked to that token (see "Zone terrain/duration semantics").
-  Reports what it tore down.
+  Reports what it tore down, including which aura slot.
+- **A concentration aura must claim its slot.** Place it with `set_token_aura`
+  `concentration: true` (or `resolve_aoe draw:"aura"` with `auraConcentration: true`) — that records
+  the slot, so the break tears down the right ring. Without it the cascade falls back to slot 1, and
+  a spell parked on slot 2 survives its own teardown. A non-concentration aura (a permanent light
+  ring, a marching-order marker) leaves `concentration` false. On slot 2, or on a slot that a
+  tagged spell had claimed, it is never torn down by a break. On slot 1 of a token with no live
+  claim it IS — an untagged slot-1 ring is treated as the historical concentration ring — so park
+  a permanent ring on slot 2 when the token also concentrates.
 - Breaks arrive two ways:
   - **Declaratively** — the DM says the spell ends ("she loses Bless", "the guardians fade") or
     the save already happened at the table. Call `break_concentration` directly, no question asked.
@@ -166,7 +186,10 @@ what you did, mechanically and explicitly.
   applied**, and describe relative health in words (bloodied, badly hurt, near death, reeling,
   dropped). You must **NEVER** state a target's **remaining or total HP** to players (no "4/15",
   no "33 left"). Damage dealt = allowed; HP totals/remaining = never. (The GM-facing gem report
-  above may still show exact totals — that surface is GM-only.)
+  above may still show exact totals — that surface is GM-only.) On the token, NPC HP digits are
+  already editor-only by Roll20's default (an NPC token has no controllers, so only the GM reads
+  them); `create_npc_token` can opt a token into showing them to everyone with
+  `showHpNumbersToPlayers: true`. None of that governs what you SAY — the rule above does.
 - `send_narration` otherwise carries only what the DM told you to say, plus at most a few words of
   color tied to a mechanical outcome. Don’t freelance narration.
 - **Not every clause maps to a tool.** Positional or flavor clauses that don't change tracked
@@ -198,6 +221,8 @@ Work out what a mob intends the same way you work out anything else, then write 
 
 - **Emanation** spells that move with a creature (Spirit Guardians, Aura of Vitality, etc.) →
   token **aura** (`set_token_aura` — radius in feet, `0` clears, player-visible by default), not a zone.
+  A concentration emanation passes `concentration: true` so the break cascade can find its slot;
+  `slot: 2` puts a second emanation on the same creature without overwriting the first.
 - **Fixed-area** spells (Web, Cloudkill, Spike Growth, Fireball footprint) → `create_zone`.
 - One-shot instantaneous spells (Fireball, Thunder Wave) need no persistent zone; clean up any
   pre-placed template token with `remove_object` after resolving.

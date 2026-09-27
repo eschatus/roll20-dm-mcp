@@ -70,5 +70,7 @@ RunPod MCP server was added this session; it loads on the next Claude Code start
 
 ## Also outstanding (unrelated to SFT)
 
-`npm run release:mod` before the next live session — `mod-scripts/ai-relay.js` changed
-(threshold automation, `breakConcentration`, zone metadata) and the sandbox copy is stale.
+Redeploy the Mod before the next live session — `mod-scripts/ai-relay.js` changed (threshold
+automation, `breakConcentration`, zone metadata) and the sandbox copy is stale. There is no
+`npm run release:mod` any more (#175): paste the file into the campaign's API console yourself and
+confirm the `[GM_AI_Bridge] Relay script loaded (vX.Y.Z)` banner.

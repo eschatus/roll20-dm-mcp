@@ -28,15 +28,20 @@ The Gem's **Connect Roll20** button opens a login window, you sign in as normal,
 
 | File | What it's for | How long it lasts |
 |---|---|---|
-| `roll20-rt-token.json` | Everything. **Campaign-scoped** — a token for one game cannot read another. | ~50 minutes from harvest |
+| `roll20-rt-token.json` | Everything. **Campaign-scoped** — a token for one game cannot read another. | ~1 hour from harvest |
 | `roll20-upload-cache.json` | Uploading your own battlemap art | 8 hours |
 
 Practical consequences:
 
 - **Connect the Gem to the campaign you're about to run, before you press Connect.** Switching campaigns means
   reconnecting.
-- **Reconnect at the start of a session.** The ~50-minute limit governs *making* a connection, not holding one —
+- **Reconnect at the start of a session.** The ~1-hour limit governs *making* a connection, not holding one —
   once the server is connected it stays live all evening — but a restart mid-session needs a fresh harvest.
+- **A long-running Gem does not keep the token file warm.** The Gem harvests reactively, when its own server
+  hits a token failure — and a connected server never hits one. So after an hour the Gem still reports
+  `health: ok` on its live socket while the file on disk is spent, and anything *else* pointed at that data
+  dir (the `roll20-dm-maps` stdio server, a script) cannot sign in. `transport_status` now reports
+  `rtToken: {ageMinutes, stale, note}` so you can see this coming; pressing **Connect Roll20** clears it (#216).
 - **The Gem and the server must share one data directory.** `DMW_DATA_DIR` (the Gem, `%APPDATA%\DM Whisper` on
   Windows by default) and `ROLL20_DATA_DIR` (the server, `./data` by default) have to resolve to the same folder.
   Otherwise the Gem harvests into a directory the server never reads — and the two also keep separate campaign
@@ -76,7 +81,7 @@ D&D Beyond at all.
 
 ### The Gem pins this repository
 
-The Gem installs roll20-dm-mcp as a dependency at a fixed tag — currently **`#v2.0.6`** — and builds it in its
+The Gem installs roll20-dm-mcp as a dependency at a fixed tag — currently **`#v2.1.0`** — and builds it in its
 own clone. So you do not need a separate checkout of this repo for the Gem to run, and changes made here reach
 the Gem only when it re-pins. It also bundles this repo's `skills/dm-rules.md` and `mod-scripts/ai-relay.js`
 into its installer.
@@ -88,7 +93,7 @@ into its installer.
 **The Mod script must be loaded, per campaign.** Roll20 only runs the helper script when your campaign is open,
 and each campaign carries its own copy — so one game can be running an older version than another. After
 updating, re-paste `mod-scripts/ai-relay.js` and confirm the console prints
-`[GM_AI_Bridge] Relay script loaded (v2.8.0)`. Saving is not loading. See **[Setup](Setup)** step 3.
+`[GM_AI_Bridge] Relay script loaded (v2.9.0)`. Saving is not loading. See **[Setup](Setup)** step 3.
 
 **Names must match the map.** The Gem matches what you say against the actual token names on the page — it won't
 invent one. If you call the boss "the big guy", add a nickname in the Gem.

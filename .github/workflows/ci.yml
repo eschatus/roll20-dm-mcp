@@ -25,6 +25,8 @@ jobs:
         run: npm run build
       - name: Mod syntax gate (ai-relay.js is plain sandbox JS — no typecheck otherwise)
         run: node --check mod-scripts/ai-relay.js
+      - name: Minified relay gate (build the paste-ready artifact, re-run the emulator suite on it)
+        run: npm run build:mod -- --verify
 
 # The voice-hud-tests job moved to the dm-whisper repository on 2026-08-11, with the gem
 # itself. So did release.yml (the installer build) and llm-eval.yml (narration eval) —

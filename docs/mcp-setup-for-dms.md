@@ -194,7 +194,7 @@ sign in as normal, and it writes the token file for you. Switch the gem to the c
 > "no token file" with a perfectly good token sitting on disk.
 
 **Without the gem — the manual way.** There is currently no built-in way to get a token without it, so you build
-the file yourself. It is genuinely fiddly, and the token is only accepted for about **50 minutes** after it's
+the file yourself. It is genuinely fiddly, and the token is only accepted for about **an hour** after it's
 minted, so you have to do this shortly before you start the server. In Chrome or Edge, with your campaign's
 Roll20 **editor** open (the play screen, not the details page):
 
@@ -220,8 +220,8 @@ Then create `data/roll20-rt-token.json` in the project folder:
 
 `harvestedAt` is the current time in **milliseconds** — paste `Date.now()` into the DevTools Console to get it.
 
-Start the server within the next 50 minutes. Once it has connected, the connection stays live for the rest of the
-evening; the 50-minute limit only applies to *making* a connection, so a mid-session restart means redoing this.
+Start the server within the next hour. Once it has connected, the connection stays live for the rest of the
+evening; the limit only applies to *making* a connection, so a mid-session restart means redoing this.
 
 > **Uploading your own battlemap art** needs a second file, `data/roll20-upload-cache.json`, which the gem also
 > writes and which expires after 8 hours. Without it, art upload fails with a clear message; everything else keeps
@@ -335,7 +335,7 @@ you **restarted Claude after** the file was written. This restart-after step is 
 people miss.
 
 **"No usable Roll20 realtime token…"**
-Exactly what it says: the token file from Step 7 is missing, older than about 50 minutes, or belongs to a
+Exactly what it says: the token file from Step 7 is missing, spent (about an hour after it was captured), or belongs to a
 different campaign — the message tells you which. Reconnect Roll20 in the gem (with the gem pointed at *this*
 campaign), then restart the server. If you're not running the gem, redo the manual build in Step 7.
 

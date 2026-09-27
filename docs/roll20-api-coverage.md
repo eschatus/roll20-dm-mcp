@@ -27,6 +27,16 @@ is **out of scope here**, not "bridged with Playwright".
 >
 > Read the page before trusting anything below it — §2 is transcribed from the live articles, but
 > Roll20 ships changes weekly and the Objects page visibly lags its own change log.
+>
+> **A Cloudflare challenge has been seen once.** On **2026-09-26** one fetch with the short UA
+> above came back as a "Just a moment..." interstitial (~5.8 KB of JS challenge, HTTP 200) instead
+> of the article. Later the same day all three articles fetched fine (HTTP 200, full article) with a
+> **full** Chrome UA plus `-H 'Accept: text/html'`. So if you hit the interstitial, retry with a
+> full Chrome UA string and an `Accept: text/html` header — or read the article through the
+> Zendesk JSON API (`https://help.roll20.net/api/v2/help_center/en-us/articles/<id>.json`, whose
+> `body` field is the article HTML) — before concluding the pages are unreachable. Save any fresh
+> transcription under `data/` (gitignored) the way `data/Mod_Objects - Roll20 Wiki.html` used to
+> be — the emulator's property whitelist cites it.
 
 **Mod Script Sandbox v1.0 vs v1.5 — read this before anything else.** On **2026-09-02** Roll20 made
 **v1.5 the default** for every game that had never explicitly picked a version (the old
@@ -37,10 +47,10 @@ can be moved back to 1.0 by hand. `ACTIONS["ping"]` echoes `Campaign().sandboxVe
 surfaces them under `sandbox` — that is how you find out which one a campaign is on. A `sandbox` of
 `null` there means the *relay* is older than 2.7.0, not that the sandbox is old.
 
-Last analyzed: **2026-09-08** (docs re-read live; repo v2.0.6). Relay version string: `2.8.0`
+Last analyzed: **2026-09-26** (docs re-read live; repo v2.1.0). Relay version string: `2.9.0`
 (reported by the `ping` action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
-(`[GM_AI_Bridge] Relay script loaded (v2.8.0)`), not the save.
+(`[GM_AI_Bridge] Relay script loaded (v2.9.0)`), not the save.
 
 ---
 
@@ -61,7 +71,7 @@ Claude → MCP tool (TS) → roll20.relayCommand({action,...})
 ```
 
 **Two layers of "can do":**
-1. **Relay actions** (73 action handlers in the `ACTIONS` dispatch map in `ai-relay.js`, plus `batchExec` sub-actions) — the real Roll20 API surface this project uses.
+1. **Relay actions** (76 action handlers in the `ACTIONS` dispatch map in `ai-relay.js`, plus `batchExec` sub-actions) — the real Roll20 API surface this project uses.
 2. **Direct RTDB paths** (`tryDirectRead` / `tryDirectWrite` in `src/bridge/roll20-rt.ts`) — a faster
    route to a *subset* of the same actions off the socket, plus the two things the sandbox genuinely
    can't do (`rtCreatePage`, and art upload via a furnished-credential multipart POST).
@@ -85,8 +95,8 @@ Coverage = relay + direct RTDB.
 — plus `pageFolder` on **sandbox v1.5 only**.
 
 `pathv2` (DL barriers/walls), `door` and `window` are now first-class in that list, so the
-legacy-`path` fallback in the relay's `createWalls` is dead code (and it hardcodes a yellow stroke
-against the project's blue-wall convention — #207).
+relay's `createWalls` no longer carries a legacy-`path` fallback (it was dead code that hardcoded a
+yellow stroke against the project's blue-wall convention — removed in #207).
 
 **`pin` is a new object type this project does not use at all** (#203). Map pins: `shape`
 (teardrop/circle/diamond/square), a built-in `icon` set or a `pinImage`, `title`/`notes`/`gmNotes`,
@@ -157,21 +167,38 @@ Persistent storage: the global **`state`** object (survives sandbox restarts).
   arms it before the write and falls back to a timeout so a queue that never drains still answers.
 - `getSheetItem` / `setSheetItem` (async, Promise) — the sheet-aware attribute carriers. On v1.0
   they wrap attributes; on v1.5 they also reach Beacon computed properties and `user.*` attrs.
-- `getSheetDefaultValue(name, valtype?)` — the sheet's default for a field, not the live value.
 - `findObjs` options now include **`tagMatch: 'all' | 'any' | 'only'`** beside `caseInsensitive`
-  and `startsWith`. (#209 covers this and the rest of the small unused surface.)
+  and `startsWith` — `'all'` (default) means the object carries every listed tag, `'any'` at least
+  one, `'only'` exactly the listed set. **Not adopted, and deliberately so (#209):** the live
+  Objects page (re-read 2026-09-26) lists a `tags` property on **character** and **handout** only —
+  graphics, paths and text have none. So `tagMatch` is inert for token lookup, the one place it
+  could have replaced `resolveToken`'s name matching: tokens carry no tags to match. It could
+  filter characters or handouts if a use for that ever appears; nothing here needs one today.
 - Card/deck helpers: `shuffleDeck`, `cardInfo`, `recallCards`, `dealCardsToTurn`, `drawCard`,
-  `pickUpCard`, `takeCardFromPlayer`, `playCardToTable`, `giveCardToPlayer`.
+  `pickUpCard`, `takeCardFromPlayer`, `playCardToTable`, `giveCardToPlayer`. Available on both
+  sandboxes. **Not adopted (#209):** nothing at the table uses decks yet. This is the same gap as
+  §5 item 5 (the Tarokka deck for Curse of Strahd) and belongs to that item, not to a speculative
+  wrapper per helper — a deck feature wants the `deck`/`card`/`hand` object CRUD *and* these
+  helpers designed together.
 
 **Sandbox v1.5 only:**
 - `getComputed` / `setComputed` / `performAction` — Beacon sheet computed properties and sheet
   actions. Enumerate them with `Campaign().computedSummary` / `actionSummary`.
-- `toAbove(obj, target)` / `toBelow(obj, target)` — precise layer ordering; `toFront`/`toBack` are
-  also "substantially faster" here, and graphics/paths/text gain `.toFront()` / `.toBack()` methods.
+- ~~`toAbove(obj, target)` / `toBelow(obj, target)`~~ ✅ **wired (relay 2.9.0)** as `to_above` /
+  `to_below` — precise layer ordering, which `to_front`/`to_back` cannot express. The relay refuses
+  on v1.0 with the campaign's sandbox version named rather than letting `toAbove is not defined`
+  surface, and refuses a cross-page or cross-layer pair rather than reporting `ok:true` for a no-op
+  (z-order is per-page and per-layer). `toFront`/`toBack` are also "substantially faster" here, and graphics/paths/text gain
+  `.toFront()` / `.toBack()` instance methods (the globals still work; nothing here needs changing).
 - `spawnFxBetweenPoints` beam types point at the end point (an angle bug is fixed).
-- `log` error messages carry a context object; the Apr 2026 server release added per-script
-  callstacks with script name + line and attributed "Possible Infinite Loop Detected" reports.
-- Graphic `currentSide` — setting it auto-updates `imgsrc` for rollable tokens.
+- `log` error messages carry a context object (e.g. `[Roll20 character -id]`); the Apr 2026 server
+  release added per-script callstacks with script name, tab number, line and column, plus
+  attribution for "Possible Infinite Loop Detected". **Read the Mod console callstack FIRST** when
+  the sandbox dies: both crash classes this repo has burned days on — an `undefined`/`NaN` value
+  reaching `t.set()`, and `@{`/`[[` echoed back through chat — presented as nothing but a dead
+  sandbox, and are now attributable in one look (#209).
+- Graphic `currentSide` — setting it auto-updates `imgsrc` for rollable tokens. Exposed through
+  `set_token_props` as of #204; the write is harmless on v1.0, it just does nothing there.
 
 ### Campaign() direct properties (NOT behind `.get()`)
 `sandboxVersion` (`"1.0"`/`"1.5"`) · `nodeVersion` — both sandboxes.
@@ -207,15 +234,16 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `getTokens` | list_tokens, get_map_graphics, get_turn_order (name resolution), roll_initiative, update_hp_many, resolve_aoe | both | page graphics (direct-read path) |
 | `getSelection` | get_selection | combat | the DM's currently-selected tokens |
 | `findTokensInRange` | find_tokens_in_range, resolve_aoe | combat | range query (aura/zone) |
-| `getTokenById` | get_token, get/set_character_attribute, update_token_hp, kill_token, set_pc_dying, break_concentration, create_zone | both | full token read (direct-read path) |
-| `setTokenProps` | set_token_props, kill_token (→ map layer), resolve_aoe (aura), create_pc_token, batch_exec | both | arbitrary `.set(props)`; direct-write path |
-| `setTokenBar` | update_token_hp (NPC/sidekick), update_hp_many, roll_initiative (`entries[].hp` seed), resolve_aoe | combat | bar1 HP; direct-write path |
-| `adjustPcHp` / `getPcHp` | update_token_hp, update_hp_many, resolve_aoe (all PC-routed writes) | combat | PC HP in a `%%PCHP={…}%%` block in the token's gmnotes, routed three ways by `classifyToken` (PC / NPC / sidekick). `getPcHp` has no tool of its own — it's the direct-read half of the same carrier. **Never write a PC's token bar.** |
+| `getTokenById` | get_token, get/set_character_attribute, update_token_hp, kill_token, revive_token, set_pc_dying, break_concentration, create_zone | both | full token read (direct-read path) |
+| `setTokenProps` | set_token_props, kill_token (→ map layer), revive_token (→ token layer), create_pc_token, batch_exec | both | arbitrary `.set(props)`; direct-write path |
+| `setTokenAura` | set_token_aura, resolve_aoe (`draw:"aura"`) | combat | one aura slot (1\|2) set or cleared — radius/colour/shape/visibility — **plus** the record of which slot a concentration effect owns (`state.GM_AI_Bridge.concentrationAuras`, #210), so `breakConcentration` tears down that slot instead of assuming slot 1. Recasting onto the other slot zeroes the ring the spell used to own; clearing/repurposing the slot releases the claim (slot 0); an untagged slot-1 ring drawn over a released claim resets the token to untracked (slot-1 teardown again), while an untagged slot-2 ring keeps it released. Shape is written to `aura{n}_options` only. A raw `setTokenProps` write of `aura{n}_radius` is forced through the Mod so it releases the claim on the slot it overwrites. |
+| `setTokenBar` | update_token_hp (NPC/sidekick), update_hp_many, revive_token (NPC/sidekick), roll_initiative (`entries[].hp` seed), resolve_aoe | combat | bar1 HP; direct-write path |
+| `adjustPcHp` / `getPcHp` | update_token_hp, update_hp_many, revive_token, resolve_aoe (all PC-routed writes) | combat | PC HP in a `%%PCHP={…}%%` block in the token's gmnotes, routed three ways by `classifyToken` (PC / NPC / sidekick). `getPcHp` has no tool of its own — it's the direct-read half of the same carrier. **Never write a PC's token bar.** |
 | `setStatusMarker` | (internal) | — | single marker add/remove by tag; direct-write path |
 | `setDefaultToken` | batch_exec (`set_default_token`) | combat | `setDefaultTokenForCharacter` (token↔sheet) |
-| `toggleCondition` | set_token_marker, update_token_hp, kill_token, set_pc_dying, batch_exec | combat | resolves via 3-tier `resolveMarkerForState`; +`active_conditions`; direct-write path |
+| `toggleCondition` | set_token_marker, update_token_hp, kill_token, revive_token, set_pc_dying, batch_exec | combat | resolves via 3-tier `resolveMarkerForState`; +`active_conditions`; direct-write path |
 | `syncConditionsToToken` | update_token_hp (`replaceConditions`) | combat | replace all markers |
-| `breakConcentration` | break_concentration, set_pc_dying (auto-cascade) | combat | removes the `Concentrating` marker, zeroes `aura1_radius`, and deletes zones whose duration is `{type:'concentration', caster}` (#134/#135) |
+| `breakConcentration` | break_concentration, set_pc_dying (auto-cascade) | combat | removes the `Concentrating` marker, zeroes the aura slot the effect OWNS (`concentrationAuras` — #210; slot 1 for a never-tracked token, no aura at all for a released claim), and deletes zones whose duration is `{type:'concentration', caster}` (#134/#135) |
 | `getTokenMarkers` | get_token_markers | combat | campaign custom markers |
 | `getCustomStates` | list_custom_states | combat | tier-2 ad-hoc DM states + holders |
 | `createToken` | create_pc_token, create_npc_token, create_monster_token | maps | **does not set `represents`** (so no sheet, and `ac` is reported-back-only, never stored) and takes no `controlledby` — `create_pc_token` sets it from its `controlledBy` param via a follow-up `setTokenProps`. All three take **caller-supplied stats**; none performs a lookup (#171). |
@@ -232,15 +260,16 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `clearLayer` | clear_layer | maps | path+graphic+pathv2+wall |
 | `debugPage` | debug_page | maps | object-type census |
 | `drawLayerTest` | draw_layer_test | maps | creates `path` |
+| `pathv2ZoneProbe` | — (recon only: `src/recon/pathv2-zone-probe.ts`) | — | **spike instrument, issue #208** — draws one `pathv2` per variant (`eli`/`rec`/`pol` × fill forms × layer) and reports what Roll20 stored, to settle whether `pathv2` should replace `path` as the zone primitive. Leaves the objects on the page on purpose and stashes their ids in `state.GM_AI_Bridge.pathv2Probe`; `{ clearLast: true }` removes them. Registered by no server. Delete once the spike's Results are in. See `docs/pathv2-zone-spike.md`. |
 | `runUVTT` | run_uvtt_import | maps | drives external UniversalVTTImporter mod |
 | `listPages` | list_pages, get_current_page, setup_roll20_page, rename_roll20_page, batch_import_maps | both | page list (direct-read path) |
 | `setPageProps` | setup_roll20_page, rename_roll20_page, batch_import_maps | maps | name/size/scale/grid subset |
 | `setPageBackground` | (internal) | — | bg color only |
-| `createZone`/`clearZone`/`listZones`/`findTokensInZone`/`processRoundEndZones` | create_zone, clear_zone, list_zones, process_round_end_zones, resolve_aoe | both | path on the map layer; **metadata lives in `state.GM_AI_Bridge.zones`, not on the path object** (path objects silently drop `name`/`gmnotes`/`fill_opacity` — #162/#164) |
+| `createZone`/`clearZone`/`listZones`/`findTokensInZone`/`processRoundEndZones` | create_zone, clear_zone, list_zones, process_round_end_zones, resolve_aoe | both | path on the map layer; **metadata lives in `state.GM_AI_Bridge.zones`, not on the path object** (path objects silently drop `name`/`gmnotes`/`fill_opacity` — #162/#164). Whether `pathv2` (`shape:"eli"`/`"rec"`, real `fill`) is a better drawing primitive is an open spike — `docs/pathv2-zone-spike.md` (#208). |
 | `removeObject` | remove_object | combat | graphic or path |
-| `getTurnOrder`/`setTurnOrder`/`advanceTurn` | get_turn_order, clear_turn_order, advance_turn, update_turn_order, inject_round_marker, batch_exec | combat | `Campaign.turnorder`. **Never write `setTurnOrder` wholesale** — it erases player entries; only `clear_turn_order` does that deliberately. |
-| `mergeTurnOrder` | roll_initiative, inject_round_marker, update_turn_order | combat | NPC-only upsert (preserves PC entries) |
-| `rollInitiativeForTokens` | roll_initiative | combat | real dice + epithets; honours per-combatant `bonusOverrides` from `entries[].bonus` (#172) |
+| `getTurnOrder`/`setTurnOrder`/`advanceTurn` | get_turn_order, clear_turn_order, advance_turn, update_turn_order, inject_round_marker, revive_token (read only), batch_exec | combat | `Campaign.turnorder`. **Never write `setTurnOrder` wholesale** — it erases player entries; only `clear_turn_order` does that deliberately. |
+| `mergeTurnOrder` | roll_initiative, inject_round_marker, update_turn_order, revive_token | combat | NPC-only upsert (preserves PC entries). `keepTurn:true` (relay 2.9.0, revive_token) splices into the live rotation without the pr-descending sort, so row 0 (the active turn) never changes |
+| `rollInitiativeForTokens` | roll_initiative, revive_token (silent re-roll when a kill took an NPC/sidekick entry; never for a true PC) | combat | real dice + epithets; honours per-combatant `bonusOverrides` from `entries[].bonus` (#172) |
 | `rollFormulas` | roll_dice, resolve_aoe | combat | real dice engine — all dice go through Roll20's roller, never a TS RNG |
 | `setTurnHook`/`getTurnHookState` | set_turn_hook, check_turn_hook | combat | enables the `change:campaign:turnorder` hook; `roll_initiative` arms it itself |
 | `sendNarration` | send_narration | combat | styled HTML to chat |
@@ -250,6 +279,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `getDmInbox`/`clearDmInbox` | get_dm_inbox, clear_dm_inbox | combat | `!dm` queue |
 | `setMobPlan`/`getMobPlans`/`clearMobPlans` | set_mob_plan, get_mob_plans, clear_mob_plans | combat | **storage only.** The server no longer *plans* anything — the tactics tools (`plan_tactics`, `plan_all_tactics`, `record_tactic_outcome`, `get/clear_tactic_memory`) are removed and the gem owns tactical planning; this is just where it parks the resulting whisper cards. |
 | `setCharacterAttributes`/`getCharacterAttributes` | set_character_attribute, get_character_attribute, read_character_attributes | combat | sheet attrs. **Never read a field containing literal `@{`/`[[`** (e.g. `rollbase`) — Roll20's chat pipeline live-evaluates it on echo. |
+| `getSheetDefaultValues` | get_sheet_default_values | combat | `getSheetDefaultValue(name, valtype?)` per requested name — the **sheet's** default, not a character's value, so a stat-block writer can tell "never set" from "set to exactly the default". Campaign-wide (no `charId`). Unknown names come back under `missing`, never as a default of `null`. Roll20 doesn't document whether the getter is sync or async, so a thenable return is resolved rather than serialised as `{}`. |
 | `getRepeatingSection` | *(none)* | — | **read-only** (e.g. npcaction); row cap (maxRows default 60, `__truncated` flag); no field projection. Orphaned since tactics moved to the gem — the action still exists but no MCP tool calls it. |
 | `editCharacter` | set_character_props | combat | edit top-level character fields (name/bio/avatar/controlledby/archived/inplayerjournals) |
 | `batchExec` | batch_exec, update_hp_many, resolve_aoe, roll_initiative (HP seeding) | combat | runs N token actions in one relay round-trip |
@@ -258,8 +288,9 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `createCharacter` | create_character_stub | combat | `createObj('character')` stub; derives `<ability>_mod` from the raw score at creation (sheet workers never fire on API-created attrs) |
 | `sendPing` | send_ping | maps | "look here" / pull player view to a spot |
 | `spawnFx` / `spawnFxBetweenPoints` | spawn_fx, spawn_fx_between_points | maps | explosions, beams, spell nova |
-| `toFront` / `toBack` | to_front, to_back | maps | z-order |
-| `ping` | (health check) | — | reports relay version (2.8.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
+| `toFront` / `toBack` | to_front, to_back | maps | z-order (all-the-way front/back) |
+| `toAbove` / `toBelow` | to_above, to_below | maps | z-order **relative** to another object. **Sandbox v1.5 only** — refuses on v1.0 naming the version and the `toFront`/`toBack` fallback. Both objects must share a page **and** a layer (z-order is page- and layer-local; either mismatch is refused rather than reported as an `ok:true` no-op). **Maps server only**, matching `to_front`/`to_back` — z-order is map-prep work; a combat-side registration is a follow-up if the table ever needs it live. |
+| `ping` | (health check) | — | reports relay version (2.9.0); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
 | **event** `chat:message` | (passive) | — | buffers chat, parses `!dm`. Player `!`-commands are **forwarded, not answered** — `forwardChat` broadcasts them as an SSE `chat-message`; the gem decides what to do. |
 | **event** `change:campaign:turnorder` | (passive) | — | turn/round announcements |
 | **event** `add:graphic` | (passive) | — | auto-rolls initiative for NPC tokens dropped during combat |
@@ -308,6 +339,18 @@ Legend: ✅ exposed · 🟡 partial · ❌ API-reachable but **not exposed** (ad
 
 ### Strong (✅)
 - **Tokens/graphics** — full CRUD; `setTokenProps` passes arbitrary props (bars, auras, tint, light, position, layer, gmnotes…).
+  `set_token_props` validates the presentation/behaviour properties added in #204:
+  `bar{1,2,3}_num_permission` (`everyone` | `hidden` | `""` = editors only), `lockMovement`,
+  `renderAsScenery`, `baseOpacity` / `fadeOnOverlap` / `fadeOpacity`, `night_vision_effect`,
+  `bar_location` / `compact_bar`, `currentSide` (v1.5), `interactionManualReset` (an action —
+  `true` resets the object's interactions) / `interactionTriggered` (state Roll20 sets when the
+  interaction fires; read it back via `get_token`). NPC HP digits are editor-only by Roll20's
+  default (`""`; an NPC token has no controllers, so only the GM reads them) — the creation tools
+  write nothing unless `showHpNumbersToPlayers: true` opts a token into `"everyone"`.
+  **Anything a creation path sets must also appear in `setDefaultTokenForChar`'s KEYS list**
+  in `ai-relay.js`, or it is silently lost when the sheet's default token is applied. The two
+  interaction flags are deliberately excluded (a default token must not replay a reset).
+  Roll20 now also documents a **4th bar** (`bar4_*`); it is not yet exposed by any tool.
 - **HP & conditions** — token bars + status markers + char `active_conditions`; `batch_exec` for bulk; three-way PC / NPC / sidekick routing.
 - **Initiative / turn order** — read, merge, advance, real-dice roll, auto announcements, round detection, epithets, per-combatant `entries[{match,bonus,hp}]` overrides.
 - **Dice** — real Roll20 engine via inline rolls, plus `post_roll_as_character` for results rolled elsewhere.
@@ -319,7 +362,7 @@ Legend: ✅ exposed · 🟡 partial · ❌ API-reachable but **not exposed** (ad
 - **Art upload** — browserless multipart POST with a furnished credential.
 
 ### Partial (🟡)
-- **`pathv2` DL barriers** — *read* via `getWalls`; `createWalls` now *creates* native `pathv2` (falling back to legacy `path` only if `pathv2` returns undefined). `drawLayerTest` deliberately creates `path`.
+- **`pathv2` DL barriers** — *read* via `getWalls`; `createWalls` *creates* native `pathv2` only — no legacy-`path` fallback (#207); a `pathv2` miss throws and rolls back the walls that call already placed. `drawLayerTest` deliberately creates `path`.
 - **Door/window** — create/read/delete only; **no update** (open/close, lock, toggle secret) — all API-reachable.
 - **Repeating sections** — read only; **no write** (no row-id generation / `generateRowID` helper); read has a row cap (maxRows default 60, `__truncated` flag) but no field projection. Since tactics moved to the gem, `getRepeatingSection` has **no MCP tool calling it** — the relay action is live but unreachable from a tool. (Writing rows is also the `rollbase` minefield — see `CLAUDE.md`.)
 - **Page properties** — only name/size/scale/grid/bg; UDL lighting/fog/explorer-mode/grid-type/diagonal props not exposed (all API-reachable).
@@ -344,7 +387,10 @@ These are the "stop hitting the wall" items. None need the browser.
 ### Shipped since this doc's first draft (✅ — no longer gaps)
 - **Visual FX** — `spawnFx` / `spawnFxBetweenPoints` → `spawn_fx`, `spawn_fx_between_points`.
 - **Pings** — `sendPing` → `send_ping`.
-- **Z-order** — `toFront`/`toBack` → `to_front`, `to_back`.
+- **Z-order** — `toFront`/`toBack` → `to_front`, `to_back`; `toAbove`/`toBelow` → `to_above`,
+  `to_below` (relay 2.9.0, **sandbox v1.5 only**).
+- **Sheet defaults** — `getSheetDefaultValue` → `get_sheet_default_values` (relay 2.9.0), the
+  "unset vs. default" comparison `getCharacterAttributes` cannot make on its own.
 - **Handouts** — `createHandout` → `create_handout`.
 - **Character stubs** — `createCharacter` → `create_character_stub`.
 - **Token↔sheet default token** — `setDefaultTokenForCharacter` → `setDefaultToken` / `batch_exec`.
@@ -376,7 +422,7 @@ action**, and nothing here needs a browser.
 3. ~~**Handouts CRUD**~~ 🟡 partial — `create_handout` shipped; read/update/delete still missing.
 4. **`createToken represents`** — set `represents` on create (default-token linking exists; creation-time binding doesn't), so sheet HP/AC/abilities bind without a follow-up call. Now the highest-value item: with the DDB bridge gone, a bare token is the *only* stat carrier, and it can't hold AC.
 5. **Cards/decks** — `deck`/`card`/`hand` (e.g. the Tarokka deck for Curse of Strahd).
-6. **Door/window update** — open/close, lock, toggle secret. (`createWalls` already makes native `pathv2`, falling back to legacy `path` only when `createObj("pathv2")` returns undefined.)
+6. **Door/window update** — open/close, lock, toggle secret. (`createWalls` already makes native `pathv2`, with no legacy-`path` fallback — #207.)
 7. **Jukebox/audio + rollable tables** — ambiance and random tables.
 8. **Move the player ribbon** — `Campaign().set('playerpageid', id)`.
 
