@@ -323,7 +323,7 @@ export function registerCombatTools(server: McpServer): void {
       await roll20.relayCommand({ action: "toggleCondition", tokenId: resolvedTokenId, charId, condition: "unconscious", active: true });
 
       // Auto-cascade: going down breaks concentration implicitly (issue #135).
-      let teardown: { markerRemoved: boolean; auraCleared: boolean; zonesRemoved: { id: string; name: string }[] } | null = null;
+      let teardown: { markerRemoved: boolean; auraCleared: boolean; auraSlot?: number | null; zonesRemoved: { id: string; name: string }[] } | null = null;
       const markers = String(tok.statusmarkers || "").split(",");
       const wasConcentrating = markers.some((m) => m.startsWith("Concentrating::"));
       if (wasConcentrating) {
@@ -335,7 +335,7 @@ export function registerCombatTools(server: McpServer): void {
       }
 
       const cascadeNote = teardown
-        ? ` Concentration broken (was concentrating): aura cleared=${teardown.auraCleared}, zones removed=${teardown.zonesRemoved.map((z) => z.name).join(", ") || "none"}.`
+        ? ` Concentration broken (was concentrating): ${teardown.auraSlot ? `aura ${teardown.auraSlot} cleared=${teardown.auraCleared}` : "no aura owned"}, zones removed=${teardown.zonesRemoved.map((z) => z.name).join(", ") || "none"}.`
         : "";
       return text(
         `${characterName ?? resolvedTokenId} marked dying — prone + unconscious, stays on the token layer.${cascadeNote} Death saves are player-owned; call kill_token only on 3 failed saves.`
@@ -345,7 +345,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "break_concentration",
-    "Tear down a concentration effect on a token (issue #135): removes the Concentrating marker, zeroes its aura (aura1_radius=0), and deletes any zone whose duration is {type:'concentration', caster} linked to this token (zone metadata from issue #134). Returns what was torn down. Use when the DM declares the break directly ('she loses the spell', 'the guardians fade'), when a concentration save fails after damage (ask the DM a one-word question first per skills/dm-rules.md — don't call this unasked), or via the automatic cascade in set_pc_dying. Never call this on a 'Passed' concentration save.",
+    "Tear down a concentration effect on a token (issue #135): removes the Concentrating marker, zeroes the aura slot that effect OWNS (the slot recorded by set_token_aura concentration:true — slot 1 when nothing was recorded, issue #210), and deletes any zone whose duration is {type:'concentration', caster} linked to this token (zone metadata from issue #134). Returns what was torn down. Use when the DM declares the break directly ('she loses the spell', 'the guardians fade'), when a concentration save fails after damage (ask the DM a one-word question first per skills/dm-rules.md — don't call this unasked), or via the automatic cascade in set_pc_dying. Never call this on a 'Passed' concentration save.",
     {
       characterName: z.string().optional().describe("The concentrating token/character's name exactly as on the map, e.g. 'Glint'."),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
@@ -358,7 +358,7 @@ export function registerCombatTools(server: McpServer): void {
       }
       const tok = await roll20.relayCommand<{ name?: string } | null>({ action: "getTokenById", tokenId: resolvedTokenId });
       const casterRef = characterName ?? tok?.name ?? resolvedTokenId;
-      const result = await roll20.relayCommand<{ ok: boolean; markerRemoved: boolean; auraCleared: boolean; zonesRemoved: { id: string; name: string }[] }>({
+      const result = await roll20.relayCommand<{ ok: boolean; markerRemoved: boolean; auraCleared: boolean; auraSlot?: number | null; zonesRemoved: { id: string; name: string }[] }>({
         action: "breakConcentration",
         tokenId: resolvedTokenId,
         casterRef,
@@ -367,6 +367,9 @@ export function registerCombatTools(server: McpServer): void {
         target: characterName ?? resolvedTokenId,
         markerRemoved: result.markerRemoved,
         auraCleared: result.auraCleared,
+        // Which slot the teardown actually touched (#210): 1 unless the effect claimed slot 2;
+        // null when the claim had already been released, so no aura was touched.
+        auraSlot: result.auraSlot === undefined ? 1 : result.auraSlot,
         zonesRemoved: result.zonesRemoved,
       });
     }
@@ -1271,7 +1274,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "set_token_aura",
-    "Set or clear a token's aura — the table's visual for an EMANATION, i.e. an effect centred on a creature that MOVES WITH IT (Spirit Guardians, Aura of Protection, a dragon's Frightful Presence). A fixed area that stays where it was cast uses create_zone instead, never this. Auras are player-visible by default, because their whole job is showing the table where the effect reaches. Pass radiusFeet 0 to clear one. Slot 2 is a second, independent aura on the same token — use it for a creature carrying two overlapping effects rather than overwriting the first.",
+    "Set or clear a token's aura — the table's visual for an EMANATION, i.e. an effect centred on a creature that MOVES WITH IT (Spirit Guardians, Aura of Protection, a dragon's Frightful Presence). A fixed area that stays where it was cast uses create_zone instead, never this. Auras are player-visible by default, because their whole job is showing the table where the effect reaches. Pass radiusFeet 0 to clear one. Slot 2 is a second, independent aura on the same token — use it for a creature carrying two overlapping effects rather than overwriting the first. Pass concentration:true when the aura IS the visual for a concentration spell — that records which slot the spell owns, so break_concentration (and the set_pc_dying cascade) tears down THAT ring instead of assuming slot 1 (issue #210), exactly as a concentration zone records its caster.",
     {
       characterName: z.string().optional().describe("Target token/character name exactly as on the map, e.g. 'Brie Mossfrond'."),
       tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName lookup."),
@@ -1280,38 +1283,29 @@ export function registerCombatTools(server: McpServer): void {
       color: z.string().optional().describe("Aura color as #hex, e.g. '#cc0000'. Left alone when omitted, so re-radiusing an existing aura keeps its color."),
       shape: z.string().optional().describe("Aura shape. Roll20 documents 'circle' (default) and 'square'; the 2026-09-01 release added hex and outline-only (border) variants whose property strings are not yet documented — passed through verbatim."),
       visibleToPlayers: z.boolean().default(true).describe("Show the aura to players. Defaults true — an emanation the table cannot see defeats the point."),
+      concentration: z.boolean().default(false).describe("true = this aura is the visual for a CONCENTRATION spell, so the slot is recorded as owned by that concentration effect and break_concentration tears down this slot specifically (issue #210). Leave false for an aura that is not concentration (a permanent light ring, Aura of Protection, a marching-order marker) — that also RELEASES the slot if a concentration effect had claimed it."),
     },
-    async ({ characterName, tokenId, radiusFeet, slot, color, shape, visibleToPlayers }) => {
+    async ({ characterName, tokenId, radiusFeet, slot, color, shape, visibleToPlayers, concentration }) => {
       let resolvedTokenId = tokenId;
       if (!resolvedTokenId) {
         if (!characterName) throw new Error("Provide characterName or tokenId");
         resolvedTokenId = await resolveTokenOrThrow(characterName);
       }
-      const props: Record<string, unknown> = { [`aura${slot}_radius`]: radiusFeet };
-      // Clearing is radius-only on purpose: colour and shape survive, so the next cast of the same
-      // effect on the same creature comes back looking the way the DM set it up.
-      // NB break_concentration tears down aura slot 1 ONLY, so a concentration effect parked on
-      // slot 2 currently outlives its own teardown — issue #210.
-      if (radiusFeet > 0) {
-        if (color) props[`aura${slot}_color`] = color;
-        if (shape) {
-          // aura{n}_options is the authoritative shape field and Roll20 documents the legacy
-          // aura{n}_square boolean as "kept in sync" with it. That sync is Roll20's claim, not
-          // something verified here, and a graphic silently DROPS a property it doesn't recognise
-          // (the #162/#164 class) — so for the two shapes the boolean can express, write it too.
-          // They mean the same thing, so this is belt-and-braces, not two sources of truth. Shapes
-          // the boolean cannot express (hex, the border-only variants) go through options alone.
-          props[`aura${slot}_options`] = shape;
-          if (shape === "square") props[`aura${slot}_square`] = true;
-          else if (shape === "circle") props[`aura${slot}_square`] = false;
-        }
-        props[`showplayers_aura${slot}`] = visibleToPlayers;
-      }
-      await roll20.relayCommand({ action: "setTokenProps", tokenId: resolvedTokenId, props });
+      // The relay owns the whole write (setTokenAura): radius/colour/shape/visibility AND the
+      // record of which slot a concentration effect owns, in one atomic step. Clearing is
+      // radius-only on purpose: colour and shape survive, so the next cast of the same effect on
+      // the same creature comes back looking the way the DM set it up.
+      await roll20.relayCommand({
+        action: "setTokenAura",
+        tokenId: resolvedTokenId,
+        slot, radiusFeet, color, shape,
+        visibleToPlayers,
+        concentration,
+      });
       const who = characterName ?? resolvedTokenId;
       return text(
         radiusFeet > 0
-          ? `Aura ${slot} on ${who}: ${radiusFeet} ft${shape ? `, ${shape}` : ""}${color ? `, ${color}` : ""}, ${visibleToPlayers ? "visible to players" : "GM-only"}. It moves with the token — clear it with radiusFeet 0 when the effect ends.${slot === 2 ? " NOTE: break_concentration only tears down slot 1 (#210), so a concentration effect on slot 2 must be cleared by hand." : ""}`
+          ? `Aura ${slot} on ${who}: ${radiusFeet} ft${shape ? `, ${shape}` : ""}${color ? `, ${color}` : ""}, ${visibleToPlayers ? "visible to players" : "GM-only"}. It moves with the token — clear it with radiusFeet 0 when the effect ends.${concentration ? ` Slot ${slot} is recorded as this concentration effect's, so break_concentration will tear it down.` : ""}`
           : `Aura ${slot} cleared on ${who}.`
       );
     }
@@ -1329,7 +1323,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "find_tokens_in_range",
-    "Find all Roll20 tokens within radiusFeet of a center token. Use for AoE targeting — find who's in range of a spell or effect. Returns token names, HP, layer, and distance sorted nearest-first. After targeting, place a visual marker with set_token_props (aura1_radius + aura1_color) on the caster and create_zone to track the persistent AoE area.",
+    "Find all Roll20 tokens within radiusFeet of a center token. Use for AoE targeting — find who's in range of a spell or effect. Returns token names, HP, layer, and distance sorted nearest-first. After targeting, show an emanation that moves with the caster with set_token_aura (concentration:true when it is a concentration spell), or a fixed persistent area with create_zone.",
     {
       centerTokenId: z.string().describe("Roll20 token ID of the caster / effect origin"),
       radiusFeet: z.number().describe("Effect radius in feet, e.g. 15 for Spiritual Guardians, 20 for Fireball"),
@@ -1374,8 +1368,13 @@ export function registerCombatTools(server: McpServer): void {
       healing: z.boolean().default(false).describe("true = restore HP instead of dealing it. The formula/flat amount is applied as POSITIVE HP to every resolved target (PCs route through adjustPcHp; NPCs write bar1). No saving throws, no conditions; downed creatures ARE included so you can heal them up. Use targetNames to hand-pick the allies you're healing (e.g. Mass Cure Wounds)."),
       halfOnSave: z.boolean().default(true).describe("true = save takes half (Fireball); false = save negates"),
       onFailCondition: z.string().optional().describe("Condition applied to NPCs that FAIL, e.g. 'restrained', 'prone'"),
-      draw: z.enum(["zone", "aura", "none"]).default("zone").describe("Visual for the area: 'zone' (default) draws a circle on the map at the blast point — clear with clear_zone when it ends; 'aura' (token-centered mode only) sets a player-visible aura on the center token instead — right for emanations like Spirit Guardians that move with the caster; 'none' skips the visual. Ignored for zoneName/targetNames modes (nothing new to draw)."),
+      draw: z.enum(["zone", "aura", "none"]).default("zone").describe("Visual for the area: 'zone' (default) draws a circle on the map at the blast point — clear with clear_zone when it ends; 'aura' (token-centered mode only) sets a player-visible aura on the center token instead — right for emanations like Spirit Guardians that move with the caster (pass auraConcentration:true for concentration emanations — Spirit Guardians, Moonbeam… — so a break tears the ring down); 'none' skips the visual. Ignored for zoneName/targetNames modes (nothing new to draw)."),
       color: z.string().default("#cc0000").describe("Zone/aura color as #hex"),
+      // draw:"aura" goes through the same relay action as set_token_aura, so an AoE-placed aura and
+      // a hand-placed one are the same object with the same lifecycle (issue #210).
+      auraSlot: z.union([z.literal(1), z.literal(2)]).default(1).describe("draw:'aura' only — which of the center token's two aura slots to use. Default 1. Use 2 when the caster already carries an unrelated aura on slot 1 rather than overwriting it."),
+      auraShape: z.string().optional().describe("draw:'aura' only — aura shape, same values as set_token_aura ('circle' default, 'square', and the undocumented hex/outline variants passed through verbatim)."),
+      auraConcentration: z.boolean().default(false).describe("draw:'aura' only — true when the emanation is a CONCENTRATION spell (Spirit Guardians, Moonbeam): records the slot as owned by that concentration effect so break_concentration tears down this exact aura (issue #210)."),
       dryRun: z.boolean().default(false).describe("Preview targets only — no rolls, no damage (atPing still draws its zone so you can see the spot)"),
       pageId: z.string().optional(),
     },
@@ -1455,10 +1454,12 @@ export function registerCombatTools(server: McpServer): void {
           drawNote = `Zone '${zone.name}' drawn at ${center.name}'s position — clear_zone when the effect ends.`;
         } else if (args.draw === "aura" && !args.dryRun) {
           await roll20.relayCommand({
-            action: "setTokenProps", tokenId: centerId,
-            props: { aura1_radius: args.radiusFeet, aura1_color: args.color, showplayers_aura1: true },
+            action: "setTokenAura", tokenId: centerId,
+            slot: args.auraSlot, radiusFeet: args.radiusFeet, color: args.color,
+            shape: args.auraShape, visibleToPlayers: true,
+            concentration: args.auraConcentration,
           });
-          drawNote = `Aura set on ${center?.name ?? "the center token"} (moves with the token) — clear with set_token_props aura1_radius 0.`;
+          drawNote = `Aura ${args.auraSlot} set on ${center?.name ?? "the center token"} (moves with the token) — clear with set_token_aura radiusFeet 0${args.auraConcentration ? ", or let break_concentration tear it down" : ""}.`;
         }
       } else {
         throw new Error("Target via atPing, centerTokenName/centerTokenId + radiusFeet, zoneName/zoneId, or targetNames");

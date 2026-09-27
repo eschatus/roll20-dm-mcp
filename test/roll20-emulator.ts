@@ -530,6 +530,17 @@ export class Roll20Emulator {
       left: t.get("left"),
       top: t.get("top"),
       aura1_radius: t.get("aura1_radius"),
+      // Both aura slots (plus shape/visibility) are readable here because the concentration
+      // teardown has to pick the RIGHT slot (issue #210) — a test can only prove that if it can
+      // see slot 2 as well as slot 1.
+      aura1_options: t.get("aura1_options"),
+      aura1_square: t.get("aura1_square"),
+      showplayers_aura1: t.get("showplayers_aura1"),
+      aura2_radius: t.get("aura2_radius"),
+      aura2_color: t.get("aura2_color"),
+      aura2_options: t.get("aura2_options"),
+      aura2_square: t.get("aura2_square"),
+      showplayers_aura2: t.get("showplayers_aura2"),
       represents: t.get("represents"),
       gmnotes: t.get("gmnotes"),
       // PC/NPC/sidekick HP + death routing keys off this (isPcToken), so a test must
