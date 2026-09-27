@@ -19,8 +19,9 @@
 // READBACK IS OFF RTDB, NOT OVER CHAT. `rollbase` is a macro template full of literal `@{` and
 // `[[`; Roll20 live-evaluates those on every outgoing chat message and a malformed one disables
 // the whole Mod sandbox asynchronously. Relay >= 2.7.0 percent-encodes its result payload, which
-// makes the chat path structurally safe again — but reading the RTDB `char-blobs` node never
-// touches chat at all, so that is what this uses. Do not "simplify" it to
+// makes the chat path structurally safe again — but reading the RTDB `char-attribs/char/<id>`
+// node never touches chat at all, so that is what this uses (`char-blobs/<id>` holds only
+// bio/defaulttoken/gmnotes — probed live in #230). Do not "simplify" it to
 // getCharacterAttributes.
 // ─────────────────────────────────────────────────────────────────────────────
 import { relayCommand } from "../bridge/roll20.js";
@@ -77,18 +78,19 @@ type SetAttrsResult = {
 
 type Attr = { name?: string; current?: unknown; max?: unknown };
 
+/** The RTDB node that holds a character's attribute records (#230, probed live 2026-09-27). */
+const attribsNode = (charId: string) => `char-attribs/char/${charId}`;
+
 /**
- * Read every attribute off the RTDB char-blob, keyed by LOWER-CASED name — Roll20 folds attribute
- * names case-insensitively, so a minted mixed-case row id may read back in another case.
- * Chat-free, so a rollbase value is harmless.
+ * Read every attribute off `char-attribs/char/<id>`, keyed by LOWER-CASED name — Roll20 folds
+ * attribute names case-insensitively, so a minted mixed-case row id may read back in another
+ * case. Records are `{ id, name, current?, max? }` keyed by their own id; an unset `current` is
+ * omitted, not stored as "". Chat-free, so a rollbase value is harmless.
  */
 async function readAttrs(charId: string): Promise<Map<string, Attr>> {
-  const blob = await rtGet<Record<string, unknown>>(`char-blobs/${charId}`).catch(() => null);
-  const raw = (blob?.attribs ?? blob?.attributes) as Record<string, Attr> | undefined;
+  const raw = await rtGet<Record<string, Attr>>(attribsNode(charId)).catch(() => null);
   const out = new Map<string, Attr>();
   for (const [key, a] of Object.entries(raw ?? {})) {
-    // The node is keyed by attribute id and each entry carries its own `name`; fall back to the
-    // key if this campaign's backend shape differs (the schema was probed, not documented).
     out.set(String(a?.name ?? key).toLowerCase(), a ?? {});
   }
   return out;
@@ -156,8 +158,8 @@ async function main() {
 
     const attrs = await readAttrs(charId);
     if (attrs.size === 0) {
-      throw new Error("RTDB readback returned no attributes — cannot judge. Check char-blobs "
-        + `shape for this campaign (src/recon/rtdb-schema.ts) and inspect ${charId} by hand.`);
+      throw new Error(`RTDB readback of ${attribsNode(charId)} returned no attributes — cannot judge. `
+        + `Inspect the node by hand (rerun with --keep); see #230 for the probed shape.`);
     }
 
     // ── Precondition: did the INPUT writes land? ─────────────────────────────
@@ -234,7 +236,7 @@ async function main() {
         : "\n→ NEGATIVE (or partial). Record this in docs/roll20-api-coverage.md under #206 with the\n"
           + "  relay/sandbox/sheet versions printed above, and KEEP both workarounds."
     );
-    console.error("\nReproduce the readback by hand: rtGet(`char-blobs/" + charId + "`)");
+    console.error("\nReproduce the readback by hand: rtGet(`" + attribsNode(charId) + "`)");
   } finally {
     if (KEEP) {
       console.error(`\n--keep: scratch character ${charId} left in place.`);

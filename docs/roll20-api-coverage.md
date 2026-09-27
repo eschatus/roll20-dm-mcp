@@ -128,8 +128,10 @@ Persistent storage: the global **`state`** object (survives sandbox restarts).
   carries the action. It writes ability scores and one `repeating_npcaction` row (under a minted
   push-style row id — `$0` cannot address a row on a character that has none) through `setAttrs`,
   waits, verifies every input read back before judging anything (otherwise INCONCLUSIVE), and
-  reads back **off RTDB (`char-blobs/<id>`), never over chat** — `rollbase` is full of literal
-  `@{`/`[[`. Whether `char-blobs/<id>` actually carries attribs is itself open (#230). (The issue
+  reads back **off RTDB (`char-attribs/char/<id>`), never over chat** — `rollbase` is full of
+  literal `@{`/`[[`. That node holds one `{ id, name, current?, max? }` record per attribute,
+  repeating rows flat as `repeating_<section>_<rowId>_<field>`, and push ids may contain `_`
+  (probed live in #230; `char-blobs/<id>` is only bio/defaulttoken/gmnotes). (The issue
   suggested `scripts/dump-character-attrs.ts` for the readback; that script imports Playwright, which this repo has not depended on since #179, so the RTDB path replaces it.)
   Record the outcome HERE when it is known, positive or negative, so nobody re-spikes it:
   - positive → route `createCharacter`/`setCharacterAttributes` through `setAttrs`, delete the
