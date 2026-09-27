@@ -304,17 +304,55 @@ describe("performAction — triggering a Beacon sheet action", () => {
     });
   });
 
-  it("says when a name is not a Beacon action but a same-named ability exists for Roll20 to fall back to", async () => {
+  it("refuses the same-named ability fallback unless the caller opts in — it is a chat macro outside chatSend()", async () => {
+    emu.installSheetCarriers({ computed: { ac: 17 }, actions: ["attack.claw"] });
+    emu.createObj("ability", { characterid: charId, name: "Bite", action: "/r 1d6" });
+    await expect(emu.relayAsync({ action: "performAction", charId, actionName: "Bite" }))
+      .rejects.toThrow(/matches character ability .* Pass allowAbilityFallback:true/);
+    expect(callsTo("performAction")).toEqual([]);
+  });
+
+  it("invokes the ability fallback when explicitly allowed, and says so", async () => {
     // The fallback is ROLL20'S, not ours — firing our own sendChat here would double-trigger the
     // ability. All the relay can honestly do is check the ability exists and flag the path taken.
     emu.installSheetCarriers({ computed: { ac: 17 }, actions: ["attack.claw"] });
-    emu.createObj("ability", { characterid: charId, name: "Bite", action: "/r 1d6" });
-    const r = await emu.relayAsync<{ known: boolean; abilityFallback: boolean; note: string }>({
-      action: "performAction", charId, actionName: "Bite",
+    const abilityId = emu.createObj("ability", { characterid: charId, name: "Bite", action: "/r 1d6" }).id;
+    const r = await emu.relayAsync<{ known: boolean; abilityFallback: boolean; abilityId: string; note: string }>({
+      action: "performAction", charId, actionName: "Bite", allowAbilityFallback: true,
     });
     expect(r.known).toBe(false);
     expect(r.abilityFallback).toBe(true);
+    expect(r.abilityId).toBe(abilityId);
     expect(r.note).toMatch(/fell back to the character ability/);
+    expect(callsTo("performAction")).toHaveLength(1);
+  });
+
+  it("lets a call through with known:null when actionSummary has entries whose names it cannot read", async () => {
+    // Refusing here would refuse EVERY real action on a sheet whose summary shape we have not seen.
+    emu.installSheetCarriers({ computed: { ac: 17 }, actions: ["attack.claw"] });
+    (emu.campaignModel as unknown as Record<string, unknown>).actionSummary = [{ id: 7 }, { id: 8 }];
+    const r = await emu.relayAsync<{ ok: boolean; known: boolean | null; abilityFallback: boolean; note: string }>({
+      action: "performAction", charId, actionName: "Bite",
+    });
+    expect(r.ok).toBe(true);
+    expect(r.known).toBeNull();
+    expect(r.abilityFallback).toBe(false);
+    expect(r.note).toMatch(/could not check/);
+    expect(callsTo("performAction")).toHaveLength(1);
+  });
+
+  it("does not fire twice when the same nonce is resent while the first call is still in flight", async () => {
+    emu.installSheetCarriers({ computed: { ac: 17 }, actions: ["attack.claw"] });
+    const nonce = 515151;
+    const cmd = { action: "performAction", charId, actionName: "attack.claw" };
+    emu.relayWithNonce(cmd, nonce);
+    const replay = emu.relayWithNonce(cmd, nonce);
+    expect(replay.error).toMatch(/still in flight/);
+    expect(callsTo("performAction")).toHaveLength(1);
+    await new Promise((resolve) => setImmediate(resolve));
+    // The original's settlement still wins the nonce: the replay did not poison the record.
+    expect((emu.resultFor(nonce)?.data as { ok: boolean }).ok).toBe(true);
+    expect(emu.relayWithNonce(cmd, nonce).data).toEqual(emu.resultFor(nonce)?.data);
     expect(callsTo("performAction")).toHaveLength(1);
   });
 
@@ -351,6 +389,23 @@ describe("a carrier that never settles", () => {
 
     await vi.advanceTimersByTimeAsync(6000);
     expect(e.resultFor(nonce)?.error).toMatch(/getSheetItem: no result after 6000ms/);
+    // A timeout is not a failure report: the write may still land, so the caller is told to read back.
+    expect(e.resultFor(nonce)?.error).toMatch(/may still land.*read the property back/);
+  });
+
+  it("clears its timer once the carrier settles, so nothing fires later against a finished nonce", async () => {
+    vi.useFakeTimers();
+    const e = new Roll20Emulator({ seed: 205 });
+    e.load();
+    const id = e.createCharacter("Prompt", {}, "");
+    e.installSheetCarriers({ computed: { ac: 17 } });
+    expect(vi.getTimerCount()).toBe(0);
+    const nonce = 434343;
+    e.relayWithNonce({ action: "getSheetItem", charId: id, property: "ac" }, nonce);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(e.resultFor(nonce)?.data).toMatchObject({ values: { ac: 17 } });
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
@@ -424,6 +479,13 @@ describe("MCP tools over the carriers", () => {
 
     await expect(h.callTool("perform_sheet_action", { charSheetId: sheetId, actionName: "Bite" }))
       .rejects.toThrow(/not in Campaign\(\)\.actionSummary and the character has no ability/);
+
+    h.emu.createObj("ability", { characterid: sheetId, name: "Bite", action: "/r 1d6" });
+    await expect(h.callTool("perform_sheet_action", { charSheetId: sheetId, actionName: "Bite" }))
+      .rejects.toThrow(/allowAbilityFallback:true/);
+    const fallback = await h.callTool("perform_sheet_action", { charSheetId: sheetId, actionName: "Bite", allowAbilityFallback: true });
+    expect(fallback.isError).toBe(false);
+    expect((fallback.json as { known: boolean; abilityFallback: boolean })).toMatchObject({ known: false, abilityFallback: true });
   });
 
   it("set_computed_property carries the read-back that is its only evidence", async () => {

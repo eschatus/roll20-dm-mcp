@@ -21,6 +21,9 @@ import { isPcToken } from "../src/tools/aoe.js";
 let emu: Roll20Emulator;
 let server: FakeMcpServer;
 let pageId: string;
+// Every relay action the tools send, in order — lets a test prove a follow-up write
+// did NOT happen, not merely that the emulator's field happens to look unset.
+const relayActions: string[] = [];
 
 async function callTool(name: string, args: Record<string, unknown> = {}) {
   const entry = server.handlers.get(name);
@@ -41,7 +44,10 @@ beforeAll(() => {
   emu = new Roll20Emulator({ seed: 171 });
   emu.load();
   roll20.__setBridgeTestTransport({
-    relay: <T>(cmd: Record<string, unknown>) => Promise.resolve(emu.relay<T>(cmd)),
+    relay: <T>(cmd: Record<string, unknown>) => {
+      relayActions.push(String(cmd.action));
+      return Promise.resolve(emu.relay<T>(cmd));
+    },
     evaluate: <T>(fn: (args?: unknown) => T, args?: unknown) => {
       (globalThis as unknown as { window: unknown }).window = { Campaign: emu.campaignModel };
       return Promise.resolve(fn(args));
@@ -129,5 +135,52 @@ describe("create_npc_token / create_monster_token — caller-supplied stats", ()
     const id = idFrom(text);
     expect(Number(props(id).left)).toBe(3 * 70);
     expect(Number(props(id).top)).toBe(4 * 70);
+  });
+});
+
+// ── HP digits: Roll20's default unless the DM opts in (#204) ──────────────────
+// Roll20's default bar1_num_permission ("") already limits the number to the token's
+// editors (GM + controllers), and an NPC token has no controllers — so players can't read
+// it without any write from us. Writing "hidden" protected nothing and could hide the GM's
+// own digits. The tools therefore write NOTHING by default (no follow-up relay round-trip)
+// and only opt a token into "everyone" when asked.
+describe("create_npc_token / create_monster_token — bar1_num_permission", () => {
+  const numPermission = (id: string) => emu.getObj("graphic", id)!.get("bar1_num_permission");
+
+  it("writes nothing by default — createToken only, no follow-up setTokenProps", async () => {
+    relayActions.length = 0;
+    const { text } = await callTool("create_npc_token", { name: "Quiet Ogre", hp: 59, pageId });
+    expect(relayActions.filter((a) => a === "setTokenProps")).toEqual([]);
+    expect(relayActions).toContain("createToken");
+    const v = numPermission(idFrom(text));
+    expect(v === undefined || v === "").toBe(true);
+    expect(text).toMatch(/HP numbers editor-only \(Roll20 default\)/);
+  });
+
+  it("sets 'everyone' when the DM explicitly asks", async () => {
+    const { text } = await callTool("create_npc_token", {
+      name: "Open Book", hp: 12, pageId, showHpNumbersToPlayers: true,
+    });
+    expect(numPermission(idFrom(text))).toBe("everyone");
+    expect(text).toMatch(/HP numbers visible to everyone/);
+  });
+
+  it("create_monster_token behaves the same: nothing by default, 'everyone' on opt-in", async () => {
+    relayActions.length = 0;
+    const quiet = await callTool("create_monster_token", { monsterName: "Owlbear", hp: 59, pageId });
+    expect(relayActions.filter((a) => a === "setTokenProps")).toEqual([]);
+    const v = numPermission(idFrom(quiet.text));
+    expect(v === undefined || v === "").toBe(true);
+
+    const open = await callTool("create_monster_token", {
+      monsterName: "Glass Owlbear", hp: 59, pageId, showHpNumbersToPlayers: true,
+    });
+    expect(numPermission(idFrom(open.text))).toBe("everyone");
+  });
+
+  it("leaves a PC token's permission alone — only controlledby is written", async () => {
+    const { text } = await callTool("create_pc_token", { name: "Numeric", hp: 30, pageId, controlledBy: "player-n" });
+    const v = numPermission(idFrom(text));
+    expect(v === undefined || v === "").toBe(true);
   });
 });

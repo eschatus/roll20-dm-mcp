@@ -6,10 +6,13 @@ import { fail, failJson, json, resolveCharSheetId } from "./combatHelpers.js";
 // ─────────────────────────────────────────────────────────────────────────────
 // Beacon character sheet access (Mod Script Sandbox v1.5) — issue #205.
 //
-// A Beacon ("advanced") sheet keeps character data in COMPUTED PROPERTIES rather than `attribute`
-// objects, so get_character_attribute / set_character_attribute cannot see or reach any of it —
+// A Beacon ("advanced") sheet keeps SOME of its character data in COMPUTED PROPERTIES rather than
+// `attribute` objects. Data held that way is not reachable as an attribute — `findObjs` never sees
+// it and an attribute write aimed at it is created, unread, and looks successful — so
 // set_character_attribute refuses such a write rather than reporting a success that did nothing.
-// These are the carriers that DO reach it:
+// It is NOT true that attributes are dead on a Beacon sheet: a live spike (#225) saw `setAttrs`
+// write attributes, fire sheet workers and materialise `rollbase`/`attack_onhit` on a sandbox 1.5
+// ogl5e campaign. These are the carriers that reach the computed-property side:
 //
 //   get_sheet_item / set_sheet_item   — work on BOTH sandbox versions (on v1.0 they wrap
 //                                       attributes), so they are the version-agnostic pair and the
@@ -31,7 +34,7 @@ const valtypeSchema = z.enum(["current", "max"]).optional()
 export function registerSheetTools(server: McpServer): void {
   server.tool(
     "get_sheet_summary",
-    "What this campaign's character sheet actually offers: the Mod Script Sandbox version, the sheet name, whether it is a Beacon ('advanced') sheet, the list of Beacon COMPUTED PROPERTY names (usable with get/set_computed_property and get/set_sheet_item), the list of Beacon ACTION names (usable with perform_sheet_action), and which carrier functions exist in the sandbox. Call this FIRST when a character read or write comes back empty or refused — on a Beacon sheet the attribute tools cannot see the data at all.",
+    "What this campaign's character sheet actually offers: the Mod Script Sandbox version, the sheet name, whether it is a Beacon ('advanced') sheet, the list of Beacon COMPUTED PROPERTY names (usable with get/set_computed_property and get/set_sheet_item), the list of Beacon ACTION names (usable with perform_sheet_action), and which carrier functions exist in the sandbox. Call this FIRST when a character read or write comes back empty or refused — on a Beacon sheet, data held in computed properties is not reachable through the attribute tools (attributes still exist there; the computed side is simply a different store).",
     {},
     async () => {
       const r = await roll20.relayCommand<{
@@ -144,20 +147,21 @@ export function registerSheetTools(server: McpServer): void {
 
   server.tool(
     "perform_sheet_action",
-    "Run a Beacon sheet ACTION on a character — this is how a monster's attack is triggered on a Beacon sheet, where the repeating_npcaction attributes do not exist (Mod Script Sandbox v1.5 only). List the available names with get_sheet_summary. The roll lands in Roll20 chat; the tool result reports that the sheet accepted the call, not what it rolled. If the name is not a Beacon action, Roll20 falls back to invoking a character ability of that name — the result flags that with known:false and abilityFallback:true. If neither exists the call is refused rather than dispatched to nowhere.",
+    "Run a Beacon sheet ACTION on a character — this is how a monster's attack is triggered on a Beacon sheet, where the repeating_npcaction attributes do not exist (Mod Script Sandbox v1.5 only). List the available names with get_sheet_summary. The roll lands in Roll20 chat; the tool result reports that the sheet accepted the call, not what it rolled. `known` in the result: true = the name is in the sheet's action list; null = the sheet lists actions but their names could not be read, so the call went through unverified (check chat); false = not a Beacon action. In the false case Roll20 falls back to running a character ABILITY of that name as a chat macro — that is a sendChat outside the relay's chat-safety chokepoint, so it is REFUSED unless you pass allowAbilityFallback:true, and the result then flags abilityFallback:true. If neither an action nor an ability exists the call is refused rather than dispatched to nowhere.",
     {
       actionName: z.string().describe("Beacon action name, as listed by get_sheet_summary"),
       args: z.record(z.string(), z.unknown()).optional().describe("Beacon's args payload for this action, if it takes one"),
       playerId: z.string().optional().describe("Roll20 player id to attribute the action to. Defaults to the GM running the relay."),
+      allowAbilityFallback: z.boolean().optional().describe("Explicitly permit Roll20's fallback to a same-named character ABILITY when actionName is not a Beacon action. The ability runs as a chat macro through Roll20's own sendChat; without this flag such a call is refused."),
       characterName: z.string().optional(),
       charSheetId: z.string().optional(),
     },
-    async ({ actionName, args, playerId, characterName, charSheetId }) => {
+    async ({ actionName, args, playerId, allowAbilityFallback, characterName, charSheetId }) => {
       const charId = await resolveCharSheetId(characterName, charSheetId);
       const r = await roll20.relayCommand<{
-        ok: boolean; action: string; known: boolean; abilityFallback: boolean; abilityId?: string;
+        ok: boolean; action: string; known: boolean | null; abilityFallback: boolean; abilityId?: string;
         note: string; sheet: SheetStamp;
-      }>({ action: "performAction", charId, actionName, args, playerId });
+      }>({ action: "performAction", charId, actionName, args, playerId, allowAbilityFallback });
       return json({ charSheetId: charId, ...r });
     }
   );

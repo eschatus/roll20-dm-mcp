@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.9.0";
+var AI_RELAY_VERSION = "2.10.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -16,6 +16,12 @@ function writeResult(nonce, data, error) {
   // Remember this nonce's outcome so a replayed (same-nonce) command echoes it
   // instead of re-running a mutating action. recordNonceResult is hoisted.
   recordNonceResult(nonce, error ? undefined : data, error ? String(error) : undefined);
+  emitResult(nonce, data, error);
+}
+
+// The wire half of writeResult: whisper a result WITHOUT recording it against the nonce. Used
+// directly only by the in-flight replay, where the pending marker must survive the whisper.
+function emitResult(nonce, data, error) {
   const payload = error
     ? JSON.stringify({ nonce, error: String(error) })
     : JSON.stringify({ nonce, data });
@@ -145,9 +151,10 @@ function sheetContext() {
     sandbox: c.sandboxVersion || null,
     node: c.nodeVersion || null,
     sheetName: c.sheetName || null,
-    // A Beacon ("advanced") character sheet keeps its data in computed properties rather than
-    // `attribute` objects, so the attribute-object read/write path in this script cannot see or
-    // reach any of it. setCharacterAttributes uses this to refuse a write it cannot land.
+    // A Beacon ("advanced") character sheet keeps SOME of its data in computed properties rather
+    // than `attribute` objects; data held that way is not reachable through the attribute-object
+    // read/write path in this script (attributes as such still work there — see #225).
+    // setCharacterAttributes uses this to refuse a write it cannot land.
     beacon: computedSummary.rawCount > 0,
     computed: computed,
     // A Beacon sheet whose property names we could not extract: we know attribute writes are
@@ -156,6 +163,9 @@ function sheetContext() {
     // Beacon sheet ACTIONS (performAction names). Enumerated the same way and reported by
     // getSheetSummary; nothing gates on it, so an unreadable actionSummary is just an empty list.
     actions: actionSummary.names,
+    // actionSummary has entries but none yielded a name: performAction cannot tell a real action
+    // from a typo here, so it passes the call through with known:null instead of refusing them all.
+    actionsUnreadable: actionSummary.rawCount > 0 && actionSummary.names.length === 0,
   };
 }
 
@@ -182,8 +192,14 @@ function errText(e) {
 
 function settleSheetAsync(nonce, label, promise, mapValue) {
   var done = false;
-  function ok(v) { if (done) return; done = true; writeResult(nonce, v); }
-  function bad(e) { if (done) return; done = true; writeResult(nonce, undefined, label + ": " + errText(e)); }
+  var timer = null;
+  // The nonce is marked in flight BEFORE the promise settles: recordNonceResult otherwise only
+  // runs from writeResult, so a same-nonce resend arriving mid-flight would find no record and
+  // invoke the carrier a second time — two attacks from one performAction.
+  markNoncePending(nonce);
+  function finish() { done = true; if (timer !== null) { clearTimeout(timer); timer = null; } }
+  function ok(v) { if (done) return; finish(); writeResult(nonce, v); }
+  function bad(e) { if (done) return; finish(); writeResult(nonce, undefined, label + ": " + errText(e)); }
   try {
     Promise.resolve(promise).then(function (value) {
       var out;
@@ -192,11 +208,13 @@ function settleSheetAsync(nonce, label, promise, mapValue) {
       ok(out);
     }, bad);
   } catch (e) { bad(e); return; }
-  setTimeout(function () {
+  if (done) return;
+  timer = setTimeout(function () {
     if (done) return;
-    done = true;
+    finish();
     writeResult(nonce, undefined, label + ": no result after " + SHEET_ASYNC_TIMEOUT_MS +
-      "ms — the sheet carrier never settled");
+      "ms — the sheet carrier never settled. This is NOT evidence the call failed: a write may " +
+      "still land after this timeout, so read the property back before retrying.");
   }, SHEET_ASYNC_TIMEOUT_MS);
 }
 
@@ -249,6 +267,19 @@ function recordNonceResult(nonce, data, error) {
   var key = String(nonce);
   if (!(key in PROCESSED_NONCES)) PROCESSED_ORDER.push(key);
   PROCESSED_NONCES[key] = { data: data, error: error };
+  while (PROCESSED_ORDER.length > PROCESSED_MAX) {
+    delete PROCESSED_NONCES[PROCESSED_ORDER.shift()];
+  }
+}
+// An async action's nonce is claimed the moment it is dispatched. Until its result lands the entry
+// carries `pending`, and the dispatcher answers a same-nonce resend with an in-flight error instead
+// of running the action again. writeResult later overwrites the entry with the real outcome.
+function markNoncePending(nonce) {
+  if (nonce == null) return;
+  var key = String(nonce);
+  if (key in PROCESSED_NONCES) return;
+  PROCESSED_ORDER.push(key);
+  PROCESSED_NONCES[key] = { pending: true };
   while (PROCESSED_ORDER.length > PROCESSED_MAX) {
     delete PROCESSED_NONCES[PROCESSED_ORDER.shift()];
   }
@@ -336,6 +367,18 @@ function tokenRich(t) {
     if (p[0] === "rotation" && v === 0) return;
     s[p[0]] = v;
   });
+  // Properties where "" and false are real settings ("" = editors-only bar numbers,
+  // false = movement unlocked / no overlap fade), so they are reported whenever set.
+  [
+    "bar1_num_permission", "bar2_num_permission", "bar3_num_permission",
+    "bar_location", "compact_bar", "night_vision_effect",
+    "lockMovement", "renderAsScenery", "baseOpacity", "fadeOnOverlap", "fadeOpacity",
+    "sides", "currentSide", "interactionManualReset", "interactionTriggered",
+  ].forEach(function(k) {
+    var v = t.get(k);
+    if (v === null || v === undefined) return;
+    s[k] = v;
+  });
   return s;
 }
 
@@ -371,6 +414,29 @@ function cleanChat(raw) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 240);                               // cleaned text is dense; 240 >> 600 raw
+}
+
+// Why a createObj("pathv2") came back undefined. pathv2 is a supported createObj type, so the
+// realistic causes are a bad pageid or a campaign/page still on the Legacy VTT engine (no UDL,
+// hence no pathv2 barriers). Named here so both wall creators report the same thing (#207) —
+// there is no legacy-`path` fallback: it was hardcoded yellow, against the blue-wall
+// convention, and swapping object types on a failure would hide an engine problem instead of
+// naming it. `rolledBack` is how many objects placed earlier in the same call were removed.
+function pathv2Failure(pageId, rolledBack) {
+  var c = Campaign();
+  return "createObj('pathv2') returned undefined for page " + pageId
+    + " — pathv2 walls need the Latest VTT Engine (UDL); check the page's engine and that the"
+    + " pageId is valid (sandbox " + (c && c.sandboxVersion ? c.sandboxVersion : "unknown") + ")."
+    + (rolledBack ? " Rolled back " + rolledBack + " object(s) already placed by this call, so a"
+      + " retry will not duplicate them." : "");
+}
+
+// Wall batches are all-or-nothing. A throw mid-batch would otherwise lose the ids of the objects
+// already placed (the caller never sees them), and a retry would lay duplicates on top. So:
+// on a pathv2 miss, remove every object this call created, then throw.
+function rollbackCreated(created, pageId) {
+  created.forEach(function(o) { o.remove(); });
+  throw new Error(pathv2Failure(pageId, created.length));
 }
 
 // Cheap bounding box from a points array — handles v1 [x,y] and pathv2 [cmd,x,y] points.
@@ -415,12 +481,75 @@ function B() {
   // live here, keyed by the zone path's Roll20 id → { name, shape, pageId,
   // centerX, centerY, radiusFeet, color, terrain, duration }.
   if (!s.zones || typeof s.zones !== "object") s.zones = {};
+  // Which aura slot each concentration effect owns (issue #210), keyed by token id → 1 | 2 | 0.
+  // A token carries TWO independent aura slots and set_token_aura lets the DM pick, so the
+  // break cascade cannot assume slot 1 — it has to know which ring belongs to the spell it is
+  // tearing down. This is the aura analogue of the zone registry's {type:"concentration",
+  // caster} duration: ownership recorded at cast time, read at teardown time. 0 = tracked but
+  // released (the spell's ring was cleared or repurposed; nothing to tear down). Absent entry =
+  // never tracked → slot 1, which is both the historical behaviour and the default slot.
+  if (!s.concentrationAuras || typeof s.concentrationAuras !== "object") s.concentrationAuras = {};
   return s;
 }
 
 // The zone metadata registry itself (see B() above).
 function zoneRegistry() {
   return B().zones;
+}
+
+// The concentration-aura ownership registry (see B() above): token id → aura slot (1|2).
+// RECONCILED on read, same discipline as liveZones(): a token deleted mid-concentration (killed
+// and cleaned off the map, a page rebuilt) would otherwise leave its slot claim in persistent
+// state forever.
+function concentrationAuras() {
+  let reg = B().concentrationAuras;
+  Object.keys(reg).forEach(function (id) { if (!getObj("graphic", id)) delete reg[id]; });
+  return reg;
+}
+
+// Aura slot the named token's concentration effect owns: 1 | 2, or 0 when the claim was
+// released (the spell's ring cleared or repurposed) so there is nothing to tear down. Defaults
+// to 1 for a token that was NEVER tracked — an aura placed before this bookkeeping existed is
+// overwhelmingly on slot 1 (it was the only slot anything wrote). A released claim is
+// deliberately distinguishable from that legacy case: otherwise a break after the DM cleared
+// slot 2 would fall back to slot 1 and wipe whatever unrelated ring sits there.
+function concentrationAuraSlot(tokenId) {
+  let reg = concentrationAuras();
+  if (!Object.prototype.hasOwnProperty.call(reg, tokenId)) return 1;
+  let slot = Number(reg[tokenId]);
+  return slot === 2 ? 2 : slot === 1 ? 1 : 0;
+}
+
+// Mark a token's concentration-aura claim as released (see concentrationAuraSlot).
+function releaseConcentrationAura(tokenId) {
+  concentrationAuras()[tokenId] = 0;
+}
+
+// An UNTAGGED (not concentration) aura drawn on slot 1 over a RELEASED claim returns the token
+// to the untracked legacy state (absent entry → a break tears down slot 1). Without this, one
+// break would leave the claim at 0 forever, and every later untagged slot-1 aura — the ONLY
+// kind a caller that predates concentration:true ever draws, and resolve_aoe draw:"aura"'s
+// default — would survive every later break. Slot 1 only: an untagged slot-2 ring keeps the
+// released claim, so a break still never falls back onto an unrelated slot-1 ring.
+function resetReleasedConcentrationAura(tokenId, slot, radius) {
+  let reg = concentrationAuras();
+  if (slot !== 1 || !(radius > 0)) return;
+  if (Object.prototype.hasOwnProperty.call(reg, tokenId) && Number(reg[tokenId]) === 0) delete reg[tokenId];
+}
+
+// A raw aura-radius write onto the slot a concentration effect claims means that slot no
+// longer belongs to the spell (the DM replaced or cleared the ring by hand via setTokenProps).
+// Release the claim so the break cascade leaves the new ring alone. A raw slot-1 ring drawn
+// over a released claim resets it, exactly as an untagged setTokenAura does.
+function releaseConcentrationAuraIfOverwritten(tokenId, props) {
+  let reg = concentrationAuras();
+  let slot = Number(reg[tokenId]);
+  if (slot === 0 && Object.prototype.hasOwnProperty.call(props, "aura1_radius")) {
+    resetReleasedConcentrationAura(tokenId, 1, Number(props.aura1_radius));
+    return;
+  }
+  if (slot !== 1 && slot !== 2) return;
+  if (Object.prototype.hasOwnProperty.call(props, "aura" + slot + "_radius")) reg[tokenId] = 0;
 }
 
 // Registry entries for a page (or every page if pageId is omitted), RECONCILED
@@ -523,21 +652,43 @@ function setDefaultTokenForChar(t, args) {
   var ch = getObj("character", charId);
   if (!ch) throw new Error("Character not found: " + charId);
   if (!t.get("represents")) t.set("represents", charId); // keep the link bidirectional
+  // A key missing from this list is a property SILENTLY LOST when the sheet's default token is
+  // applied — the same way the aura shape was lost before "aura1_options" was added here. Any
+  // property a creation path or a tool sets on a token belongs here, unless re-applying it on
+  // every drag would itself be wrong (see the interaction flags below).
   var KEYS = [
     "name", "imgsrc", "represents", "controlledby",
     "bar1_link", "bar2_link", "bar3_link",
     "bar1_value", "bar1_max", "bar2_value", "bar2_max", "bar3_value", "bar3_max",
+    "bar1_num_permission", "bar2_num_permission", "bar3_num_permission",
+    "bar_location", "compact_bar",
     "width", "height", "rotation", "statusmarkers", "tint_color",
     "aura1_radius", "aura1_color", "aura1_square", "aura1_options", "showplayers_aura1",
     "aura2_radius", "aura2_color", "aura2_square", "aura2_options", "showplayers_aura2",
     "showname", "showplayers_name", "showplayers_bar1", "showplayers_bar2", "showplayers_bar3",
     "light_radius", "light_dimradius", "light_otherplayers", "light_hassight",
-    "light_angle", "light_losangle", "sides", "currentside",
+    "light_angle", "light_losangle", "night_vision_effect",
+    "lockMovement", "renderAsScenery", "baseOpacity", "fadeOnOverlap", "fadeOpacity",
+    // interactionManualReset / interactionTriggered are deliberately NOT here. Setting
+    // interactionManualReset:true is an ACTION (it resets the object's interactions), and
+    // interactionTriggered is state Roll20 sets when the object fires — copying either into a
+    // default token would replay a reset, or a stale triggered state, every time the sheet is
+    // dragged out. They stay readable on a live token (tokenRich / the RT read).
+    // camelCase, per the Objects doc — the lowercase "currentside" this list used to carry
+    // reads back undefined and was therefore never copied at all.
+    "sides", "currentSide",
   ];
+  // "" is a MEANINGFUL value for the bar-number permissions — it means "only players who can
+  // EDIT this token may read the number", which is a stricter setting than "everyone" and not
+  // the same as unset. Dropping it with the other empties would quietly loosen the default
+  // token. Everywhere else "" is genuinely "nothing to copy" (no name, no image, no tint).
+  var EMPTY_MEANINGFUL = ["bar1_num_permission", "bar2_num_permission", "bar3_num_permission"];
   var props = {};
   KEYS.forEach(function (k) {
     var v = t.get(k);
-    if (v !== undefined && v !== null && v !== "") props[k] = v;
+    if (v === undefined || v === null) return;
+    if (v === "" && EMPTY_MEANINGFUL.indexOf(k) === -1) return;
+    props[k] = v;
   });
   ch.set("defaulttoken", JSON.stringify(props));
   return { ok: true, charId: charId, character: ch.get("name"), fields: Object.keys(props).length };
@@ -1081,6 +1232,7 @@ function runBatchOp(action, args) {
       let keys = Object.keys(props);
       if (keys.length === 0) throw new Error("setTokenProps: no properties to set — pass props:{...} (or top-level fields)");
       setSafe(t, props);
+      releaseConcentrationAuraIfOverwritten(args.tokenId, props);
       return { ok: true, set: keys };
     }
     case "toggleCondition": {
@@ -1341,8 +1493,11 @@ ACTIONS["createToken"] = function (args, msg, nonce, senderPlayerId) {
       };
 ACTIONS["createPage"] = function (args, msg, nonce, senderPlayerId) {
         {
-        // Roll20 API does not support createObj("page") — pages must be created manually in the UI.
-        throw new Error("Roll20 API does not allow creating pages programmatically. Create the page manually in the Roll20 page navigator, then pass its pageId.");
+        // createObj("page") is unsupported in the Mod sandbox — but that is a MOD limitation, not a
+        // Roll20 one: the TS side creates pages browserlessly by writing the RTDB `pages` node
+        // directly (rtCreatePage in src/bridge/roll20-rt.ts, proved live in #178), then sets the
+        // handful of MOD-only page fields over this relay via setPageProps.
+        throw new Error("The Mod sandbox cannot create pages (createObj('page') is unsupported). Create it over RTDB instead (rtCreatePage / setup_roll20_page), or add the page in the Roll20 page navigator and pass its pageId.");
       }
       };
 ACTIONS["createPath"] = function (args, msg, nonce, senderPlayerId) {
@@ -1463,18 +1618,12 @@ ACTIONS["createWalls"] = function (args, msg, nonce, senderPlayerId) {
         // Create DL barriers. Latest Engine UDL → pathv2 with shape:"pol".
         // Points are relative to the object center (x,y). For a two-point wall from
         // (x1,y1)→(x2,y2): center = midpoint; points = [[-dx/2,-dy/2],[dx/2,dy/2]].
-        // If createObj("pathv2") returns undefined, fall back to legacy path.
-        let firstWall = (args.walls || [])[0];
-        if (firstWall) {
-          let probeCx = (firstWall.x1 + firstWall.x2) / 2;
-          let probeCy = (firstWall.y1 + firstWall.y2) / 2;
-          log("[GM_AI_Bridge] createWalls probe — pageId=" + args.pageId
-            + " wall[0]: x1=" + firstWall.x1 + " y1=" + firstWall.y1
-            + " x2=" + firstWall.x2 + " y2=" + firstWall.y2
-            + " cx=" + probeCx + " cy=" + probeCy
-            + " points=" + JSON.stringify([[firstWall.x1 - probeCx, firstWall.y1 - probeCy], [firstWall.x2 - probeCx, firstWall.y2 - probeCy]]));
-        }
-        let wallResults = (args.walls || []).map(function(w, wi) {
+        // "pathv2" IS createObj-able (Roll20 lists it in the Function Documentation type list,
+        // and #178-era live work confirmed it), so a failure here is a real error — there is no
+        // legacy-path fallback to hide behind, and there must not be: it drew in hardcoded
+        // yellow, against the blue-wall convention (#207). A miss rolls the whole batch back.
+        let created = [];
+        let wallResults = (args.walls || []).map(function(w) {
           let cx = (w.x1 + w.x2) / 2;
           let cy = (w.y1 + w.y2) / 2;
           let pv2Props = {
@@ -1489,29 +1638,10 @@ ACTIONS["createWalls"] = function (args, msg, nonce, senderPlayerId) {
             stroke_width: 5,
             controlledby: "",
           };
-          let wallObj;
-          try { wallObj = createObj("pathv2", pv2Props); } catch(e) {
-            log("[GM_AI_Bridge] createWalls pathv2 threw: " + String(e));
-          }
-          if (wi === 0) log("[GM_AI_Bridge] createWalls pathv2 result[0]: " + (wallObj ? "id=" + wallObj.id : "undefined — falling back"));
-          if (wallObj) return { id: wallObj.id, kind: "pathv2" };
-          // Fall back to legacy path on walls layer
-          let minX = Math.min(w.x1, w.x2), minY = Math.min(w.y1, w.y2);
-          let legacyObj = createObj("path", {
-            pageid: args.pageId,
-            layer: "walls",
-            path: JSON.stringify([["M", w.x1 - minX, w.y1 - minY], ["L", w.x2 - minX, w.y2 - minY]]),
-            left: cx, top: cy,
-            width: Math.max(Math.abs(w.x2 - w.x1), 1),
-            height: Math.max(Math.abs(w.y2 - w.y1), 1),
-            barrierType: args.barrierType || "wall",
-            stroke: "#FFFF00",
-            stroke_width: 5,
-            fill: "transparent",
-            rotation: 0, scaleX: 1, scaleY: 1, controlledby: "",
-          });
-          if (wi === 0) log("[GM_AI_Bridge] createWalls path-fallback result[0]: " + (legacyObj ? "id=" + legacyObj.id : "undefined"));
-          return legacyObj ? { id: legacyObj.id, kind: "path-fallback" } : { error: "createObj failed for both pathv2 and path" };
+          let wallObj = createObj("pathv2", pv2Props);
+          if (!wallObj) rollbackCreated(created, args.pageId);
+          created.push(wallObj);
+          return { id: wallObj.id, kind: "pathv2" };
         });
         writeResult(nonce, wallResults);
         return;
@@ -1759,6 +1889,252 @@ ACTIONS["drawLayerTest"] = function (args, msg, nonce, senderPlayerId) {
         return;
       }
       };
+// ── pathv2 zone-primitive probe (issue #208) ─────────────────────────────────
+// SPIKE INSTRUMENT, not a production drawing path. Zones today are legacy `path`
+// objects (ACTIONS["createZone"]) with two known limits: no working fill_opacity
+// (so tint is baked into the fill colour, #162) and no name/gmnotes (so metadata
+// lives in state.GM_AI_Bridge.zones, #164). pathv2 documents a `fill` property and
+// shapes "eli"/"rec", which would make a spell area a real ellipse/rectangle.
+//
+// This draws one pathv2 per variant in a left-to-right row and reports what Roll20
+// actually STORED for each, so three questions can be settled on a live table:
+//   Q1  does `fill` honour an 8-digit #RRGGBBAA — i.e. real translucency?
+//       (and does pathv2 have a working `fill_opacity`, unlike legacy path?)
+//   Q2  does shape "eli"/"rec" render a proper ellipse/rectangle off the WALLS
+//       layer — on "objects", and on "map"?
+//   Q3  does pathv2 carry name/gmnotes (the Objects doc doesn't list them)?
+//
+// Read-back answers storage only. Rendering needs eyes on the page, which is why
+// the objects are LEFT there on purpose — clean up afterwards with
+// removeObject { objectType: "pathv2", objectId }, or { clearLast: true } below.
+//
+// Recovery: every id the probe creates is stashed in state.GM_AI_Bridge.pathv2Probe
+// ({ pageId, ids, at }) BEFORE the result goes back, so shapes whose ids were lost
+// (a dropped RTDB result, a closed terminal) are still findable. The stash
+// ACCUMULATES across runs until cleared, so a second run never orphans the first.
+// { clearLast: true } removes every stashed id and clears the stash; ids it fails
+// to remove stay stashed for a retry.
+//
+// Geometry: pathv2 re-anchors to its FIRST point regardless of the x/y passed, so
+// every variant is built first-point-as-anchor (same rule as walls). For "eli"/"rec"
+// the first two points are the bounding box, so the anchor is the box's top-left.
+ACTIONS["pathv2ZoneProbe"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        if (args.clearLast) {
+          let stash = B().pathv2Probe;
+          if (!stash || !Array.isArray(stash.ids) || !stash.ids.length) {
+            writeResult(nonce, { cleared: false, stash: null, removed: [], alreadyGone: [], failed: [] });
+            return;
+          }
+          let clRemoved = [], clGone = [], clFailed = [];
+          stash.ids.forEach(function (id) {
+            let o = getObj("pathv2", id);
+            if (!o) { clGone.push(id); return; }
+            try { o.remove(); clRemoved.push(id); } catch (e) { clFailed.push({ id: id, error: String(e).slice(0, 120) }); }
+          });
+          // Keep exactly the stragglers, so a retry targets only what is still on a page.
+          if (clFailed.length) {
+            B().pathv2Probe = { pageId: stash.pageId, ids: clFailed.map(function (f) { return f.id; }), at: stash.at };
+          } else {
+            delete B().pathv2Probe;
+          }
+          writeResult(nonce, { cleared: clFailed.length === 0, stash: stash, removed: clRemoved,
+                               alreadyGone: clGone, failed: clFailed });
+          return;
+        }
+
+        let probePage = getObj("page", args.pageId);
+        if (!probePage) throw new Error("Page not found: " + args.pageId);
+
+        let probeR = Number(args.radiusPx);
+        if (!isFinite(probeR) || probeR <= 0) probeR = 140; // two 70px cells across by default
+        let probeCx = Number(args.centerX); if (!isFinite(probeCx)) probeCx = probeR + 70;
+        let probeCy = Number(args.centerY); if (!isFinite(probeCy)) probeCy = probeR + 70;
+        let probeStep = probeR * 2 + 70; // one empty cell of gutter between variants
+        // Page extent in px. Roll20 keeps page width/height in 70px UNITS, not cells. Eight
+        // variants at the default radius need ~3000px of row, and a default page is far
+        // narrower, so the row WRAPS rather than drawing the last shapes off the page.
+        // An unreadable size falls back to Roll20's 25-unit default page.
+        let probePageW = Number(probePage.get("width")) * 70;
+        if (!isFinite(probePageW) || probePageW <= 0) probePageW = 25 * 70;
+        let probePageH = Number(probePage.get("height")) * 70;
+        if (!isFinite(probePageH) || probePageH <= 0) probePageH = 25 * 70;
+        let probeNextX = probeCx;
+        let probeNextY = probeCy;
+        let probeRowYs = [];
+
+        let probeHexMatch = typeof args.color === "string" ? /^#([0-9a-fA-F]{6})/.exec(args.color) : null;
+        let probeHex6 = probeHexMatch ? "#" + probeHexMatch[1] : "#aa00ff";
+        let probeAlpha = typeof args.alphaHex === "string" && /^[0-9a-fA-F]{2}$/.test(args.alphaHex)
+          ? args.alphaHex : ZONE_FILL_ALPHA_HEX;
+        let probeHex8 = probeHex6 + probeAlpha;
+
+        // One variant per question. `asks` is carried through to the report so the
+        // human reading the page knows what each shape in the row is for.
+        let probeVariants = [
+          { key: "eli-fill8",       shape: "eli", layer: "objects", fill: probeHex8,      asks: "Q1+Q2: ellipse with 8-digit #RRGGBBAA fill — the candidate zone primitive" },
+          { key: "eli-fill6",       shape: "eli", layer: "objects", fill: probeHex6,      asks: "Q1 control: same ellipse, opaque 6-digit fill" },
+          { key: "eli-fillopacity", shape: "eli", layer: "objects", fill: probeHex6, fillOpacity: 0.25, asks: "Q1 alt: 6-digit fill + fill_opacity 0.25 (legacy path drops this, #162)" },
+          { key: "eli-transparent", shape: "eli", layer: "objects", fill: "transparent",  asks: "Q2 control: outline only, no fill" },
+          { key: "rec-fill8",       shape: "rec", layer: "objects", fill: probeHex8,      asks: "Q2: rectangle shape" },
+          { key: "pol-fill8",       shape: "pol", layer: "objects", fill: probeHex8,      asks: "Q2 control: today's 36-gon circle approximation, drawn as pathv2" },
+          { key: "eli-map-layer",   shape: "eli", layer: "map",     fill: probeHex8,      asks: "Q2: does it render on the map layer as well as objects?" },
+          { key: "eli-meta",        shape: "eli", layer: "objects", fill: probeHex8, meta: true, asks: "Q3: name/gmnotes at create AND via a later set()" }
+        ];
+
+        // Every property worth knowing about. Roll20 returns undefined for a property an
+        // object type does not have, which is exactly the Q3 signal — so undefined is
+        // reported as a name in `missing`, never silently flattened to null.
+        let probeReadProps = ["shape", "fill", "fill_opacity", "stroke", "stroke_width", "layer",
+          "x", "y", "width", "height", "rotation", "barrierType", "name", "gmnotes", "controlledby"];
+
+        // The stored `points` string can be ~500 chars for the 36-gon control, which is pure
+        // bloat on the RTDB result payload. Report a preview plus the bounding box computed
+        // from the FULL array — the bbox is what actually says whether the geometry landed
+        // where it should, relative to the anchor.
+        function probeReadBack(obj) {
+          let stored = {};
+          let missing = [];
+          probeReadProps.forEach(function (p) {
+            let v;
+            try { v = obj.get(p); } catch (e) { stored[p] = "<threw: " + String(e).slice(0, 60) + ">"; return; }
+            if (v === undefined) { missing.push(p); return; }
+            stored[p] = v;
+          });
+          let pts;
+          try { pts = obj.get("points"); } catch (e) { pts = "<threw>"; }
+          if (typeof pts === "string") {
+            stored.pointsPreview = pts.slice(0, 160);
+            stored.pointsTruncated = pts.length > 160;
+            let parsed = null;
+            try { parsed = JSON.parse(pts); } catch (e) { parsed = null; }
+            if (parsed && parsed.length) {
+              let xs = parsed.map(function (pt) { return pt[0]; });
+              let ys = parsed.map(function (pt) { return pt[1]; });
+              stored.pointsBBox = {
+                minX: Math.min.apply(null, xs), maxX: Math.max.apply(null, xs),
+                minY: Math.min.apply(null, ys), maxY: Math.max.apply(null, ys)
+              };
+            }
+          } else {
+            stored.pointsPreview = pts;
+            stored.pointsTruncated = false;
+          }
+          return { stored: stored, missing: missing };
+        }
+
+        let probeResults = probeVariants.map(function (v, vi) {
+          let cx = probeNextX;
+          let cy = probeNextY;
+          if (vi > 0 && cx + probeR > probePageW) {
+            // Next shape would cross the right edge: start a new row under this one.
+            probeNextY += probeStep;
+            cx = probeCx;
+            cy = probeNextY;
+          }
+          probeNextX = cx + probeStep;
+          if (probeRowYs.indexOf(cy) < 0) probeRowYs.push(cy);
+          // Still off the page (a start point or radius too large for the page to hold even
+          // one shape per row, or more rows than the page is tall): say so, don't hide it.
+          let offPage = cx - probeR < 0 || cy - probeR < 0 || cx + probeR > probePageW || cy + probeR > probePageH;
+          let anchorX, anchorY, pts;
+          if (v.shape === "pol") {
+            // 36-gon, first point at angle 0 — anchor is that point, not the centre.
+            anchorX = cx + probeR;
+            anchorY = cy;
+            pts = [];
+            for (let i = 0; i <= 36; i++) {
+              let a = (i / 36) * 2 * Math.PI;
+              pts.push([Math.round((probeR * Math.cos(a) - probeR) * 100) / 100,
+                        Math.round((probeR * Math.sin(a)) * 100) / 100]);
+            }
+          } else {
+            // eli/rec: first two points are the bounding box; anchor at its top-left.
+            anchorX = cx - probeR;
+            anchorY = cy - probeR;
+            pts = [[0, 0], [probeR * 2, probeR * 2]];
+          }
+
+          let props = {
+            pageid: args.pageId,
+            layer: v.layer,
+            x: anchorX,
+            y: anchorY,
+            width: probeR * 2,
+            height: probeR * 2,
+            shape: v.shape,
+            points: JSON.stringify(pts),
+            stroke: probeHex6,
+            stroke_width: 5,
+            fill: v.fill,
+            controlledby: ""
+          };
+          if (v.fillOpacity !== undefined) props.fill_opacity = v.fillOpacity;
+          // Plain ASCII, no chat triggers — this round-trips back through writeResult.
+          let metaAtCreate = { name: "ZONE PROBE " + v.key, gmnotes: "probe gmnotes at create" };
+          let metaAfterSet = { name: "ZONE PROBE set-after", gmnotes: "probe gmnotes after set" };
+          if (v.meta) { props.name = metaAtCreate.name; props.gmnotes = metaAtCreate.gmnotes; }
+
+          let obj;
+          try { obj = createObj("pathv2", props); } catch (e) {
+            return { key: v.key, asks: v.asks, shape: v.shape, layer: v.layer, sentFill: v.fill,
+                     created: false, error: String(e).slice(0, 200) };
+          }
+          if (!obj) {
+            return { key: v.key, asks: v.asks, shape: v.shape, layer: v.layer, sentFill: v.fill,
+                     created: false, error: "createObj('pathv2') returned undefined" };
+          }
+
+          let out = { key: v.key, asks: v.asks, id: obj.id, shape: v.shape, layer: v.layer,
+                      sentFill: v.fill, sentFillOpacity: v.fillOpacity, centerX: cx, centerY: cy,
+                      anchorX: anchorX, anchorY: anchorY, pointCount: pts.length, offPage: offPage, created: true };
+          let first = probeReadBack(obj);
+          out.stored = first.stored;
+          out.missing = first.missing;
+
+          if (v.meta) {
+            // Second half of Q3: a later set() is the write path setCharacterAttributes-style
+            // callers would use, and legacy `path` swallows it silently (#164).
+            try {
+              setSafe(obj, metaAfterSet);
+            } catch (e) {
+              out.setAfterError = String(e).slice(0, 200);
+            }
+            let second = probeReadBack(obj);
+            // Echo what was WRITTEN alongside what came back: a sandbox that drops the
+            // write may hand back "" rather than undefined, so the caller has to compare
+            // against the exact string rather than test for presence.
+            out.wrote = { atCreate: metaAtCreate, afterSet: metaAfterSet };
+            out.storedAfterSet = { name: second.stored.name, gmnotes: second.stored.gmnotes };
+            out.missingAfterSet = second.missing;
+          }
+          return out;
+        });
+
+        // Stash the ids before replying: if the reply is lost, the shapes are still findable.
+        let probeIds = probeResults.filter(function (r) { return r.id; }).map(function (r) { return r.id; });
+        let probePrior = B().pathv2Probe;
+        let probePriorIds = probePrior && Array.isArray(probePrior.ids) ? probePrior.ids : [];
+        if (probeIds.length) {
+          B().pathv2Probe = { pageId: args.pageId, ids: probePriorIds.concat(probeIds), at: Date.now() };
+        }
+
+        writeResult(nonce, {
+          pageId: args.pageId,
+          hex6: probeHex6,
+          hex8: probeHex8,
+          radiusPx: probeR,
+          rowY: probeCy,
+          rowYs: probeRowYs,
+          pageWidthPx: probePageW,
+          pageHeightPx: probePageH,
+          variants: probeResults,
+          stashedIds: (B().pathv2Probe && B().pathv2Probe.ids) || [],
+          note: "Objects left on the page deliberately — look at them, then remove them with { clearLast: true } (or removeObject { objectType: 'pathv2', objectId } each)."
+        });
+        return;
+      }
+      };
 ACTIONS["runUVTT"] = function (args, msg, nonce, senderPlayerId) {
         {
         // Create a carrier graphic on gmlayer with UVTT JSON in its gmnotes,
@@ -1798,6 +2174,9 @@ ACTIONS["createPolylines"] = function (args, msg, nonce, senderPlayerId) {
         // Create one path object per polyline from an ordered list of absolute-pixel points.
         // Walls layer → pathv2 UDL barrier (Latest VTT Engine). Other layers → legacy path.
         // Each polyline: { points: [[x,y], ...], stroke?, stroke_width?, closed?, layer? }
+        // Everything this call creates (walls AND other-layer paths), so a pathv2 miss rolls the
+        // whole call back rather than strand objects whose ids the caller never receives.
+        let created = [];
         let polylineResults = (args.polylines || []).map(function(pl) {
           let pts = pl.points || [];
           if (pts.length < 2) return { error: "Need at least 2 points" };
@@ -1827,7 +2206,9 @@ ACTIONS["createPolylines"] = function (args, msg, nonce, senderPlayerId) {
               stroke: pl.stroke || args.stroke || "#0044FF",
               controlledby: "",
             });
-            return wallObj ? { id: wallObj.id, pointCount: pts.length } : { error: "createObj('pathv2') returned undefined" };
+            if (!wallObj) rollbackCreated(created, args.pageId);
+            created.push(wallObj);
+            return { id: wallObj.id, pointCount: pts.length };
           }
           let minX = Math.min.apply(null, pts.map(function(p) { return p[0]; }));
           let minY = Math.min.apply(null, pts.map(function(p) { return p[1]; }));
@@ -1853,6 +2234,7 @@ ACTIONS["createPolylines"] = function (args, msg, nonce, senderPlayerId) {
             scaleY: 1,
             controlledby: "",
           });
+          if (pathObj) created.push(pathObj);
           return pathObj ? { id: pathObj.id, pointCount: pts.length } : { error: "createObj('path') returned undefined" };
         });
         writeResult(nonce, polylineResults);
@@ -1890,6 +2272,46 @@ ACTIONS["setTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
         // every player's initiative while reporting ok:true. Delegate; never re-fork this.
         writeResult(nonce, runBatchOp("setTurnOrder", args));
       };
+function turnPr(e) {
+  var p = Number(e && e.pr);
+  return isNaN(p) ? -Infinity : p;
+}
+
+// Upsert one entry into a live (rotated) turn order without changing row 0. The ring is
+// a rotation of a pr-descending list: rows 0..wrap-1 are still to act this round, rows
+// wrap..end already acted. An entry with pr above the active row goes into the acted
+// segment (so it acts next round in its slot); otherwise it lands in the pending segment
+// after the active row. If the id already sits at row 0 it is replaced in place.
+function insertKeepingTurn(order, entry) {
+  var id = entry.id != null ? String(entry.id) : null;
+  var out = [];
+  for (var i = 0; i < order.length; i++) {
+    var row = order[i];
+    if (id !== null && id !== "-1" && row && String(row.id) === id) {
+      if (i === 0) { out.push(entry); id = null; }
+      continue;
+    }
+    out.push(row);
+  }
+  if (id === null) return out;
+  if (out.length === 0) return [entry];
+  var p = turnPr(entry);
+  var wrap = out.length;
+  for (var w = 1; w < out.length; w++) {
+    if (turnPr(out[w]) > turnPr(out[w - 1])) { wrap = w; break; }
+  }
+  var at;
+  if (p > turnPr(out[0])) {
+    at = wrap;
+    while (at < out.length && turnPr(out[at]) >= p) at++;
+  } else {
+    at = 1;
+    while (at < wrap && turnPr(out[at]) >= p) at++;
+  }
+  out.splice(at, 0, entry);
+  return out;
+}
+
 ACTIONS["mergeTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
         {
         // Atomic upsert into the live turn order — read, merge, write in ONE
@@ -1904,6 +2326,12 @@ ACTIONS["mergeTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
         // Keeps player-controlled tokens (controlledby = a real player ID) and
         // custom rows (id "-1", e.g. round markers). Safe replacement for a full
         // setTurnOrder([]) wipe that would also erase player entries.
+        //
+        // keepTurn: true → mid-combat insert. Roll20 tracks the active turn by ROTATING
+        // the array (row 0 is whoever is up), so the pr-descending sort below would rewind
+        // play to the highest initiative and fire the turn hook. With keepTurn each entry
+        // is spliced into the rotated ring at its sorted slot relative to the current row 0,
+        // which never changes. Only a single entry per id is supported in this mode.
         let rawTO = Campaign().get("turnorder");
         let merged;
         try { merged = rawTO ? JSON.parse(rawTO) : []; } catch (e) { merged = []; }
@@ -1919,6 +2347,15 @@ ACTIONS["mergeTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
           });
         }
         let incoming = args.entries || [];
+        if (args.keepTurn) {
+          incoming.forEach(function (entry) {
+            if (!entry || typeof entry !== "object") return;
+            merged = insertKeepingTurn(merged, entry);
+          });
+          Campaign().set("turnorder", JSON.stringify(merged));
+          writeResult(nonce, { ok: true, turnorder: merged });
+          return;
+        }
         incoming.forEach(function (entry) {
           if (!entry || typeof entry !== "object") return;
           let id = entry.id;
@@ -2131,6 +2568,59 @@ ACTIONS["setTokenProps"] = function (args, msg, nonce, senderPlayerId) {
         return;
       }
       };
+ACTIONS["setTokenAura"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // One aura slot, set or cleared, with its concentration ownership recorded (issue #210).
+        // The shape/visibility plumbing lives HERE rather than in the TS caller so that the write
+        // and the bookkeeping are one atomic step: a caller that builds raw aura props itself and
+        // sends setTokenProps can still do so, but then nothing knows the slot belongs to a spell.
+        let t = getObj("graphic", args.tokenId);
+        if (!t) throw new Error("Token not found: " + args.tokenId);
+        let slot = Number(args.slot) === 2 ? 2 : 1;
+        let radius = Number(args.radiusFeet);
+        if (!isFinite(radius) || radius < 0) {
+          throw new Error("setTokenAura: radiusFeet must be a finite number >= 0, got " + JSON.stringify(args.radiusFeet));
+        }
+        let reg = concentrationAuras();
+        let prior = Number(reg[args.tokenId]);
+        let props = {};
+        props["aura" + slot + "_radius"] = radius;
+        // A recast onto the OTHER slot moves the claim; the ring the spell used to own has to
+        // go with it, or the break cascade (which reads one slot) would orphan it on the map.
+        let movedFrom = null;
+        if (args.concentration && radius > 0 && (prior === 1 || prior === 2) && prior !== slot) {
+          props["aura" + prior + "_radius"] = 0;
+          movedFrom = prior;
+        }
+        if (radius > 0) {
+          if (args.color) props["aura" + slot + "_color"] = args.color;
+          // aura{n}_options is the authoritative shape field; Roll20 keeps the legacy
+          // aura{n}_square boolean in sync with it, so only _options is ever written.
+          if (args.shape) props["aura" + slot + "_options"] = args.shape;
+          props["showplayers_aura" + slot] = args.visibleToPlayers !== false;
+        }
+        setSafe(t, props);
+
+        // Ownership bookkeeping. Claiming a slot for a concentration effect records it; clearing
+        // that slot, or reusing it for something that ISN'T concentration (a permanent light ring,
+        // a marching-order marker), releases the claim — otherwise the break cascade would later
+        // tear down an aura that no longer belongs to a spell.
+        // An untagged slot-1 ring over a RELEASED claim resets the token to untracked (see
+        // resetReleasedConcentrationAura) so a caller that never tags keeps master's behaviour.
+        if (args.concentration && radius > 0) reg[args.tokenId] = slot;
+        else if (prior === slot) releaseConcentrationAura(args.tokenId);
+        else if (!args.concentration) resetReleasedConcentrationAura(args.tokenId, slot, radius);
+
+        writeResult(nonce, {
+          ok: true,
+          slot: slot,
+          radiusFeet: radius,
+          concentration: Number(reg[args.tokenId]) === slot,
+          movedFromSlot: movedFrom,
+        });
+        return;
+      }
+      };
 ACTIONS["getRecentChat"] = function (args, msg, nonce, senderPlayerId) {
         {
         let n = Math.min(args.limit || 50, CHAT_BUFFER.length);
@@ -2337,6 +2827,48 @@ ACTIONS["getCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) 
           }
         });
         writeResult(nonce, result);
+        return;
+      }
+      };
+ACTIONS["getSheetDefaultValues"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        // The SHEET's default for a field, as opposed to a character's live value (#209).
+        // getCharacterAttributes cannot tell "never set" from "set to exactly the default" —
+        // an absent `attribute` object and one holding the default both read the same once a
+        // sheet worker has materialised it. This is the other half of that comparison, so a
+        // stat-block writer can skip fields it would only be rewriting with the default.
+        //
+        // getSheetDefaultValue(name, valtype?) is a GLOBAL keyed on the campaign's sheet, not on
+        // a character — there is no charId here by design.
+        if (!Array.isArray(args.names) || args.names.length === 0) {
+          throw new Error("getSheetDefaultValues requires names: [string, ...]");
+        }
+        let sdCtx = sheetContext();
+        if (typeof getSheetDefaultValue !== "function") {
+          throw new Error("getSheetDefaultValue is not available in this Mod sandbox (sandbox " +
+            (sdCtx.sandbox || "1.0") + ", sheet " + (sdCtx.sheetName || "?") + ")");
+        }
+        let sdSheet = { sandbox: sdCtx.sandbox, sheetName: sdCtx.sheetName, beacon: sdCtx.beacon };
+        let sdNames = args.names.map(String);
+        let sdRaw = sdNames.map(function (n) {
+          return args.valtype ? getSheetDefaultValue(n, args.valtype) : getSheetDefaultValue(n);
+        });
+        // Roll20 documents the sheet-aware getters (getSheetItem/setSheetItem) as async but does
+        // NOT say either way for this one, and the two shapes are indistinguishable from the
+        // outside. Resolve thenables rather than serialising a Promise as `{}` and calling it the
+        // sheet's default. Same async-writeResult pattern the dice path already uses.
+        let sdDeferred = sdRaw.some(function (v) { return v && typeof v.then === "function"; });
+        let sdPack = function (values) {
+          let defaults = {}, missing = [];
+          sdNames.forEach(function (n, i) {
+            let v = values[i];
+            if (v === undefined || v === null) { missing.push(n); return; }
+            defaults[n] = v;
+          });
+          return { defaults: defaults, missing: missing, valtype: args.valtype || null, sheet: sdSheet };
+        };
+        if (!sdDeferred) { writeResult(nonce, sdPack(sdRaw)); return; }
+        settleSheetAsync(nonce, "getSheetDefaultValue rejected", Promise.all(sdRaw), sdPack);
         return;
       }
       };
@@ -2637,6 +3169,52 @@ ACTIONS["spawnFxBetweenPoints"] = function (args, msg, nonce, senderPlayerId) {
         return;
       }
       };
+// Precise z-order: put an object IMMEDIATELY above/below another one on the same layer.
+// toFront/toBack can only go all-the-way-front / all-the-way-back, so "slide this bloodstain just
+// under that token" was not expressible before (#209).
+//
+// SANDBOX v1.5 ONLY. On v1.0 the globals simply do not exist, so refuse with the campaign's
+// sandbox version named instead of letting a bare ReferenceError surface as "toAbove is not
+// defined" — the DM's fix is a per-campaign sandbox setting, and the message has to say so.
+// `typeof` on an undeclared identifier is safe; the && short-circuit keeps us from evaluating the
+// identifier itself when it is missing.
+function reorderRelative(which, args) {
+  var available = which === "toAbove" ? typeof toAbove === "function" : typeof toBelow === "function";
+  if (!available) {
+    var ctx = sheetContext();
+    throw new Error(which + " is not available on Mod Script Sandbox " + (ctx.sandbox || "1.0") +
+      " (it is v1.5 only). Switch the campaign's sandbox version to 1.5, or use " +
+      (which === "toAbove" ? "toFront" : "toBack") + " instead.");
+  }
+  var objType = args.objectType || "graphic";
+  var tgtType = args.targetType || objType;
+  var obj = getObj(objType, args.objectId);
+  if (!obj) throw new Error("Object not found: " + args.objectId);
+  var target = getObj(tgtType, args.targetId);
+  if (!target) throw new Error("Target object not found: " + args.targetId);
+  if (args.objectId === args.targetId) throw new Error("Cannot reorder an object relative to itself: " + args.objectId);
+  // Z-order is PAGE-local: two objects on different pages have no relative order, and the global
+  // would silently do nothing even when the layer names match. Refuse, naming both pages.
+  var objPage = obj.get("_pageid");
+  var tgtPage = target.get("_pageid");
+  if (objPage && tgtPage && objPage !== tgtPage) {
+    throw new Error(which + " needs both objects on the same page: " + args.objectId + " is on page '" +
+      objPage + "', " + args.targetId + " is on page '" + tgtPage + "'");
+  }
+  // Roll20 orders z WITHIN a layer, so a cross-layer pair has no defined answer and the global
+  // would silently do nothing. Say which layers, rather than report ok:true for a no-op.
+  var objLayer = obj.get("layer");
+  var tgtLayer = target.get("layer");
+  if (objLayer && tgtLayer && objLayer !== tgtLayer) {
+    throw new Error(which + " needs both objects on the same layer: " + args.objectId + " is on '" +
+      objLayer + "', " + args.targetId + " is on '" + tgtLayer + "'");
+  }
+  // Called by name, not through a captured reference — a Roll20 global is free to care about its
+  // own `this`, and there is no reason to find out the hard way.
+  if (which === "toAbove") { toAbove(obj, target); } else { toBelow(obj, target); }
+  return { ok: true, objectId: args.objectId, targetId: args.targetId, layer: objLayer || null };
+}
+
 ACTIONS["toFront"] = function (args, msg, nonce, senderPlayerId) {
         {
         let frontObj = getObj(args.objectType || "graphic", args.objectId);
@@ -2652,6 +3230,18 @@ ACTIONS["toBack"] = function (args, msg, nonce, senderPlayerId) {
         if (!backObj) throw new Error("Object not found: " + args.objectId);
         toBack(backObj);
         writeResult(nonce, { ok: true });
+        return;
+      }
+      };
+ACTIONS["toAbove"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        writeResult(nonce, reorderRelative("toAbove", args));
+        return;
+      }
+      };
+ACTIONS["toBelow"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        writeResult(nonce, reorderRelative("toBelow", args));
         return;
       }
       };
@@ -2791,7 +3381,7 @@ ACTIONS["removeObject"] = function (args, msg, nonce, senderPlayerId) {
 ACTIONS["breakConcentration"] = function (args, msg, nonce, senderPlayerId) {
         {
         // Concentration break cascade (issue #135): remove the Concentrating
-        // sticker, zero the token's aura (aura1_radius), and delete any zone whose
+        // sticker, zero the aura slot the effect owns (issue #210), and delete any zone whose
         // duration links to this token as caster ({type:"concentration", caster}
         // metadata from issue #134/createZone). caster linkage is matched
         // case-insensitively against BOTH the token's id and its display name (a
@@ -2814,9 +3404,22 @@ ACTIONS["breakConcentration"] = function (args, msg, nonce, senderPlayerId) {
         markerSet.delete(concTag);
         t.set("statusmarkers", Array.from(markerSet).join(","));
 
-        // 2) Zero the aura (emanation effects, e.g. Spirit Guardians).
-        let auraCleared = Number(t.get("aura1_radius")) > 0;
-        setSafe(t, { aura1_radius: 0 });
+        // 2) Zero the aura the effect OWNS (emanation effects, e.g. Spirit Guardians). Which
+        // slot that is comes from the concentration-aura registry (issue #210) — set_token_aura
+        // lets the DM park an emanation on slot 2, and tearing down slot 1 regardless both left
+        // the real ring on the map and wiped whatever unrelated aura sat in slot 1. No recorded
+        // slot means slot 1, the historical assumption and the default slot; a RELEASED claim
+        // (slot 0 — the ring was already cleared or repurposed) means no aura to touch at all.
+        let auraSlot = concentrationAuraSlot(args.tokenId);
+        let auraCleared = false;
+        if (auraSlot) {
+          let auraRadiusProp = "aura" + auraSlot + "_radius";
+          auraCleared = Number(t.get(auraRadiusProp)) > 0;
+          let auraProps = {};
+          auraProps[auraRadiusProp] = 0;
+          setSafe(t, auraProps);
+        }
+        releaseConcentrationAura(args.tokenId);
 
         // 3) Delete linked concentration zones.
         let zonesRemoved = [];
@@ -2837,6 +3440,7 @@ ACTIONS["breakConcentration"] = function (args, msg, nonce, senderPlayerId) {
           ok: true,
           markerRemoved: markerRemoved,
           auraCleared: auraCleared,
+          auraSlot: auraSlot || null,
           zonesRemoved: zonesRemoved,
         });
         return;
@@ -3258,14 +3862,24 @@ ACTIONS["performAction"] = function (args, msg, nonce, senderPlayerId) {
   if (!args.charId) throw new Error("performAction: charId is required");
   if (!args.actionName) throw new Error("performAction: actionName is required (the Beacon action to run)");
   let ctx = sheetContext();
-  let known = ctx.actions.indexOf(args.actionName) !== -1;
+  // known: true = named in actionSummary; null = actionSummary has entries whose shape we could
+  // not read, so the name is unverifiable and the call goes through; false = definitely absent.
+  let known = ctx.actionsUnreadable ? null : ctx.actions.indexOf(args.actionName) !== -1;
   // Roll20 falls back to a same-named character ABILITY when the name is not a Beacon action.
   // If there is no such ability either, the call would do nothing — refuse it before it is made,
-  // rather than reporting a dispatch that went nowhere.
-  let ability = known ? null : findObjs({ _type: "ability", _characterid: args.charId, name: args.actionName })[0] || null;
-  if (!known && !ability) {
+  // rather than reporting a dispatch that went nowhere. And when the ability DOES exist, the
+  // fallback runs its macro through Roll20's own sendChat — outside the chatSend() chokepoint,
+  // with whatever @{...}/[[...]] the ability body carries — so it needs an explicit opt-in.
+  let ability = known === false ? findObjs({ _type: "ability", _characterid: args.charId, name: args.actionName })[0] || null : null;
+  if (known === false && !ability) {
     throw new Error("performAction: \"" + args.actionName + "\" is not in Campaign().actionSummary and " +
       "the character has no ability of that name — nothing would fire. Known actions: [" +
+      ctx.actions.join(", ") + "]");
+  }
+  if (known === false && args.allowAbilityFallback !== true) {
+    throw new Error("performAction: \"" + args.actionName + "\" is not in Campaign().actionSummary; it " +
+      "matches character ability " + ability.id + ", which Roll20 would run as a chat macro instead. " +
+      "Pass allowAbilityFallback:true to invoke the ability deliberately. Known actions: [" +
       ctx.actions.join(", ") + "]");
   }
   let call = stripUndef({
@@ -3283,13 +3897,19 @@ ACTIONS["performAction"] = function (args, msg, nonce, senderPlayerId) {
       // double-trigger the ability. known:false is the caller's signal that the call went down
       // the ability path; the relay has already checked that the ability exists.
       known: known,
-      abilityFallback: !known,
+      abilityFallback: known === false,
       abilityId: ability ? ability.id : undefined,
-      note: known
+      note: known === true
         ? "performAction returns void — this reports that the sheet accepted the call, not what it " +
           "rolled. The roll itself lands in Roll20 chat."
+        : known === null
+        ? "performAction returns void — this reports that the sheet accepted the call, not what it " +
+          "rolled. Campaign().actionSummary has " + ctx.actions.length + " readable names out of a " +
+          "non-empty list, so the relay could not check that \"" + args.actionName + "\" is one of them; " +
+          "if nothing appeared in Roll20 chat, the name was probably wrong."
         : "\"" + args.actionName + "\" is not in Campaign().actionSummary, so Roll20 fell back to the " +
-          "character ability of that name (which exists). The ability's output lands in Roll20 chat.",
+          "character ability of that name (which exists), invoked with allowAbilityFallback:true. " +
+          "The ability's output lands in Roll20 chat.",
       sheet: sheetStamp(ctx),
     };
   });
@@ -3372,6 +3992,13 @@ on("chat:message", function (msg) {
   // write must not double-apply).
   if (nonce != null && Object.prototype.hasOwnProperty.call(PROCESSED_NONCES, String(nonce))) {
     let prior = PROCESSED_NONCES[String(nonce)];
+    if (prior.pending) {
+      // Do NOT record this through writeResult — that would replace the pending marker with an
+      // error and the original call's settlement must still win.
+      emitResult(nonce, undefined, "nonce " + nonce + " is still in flight (" + action + ") — the " +
+        "original call has not settled; wait for its result or read the sheet back rather than resending");
+      return;
+    }
     writeResult(nonce, prior.data, prior.error);
     return;
   }

@@ -75,7 +75,7 @@ driving a browser against your live Roll20 account, which is a human-attended ac
 
 | file (in the data dir) | what it is | lifetime |
 |---|---|---|
-| `roll20-rt-token.json` | the realtime credential — **campaign-scoped**, carries that campaign's RTDB shard | ~50 min |
+| `roll20-rt-token.json` | the realtime credential — **campaign-scoped**, carries that campaign's RTDB shard | ~1 h |
 | `roll20-upload-cache.json` | endpoint + cookies for art upload (uploads themselves are a plain HTTP POST) | 8 h |
 
 When one is missing, stale, or belongs to a different campaign, you get a typed error
@@ -110,13 +110,13 @@ save. There is no deploy tool and no `release:mod` script; both drove a browser.
 Two things worth knowing:
 
 - **Verify the load, not the save.** The Mod console must print
-  `[GM_AI_Bridge] Relay script loaded (v2.9.0)`. A successful paste is not a running script.
+  `[GM_AI_Bridge] Relay script loaded (v2.10.0)`. A successful paste is not a running script.
 - **Deploys are per-campaign.** Each campaign carries its own copy, so one table can be running an
   older relay than another. A mismatch is reported through `transport_status`.
 
 ## What the servers expose
 
-**`roll20-dm`** — tokens and HP (`update_token_hp`, `update_hp_many`, `kill_token`, `set_pc_dying`),
+**`roll20-dm`** — tokens and HP (`update_token_hp`, `update_hp_many`, `kill_token`, `revive_token`, `set_pc_dying`),
 conditions and markers (`set_token_marker`, `break_concentration`), initiative
 (`roll_initiative` with explicit `entries`, `update_turn_order`, `inject_round_marker`,
 `advance_turn`), dice (`roll_dice`, `post_roll_as_character`), AoE (`resolve_aoe`) and zones,
