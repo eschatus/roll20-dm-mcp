@@ -47,6 +47,12 @@ export function json(value: unknown, pretty = true): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value, pretty ? null : undefined, pretty ? 2 : undefined) }] };
 }
 
+// fail() with a structured payload: for a failure (or partial failure) where the
+// caller needs the per-field detail, not just prose.
+export function failJson(value: unknown): ToolResult {
+  return { ...json(value), isError: true };
+}
+
 // Roll20 stores numeric fields as STRINGS (token bar1_value/bar1_max, turnorder pr,
 // selection geometry, …). Passing them through untyped puts QUOTED numbers ("133",
 // "17") into the JSON tool-results the model reads back — a "retyping smell" that
