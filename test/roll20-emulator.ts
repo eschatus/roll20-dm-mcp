@@ -17,7 +17,14 @@ import * as vm from "vm";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const AI_RELAY_PATH = path.resolve(__dirname, "../mod-scripts/ai-relay.js");
+// AI_RELAY_PATH env override: point the whole emulator suite at the MINIFIED deploy artifact
+// (npm run build:mod -- --verify) to prove the bytes a DM actually pastes behave like the source.
+// node --check only proves the minified output parses; this proves it still works.
+// Exported so the tests that read the relay as TEXT (source-level gates, parsed constants) read the
+// same bytes the emulator executes — otherwise --verify would check them against the source.
+export const AI_RELAY_PATH = process.env.AI_RELAY_PATH
+  ? path.resolve(process.env.AI_RELAY_PATH)
+  : path.resolve(__dirname, "../mod-scripts/ai-relay.js");
 
 // Keys Roll20 mirrors between a settable form and a read-only underscore form
 // (createObj("graphic",{pageid}) is later read as get("_pageid")). We store both.
@@ -65,6 +72,18 @@ export interface R20Obj {
 export interface EmulatorOptions {
   seed?: number;
   gmPlayerId?: string;
+  /**
+   * Install the Mod Script Sandbox **v1.5**-only globals (`toAbove`/`toBelow`). Default false =
+   * a v1.0 sandbox, where those identifiers do not exist at all — which is the case the relay's
+   * typeof guard has to survive, so it must be the default here too.
+   */
+  sandbox15?: boolean;
+  /**
+   * Backing map for the `getSheetDefaultValue(name, valtype?)` global. Omit to model a sandbox/
+   * sheet that does not expose the function. A `valtype` is looked up as "name:valtype" first,
+   * then bare "name".
+   */
+  sheetDefaults?: Record<string, unknown>;
 }
 
 export class Roll20Emulator {
@@ -76,6 +95,15 @@ export class Roll20Emulator {
   private gmIds = new Set<string>();
   private rng: () => number;
   private vmRng: () => number;
+  private sandbox15: boolean;
+  private sheetDefaults?: Record<string, unknown>;
+
+  /**
+   * Every relative-z-order call the relay made, in order. The emulator does not model z-order (as
+   * with toFront/toBack), so this is what a test asserts on: that the relay resolved both objects
+   * and handed the right PAIR to the right v1.5 global.
+   */
+  readonly zOrderCalls: Array<{ fn: "toAbove" | "toBelow"; objectId: string; targetId: string }> = [];
 
   readonly chatLog: Array<{ who: string; content: string; options?: unknown }> = [];
   readonly logs: unknown[][] = [];
@@ -90,6 +118,8 @@ export class Roll20Emulator {
     this.rng = makeRng(seed);
     this.vmRng = makeRng(seed ^ 0x9e3779b9);
     this.gmPlayerId = opts.gmPlayerId ?? "gm-player-1";
+    this.sandbox15 = opts.sandbox15 ?? false;
+    this.sheetDefaults = opts.sheetDefaults;
     this.gmIds.add(this.gmPlayerId);
     this.campaignModel = this.makeObj("campaign", { turnorder: "", playerpageid: "" }, "campaign-singleton");
     // The campaign singleton is not part of findObjs results.
@@ -354,6 +384,25 @@ export class Roll20Emulator {
       setTimeout,
       clearTimeout,
     };
+    // v1.5-only globals. On v1.0 they are ABSENT, not stubs — the relay's `typeof toAbove ===
+    // "function"` guard is only exercised if the identifier is genuinely undeclared.
+    if (this.sandbox15) {
+      sandbox.toAbove = (obj: R20Obj, target: R20Obj) => {
+        this.zOrderCalls.push({ fn: "toAbove", objectId: obj.id, targetId: target.id });
+      };
+      sandbox.toBelow = (obj: R20Obj, target: R20Obj) => {
+        this.zOrderCalls.push({ fn: "toBelow", objectId: obj.id, targetId: target.id });
+      };
+    }
+    if (this.sheetDefaults) {
+      const defaults = this.sheetDefaults;
+      sandbox.getSheetDefaultValue = (name: string, valtype?: string): unknown => {
+        const keyed = valtype ? `${name}:${valtype}` : undefined;
+        if (keyed !== undefined && keyed in defaults) return defaults[keyed];
+        return defaults[name];
+      };
+    }
+
     vm.createContext(sandbox);
     vm.runInContext(code, sandbox, { filename: "ai-relay.js" });
     this.emit("ready");
@@ -395,6 +444,24 @@ export class Roll20Emulator {
   }
 
   /**
+   * Async twin of relay(), for the actions that resolve a Promise before writing their result
+   * (`getSheetDefaultValues` when the sheet's own getter turns out to be async — Roll20 does not
+   * document which). Dispatches, lets the microtask queue drain, then reads the same nonce.
+   */
+  async relayAsync<T = unknown>(cmd: Record<string, unknown>, opts: { playerid?: string } = {}): Promise<T> {
+    const nonce = ++this.nonceCounter;
+    this.resultByNonce.delete(nonce);
+    this.dispatchChat("!ai-relay " + JSON.stringify({ ...cmd, nonce }), { playerid: opts.playerid });
+    await new Promise((resolve) => setImmediate(resolve));
+    const result = this.resultByNonce.get(nonce);
+    if (!result) {
+      throw new Error(`Relay produced no result for action '${cmd.action}' (nonce ${nonce})`);
+    }
+    if (result.error) throw new Error(`Relay error for '${cmd.action}': ${result.error}`);
+    return result.data as T;
+  }
+
+  /**
    * Dispatch a relay command with a CALLER-SUPPLIED nonce and return the raw
    * result record ({} if none was produced). Used to exercise the sandbox's
    * same-nonce replay idempotency (resend the same nonce → echo, no re-run).
@@ -414,9 +481,10 @@ export class Roll20Emulator {
     this.gmIds.add(playerId);
   }
 
-  /** Create a page-like id (Roll20 doesn't require a page object for our paths). */
-  createPage(name = "Test Map"): string {
-    const page = this.makeObj("page", { name });
+  /** Create a page-like id (Roll20 doesn't require a page object for our paths).
+   *  `props` sets extra page fields — e.g. `width`/`height`, which Roll20 keeps in 70px units. */
+  createPage(name = "Test Map", props: Record<string, unknown> = {}): string {
+    const page = this.makeObj("page", { name, ...props });
     return page.id;
   }
 
@@ -462,6 +530,17 @@ export class Roll20Emulator {
       left: t.get("left"),
       top: t.get("top"),
       aura1_radius: t.get("aura1_radius"),
+      // Both aura slots (plus shape/visibility) are readable here because the concentration
+      // teardown has to pick the RIGHT slot (issue #210) — a test can only prove that if it can
+      // see slot 2 as well as slot 1.
+      aura1_options: t.get("aura1_options"),
+      aura1_square: t.get("aura1_square"),
+      showplayers_aura1: t.get("showplayers_aura1"),
+      aura2_radius: t.get("aura2_radius"),
+      aura2_color: t.get("aura2_color"),
+      aura2_options: t.get("aura2_options"),
+      aura2_square: t.get("aura2_square"),
+      showplayers_aura2: t.get("showplayers_aura2"),
       represents: t.get("represents"),
       gmnotes: t.get("gmnotes"),
       // PC/NPC/sidekick HP + death routing keys off this (isPcToken), so a test must

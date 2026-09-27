@@ -14,14 +14,16 @@ import { buildCombatServer } from "./server-combat.js";
 import { onRtdbEvent, startRtdbSubscriptions } from "./bridge/roll20-rt.js";
 import { startWatchdog } from "./bridge/sandbox-watchdog.js";
 
-// Long-running HTTP MCP server. One process owns the shared Playwright browser
-// (via src/bridge/browser.ts singletons) and serves multiple clients — the Voice
-// HUD app and Claude Code both connect here, so there's a single relay queue and
-// no browser-lock conflict.
+// Long-running HTTP MCP server. One process owns the shared RT connection (the
+// src/bridge/roll20-rt.ts singletons) and serves multiple clients — the gem and
+// Claude Code both connect here, so there's a single relay queue and one RTDB
+// listener. There is no browser to own: src/bridge/browser.ts is deleted and
+// `playwright` is not a dependency (#175/#179), so the only thing a client can
+// contend over is the relay.
 //
 // Stateful sessions: each client's `initialize` mints a session + its own McpServer
-// instance. All instances share the same browser/relay module singletons, so the
-// tools behave identically regardless of which session calls them.
+// instance. All instances share the same relay module singletons, so the tools
+// behave identically regardless of which session calls them.
 
 const PORT = Number(process.env.ROLL20_HTTP_PORT) || 39200;
 const HOST = process.env.ROLL20_HTTP_HOST || "127.0.0.1";

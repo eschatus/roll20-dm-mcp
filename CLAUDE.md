@@ -39,10 +39,20 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
   the Roll20 API sandbox and only takes effect once deployed — but deploying means driving a
   browser against a live account, so it is a human-attended act, not something an MCP server or a
   dev session does. Paste `mod-scripts/ai-relay.js` into the campaign's API console yourself (or
-  use the gem's attended flow). Verify the LOAD, never the write: the sandbox banner
+  use the gem's attended flow). **`npm run build:mod`** produces the paste-ready artifact
+  (`mod-scripts/.ai-relay.deploy.js`, gitignored): esbuild minify → `node --check` → a
+  version-drift assert, ~156KB → ~63KB. `npm run build:mod -- --verify` re-runs the emulator
+  suite against the MINIFIED bytes (the `AI_RELAY_PATH` env override on `test/roll20-emulator.ts`),
+  which is the only check that proves mangling did not break a handler — `node --check` only
+  proves it parses. Verify the LOAD, never the write: the sandbox banner
   `[GM_AI_Bridge] Relay script loaded (vX.Y.Z)` or a `ping` returning the version. Deploys are
   **per-campaign** — each campaign carries its own copy, so one can run a newer relay than another.
-  CI runs `node --check mod-scripts/ai-relay.js` as a syntax gate.
+  CI runs `node --check mod-scripts/ai-relay.js` as a syntax gate. **`test/no-browser-invariant.test.ts`
+  keeps this closed structurally:** no file under `src/`, `scripts/`, `test/` or `mod-scripts/` may
+  import `playwright`/`puppeteer`, attach over CDP, launch a browser, or name a remote-debugging
+  port, and `package.json` may declare no browser dependency and no npm script whose command
+  drives a browser or a deleted deploy tool (`build:mod` only builds the paste file). Credentials here are **furnished, never minted** — a stale one throws a typed error
+  naming what to refresh; harvesting belongs to the gem, where a human is watching one window.
 - **Relay version handshake:** `AI_RELAY_VERSION` (`mod-scripts/ai-relay.js`) and
   `EXPECTED_RELAY_VERSION` (`src/bridge/relay-version.ts`) are a hand-synced pair, locked by
   `test/relay-version.test.ts` — bump BOTH when changing `ai-relay.js` in a way worth flagging to a
@@ -64,9 +74,10 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
   creation was rebuilt over RTDB (#178) and why `screenshot_roll20` left. The browser recon
   instruments live in the sibling `roll20-recon` repo; the wall-dataset harvesters live in
   `wall-seg`. Credentials are FURNISHED, never minted: the RT token is read from
-  `<data dir>/roll20-rt-token.json` (campaign-scoped) and art uploads from
-  `roll20-upload-cache.json`; both throw a typed error (`Roll20TokenUnavailableError`,
-  `Roll20UploadCredentialError`) naming what to refresh instead of harvesting. Art upload is a
+  `ROLL20_RT_TOKEN` or `<data dir>/roll20-rt-token.json` (same object either way, env wins,
+  campaign-scoped) and art uploads from `roll20-upload-cache.json`; both throw a typed error
+  (`Roll20TokenUnavailableError`, `Roll20UploadCredentialError`) naming what to refresh instead of
+  harvesting. A set-but-unusable `ROLL20_RT_TOKEN` throws rather than falling back to the file. Art upload is a
   plain multipart POST — browserless, credential furnished. Harvesting happens in the gem's own
   logged-in session, where a human is present. The legacy browser→chat relay is DELETED (#122/#179) —
   RT is the only transport, and an RT failure is a loud hard stop, never a quiet fallback. Harvest
@@ -159,14 +170,23 @@ moved to beyond-mcp with the code.)
   is structurally incapable of carrying `[[`/`@{`/`%{`/`&{` (`encodeURIComponent` turns `{` into
   `%7B`, `[` into `%5B`, `&` into `%26`); `parseAibridge` decodes it and still accepts the legacy
   marker for a campaign that hasn't been re-pasted. Enumerating Roll20's trigger syntax was the
-  losing move — that list never included `&{`. Verify writes instead by
-  reading `Campaign.characters.get(id).attribs` directly in the browser, which bypasses the
-  chat-echo path entirely — see `scripts/dump-character-attrs.ts` and
-  `scripts/find-character-by-name.ts`.
+  losing move — that list never included `&{`. **There is currently NO chat-free way
+  to verify an attribute write.** The CDP dump scripts this note used to point at
+  (`scripts/dump-character-attrs.ts`, `scripts/find-character-by-name.ts`) are DELETED (#224): they
+  drove whatever logged-in Roll20 tab was open (an ambient credential, #83/#175) and imported
+  `playwright`, which isn't a dependency. A browserless RTDB attribute reader is tracked in **#230**
+  (blocked on locating the attribute node; probe in PR #231). Until it lands, don't read
+  `rollbase`-style fields back at all — nobody has confirmed the ≥2.7.0 encoding makes it safe.
 - **Ability-score `_mod` attributes don't auto-derive either**, for the same sheet-worker-never-
   fires-on-the-API reason. `createCharacter`'s relay action now derives `<ability>_mod` from the
   raw score at creation time (an explicitly-passed `_mod` is left untouched) — see
   `ACTIONS["createCharacter"]` in `ai-relay.js`.
+- **When the sandbox dies, read the Mod console callstack FIRST.** Both crash classes above (an
+  `undefined`/`NaN` value reaching `t.set()`, and `@{`/`[[` echoed back through chat) presented as
+  nothing but a dead sandbox, and cost days each. That is no longer the only symptom available: on
+  v1.5 `log` error messages carry a context object (e.g. `[Roll20 character -id]`), and the April
+  2026 Mod server release added per-script callstacks with script name, tab number, line and column,
+  plus attribution for "Possible Infinite Loop Detected" (#209).
 
 ## Where things live
 
@@ -183,7 +203,9 @@ skills/                  dm-rules.md (canonical play rules), dm-map-setup.md
 .claude/commands/        /combat, /round (session choreography)
 docs/                    architecture, decisions, protocols, coverage, security
 test/                    integration tests + the Roll20 emulator (roll20-emulator.ts, harness.ts)
-scripts/                 one-off live diagnostics (run with tsx, e.g. dump-character-attrs.ts)
+scripts/                 one-off live diagnostics (run with tsx). Browserless only — see
+                         test/no-browser-invariant.test.ts. Plus build-mod.mjs — the
+                         `npm run build:mod` relay minifier/gate
 wiki/                    GitHub wiki content (user-facing setup/player docs)
 ```
 
@@ -220,12 +242,23 @@ vision/wall tooling is maps-only.)
    objects** (not map-layer rectangles): doors `#FF0000`, windows `#00FFFF`, secret doors `#9932CC`.
 
 **Map gotchas:**
-- **Wall color:** `auto_place_dl_walls` and `place_polyline_walls` default `strokeColor` to yellow
-  `#FFFF00`. **Always pass `#0044FF`** (project convention: blue walls, cyan windows (#00FFFF)) — the default
-  violates it.
+- **Wall color:** `auto_place_dl_walls` and `place_polyline_walls` default `strokeColor` to blue
+  `#0044FF` (project convention: blue walls, cyan windows (#00FFFF)); the relay's wall creators
+  default to it too. They used to default to yellow `#FFFF00` — the source of yellow walls (#207);
+  a yellow wall now is a regression, not a missed argument.
 - `pathv2` re-anchors to the first point regardless of passed x/y — build paths first-point-as-center.
 - **Upload dedup:** `upload_and_place` reuses a stale art-library asset by filename — use a unique
   filename.
+- **NPC token HP digits are editor-only by Roll20's default** (#204): `bar1_num_permission` `""`
+  (the default) = only the token's editors (GM + controllers) read the number, and an NPC token
+  has no controllers — so players already can't. `create_npc_token` / `create_monster_token`
+  write nothing by default; `showHpNumbersToPlayers: true` opts a token into `"everyone"`. Don't
+  "harden" this to `"hidden"`: it protects nothing and may hide the GM's own digits. Anything a
+  creation path sets on a token must ALSO be listed in `setDefaultTokenForChar`'s `KEYS` in
+  `ai-relay.js`, or it is silently dropped when the sheet's default token is applied — that list
+  lost the aura shape exactly this way. (Exception: the interaction flags are deliberately NOT
+  in `KEYS` — `interactionManualReset:true` is a reset action and `interactionTriggered` is
+  Roll20-set state; neither belongs in a default token.)
 - **Token creation takes CALLER-SUPPLIED STATS** (#171): `create_pc_token` / `create_npc_token` /
   `create_monster_token` perform no lookup — resolve HP/AC yourself (ddb-mcp, a module stat block,
   the DM) and pass them. `create_monster_token` is now identical to `create_npc_token` and kept only
@@ -276,12 +309,47 @@ registry override (`sidekick: true`, `src/registry/characters.ts`) is needed to 
   (`registry.listSidekickNames()`) so a sidekick routes as an NPC everywhere HP/death routing is
   decided. See issue #132.
 
+**Death and its undo:** `kill_token` is the one-call death procedure (dead marker + map layer);
+`revive_token` is its one-call inverse (#217) — HP (required, must be ≥ 1 or the auto-death
+threshold re-kills the token), clear `dead`, back to the `objects` layer, turn-order entry restored.
+The entry comes back three ways, in this order: an explicit `initiative` argument, the entry that
+survived the kill (leaving the token layer is what drops a combatant from the tracker), else a
+silent `rollInitiativeForTokens` re-roll — NPC/sidekick only; a true PC with neither reports
+`initiativeSource:"pending"` and the player rolls (PC initiative is read-only). Always upserted with
+`mergeTurnOrder keepTurn:true`, never a wholesale write: Roll20 marks the active turn by rotating
+the array, and the plain merge's pr-descending sort would rewind play to the top and trip the turn
+hook — `keepTurn` splices into the live rotation and leaves row 0 alone. `keepTurn` exists only from relay 2.9.0 — an older relay drops the flag and
+re-sorts — so before any turn-order write revive pings the relay and, if it is older than 2.9.0
+or reports no version, skips the write and returns `initiativeSource:"pending"` with an
+`initiativeNote` to redeploy (unknown is treated as stale on purpose: a skipped write costs one
+re-run, a wrong one rewinds a live turn). The four steps commit one relay call at a time (no
+transaction); a failure part-way reports which steps landed, and the repair is to re-run
+`revive_token` — it is idempotent. Never hint `roll_initiative` as a repair: its legacy sort
+rewinds the turn and it would roll a PC's initiative. Nothing on the board remembers a pre-kill HP or `pr`: a stash at the layer-write seam would
+have to be hand-synced across BOTH write paths (`roll20-rt.ts`'s direct write and `ai-relay.js`'s
+copy), which is why revive reads the live order instead of trusting a cache.
+
 **Auras (emanations):** `set_token_aura` is the one-call primitive — radius in feet, `0` clears,
 slot 1 or 2, player-visible by default. Shape goes to `aura{n}_options` (the authoritative field;
 Roll20 keeps the legacy `aura{n}_square` boolean in sync with it, so never write both). Roll20
 documents `"circle"`/`"square"`; the 2026-09-01 release added hex and outline-only variants whose
 property strings Roll20 hasn't published, so the schema takes a free string rather than a guessed
 enum. Emanations that move with a creature use an aura; fixed areas use `create_zone`.
+**A concentration aura must CLAIM its slot** (`concentration: true`, #210): the slot is recorded in
+`state.GM_AI_Bridge.concentrationAuras` (token id → 1|2, or 0 once released) and
+`breakConcentration` tears down *that* slot — the aura analogue of a zone's
+`{type:'concentration', caster}` duration. A token that was NEVER tracked falls back to slot 1
+(the old always-slot-1 behaviour); a *released* claim (ring cleared, repurposed, or already torn
+down) is slot 0 and the break touches no aura at all, so it can't wipe an unrelated slot-1 ring.
+Recasting onto the other slot moves the claim and zeroes the ring it used to own. Both
+`set_token_aura` and `resolve_aoe draw:"aura"` go through the one `setTokenAura` relay action
+(write + bookkeeping in one step); a raw `set_token_props` write of `aura{n}_radius` is routed
+through the Mod (never the RTDB direct path) so it releases the claim on the slot it overwrites.
+**The contract in one sentence:** a tagged (`concentration:true`) ring is torn down on its own slot,
+an untracked token's slot-1 ring is torn down as it always was, and a released claim touches
+nothing — except that an UNTAGGED slot-1 ring drawn over a released claim resets the token to
+untracked, so a caller that never tags (the pinned gem, `resolve_aoe`'s default) still gets a
+slot-1 teardown on every break, not just the first.
 
 **Conditions/markers:** `set_token_marker` → `toggleCondition` → three-tier `resolveMarkerForState`
 (CONDITION → PSEUDO → hashed ad-hoc). Custom campaign marker set, IDs 4444311–4444352; default

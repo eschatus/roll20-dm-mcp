@@ -76,7 +76,7 @@ ID `17491327`) is the project's control campaign (no real PCs) — skip Phase 1'
 | 0.1 | `node --version` | ≥ v20 | [ ] |
 | 0.2 | `npm install` (repo root) | clean install. **No `npx playwright install` step** — confirm `playwright` is absent from `package.json` dependencies | [ ] |
 | 0.3 | Confirm `.env` has `ANTHROPIC_API_KEY` | Needed **only** by the maps suite's `analyze_battlemap` (`src/tools/vision.ts` is the sole `@anthropic-ai/sdk` importer). The combat server reaches no Anthropic code — skip this if you skip Phase 2. **No DDB credential is needed or used.** | [ ] |
-| 0.4 | Confirm the data dir holds a **current** `roll20-rt-token.json` for the campaign you're about to test | `{campaignId, customToken, databaseURL, harvestedAt}`, < 50 min old, **matching this campaign** (tokens are campaign-scoped). The server never harvests one — refresh it from the gem. Data dir = `./data` unless `ROLL20_DATA_DIR` is set. | [ ] |
+| 0.4 | Confirm the data dir holds a **current** `roll20-rt-token.json` for the campaign you're about to test | `{campaignId, customToken, databaseURL, harvestedAt}`, well under an hour old, **matching this campaign** (tokens are campaign-scoped). The server never harvests one — refresh it from the gem. Data dir = `./data` unless `ROLL20_DATA_DIR` is set. | [ ] |
 | 0.5 | If you'll run Phase 2: confirm `roll20-upload-cache.json` too | `{endpoint, cookies, harvestedAt}`, < 8 h old. Missing/stale → `Roll20UploadCredentialError` on any upload. | [ ] |
 | 0.6 | `npm run build` | `tsc` exits 0 (required for the stdio maps server + `npm start`) | [ ] |
 | 0.7 | `npm test` | suite green — **34 files, 400 tests passing, 0 skipped** as of v2.0.0 | [ ] |
@@ -133,7 +133,7 @@ filename** — upload dedups by name.
 | 2.2 | Derive page size: `widthSquares = round((W − offsetX)/gridSizePx)`, `heightSquares = round((H − offsetY)/gridSizePx)` | sane integers | [ ] |
 | 2.3 | `setup_roll20_page { name: "E2E Arena", widthSquares, heightSquares, scaleNumber: 5, scaleUnits: "ft" }` ⚠ | page created **browserlessly** via `rtCreatePage` (RTDB write mirroring an existing page's schema — `createPageViaUI` is deleted, and `createObj("page")` is still unsupported in the sandbox); returns `pageId` | [ ] |
 | 2.4 | `upload_and_place_map_image { pageId, imagePath, widthSquares, heightSquares }` ⚠ | background on the **map** layer; returns `graphicId` | [ ] |
-| 2.5 | `auto_place_dl_walls { pageId, walls, doors, windows, sourceImageWidth: W, sourceImageHeight: H, pageWidthSquares, pageHeightSquares, strokeColor: "#0044FF" }` ⚠ | DL walls placed in **blue**. **GOTCHA: you MUST pass `#0044FF`** — the default is yellow `#FFFF00`. | [ ] |
+| 2.5 | `auto_place_dl_walls { pageId, walls, doors, windows, sourceImageWidth: W, sourceImageHeight: H, pageWidthSquares, pageHeightSquares }` ⚠ | DL walls placed in **blue** `#0044FF` — the `strokeColor` default (it was yellow `#FFFF00` before #207; a yellow wall now is a regression). | [ ] |
 | 2.6 | `decorate_openings { pageId, doors, windows, secretDoors, sourceImageWidth: W, sourceImageHeight: H, pageWidthSquares, pageHeightSquares }` ⚠ | native DL **doors #FF0000 / windows #00FFFF / secret #9932CC** | [ ] |
 | 2.7 | `get_walls { pageId, includePoints: true }` and `get_doors { pageId }` 🔒 | counts match what 2.5/2.6 reported; wall vertices land inside the page's pixel bounds. **`screenshot_roll20` is removed** — verification is now numeric here plus your own eyes on the Roll20 tab | [ ] |
 | 2.8 | Look at the page in Roll20 with the DL layer visible | walls + openings track the art | [ ] |
@@ -263,6 +263,7 @@ Fixed AoEs that stay put → **zones**.
 |---|---|---|---|
 | 5F.1 | "The ogre drops." | **`kill_token { characterName: "Ogre" }`** ⚠ — one call does the whole death procedure (dead marker + move to the **map** layer). It replaces the old `set_token_marker(dead)` + `set_token_props(layer:"map")` pair, and it is **not** an HP edit — don't set HP to 0 | [ ] |
 | 5F.1b | "Thorne is down." (a **true PC** at 0 HP) | **`set_pc_dying { characterName: "Thorne" }`** ⚠ — prone + unconscious, token **stays on the token layer**, never dead, never map layer. Death saves are player-owned. If Thorne was concentrating, the teardown (marker + aura + linked zones) cascades automatically. `kill_token` only on the DM's explicit declaration of death | [ ] |
+| 5F.1b2 | "No wait — that was the wrong goblin, it's still up at 4." (right after 5F.1) | **`revive_token { characterName: "Ogre", hp: 4 }`** ⚠ — ONE call undoes the kill: HP back (never 0), `dead` cleared, token back on the **objects** layer, turn-order entry restored (original `pr` if it survived, else a fresh roll — reported as `initiativeSource`) **without changing whose turn it is** — the tracker's top row is the same combatant before and after, and no turn-hook whisper fires. It must NOT hand-unwind this with `update_token_hp` + `set_token_marker` + `set_token_props` + `roll_initiative`, and the players' initiative entries must all still be there afterwards | [ ] |
 | 5F.1c | "She loses the spell." | `break_concentration { characterName: … }` ⚠ — removes the Concentrating marker, zeroes `aura1_radius`, deletes zones whose duration is `{type:'concentration', caster}`. Returns what it tore down | [ ] |
 | 5F.2 | Any public line | `send_narration` contains **no numbers** (no "39/59", no totals) — damage/effects in words only; ASCII/Wounded receipt OK ⚠ | [ ] |
 | 5F.3 | Per-turn report | a **markdown report**: one-line summary + **Changes** + **Actions/tools**; GM-facing so exact HP is fine here | [ ] |
@@ -341,6 +342,7 @@ Type these as a **player** in Roll20 chat. Watch the `/events` SSE stream (e.g.
 | 7.2 | Open the **Setup** tab | status shows dataDir, **API key**, **RT token**, campaign count, active slug; a `!` badge until essentials done, then a green "You're all set" | [ ] |
 | 7.3 | If needed: enter Anthropic key; **Connect Roll20** (first-party token harvest in the gem's own Electron session — not OAuth); optionally pick a larger STT model / enable GPU; **copy the Mod** to clipboard | each step flips its status green | [ ] |
 | 7.4 | **The harvest contract:** confirm Connect Roll20 refreshes `roll20-rt-token.json` (and the upload cache) in the dir this server reads | the gem is the **sole harvester**; this server only reads those files and raises `Roll20TokenUnavailableError` / `Roll20UploadCredentialError` when they're absent or stale. Whether the gem also connects D&D Beyond (for beyond-mcp) is **dm-whisper's business, not this repo's** | [ ] |
+| 7.4a | **The stale-file trap (#216):** with the gem up for ≥ 50 min, call `transport_status` | `rtToken.stale` is `true` with a note naming the other readers it locks out, even though `rt.health` is `ok`. The gem's own socket is fine; a second reader of the data dir is not. Press **Connect Roll20** → `rtToken.ageMinutes` drops and `stale` clears | [ ] |
 | 7.5 | Say/type "list my campaigns" → switch to **e2e-test** | active campaign = e2e-test | [ ] |
 
 ### 7B — A voice turn + confirm flow
@@ -526,19 +528,23 @@ Output JSON:
   (`npm run release:mod` and `deploy_mod_script` are deleted.)
 - **Transport:** RT (Firebase RTDB) only. No browser, no Playwright, no chromium step.
 - **Credentials:** furnished, never minted — the server reads
-  `roll20-rt-token.json` (campaign-scoped, ~50 min) and `roll20-upload-cache.json`
+  `roll20-rt-token.json` (campaign-scoped, ~1 h) and `roll20-upload-cache.json`
   (8 h) from the data dir (`ROLL20_DATA_DIR`, default `./data`) and raises
   `Roll20TokenUnavailableError` / `Roll20UploadCredentialError` when they're missing
-  or stale. The gem harvests them.
+  or stale. The gem harvests them — reactively, only when its own server fails, so a
+  long-up gem leaves the file cold and locks out every other reader of the dir
+  (#216). `transport_status.rtToken` is the warning.
 - **`ANTHROPIC_API_KEY`:** maps suite only (`analyze_battlemap`). The combat server
   reaches no Anthropic code.
-- **Wall color:** always pass `#0044FF` (default is yellow). Openings: doors
+- **Wall color:** blue `#0044FF` (the tools' default since #207). Openings: doors
   `#FF0000`, windows `#00FFFF` (cyan), secret `#9932CC`.
 - **HP routing (three-way):** true PC → `adjustPcHp` (tracked, never bar1);
   NPC → bar1; **sidekick** (player-controlled + registry override) → bar1, and dies
   like an NPC. Set with `set_token_class`.
 - **Death:** `kill_token` (NPC/sidekick, or a DM-declared PC death) — one call, marker
   + map layer, not an HP edit. A true PC at 0 HP → `set_pc_dying`.
+- **Undo a death:** `revive_token { characterName, hp }` — one call, the inverse of
+  `kill_token` (HP ≥ 1, clears `dead`, objects layer, turn-order entry back).
 - **AoE vs emanation vs zone:** `resolve_aoe` for the AoE event; **aura** for
   emanations (move with caster); **`create_zone`** for fixed areas.
 - **SSE `/events` emits:** `combat-update`, `mob-plan` (`plan: null` = cleared),

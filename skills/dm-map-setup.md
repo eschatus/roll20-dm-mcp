@@ -38,9 +38,9 @@ Ask the DM for the page name if not provided. Default: 30×20 squares, 5ft scale
 
 ### 4. Place DL walls and decorate openings
 
-Call `auto_place_dl_walls` with the walls from step 2. **Always pass `strokeColor: "#0044FF"`**
-(blue) for DL walls — the tool defaults to yellow `#FFFF00`, which violates the project convention
-(blue `#0044FF` for walls, cyan `#00FFFF` for windows). Tune the geometry for the map type:
+Call `auto_place_dl_walls` with the walls from step 2. DL walls are blue `#0044FF` — the tool's
+`strokeColor` defaults to it, so leave it unset unless the DM asks for something else (project
+convention: blue `#0044FF` for walls, cyan `#00FFFF` for windows). Tune the geometry for the map type:
 
 **Stone dungeon / cave (rough walls):**
 ```
@@ -68,7 +68,7 @@ maxSegmentPx: 150         ← short chunks match organic curves
 
 If the DM hasn't specified a wall type, look at the map and pick the closest profile. Mention which profile you used.
 
-(If you instead place an organic perimeter with `place_polyline_walls`, pass `strokeColor: "#0044FF"` there too — it carries the same yellow `#FFFF00` default.)
+(If you instead place an organic perimeter with `place_polyline_walls`, it defaults to the same blue `#0044FF`.)
 
 After placing DL walls, immediately call `decorate_openings` with the `doors`, `windows`, and `secretDoors` arrays from the analysis. It creates **native Roll20 Dynamic Lighting door/window objects** (not map-layer rectangles), color-coded so you can tell them apart in the editor:
 

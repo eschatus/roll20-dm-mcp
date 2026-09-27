@@ -606,4 +606,40 @@ export function registerMapTools(server: McpServer): void {
       return { content: [{ type: "text", text: JSON.stringify({ ok: true, objectId }) }] };
     }
   );
+
+  // Relative z-order — what to_front/to_back cannot express. Mod Script Sandbox v1.5 only; on
+  // v1.0 the relay refuses with the campaign's sandbox version named (#209).
+  server.tool(
+    "to_above",
+    "Move a Roll20 object immediately ABOVE another one in the z-order — the precise alternative to to_front, which can only go all-the-way-front. Both objects must be on the same layer, and the campaign must be on Mod Script Sandbox v1.5.",
+    {
+      objectId: z.string().describe("The object to move"),
+      targetId: z.string().describe("The object to position it directly above"),
+      objectType: z.string().default("graphic").describe("Roll20 type of objectId, e.g. graphic, path, text"),
+      targetType: z.string().optional().describe("Roll20 type of targetId (defaults to objectType)"),
+    },
+    async ({ objectId, targetId, objectType, targetType }) => {
+      const result = await roll20.relayCommand<{ ok: boolean; layer: string | null }>({
+        action: "toAbove", objectId, targetId, objectType, targetType,
+      });
+      return { content: [{ type: "text", text: JSON.stringify({ ...result, objectId, targetId }) }] };
+    }
+  );
+
+  server.tool(
+    "to_below",
+    "Move a Roll20 object immediately BELOW another one in the z-order — the precise alternative to to_back, which can only go all-the-way-back. Both objects must be on the same layer, and the campaign must be on Mod Script Sandbox v1.5.",
+    {
+      objectId: z.string().describe("The object to move"),
+      targetId: z.string().describe("The object to position it directly below"),
+      objectType: z.string().default("graphic").describe("Roll20 type of objectId, e.g. graphic, path, text"),
+      targetType: z.string().optional().describe("Roll20 type of targetId (defaults to objectType)"),
+    },
+    async ({ objectId, targetId, objectType, targetType }) => {
+      const result = await roll20.relayCommand<{ ok: boolean; layer: string | null }>({
+        action: "toBelow", objectId, targetId, objectType, targetType,
+      });
+      return { content: [{ type: "text", text: JSON.stringify({ ...result, objectId, targetId }) }] };
+    }
+  );
 }
