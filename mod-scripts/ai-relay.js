@@ -1721,6 +1721,252 @@ ACTIONS["drawLayerTest"] = function (args, msg, nonce, senderPlayerId) {
         return;
       }
       };
+// ── pathv2 zone-primitive probe (issue #208) ─────────────────────────────────
+// SPIKE INSTRUMENT, not a production drawing path. Zones today are legacy `path`
+// objects (ACTIONS["createZone"]) with two known limits: no working fill_opacity
+// (so tint is baked into the fill colour, #162) and no name/gmnotes (so metadata
+// lives in state.GM_AI_Bridge.zones, #164). pathv2 documents a `fill` property and
+// shapes "eli"/"rec", which would make a spell area a real ellipse/rectangle.
+//
+// This draws one pathv2 per variant in a left-to-right row and reports what Roll20
+// actually STORED for each, so three questions can be settled on a live table:
+//   Q1  does `fill` honour an 8-digit #RRGGBBAA — i.e. real translucency?
+//       (and does pathv2 have a working `fill_opacity`, unlike legacy path?)
+//   Q2  does shape "eli"/"rec" render a proper ellipse/rectangle off the WALLS
+//       layer — on "objects", and on "map"?
+//   Q3  does pathv2 carry name/gmnotes (the Objects doc doesn't list them)?
+//
+// Read-back answers storage only. Rendering needs eyes on the page, which is why
+// the objects are LEFT there on purpose — clean up afterwards with
+// removeObject { objectType: "pathv2", objectId }, or { clearLast: true } below.
+//
+// Recovery: every id the probe creates is stashed in state.GM_AI_Bridge.pathv2Probe
+// ({ pageId, ids, at }) BEFORE the result goes back, so shapes whose ids were lost
+// (a dropped RTDB result, a closed terminal) are still findable. The stash
+// ACCUMULATES across runs until cleared, so a second run never orphans the first.
+// { clearLast: true } removes every stashed id and clears the stash; ids it fails
+// to remove stay stashed for a retry.
+//
+// Geometry: pathv2 re-anchors to its FIRST point regardless of the x/y passed, so
+// every variant is built first-point-as-anchor (same rule as walls). For "eli"/"rec"
+// the first two points are the bounding box, so the anchor is the box's top-left.
+ACTIONS["pathv2ZoneProbe"] = function (args, msg, nonce, senderPlayerId) {
+        {
+        if (args.clearLast) {
+          let stash = B().pathv2Probe;
+          if (!stash || !Array.isArray(stash.ids) || !stash.ids.length) {
+            writeResult(nonce, { cleared: false, stash: null, removed: [], alreadyGone: [], failed: [] });
+            return;
+          }
+          let clRemoved = [], clGone = [], clFailed = [];
+          stash.ids.forEach(function (id) {
+            let o = getObj("pathv2", id);
+            if (!o) { clGone.push(id); return; }
+            try { o.remove(); clRemoved.push(id); } catch (e) { clFailed.push({ id: id, error: String(e).slice(0, 120) }); }
+          });
+          // Keep exactly the stragglers, so a retry targets only what is still on a page.
+          if (clFailed.length) {
+            B().pathv2Probe = { pageId: stash.pageId, ids: clFailed.map(function (f) { return f.id; }), at: stash.at };
+          } else {
+            delete B().pathv2Probe;
+          }
+          writeResult(nonce, { cleared: clFailed.length === 0, stash: stash, removed: clRemoved,
+                               alreadyGone: clGone, failed: clFailed });
+          return;
+        }
+
+        let probePage = getObj("page", args.pageId);
+        if (!probePage) throw new Error("Page not found: " + args.pageId);
+
+        let probeR = Number(args.radiusPx);
+        if (!isFinite(probeR) || probeR <= 0) probeR = 140; // two 70px cells across by default
+        let probeCx = Number(args.centerX); if (!isFinite(probeCx)) probeCx = probeR + 70;
+        let probeCy = Number(args.centerY); if (!isFinite(probeCy)) probeCy = probeR + 70;
+        let probeStep = probeR * 2 + 70; // one empty cell of gutter between variants
+        // Page extent in px. Roll20 keeps page width/height in 70px UNITS, not cells. Eight
+        // variants at the default radius need ~3000px of row, and a default page is far
+        // narrower, so the row WRAPS rather than drawing the last shapes off the page.
+        // An unreadable size falls back to Roll20's 25-unit default page.
+        let probePageW = Number(probePage.get("width")) * 70;
+        if (!isFinite(probePageW) || probePageW <= 0) probePageW = 25 * 70;
+        let probePageH = Number(probePage.get("height")) * 70;
+        if (!isFinite(probePageH) || probePageH <= 0) probePageH = 25 * 70;
+        let probeNextX = probeCx;
+        let probeNextY = probeCy;
+        let probeRowYs = [];
+
+        let probeHexMatch = typeof args.color === "string" ? /^#([0-9a-fA-F]{6})/.exec(args.color) : null;
+        let probeHex6 = probeHexMatch ? "#" + probeHexMatch[1] : "#aa00ff";
+        let probeAlpha = typeof args.alphaHex === "string" && /^[0-9a-fA-F]{2}$/.test(args.alphaHex)
+          ? args.alphaHex : ZONE_FILL_ALPHA_HEX;
+        let probeHex8 = probeHex6 + probeAlpha;
+
+        // One variant per question. `asks` is carried through to the report so the
+        // human reading the page knows what each shape in the row is for.
+        let probeVariants = [
+          { key: "eli-fill8",       shape: "eli", layer: "objects", fill: probeHex8,      asks: "Q1+Q2: ellipse with 8-digit #RRGGBBAA fill — the candidate zone primitive" },
+          { key: "eli-fill6",       shape: "eli", layer: "objects", fill: probeHex6,      asks: "Q1 control: same ellipse, opaque 6-digit fill" },
+          { key: "eli-fillopacity", shape: "eli", layer: "objects", fill: probeHex6, fillOpacity: 0.25, asks: "Q1 alt: 6-digit fill + fill_opacity 0.25 (legacy path drops this, #162)" },
+          { key: "eli-transparent", shape: "eli", layer: "objects", fill: "transparent",  asks: "Q2 control: outline only, no fill" },
+          { key: "rec-fill8",       shape: "rec", layer: "objects", fill: probeHex8,      asks: "Q2: rectangle shape" },
+          { key: "pol-fill8",       shape: "pol", layer: "objects", fill: probeHex8,      asks: "Q2 control: today's 36-gon circle approximation, drawn as pathv2" },
+          { key: "eli-map-layer",   shape: "eli", layer: "map",     fill: probeHex8,      asks: "Q2: does it render on the map layer as well as objects?" },
+          { key: "eli-meta",        shape: "eli", layer: "objects", fill: probeHex8, meta: true, asks: "Q3: name/gmnotes at create AND via a later set()" }
+        ];
+
+        // Every property worth knowing about. Roll20 returns undefined for a property an
+        // object type does not have, which is exactly the Q3 signal — so undefined is
+        // reported as a name in `missing`, never silently flattened to null.
+        let probeReadProps = ["shape", "fill", "fill_opacity", "stroke", "stroke_width", "layer",
+          "x", "y", "width", "height", "rotation", "barrierType", "name", "gmnotes", "controlledby"];
+
+        // The stored `points` string can be ~500 chars for the 36-gon control, which is pure
+        // bloat on the RTDB result payload. Report a preview plus the bounding box computed
+        // from the FULL array — the bbox is what actually says whether the geometry landed
+        // where it should, relative to the anchor.
+        function probeReadBack(obj) {
+          let stored = {};
+          let missing = [];
+          probeReadProps.forEach(function (p) {
+            let v;
+            try { v = obj.get(p); } catch (e) { stored[p] = "<threw: " + String(e).slice(0, 60) + ">"; return; }
+            if (v === undefined) { missing.push(p); return; }
+            stored[p] = v;
+          });
+          let pts;
+          try { pts = obj.get("points"); } catch (e) { pts = "<threw>"; }
+          if (typeof pts === "string") {
+            stored.pointsPreview = pts.slice(0, 160);
+            stored.pointsTruncated = pts.length > 160;
+            let parsed = null;
+            try { parsed = JSON.parse(pts); } catch (e) { parsed = null; }
+            if (parsed && parsed.length) {
+              let xs = parsed.map(function (pt) { return pt[0]; });
+              let ys = parsed.map(function (pt) { return pt[1]; });
+              stored.pointsBBox = {
+                minX: Math.min.apply(null, xs), maxX: Math.max.apply(null, xs),
+                minY: Math.min.apply(null, ys), maxY: Math.max.apply(null, ys)
+              };
+            }
+          } else {
+            stored.pointsPreview = pts;
+            stored.pointsTruncated = false;
+          }
+          return { stored: stored, missing: missing };
+        }
+
+        let probeResults = probeVariants.map(function (v, vi) {
+          let cx = probeNextX;
+          let cy = probeNextY;
+          if (vi > 0 && cx + probeR > probePageW) {
+            // Next shape would cross the right edge: start a new row under this one.
+            probeNextY += probeStep;
+            cx = probeCx;
+            cy = probeNextY;
+          }
+          probeNextX = cx + probeStep;
+          if (probeRowYs.indexOf(cy) < 0) probeRowYs.push(cy);
+          // Still off the page (a start point or radius too large for the page to hold even
+          // one shape per row, or more rows than the page is tall): say so, don't hide it.
+          let offPage = cx - probeR < 0 || cy - probeR < 0 || cx + probeR > probePageW || cy + probeR > probePageH;
+          let anchorX, anchorY, pts;
+          if (v.shape === "pol") {
+            // 36-gon, first point at angle 0 — anchor is that point, not the centre.
+            anchorX = cx + probeR;
+            anchorY = cy;
+            pts = [];
+            for (let i = 0; i <= 36; i++) {
+              let a = (i / 36) * 2 * Math.PI;
+              pts.push([Math.round((probeR * Math.cos(a) - probeR) * 100) / 100,
+                        Math.round((probeR * Math.sin(a)) * 100) / 100]);
+            }
+          } else {
+            // eli/rec: first two points are the bounding box; anchor at its top-left.
+            anchorX = cx - probeR;
+            anchorY = cy - probeR;
+            pts = [[0, 0], [probeR * 2, probeR * 2]];
+          }
+
+          let props = {
+            pageid: args.pageId,
+            layer: v.layer,
+            x: anchorX,
+            y: anchorY,
+            width: probeR * 2,
+            height: probeR * 2,
+            shape: v.shape,
+            points: JSON.stringify(pts),
+            stroke: probeHex6,
+            stroke_width: 5,
+            fill: v.fill,
+            controlledby: ""
+          };
+          if (v.fillOpacity !== undefined) props.fill_opacity = v.fillOpacity;
+          // Plain ASCII, no chat triggers — this round-trips back through writeResult.
+          let metaAtCreate = { name: "ZONE PROBE " + v.key, gmnotes: "probe gmnotes at create" };
+          let metaAfterSet = { name: "ZONE PROBE set-after", gmnotes: "probe gmnotes after set" };
+          if (v.meta) { props.name = metaAtCreate.name; props.gmnotes = metaAtCreate.gmnotes; }
+
+          let obj;
+          try { obj = createObj("pathv2", props); } catch (e) {
+            return { key: v.key, asks: v.asks, shape: v.shape, layer: v.layer, sentFill: v.fill,
+                     created: false, error: String(e).slice(0, 200) };
+          }
+          if (!obj) {
+            return { key: v.key, asks: v.asks, shape: v.shape, layer: v.layer, sentFill: v.fill,
+                     created: false, error: "createObj('pathv2') returned undefined" };
+          }
+
+          let out = { key: v.key, asks: v.asks, id: obj.id, shape: v.shape, layer: v.layer,
+                      sentFill: v.fill, sentFillOpacity: v.fillOpacity, centerX: cx, centerY: cy,
+                      anchorX: anchorX, anchorY: anchorY, pointCount: pts.length, offPage: offPage, created: true };
+          let first = probeReadBack(obj);
+          out.stored = first.stored;
+          out.missing = first.missing;
+
+          if (v.meta) {
+            // Second half of Q3: a later set() is the write path setCharacterAttributes-style
+            // callers would use, and legacy `path` swallows it silently (#164).
+            try {
+              setSafe(obj, metaAfterSet);
+            } catch (e) {
+              out.setAfterError = String(e).slice(0, 200);
+            }
+            let second = probeReadBack(obj);
+            // Echo what was WRITTEN alongside what came back: a sandbox that drops the
+            // write may hand back "" rather than undefined, so the caller has to compare
+            // against the exact string rather than test for presence.
+            out.wrote = { atCreate: metaAtCreate, afterSet: metaAfterSet };
+            out.storedAfterSet = { name: second.stored.name, gmnotes: second.stored.gmnotes };
+            out.missingAfterSet = second.missing;
+          }
+          return out;
+        });
+
+        // Stash the ids before replying: if the reply is lost, the shapes are still findable.
+        let probeIds = probeResults.filter(function (r) { return r.id; }).map(function (r) { return r.id; });
+        let probePrior = B().pathv2Probe;
+        let probePriorIds = probePrior && Array.isArray(probePrior.ids) ? probePrior.ids : [];
+        if (probeIds.length) {
+          B().pathv2Probe = { pageId: args.pageId, ids: probePriorIds.concat(probeIds), at: Date.now() };
+        }
+
+        writeResult(nonce, {
+          pageId: args.pageId,
+          hex6: probeHex6,
+          hex8: probeHex8,
+          radiusPx: probeR,
+          rowY: probeCy,
+          rowYs: probeRowYs,
+          pageWidthPx: probePageW,
+          pageHeightPx: probePageH,
+          variants: probeResults,
+          stashedIds: (B().pathv2Probe && B().pathv2Probe.ids) || [],
+          note: "Objects left on the page deliberately — look at them, then remove them with { clearLast: true } (or removeObject { objectType: 'pathv2', objectId } each)."
+        });
+        return;
+      }
+      };
 ACTIONS["runUVTT"] = function (args, msg, nonce, senderPlayerId) {
         {
         // Create a carrier graphic on gmlayer with UVTT JSON in its gmnotes,

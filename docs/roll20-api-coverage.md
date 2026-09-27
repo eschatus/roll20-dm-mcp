@@ -219,11 +219,12 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `clearLayer` | clear_layer | maps | path+graphic+pathv2+wall |
 | `debugPage` | debug_page | maps | object-type census |
 | `drawLayerTest` | draw_layer_test | maps | creates `path` |
+| `pathv2ZoneProbe` | — (recon only: `src/recon/pathv2-zone-probe.ts`) | — | **spike instrument, issue #208** — draws one `pathv2` per variant (`eli`/`rec`/`pol` × fill forms × layer) and reports what Roll20 stored, to settle whether `pathv2` should replace `path` as the zone primitive. Leaves the objects on the page on purpose and stashes their ids in `state.GM_AI_Bridge.pathv2Probe`; `{ clearLast: true }` removes them. Registered by no server. Delete once the spike's Results are in. See `docs/pathv2-zone-spike.md`. |
 | `runUVTT` | run_uvtt_import | maps | drives external UniversalVTTImporter mod |
 | `listPages` | list_pages, get_current_page, setup_roll20_page, rename_roll20_page, batch_import_maps | both | page list (direct-read path) |
 | `setPageProps` | setup_roll20_page, rename_roll20_page, batch_import_maps | maps | name/size/scale/grid subset |
 | `setPageBackground` | (internal) | — | bg color only |
-| `createZone`/`clearZone`/`listZones`/`findTokensInZone`/`processRoundEndZones` | create_zone, clear_zone, list_zones, process_round_end_zones, resolve_aoe | both | path on the map layer; **metadata lives in `state.GM_AI_Bridge.zones`, not on the path object** (path objects silently drop `name`/`gmnotes`/`fill_opacity` — #162/#164) |
+| `createZone`/`clearZone`/`listZones`/`findTokensInZone`/`processRoundEndZones` | create_zone, clear_zone, list_zones, process_round_end_zones, resolve_aoe | both | path on the map layer; **metadata lives in `state.GM_AI_Bridge.zones`, not on the path object** (path objects silently drop `name`/`gmnotes`/`fill_opacity` — #162/#164). Whether `pathv2` (`shape:"eli"`/`"rec"`, real `fill`) is a better drawing primitive is an open spike — `docs/pathv2-zone-spike.md` (#208). |
 | `removeObject` | remove_object | combat | graphic or path |
 | `getTurnOrder`/`setTurnOrder`/`advanceTurn` | get_turn_order, clear_turn_order, advance_turn, update_turn_order, inject_round_marker, revive_token (read only), batch_exec | combat | `Campaign.turnorder`. **Never write `setTurnOrder` wholesale** — it erases player entries; only `clear_turn_order` does that deliberately. |
 | `mergeTurnOrder` | roll_initiative, inject_round_marker, update_turn_order, revive_token | combat | NPC-only upsert (preserves PC entries). `keepTurn:true` (relay 2.9.0, revive_token) splices into the live rotation without the pr-descending sort, so row 0 (the active turn) never changes |
