@@ -262,3 +262,14 @@ does so on a full re-harvest. Past ~1 h a second reader is still locked out unti
 of the failure surfacing only inside the locked-out process. Persisting on every refresh, or a way
 for a second reader to *ask* the gem to harvest, is dm-whisper's side of the contract.
 
+---
+
+## 16. Beacon sheet writes throw by default (`allowThrow: true`), and `setComputed`'s value key is not guessed
+
+**Choice:** The relay's `setSheetItem` action passes `allowThrow: true` to Roll20's `setSheetItem` unless the caller explicitly asks for `allowThrow: false`, inverting Roll20's own default. And `setComputed` forwards the caller's `args` **and** `value` verbatim, refusing a call that carries neither, instead of picking a key to put the new value under.
+
+**Why:** Both are the same failure mode this whole line of work exists to end. Roll20's lenient `setSheetItem` **resolves** whether or not the write landed — on a Beacon sheet, a property that is missing or read-only fails silently — which is exactly the "reported `created`, the sheet never read it" bug that relay 2.6.0's Beacon guard in `setCharacterAttributes` was added to stop. Defaulting to the lenient mode would have reinstated it one tool over. Likewise, Roll20 documents `setComputed`'s payload as `{characterId, property, args?, playerId?}` and never says where the new value sits; `args` being *optional* argues it is not simply that. A guessed key would be accepted by the object literal, ignored by the sheet, and write nothing — silently. Forwarding both and letting the caller match its own sheet keeps the ignorance visible instead of baking it in.
+
+**Trade-offs:** `allowThrow: true` means a batch write reports partial failure where Roll20 would have reported nothing, so callers see more failures — that is the point, but it is a behaviour difference from every other Mod script on the market. The escape hatch exists (`allowThrow: false`) and its result carries a note saying `written` is not evidence the write landed. For `setComputed`, a caller has to supply `value` or `args` and may have to try both once per sheet; the `readBack` in the result (a `getComputed` of the same property immediately after the write) is what tells them which one their sheet wanted.
+
+**Related:** the carriers are all asynchronous, so the relay writes their results from the promise's settlement (`settleSheetAsync`) with a 6s timeout chosen to fire *under* the TS side's 8s read / 30s write relay timeouts — a carrier that never settles is then named in the error instead of surfacing as an opaque transport timeout. See `docs/roll20-api-coverage.md` → "Beacon sheet carriers".

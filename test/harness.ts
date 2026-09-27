@@ -21,6 +21,7 @@ import * as roll20 from "../src/bridge/roll20.js";
 import * as characters from "../src/registry/characters.js";
 import { registerCombatTools } from "../src/tools/combat.js";
 import { registerZoneTools } from "../src/tools/zones.js";
+import { registerSheetTools } from "../src/tools/sheet.js";
 
 // ── Fake MCP server ───────────────────────────────────────────────────────────
 type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
@@ -88,7 +89,10 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
       const injected = failingActions.get(String(cmd.action));
       if (injected) return Promise.reject(new Error(injected));
       if (stubbedActions.has(String(cmd.action))) return Promise.resolve(stubbedActions.get(String(cmd.action)) as T);
-      return Promise.resolve(emu.relay<T>(cmd));
+      // relayAsync, not relay: the Beacon sheet carriers (#205) settle their writeResult from a
+      // promise, so a synchronous read of the result record would miss it. It behaves exactly like
+      // relay() for every synchronous action — the result is already there, so it never waits.
+      return emu.relayAsync<T>(cmd);
     },
     evaluate: <T>(fn: (args?: unknown) => T, args?: unknown) => {
       // The page-eval closures used by the bridge read window.Campaign.* — point
@@ -101,6 +105,7 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
   const server = new FakeMcpServer();
   registerCombatTools(server as never);
   registerZoneTools(server as never);
+  registerSheetTools(server as never);
 
   async function callTool(name: string, args: Record<string, unknown> = {}) {
     const entry = server.handlers.get(name);

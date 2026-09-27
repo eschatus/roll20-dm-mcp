@@ -1206,6 +1206,17 @@ export async function rtCreatePage(opts: {
   return newRef.key!;
 }
 
+// Create a child under a collection node with a push()-minted key, the way the Roll20 UI creates
+// an object. The record is stamped with its own `id` (Roll20 objects carry theirs) before the
+// write. Returns the new key. No Mod, no chat.
+export async function rtPushObject(relPath: string, value: Record<string, unknown>): Promise<string> {
+  const conn = await getConn();
+  const clean = relPath.replace(/^\/+|\/+$/g, "");
+  const newRef = push(ref(conn.db, `${conn.storagePath}/${clean}`));
+  await set(newRef, stripUndefWrite({ ...value, id: newRef.key }));
+  return newRef.key!;
+}
+
 // Merge-write fields onto a node under the storage root (RTDB update = partial merge), like the
 // Roll20 UI does when you edit a token. No Mod, no chat.
 export async function rtUpdate(relPath: string, partial: Record<string, unknown>): Promise<void> {

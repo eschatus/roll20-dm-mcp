@@ -15,4 +15,6 @@ export const READONLY_ACTIONS = new Set<string>([
   "getRepeatingSection",
   "getTokenMarkers", "getCustomStates", "listZones", "findTokensInZone",
   "findTokensInRange", "getJournalFolder", "ping",
+  // Beacon sheet reads (#205) — no side effects, same as any other getter.
+  "getSheetItem", "getComputed", "getSheetSummary",
 ]);

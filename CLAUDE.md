@@ -120,10 +120,29 @@ moved to beyond-mcp with the code.)
   that never explicitly picked one. Per-campaign, like a relay deploy. `ping` echoes
   `Campaign().sandboxVersion`/`nodeVersion`/`sheetName` plus a `beacon` flag (relay ≥ 2.6.0) and
   `transport_status` shows them under `sandbox`. The fork that bites: a **Beacon** ("advanced")
-  character sheet keeps data in *computed properties*, not `attribute` objects — `findObjs` can't
-  see it and `createObj("attribute")` can't reach it, so an attribute write there is created,
-  unread, and looks successful. `setCharacterAttributes` now refuses it and returns a reason;
-  `setComputed`/`setSheetItem` are the real carriers and aren't wired yet (#205).
+  character sheet keeps *some* data in *computed properties*, not `attribute` objects. Data held
+  that way is not reachable as an attribute — `findObjs` can't see it and `createObj("attribute")`
+  can't reach it, so an attribute write aimed at it is created, unread, and looks successful.
+  Attributes are NOT dead there in general: the live spike in #225 saw `setAttrs` write attributes,
+  fire sheet workers and materialise `rollbase`/`attack_onhit` on a sandbox 1.5 `ogl5e` campaign,
+  and the RTDB probe (#230) found plain `createObj("attribute")` records landing in `char-attribs` there.
+  `setCharacterAttributes` refuses the computed-held case and returns a reason; the real
+  carriers are wired as of relay **2.10.0** (#205) and live in `src/tools/sheet.ts`:
+  **`get_sheet_item`/`set_sheet_item`** (version-agnostic — on v1.0 they wrap attributes, so prefer
+  them when you don't know the sandbox), `get_computed_property`/`set_computed_property` and
+  `perform_sheet_action` (v1.5 only), and `get_sheet_summary` to enumerate what a sheet offers.
+  Three gotchas: all six carriers are **async**, so the relay writes their result from the
+  promise's settlement (`settleSheetAsync`, 6s timeout — the first *write* to need the deferred
+  `writeResult` pattern `rollFormulas` established); `setSheetItem`'s **`allowThrow` defaults to
+  TRUE here**, inverting Roll20's default, because the lenient mode resolves without saying whether
+  the write landed; and `performAction`'s action name travels as **`actionName`**, since the
+  dispatcher consumes a command's `action` field as the relay action to run. A fourth, on chat
+  safety: when the name is not a Beacon action, Roll20 falls back to a same-named character
+  *ability* and runs its macro through Roll20's own `sendChat` — outside the `chatSend()`
+  chokepoint, with whatever `@{`/`[[` the ability body carries — so the relay refuses that path
+  unless the caller passes **`allowAbilityFallback:true`**, and refuses outright when neither an
+  action nor an ability of that name exists. See
+  `docs/roll20-api-coverage.md` → "Beacon sheet carriers" for what is still unverified live.
 - **Nothing may reach `sendChat` carrying a live chat trigger.** Roll20 live-evaluates `[[`
   (inline roll), `@{` (attribute ref) and `%{` (ability/macro call) in EVERY outgoing message; a
   malformed one throws inside Roll20's own chat pipeline — asynchronously, uncatchable — and
@@ -138,7 +157,10 @@ moved to beyond-mcp with the code.)
   so every `esc()` call site is covered. `esc()` is NOT idempotent; apply it once. Deliberate
   exceptions, both server-composed and GM-only: `postChat` (must emit real roll-template syntax)
   and the `[[1d20…]]` the initiative builders send — there, escape the *token name*, never the
-  whole message. Pinned by `test/chat-trigger-safety.test.ts`.
+  whole message. Pinned by `test/chat-trigger-safety.test.ts`. One path escapes the chokepoint by
+  construction: `performAction`'s ability fallback, where Roll20 itself runs a same-named ability's
+  macro through its own `sendChat`. The relay refuses it unless the caller passes
+  `allowAbilityFallback:true` (see the Beacon gotcha above).
 - **The Mod sandbox cannot import TS.** Tables that must agree are kept in **hand-synced copies** —
   most importantly the condition→marker map lives in three places (`src/tools/combat.ts` array,
   `src/bridge/markers.ts` Record, `mod-scripts/ai-relay.js`) and they are **not identical**
@@ -275,6 +297,24 @@ vision/wall tooling is maps-only.)
   to `bar1` like an NPC's. AC is reported back but never stored: `createToken` doesn't set
   `represents`, so a bare token has no sheet to hold it.
 - `batch_import_maps` is the folder→Roll20 pipeline (uses `listPages` + the steps above).
+- **Map pins (`create_map_pin` / `list_map_pins` / `update_map_pin` / `delete_map_pin`, #203) are
+  direct RTDB, not relay.** A pin is a plain node at `<storagePath>/pins/page/<pageId>/<pinId>`
+  (same shape as doors/windows) that `push`/`update`/`rtGet` round-trip — `src/bridge/pins.ts`,
+  no relay action, **no Mod redeploy**. Verified live on #203: `x`/`y` are page **pixels**
+  (70px/square, like a graphic's `left`/`top`) and the page is the PATH — there is no `pageid`
+  in the payload. Pins are the one object type with **camelCase** properties (`gmNotes`, `bgColor`,
+  `pinImage`, `visibleTo`); the MCP SDK strips an unknown key during validation, so `gmnotes` is
+  silently dropped, not rejected — both write tools echo the exact key list they wrote (`wrote` /
+  `updated`) so a typo is visible. `imageDesynced`/`notesDesynced`/`gmNotesDesynced` are **one
+  flag wearing three names**, so the tools expose a single `desynced` boolean. **GM-notes leak:**
+  Roll20 documents `gmNotesVisibleTo` (and the other `*VisibleTo`) as defaulting to `"all"`, so
+  `create_map_pin` writes `gmNotesVisibleTo: ""` unless told otherwise. Hidden-until-found is
+  `visibleTo: ""` at creation, flipped to `"all"` with `update_map_pin`. The Roll20 UI truncates
+  pasted pin notes at 750 chars; that is a UI cap, not storage — 8k+ notes round-trip via RTDB.
+  Still unverified live (e2e 2.9/2.10 cover them): an open client picking up an RTDB-side pin write;
+  a bare pin with no icon/shape rendering; delete propagating; `visibleTo`/`gmNotesVisibleTo` hiding
+  from a player (the `"all"` default is from the docs, never observed); and a whole-`pins/page` read,
+  which every pageId-less call depends on.
 
 ## Combat development
 

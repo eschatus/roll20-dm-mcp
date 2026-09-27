@@ -135,9 +135,9 @@ describe("setAttrs worker reporting", () => {
     const nonce = 900001;
     emu.relayWithNonce({ action: "setAttrs", charId, attributes: { strength: 13 }, timeoutMs: 5000 }, nonce);
     // The write is done but the queue has not drained: no result yet, no guess.
-    expect(emu.resultFor(nonce)).toEqual({});
+    expect(emu.resultFor(nonce)).toBeUndefined();
     emu.fireSheetWorkers(true);
-    const res = emu.resultFor(nonce).data as SetAttrsResult;
+    const res = emu.resultFor(nonce)?.data as SetAttrsResult;
     expect(res.workersExecuted).toBe(true);
     expect(res.note).toBeNull();
   });
@@ -148,14 +148,14 @@ describe("setAttrs worker reporting", () => {
     const charId = emu.createCharacter("Wight", {});
     const nonce = 900002;
     emu.relayWithNonce({ action: "setAttrs", charId, attributes: { strength: 13 }, timeoutMs: 20 }, nonce);
-    expect(emu.resultFor(nonce)).toEqual({});
+    expect(emu.resultFor(nonce)).toBeUndefined();
     await new Promise((r) => setTimeout(r, 60));
-    const res = emu.resultFor(nonce).data as SetAttrsResult;
+    const res = emu.resultFor(nonce)?.data as SetAttrsResult;
     expect(res.workersExecuted).toBeNull();
     expect(res.note).toMatch(/did not fire within 20ms/);
     // A late drain after the timeout must not produce a second result.
     emu.fireSheetWorkers(true);
-    expect((emu.resultFor(nonce).data as SetAttrsResult).workersExecuted).toBeNull();
+    expect((emu.resultFor(nonce)?.data as SetAttrsResult).workersExecuted).toBeNull();
   });
 
   it("carries the exception text when arming onSheetWorkerCompleted throws", () => {
