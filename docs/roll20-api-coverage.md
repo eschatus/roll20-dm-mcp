@@ -107,8 +107,11 @@ the page is the path — there is no `pageid` in the payload. Map pins carry `sh
 - **750 chars is a UI cap, not a storage one** — the Roll20 pin editor truncates pasted notes, but
   RTDB accepted and returned 8.6k-char notes intact.
 
-The one remaining live check is propagation — an open client rendering an RTDB-side pin write
-without a reload (steps 2.9/2.10 of `docs/e2e-human-test-script.md`).
+Still unverified live, all covered by steps 2.9/2.10 of `docs/e2e-human-test-script.md`: an open
+client rendering an RTDB-side pin write without a reload; a bare pin (no icon/shape) rendering;
+delete propagating; `visibleTo`/`gmNotesVisibleTo` actually hiding from a player (the `"all"`
+default comes from the docs, never observed); and a whole-`pins/page` read, which every
+pageId-less call (`list_map_pins {}`, update/delete without a pageId) depends on.
 
 **Read/queryable but still NOT createObj-creatable:** `page`, `campaign`, `player`, `hand`,
 `jukeboxtrack`. `page`'s absence is what justifies `rtCreatePage` (#178) — the RTDB write is the

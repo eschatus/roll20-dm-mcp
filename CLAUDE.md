@@ -249,7 +249,10 @@ vision/wall tooling is maps-only.)
   `create_map_pin` writes `gmNotesVisibleTo: ""` unless told otherwise. Hidden-until-found is
   `visibleTo: ""` at creation, flipped to `"all"` with `update_map_pin`. The Roll20 UI truncates
   pasted pin notes at 750 chars; that is a UI cap, not storage — 8k+ notes round-trip via RTDB.
-  Only remaining human check: an open client picks up an RTDB-side pin write live (e2e 2.9/2.10).
+  Still unverified live (e2e 2.9/2.10 cover them): an open client picking up an RTDB-side pin write;
+  a bare pin with no icon/shape rendering; delete propagating; `visibleTo`/`gmNotesVisibleTo` hiding
+  from a player (the `"all"` default is from the docs, never observed); and a whole-`pins/page` read,
+  which every pageId-less call depends on.
 
 ## Combat development
 

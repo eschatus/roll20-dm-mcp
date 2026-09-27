@@ -14,8 +14,19 @@
 import { rtGet, rtPushObject, rtUpdate, rtRemove } from "./roll20-rt.js";
 
 export const PINS_ROOT = "pins/page";
-const pagePath = (pageId: string) => `${PINS_ROOT}/${pageId}`;
-const pinPath = (pageId: string, pinId: string) => `${pagePath(pageId)}/${pinId}`;
+// Ids are interpolated straight into RTDB paths, and every rt helper strips trailing slashes — so
+// an EMPTY or slash-bearing id silently addresses the PARENT node. `delete_map_pin {pinId:""}` used
+// to read the whole page node as "found" and remove every pin on the page. Firebase push keys (and
+// Roll20 page ids) are [-_A-Za-z0-9]; anything else is refused before a path is built.
+const RTDB_KEY = /^[-_A-Za-z0-9]+$/;
+function key(label: string, v: string): string {
+  if (typeof v !== "string" || !RTDB_KEY.test(v)) {
+    throw new Error(`${label} ${JSON.stringify(v)} is not a Roll20 id (expected [-_A-Za-z0-9]+, non-empty)`);
+  }
+  return v;
+}
+const pagePath = (pageId: string) => `${PINS_ROOT}/${key("pageId", pageId)}`;
+const pinPath = (pageId: string, pinId: string) => `${pagePath(pageId)}/${key("pinId", pinId)}`;
 
 export type PinProps = Record<string, unknown>;
 export interface PinRecord extends PinProps { id: string; pageId: string }
@@ -33,8 +44,10 @@ export function toPinFields(args: Record<string, unknown>): PinProps {
   return out;
 }
 
+// The id is the node's KEY, never the stored `id` field: every write addresses the key, so a record
+// whose stored id disagreed with it would be found by one and written through the other.
 function toRecord(pageId: string, pinId: string, raw: Record<string, unknown>): PinRecord {
-  return { ...raw, id: String(raw.id ?? pinId), pageId };
+  return { ...raw, id: pinId, pageId };
 }
 
 // Every pin on a page, or every pin in the campaign when pageId is omitted. A missing node reads
@@ -60,6 +73,7 @@ export async function createPin(pageId: string, fields: PinProps): Promise<PinRe
 // Locate a pin by id. With a pageId hint this is one read; without it, every page's pins are read
 // once and scanned — Roll20's rules deny a shallow read at the root, so there is no cheaper index.
 export async function findPin(pinId: string, pageId?: string): Promise<PinRecord | null> {
+  key("pinId", pinId);
   if (pageId) {
     const raw = await rtGet<Record<string, unknown> | null>(pinPath(pageId, pinId));
     return raw ? toRecord(pageId, pinId, raw) : null;

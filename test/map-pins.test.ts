@@ -225,6 +225,19 @@ describe("delete_map_pin", () => {
     expect((await callTool("list_map_pins", { pageId: PAGE })).json).toEqual([]);
   });
 
+  it("refuses an empty or path-shaped id instead of addressing the whole page (was: wiped every pin)", async () => {
+    await callTool("create_map_pin", { pageId: PAGE, x: 70, y: 70, title: "keep me" });
+    await callTool("create_map_pin", { pageId: PAGE, x: 140, y: 140, title: "and me" });
+    const before = rt.store.size;
+    for (const pinId of ["", "/", "a/b", ".."]) {
+      await expect(callTool("delete_map_pin", { pageId: PAGE, pinId })).rejects.toThrow(/not a Roll20 id/);
+      await expect(callTool("delete_map_pin", { pinId })).rejects.toThrow(/not a Roll20 id/);
+      await expect(callTool("update_map_pin", { pageId: PAGE, pinId, title: "x" })).rejects.toThrow(/not a Roll20 id/);
+    }
+    await expect(callTool("create_map_pin", { pageId: "", x: 1, y: 1 })).rejects.toThrow(/not a Roll20 id/);
+    expect(rt.store.size).toBe(before);
+  });
+
   it("errors on a missing pin", async () => {
     await expect(callTool("delete_map_pin", { pinId: "-Nope" })).rejects.toThrow(/not found/i);
   });
