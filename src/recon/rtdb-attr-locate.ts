@@ -108,7 +108,7 @@ async function sentinelRun(): Promise<Record<string, unknown>> {
   console.error(`scratch character: ${charId}`);
 
   try {
-    const write = await relayCommand<Record<string, unknown>>({
+    const write = await relayCommand<{ failed?: string[]; reasons?: Record<string, string> }>({
       action: "setCharacterAttributes",
       charId,
       attributes: {
@@ -118,6 +118,12 @@ async function sentinelRun(): Promise<Record<string, unknown>> {
       },
     });
     console.error(`write → ${JSON.stringify(write).slice(0, 300)}`);
+    // A refused write is not a location finding: without this, a missing marker would print as
+    // NOT FOUND and blame the RTDB node for a write that never happened (Devin, #231).
+    if (write.failed?.length) {
+      throw new Error(`INCONCLUSIVE — the relay refused ${write.failed.join(", ")}: `
+        + `${JSON.stringify(write.reasons ?? {})}. Nothing was written to locate.`);
+    }
 
     // Give the Mod → RTDB propagation a moment (client-direct writes land in ~150ms; be generous).
     await new Promise((r) => setTimeout(r, 2500));
@@ -125,8 +131,17 @@ async function sentinelRun(): Promise<Record<string, unknown>> {
     const { candidateList, ...surveyed } = await survey(charId);
     console.error(`\n── searching ${candidateList.length} candidate subtrees for "${marker}" ──`);
     const hits: Array<Hit & { root: string; template: string }> = [];
+    // A subtree we could not READ is not a subtree without the marker. Some candidates are denied
+    // by Roll20's rules (401), so a failed read is recorded and reported, never folded into "absent".
+    const unreadable: Array<{ path: string; error: string }> = [];
     for (const p of candidateList) {
-      const tree = await rtGet<unknown>(p).catch(() => null);
+      let tree: unknown;
+      try {
+        tree = await rtGet<unknown>(p);
+      } catch (e) {
+        unreadable.push({ path: p, error: String((e as Error)?.message ?? e).slice(0, 120) });
+        continue;
+      }
       if (tree === null || tree === undefined) continue;
       for (const h of findValuePaths(tree, marker)) {
         const full = `${p}/${h.path}`;
@@ -135,8 +150,11 @@ async function sentinelRun(): Promise<Record<string, unknown>> {
     }
 
     console.error("\n──────── result ────────");
+    if (unreadable.length) {
+      console.error(`UNREADABLE (not searched): ${unreadable.map((u) => u.path).join(", ")}`);
+    }
     if (!hits.length) {
-      console.error("NO HIT. The marker is in none of the candidate subtrees. Check the root-key list above for a\n"
+      console.error("NO HIT in the readable subtrees. The marker is in none of the candidate subtrees. Check the root-key list above for a\n"
         + "sheet-shaped key the heuristics missed, then re-run with that path added to candidatePaths().");
     }
     for (const h of hits) {
@@ -146,7 +164,7 @@ async function sentinelRun(): Promise<Record<string, unknown>> {
     const where = locateEach(hits, marker);
     console.error("");
     for (const [kind, t] of Object.entries(where)) console.error(`  ${kind.padEnd(10)} ${t ?? "NOT FOUND"}`);
-    return { mode: "sentinel", charId, marker, write, ...surveyed, hits, where };
+    return { mode: "sentinel", charId, marker, write, ...surveyed, hits, where, unreadable };
   } finally {
     if (KEEP) {
       console.error(`\n--keep: scratch character ${charId} left in place.`);
