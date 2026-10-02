@@ -2811,6 +2811,120 @@ ACTIONS["setCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) 
         return;
       }
       };
+// ─────────────────────────────────────────────────────────────────────────────
+// setAttrs — the SHEET-AWARE attribute carrier, under test (#206).
+//
+// Roll20's Function Documentation lists a global `setAttrs(characterId, attributeObj, options)`
+// on BOTH sandbox versions. Unlike createObj("attribute") — which setCharacterAttributes uses,
+// and which the sheet's own JS never observes — it defaults to `setWithWorker`, so sheet workers
+// are supposed to fire. Whether they actually do on an API-side write is the whole question: if
+// they do, two hand-built workarounds in this repo become dead weight (the `rollbase` +
+// companion-field scaffolding for repeating_npcaction rows, and the <ability>_mod derivation in
+// ACTIONS["createCharacter"]).
+//
+// That is an empirical question about a LIVE sheet — the emulator cannot answer it, because the
+// emulator has no sheet. So this action is the INSTRUMENT, not the conclusion: it performs the
+// write and then reports whether the worker queue actually drained, rather than assuming either
+// way. Drive it with `npx tsx src/recon/setattrs-spike.ts` and read the attributes back off
+// RTDB, never over chat — a `rollbase` value carries literal `@{`/`[[`.
+//
+// args:
+//   charId      (required) character id
+//   attributes  {name: value} or {name: {current, max}}. Names may use setAttrs' own syntax:
+//               "<name>_max" targets the max value, "repeating_<section>_<rowId>_<field>" addresses
+//               a repeating row. Values go through stripUndef, which drops null as well as
+//               undefined/NaN — so this action CANNOT clear an attribute; pass "" to blank one.
+//   silent      true → pass {silent:true}, i.e. plain `set`, workers suppressed (the control arm)
+//   timeoutMs   how long to wait for onSheetWorkerCompleted before answering anyway (default 5000)
+// ─────────────────────────────────────────────────────────────────────────────
+ACTIONS["setAttrs"] = function (args, msg, nonce, senderPlayerId) {
+  var charId = args.charId;
+  if (!charId) { writeResult(nonce, null, "setAttrs: charId is required"); return; }
+  if (typeof setAttrs !== "function") {
+    writeResult(nonce, null, "setAttrs() is not a function in this sandbox (sandboxVersion "
+      + ((typeof Campaign === "function" && Campaign().sandboxVersion) || "?") + "). Roll20 "
+      + "documents it for both 1.0 and 1.5, so this is a capability gap worth recording (#206), "
+      + "not a caller error.");
+    return;
+  }
+
+  var attributes = args.attributes || {};
+  var silent = !!args.silent;
+  var timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : 5000;
+  var ctx = sheetContext();
+
+  // Flatten {current, max} into setAttrs' own flat name space, then strip undefined/NaN through
+  // the same guard setSafe uses — an undefined value reaching a Roll20 write async-crashes the
+  // whole sandbox, and setAttrs ends up writing attribute objects like everything else.
+  var flat = {};
+  Object.keys(attributes).forEach(function (n) {
+    var v = attributes[n];
+    if (v !== null && typeof v === "object") {
+      if (v.current !== undefined) flat[n] = v.current;
+      if (v.max !== undefined) flat[n + "_max"] = v.max;
+    } else {
+      flat[n] = v;
+    }
+  });
+  var payload = stripUndef(flat);
+  var written = Object.keys(payload);
+
+  var done = false;
+  var timer = null;
+  function finish(workersExecuted, note) {
+    if (done) return;
+    done = true;
+    if (timer !== null) { try { clearTimeout(timer); } catch (e) { /* not fatal */ } }
+    writeResult(nonce, {
+      charId: charId,
+      written: written,
+      silent: silent,
+      // true/false exactly as onSheetWorkerCompleted reported it; null means the sandbox never
+      // told us — no hook, a silent write, or the queue did not drain inside timeoutMs. A null
+      // is NOT evidence that workers did not run.
+      workersExecuted: workersExecuted,
+      note: note || null,
+      sheet: { sandbox: ctx.sandbox, sheetName: ctx.sheetName, beacon: ctx.beacon },
+    });
+  }
+
+  // Arm the completion hook BEFORE the write, so a fast drain cannot be missed. A drain caused by
+  // unrelated campaign activity would be attributed here — acceptable for a probe run against a
+  // scratch character, and the alternative (arming after) can lose the signal outright.
+  var armed = false;
+  var armNote = "onSheetWorkerCompleted is not available in this sandbox";
+  if (!silent && typeof onSheetWorkerCompleted === "function") {
+    try {
+      onSheetWorkerCompleted(function (info) {
+        finish(info && typeof info.workersExecuted === "boolean" ? info.workersExecuted : null);
+      });
+      armed = true;
+    } catch (e) {
+      armed = false;
+      armNote = "onSheetWorkerCompleted threw while arming: " + String(e);
+    }
+  }
+
+  try {
+    setAttrs(charId, payload, silent ? { silent: true } : {});
+  } catch (e) {
+    done = true;
+    writeResult(nonce, null, "setAttrs threw: " + String(e));
+    return;
+  }
+
+  if (done) return;                       // hook fired synchronously during the write
+  if (!armed) {
+    finish(null, silent
+      ? "silent write — workers deliberately suppressed, nothing to report"
+      : armNote);
+    return;
+  }
+  timer = setTimeout(function () {
+    finish(null, "onSheetWorkerCompleted did not fire within " + timeoutMs + "ms");
+  }, timeoutMs);
+};
+
 ACTIONS["getCharacterAttributes"] = function (args, msg, nonce, senderPlayerId) {
         {
         // Read attributes from a Roll20 character sheet. Pass names[] to filter.

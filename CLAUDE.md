@@ -202,7 +202,14 @@ moved to beyond-mcp with the code.)
 - **Ability-score `_mod` attributes don't auto-derive either**, for the same sheet-worker-never-
   fires-on-the-API reason. `createCharacter`'s relay action now derives `<ability>_mod` from the
   raw score at creation time (an explicitly-passed `_mod` is left untouched) — see
-  `ACTIONS["createCharacter"]` in `ai-relay.js`.
+  `ACTIONS["createCharacter"]` in `ai-relay.js`. **Both this and the `rollbase` scaffolding above are under
+  test (#206):** Roll20 documents a `setAttrs` that defaults to `setWithWorker`, which may make the
+  sheet derive these itself. `ACTIONS["setAttrs"]` (unreleased until the next relay roll-up) is the instrument; run
+  `npx tsx src/recon/setattrs-spike.ts` live and record the result in
+  `docs/roll20-api-coverage.md`. **First live result (2026-09-27, ogl5e/Beacon):** the npcaction
+  arm is POSITIVE — `setAttrs` made the sheet generate `rollbase` and the companions itself; the
+  `_mod` arm is INCONCLUSIVE on a Beacon sheet and needs a non-Beacon re-run. Nothing calls it yet
+  and both workarounds stay until a follow-up reroutes the writes.
 - **When the sandbox dies, read the Mod console callstack FIRST.** Both crash classes above (an
   `undefined`/`NaN` value reaching `t.set()`, and `@{`/`[[` echoed back through chat) presented as
   nothing but a dead sandbox, and cost days each. That is no longer the only symptom available: on

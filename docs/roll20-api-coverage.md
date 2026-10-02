@@ -149,7 +149,47 @@ Persistent storage: the global **`state`** object (survives sandbox restarts).
 - **`setAttrs(charId, {name: value})`** — writes attributes and **defaults to `setWithWorker`**
   (`options.silent` opts out), handles `_max` suffixes and `repeating_…_$n` names. Sheet workers
   firing is exactly what the `rollbase` scaffolding and the `<ability>_mod` derivation in
-  `createCharacter` exist to work around. Untested against a live sheet; #206.
+  `createCharacter` exist to work around (#206).
+  **Status: instrumented; first live result below (arm 2 positive, arm 1 inconclusive).** `ACTIONS["setAttrs"]` (in `ai-relay.js`,
+  unreleased — ships with the next relay roll-up, the spike probes for it rather than gating on a
+  version) performs the write and reports back what `onSheetWorkerCompleted` said —
+  `workersExecuted: true|false`, or `null` when the sandbox never told us (no hook, a silent write, or the queue did not drain).
+  A `null` is **not** evidence that workers did not run. Nothing in either server calls it yet:
+  `setCharacterAttributes` and `createCharacter` still use `createObj("attribute")` plus the two
+  hand-built workarounds, because rerouting them depends on an answer nobody has measured.
+  Values pass through `stripUndef`, which drops `null` as well as `undefined`/`NaN` — so the
+  action **cannot clear an attribute**; pass `""` to blank one.
+  **Run the spike:** `npx tsx src/recon/setattrs-spike.ts` against a live campaign whose relay
+  carries the action. It writes ability scores and one `repeating_npcaction` row (under a minted
+  push-style row id — `$0` cannot address a row on a character that has none) through `setAttrs`,
+  waits, verifies every input read back before judging anything (otherwise INCONCLUSIVE), and
+  reads back **off RTDB (`char-attribs/char/<id>`), never over chat** — `rollbase` is full of
+  literal `@{`/`[[`. That node holds one `{ id, name, current?, max? }` record per attribute,
+  repeating rows flat as `repeating_<section>_<rowId>_<field>`, and push ids may contain `_`
+  (probed live in #230; `char-blobs/<id>` is only bio/defaulttoken/gmnotes). (The issue
+  suggested `scripts/dump-character-attrs.ts` for the readback; that script imports Playwright, which this repo has not depended on since #179, so the RTDB path replaces it.)
+  The two arms are judged **independently** (`attack_crit2` only counts when the row carries an
+  `attack_damage2` — the sheet correctly leaves it empty otherwise).
+  **Outcome so far (live run 2026-09-27, cos-test 21660022, relay 2.9.0-spike206, sandbox 1.5,
+  sheet ogl5e, Beacon: true):**
+  - **Arm 2 (npcaction row) — POSITIVE.** `workersExecuted=true`; from the five inputs alone the
+    sheet generated `attack_tohitrange` (`+5`), `attack_onhit`, `damage_flag`, `attack_crit`
+    (`2d8`) and a 324-char `rollbase`. Routing npcaction rows through `setAttrs` makes the
+    hand-written rollbase/companion scaffolding unnecessary on this sheet — a follow-up can
+    reroute the writes and delete the template from `ai-relay.js` and CLAUDE.md.
+  - **Arm 1 (`<ability>_mod`) — INCONCLUSIVE.** `workersExecuted=null` (callback never fired
+    within 5s) and no `_mod` attribute appeared — but on a Beacon sheet derived values are
+    computed properties, so a missing attribute is expected either way. Re-run on a **non-Beacon**
+    campaign before touching `createCharacter`'s `_mod` derivation.
+  - Operational: the capability probe deliberately triggers a `setAttrs: charId is required` relay
+    error at startup (the script announces it); a freshly pasted sandbox can time out the first
+    8s ping — retry (#234).
+  Caveat that survives either outcome: on a **Beacon** sheet the data lives in computed properties,
+  not `attribute` objects, so `setAttrs` is no more likely to land than `createObj` — the action
+  echoes `sheet.beacon` for exactly that reason (#205).
+- **`onSheetWorkerCompleted(cb)`** — the callback now receives `{ workersExecuted: boolean }`. This
+  is the only way a write can *confirm* the sheet ran rather than assume it; `ACTIONS["setAttrs"]`
+  arms it before the write and falls back to a timeout so a queue that never drains still answers.
 - `findObjs` options now include **`tagMatch: 'all' | 'any' | 'only'`** beside `caseInsensitive`
   and `startsWith` — `'all'` (default) means the object carries every listed tag, `'any'` at least
   one, `'only'` exactly the listed set. **Not adopted, and deliberately so (#209):** the live

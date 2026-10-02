@@ -73,6 +73,21 @@ export interface EmulatorOptions {
   seed?: number;
   gmPlayerId?: string;
   /**
+   * Install shims for the sheet-aware write path — the global `setAttrs` and
+   * `onSheetWorkerCompleted` (#206). OFF by default, because a stock Roll20 sandbox is exactly
+   * what the relay has to cope with when the capability is missing, and because the shim CANNOT
+   * model the thing the spike is actually about: it writes attribute objects and runs no sheet
+   * workers at all, so it always reports `workersExecuted: false`. It exercises the relay
+   * plumbing (flattening, the silent arm, the completion hook), never the sheet behaviour — that
+   * question is settled live by src/recon/setattrs-spike.ts.
+   *
+   * `true` fires onSheetWorkerCompleted synchronously inside setAttrs. `"deferred"` holds the
+   * callbacks until the test calls `fireSheetWorkers()` (or never), which is how the async /
+   * timeout arm of the relay is exercised. `"arm-throws"` makes onSheetWorkerCompleted itself
+   * throw, so the relay's arming failure path can be observed.
+   */
+  sheetWriteShim?: boolean | "deferred" | "arm-throws";
+  /**
    * Install the Mod Script Sandbox **v1.5**-only globals (`toAbove`/`toBelow`). Default false =
    * a v1.0 sandbox, where those identifiers do not exist at all — which is the case the relay's
    * typeof guard has to survive, so it must be the default here too.
@@ -147,6 +162,11 @@ export class Roll20Emulator {
   /** Every call the relay made into a v1.5 sheet carrier, in order. For assertions. */
   readonly sheetCalls: SheetCall[] = [];
 
+  /** Every setAttrs() the relay made, when sheetWriteShim is on. */
+  readonly setAttrsCalls: Array<{ charId: string; values: Record<string, unknown>; options: Record<string, unknown> }> = [];
+  private sheetWorkerCallbacks: Array<(info: { workersExecuted: boolean }) => void> = [];
+  private readonly sheetWriteShim: boolean | "deferred" | "arm-throws";
+
   readonly chatLog: Array<{ who: string; content: string; options?: unknown }> = [];
   readonly logs: unknown[][] = [];
   readonly state: Record<string, unknown> = {};
@@ -160,6 +180,7 @@ export class Roll20Emulator {
     this.rng = makeRng(seed);
     this.vmRng = makeRng(seed ^ 0x9e3779b9);
     this.gmPlayerId = opts.gmPlayerId ?? "gm-player-1";
+    this.sheetWriteShim = opts.sheetWriteShim ?? false;
     this.sandbox15 = opts.sandbox15 ?? false;
     this.sheetDefaults = opts.sheetDefaults;
     this.gmIds.add(this.gmPlayerId);
@@ -426,6 +447,27 @@ export class Roll20Emulator {
       setTimeout,
       clearTimeout,
     };
+    if (this.sheetWriteShim) {
+      // A DELIBERATELY inert setAttrs: it lands the values as attribute objects (so a readback
+      // sees them) and runs NO sheet workers, because there is no sheet here. Anything derived
+      // -- rollbase, <ability>_mod -- stays absent, and the completion hook says so.
+      sandbox.setAttrs = (charId: string, values: Record<string, unknown>, options?: Record<string, unknown>) => {
+        this.setAttrsCalls.push({ charId, values: { ...values }, options: { ...(options ?? {}) } });
+        for (const [name, value] of Object.entries(values)) {
+          const isMax = name.endsWith("_max");
+          const base = isMax ? name.slice(0, -"_max".length) : name;
+          const existing = this.findObjs({ _type: "attribute", _characterid: charId, name: base })[0];
+          const field = isMax ? "max" : "current";
+          if (existing) existing.set(field, value);
+          else this.createObj("attribute", { characterid: charId, name: base, [field]: value });
+        }
+        if (!options?.silent && this.sheetWriteShim !== "deferred") this.fireSheetWorkers(false);
+      };
+      sandbox.onSheetWorkerCompleted = (cb: (info: { workersExecuted: boolean }) => void) => {
+        if (this.sheetWriteShim === "arm-throws") throw new Error("emulated arming failure");
+        this.sheetWorkerCallbacks.push(cb);
+      };
+    }
     // v1.5-only globals. On v1.0 they are ABSENT, not stubs — the relay's `typeof toAbove ===
     // "function"` guard is only exercised if the identifier is genuinely undeclared.
     if (this.sandbox15) {
@@ -446,6 +488,13 @@ export class Roll20Emulator {
     this.vmSandbox = sandbox;
     vm.runInContext(code, sandbox, { filename: "ai-relay.js" });
     this.emit("ready");
+  }
+
+  /** Drain every armed onSheetWorkerCompleted callback with the given verdict. */
+  fireSheetWorkers(workersExecuted: boolean): void {
+    const cbs = this.sheetWorkerCallbacks;
+    this.sheetWorkerCallbacks = [];
+    for (const cb of cbs) cb({ workersExecuted });
   }
 
   private installZOrderGlobals(sandbox: Record<string, unknown>): void {
