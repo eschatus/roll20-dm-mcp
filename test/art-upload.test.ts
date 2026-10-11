@@ -14,6 +14,9 @@ const png = (w: number, h: number) =>
 const dims = async (b: Buffer) => { const m = await sharp(b).metadata(); return `${m.width}x${m.height} ${m.format}`; };
 
 describe("planVariants — Roll20's longest-side caps 200/512/2048/10000, never upscaled", () => {
+  it("never rounds a side to zero on a very thin image (Devin, #244)", () => {
+    expect(planVariants(1, 600)[0]).toMatchObject({ width: 1, height: 200 });
+  });
   it("matches the live 4096×1963 map upload exactly", () => {
     expect(planVariants(4096, 1963).map((v) => `${v.variantName} ${v.width}x${v.height}`)).toEqual([
       "thumb 200x96", "med 512x245", "max 2048x982", "original 4096x1963",
@@ -58,6 +61,21 @@ describe("prepareUpload — the four variants, encoded the way Roll20's client d
     expect(p.variants[3].bytes).toBe(src);
   });
 
+  it("accepts a single-frame GIF and converts it like a PNG (Devin, #244)", async () => {
+    const gif = await sharp({ create: { width: 300, height: 150, channels: 3, background: "#0a0" } }).gif().toBuffer();
+    const p = await prepareUpload("/a/portrait.gif", gif);
+    expect(p).toMatchObject({ name: "portrait.webp", type: "image/webp" });
+    expect(await dims(p.variants[0].bytes)).toBe("200x100 webp");
+  });
+
+  it("keeps a WEBP source as real webp bytes above 16 MP — never PNG bytes labelled webp (Devin, #244)", async () => {
+    const big = await sharp({ create: { width: 5000, height: 3300, channels: 3, background: "#123" } }).webp({ quality: 10 }).toBuffer();
+    const p = await prepareUpload("/maps/huge.webp", big);
+    expect(p.type).toBe("image/webp");
+    for (const v of p.variants) expect((await sharp(v.bytes).metadata()).format).toBe("webp");
+    expect(p.variants[3].bytes).toBe(big); // unresized + unconverted → the source itself
+  });
+
   it("keeps the source type above 16 MP, as Roll20 does", async () => {
     const w = 5000, h = Math.ceil(WEBP_MAX_PIXELS / 5000) + 10; // just over the limit
     const p = await prepareUpload("/maps/huge.png", await png(w, h));
@@ -68,7 +86,9 @@ describe("prepareUpload — the four variants, encoded the way Roll20's client d
   });
 
   it("refuses unsupported and animated images instead of half-uploading them", async () => {
-    await expect(prepareUpload("/a/clip.gif", Buffer.from("GIF89a"))).rejects.toThrow(/unsupported image type/);
+    await expect(prepareUpload("/a/clip.bmp", Buffer.from("BM"))).rejects.toThrow(/unsupported image type/);
+    const animatedGif = Buffer.from("R0lGODlhCAAIAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAACAAIAAAIDwABCBxIsKDBgwgTKkwYEAAh+QQBCgABACwAAAAACAAIAIEAAP8AAAAAAAAAAAAIDwABCBxIsKDBgwgTKkwYEAA7", "base64");
+    await expect(prepareUpload("/a/anim.gif", animatedGif)).rejects.toThrow(/animated/);
     // A real two-frame animated webp (8×8, made with Pillow). sharp's own `join: { animated }`
     // silently flattens to one frame in this version, so it can't build the fixture.
     const animated = Buffer.from(
@@ -136,6 +156,25 @@ describe("uploadPrepared — reqimage → s3putsign_batch → four presigned PUT
       const { doFetch } = fakeRoll20({ reqimage });
       await expect(uploadPrepared(p, CRED, doFetch)).rejects.toBeInstanceOf(UploadAuthError);
     }
+  });
+
+  it("sends the cookies only to Roll20's own origin, whatever the credential file says", async () => {
+    const p = await prepared();
+    const { calls, doFetch } = fakeRoll20();
+    await uploadPrepared(p, { ...CRED, origin: "http://evil.example" } as typeof CRED, doFetch);
+    for (const c of calls.filter((x) => x.headers.Cookie)) expect(c.url.startsWith("https://app.roll20.net/")).toBe(true);
+  });
+
+  it("keeps the step and upload id when the network itself fails (Devin, #244)", async () => {
+    const p = await prepared();
+    const { doFetch } = fakeRoll20();
+    const flaky = (async (url: string, init: RequestInit) => {
+      if (String(url).includes("/max.webp")) throw new Error("socket hang up");
+      return doFetch(url, init);
+    }) as unknown as typeof fetch;
+    const err = await uploadPrepared(p, CRED, flaky).catch((e) => e);
+    expect(err).toBeInstanceOf(UploadStageError);
+    expect(err.message).toMatch(/put:max: network error: socket hang up.*upload id 542706052/);
   });
 
   it("names the failing step and the orphaned upload id", async () => {

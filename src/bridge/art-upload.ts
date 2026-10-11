@@ -34,8 +34,12 @@ export const WEBP_MAX_PIXELS = 16_000_000;
 export const WEBP_QUALITY = 94;
 
 const SOURCE_TYPES: Record<string, string> = {
-  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif",
 };
+const EXT_FOR_TYPE: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };
+
+/** Roll20's own origin. Fixed, not configurable: the credential is Roll20 session cookies and must never be sent anywhere else. */
+export const ROLL20_ORIGIN = "https://app.roll20.net";
 
 export interface VariantPlan { variantName: VariantName; width: number; height: number; }
 
@@ -49,7 +53,8 @@ export function planVariants(width: number, height: number): VariantPlan[] {
     let w = width, h = height;
     if (w > h) { if (w > cap) { h *= cap / w; w = cap; } }
     else if (h > cap) { w *= cap / h; h = cap; }
-    return { variantName, width: Math.round(w), height: Math.round(h) };
+    // Floor of 1px: a very thin image (1×600) would otherwise round a side to zero (Devin, #244).
+    return { variantName, width: Math.max(1, Math.round(w)), height: Math.max(1, Math.round(h)) };
   });
 }
 
@@ -65,7 +70,7 @@ export async function prepareUpload(localAbsPath: string, source: Buffer): Promi
   const ext = path.extname(localAbsPath).toLowerCase();
   const sourceType = SOURCE_TYPES[ext];
   if (!sourceType) {
-    throw new Error(`unsupported image type "${ext || "(none)"}" — Roll20 art upload here takes .png, .jpg, .jpeg or .webp`);
+    throw new Error(`unsupported image type "${ext || "(none)"}" — Roll20 art upload here takes .png, .jpg, .jpeg, .webp or a single-frame .gif`);
   }
   const meta = await sharp(source).metadata();
   if ((meta.pages ?? 1) > 1) {
@@ -74,7 +79,7 @@ export async function prepareUpload(localAbsPath: string, source: Buffer): Promi
   const width = meta.width ?? 0, height = meta.height ?? 0;
   const useWebp = width * height <= WEBP_MAX_PIXELS;
   const type = useWebp ? "image/webp" : sourceType;
-  const outExt = useWebp ? "webp" : ext.slice(1) === "jpeg" ? "jpg" : ext.slice(1);
+  const outExt = EXT_FOR_TYPE[type];
   const base = path.basename(localAbsPath, path.extname(localAbsPath));
 
   const plans = planVariants(width, height);
@@ -83,17 +88,25 @@ export async function prepareUpload(localAbsPath: string, source: Buffer): Promi
   // Roll20 encodes it once and reuses the blob (`FF`/reusedFrom). A webp source at full size is
   // passed through untouched, as Roll20 does when no resize and no conversion is needed.
   let fullSize: Buffer | null = null;
+  // Encode by the DECLARED type, so bytes, Content-Type and filename always agree. A webp source
+  // over 16 MP keeps webp — Roll20 encodes it at the webp quality — rather than becoming PNG bytes
+  // labelled webp (Devin, #244).
   const encodeAt = async (w: number, h: number): Promise<Buffer> => {
     const pipeline = sharp(source).resize(w, h, { fit: "fill" });
-    if (useWebp) return pipeline.webp({ quality: WEBP_QUALITY }).toBuffer();
-    return type === "image/jpeg" ? pipeline.jpeg({ quality: 100 }).toBuffer() : pipeline.png().toBuffer();
+    switch (type) {
+      case "image/webp": return pipeline.webp({ quality: WEBP_QUALITY }).toBuffer();
+      case "image/jpeg": return pipeline.jpeg({ quality: 100 }).toBuffer();
+      case "image/gif": return pipeline.gif().toBuffer();
+      default: return pipeline.png().toBuffer();
+    }
   };
   const variants: PreparedVariant[] = [];
   for (const [i, plan] of plans.entries()) {
     const cap = VARIANTS[i][0];
     let bytes: Buffer;
     if (cap >= longest) {
-      fullSize ??= sourceType === type && sourceType === "image/webp" ? source : await encodeAt(width, height);
+      // Unconverted and unresized → the source bytes themselves, as Roll20 passes them through.
+      fullSize ??= sourceType === type ? source : await encodeAt(width, height);
       bytes = fullSize;
     } else {
       bytes = await encodeAt(plan.width, plan.height);
@@ -108,8 +121,6 @@ export interface UploadCredential {
   cookies: Record<string, string>;
   /** The harvesting browser's User-Agent. Cloudflare binds `cf_clearance` to it. */
   userAgent?: string;
-  /** Defaults to https://app.roll20.net. */
-  origin?: string;
 }
 
 /** The furnished credential was refused — re-harvest it. Raised only for auth-shaped failures. */
@@ -138,7 +149,18 @@ function looksLikeAuthWall(status: number, body: string): boolean {
 
 /** Run the three-step upload. Returns the CDN URL of the `original` variant. */
 export async function uploadPrepared(prepared: PreparedUpload, cred: UploadCredential, doFetch: Fetch = fetch): Promise<string> {
-  const origin = (cred.origin ?? "https://app.roll20.net").replace(/\/+$/, "");
+  const origin = ROLL20_ORIGIN;
+  // A rejected fetch (DNS, reset, timeout) has no response to check. Wrap every call so the failure
+  // still names its step and, once known, the orphaned upload id (Devin, #244).
+  let uploadId: string | undefined = undefined;
+  const call = async (stage: string, url: string, init: RequestInit): Promise<{ res: Response; text: string }> => {
+    try {
+      const res = await doFetch(url, init);
+      return { res, text: init.method === "PUT" ? "" : await res.text() };
+    } catch (e) {
+      throw new UploadStageError(stage, `network error: ${(e as Error).message}`, uploadId);
+    }
+  };
   const cookie = Object.entries(cred.cookies).map(([k, v]) => `${k}=${v}`).join("; ");
   const session: Record<string, string> = {
     Cookie: cookie,
@@ -148,24 +170,23 @@ export async function uploadPrepared(prepared: PreparedUpload, cred: UploadCrede
   };
 
   // 1. reqimage → upload id
-  const r1 = await doFetch(`${origin}/image_library/reqimage`, {
+  const { res: r1, text: raw1 } = await call("reqimage", `${origin}/image_library/reqimage`, {
     method: "POST",
     headers: { ...session, "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ name: prepared.name, type: prepared.type, size: String(prepared.size) }).toString(),
   });
-  const t1 = (await r1.text()).trim();
+  const t1 = raw1.trim();
   if (looksLikeAuthWall(r1.status, t1)) throw new UploadAuthError("reqimage", r1.status, t1.slice(0, 120));
   if (!r1.ok) throw new UploadStageError("reqimage", `HTTP ${r1.status} ${t1.slice(0, 200)}`);
   if (!/^\d+$/.test(t1)) throw new UploadStageError("reqimage", `expected a numeric upload id, got ${JSON.stringify(t1.slice(0, 120))}`);
-  const uploadId = t1;
+  uploadId = t1;
 
   // 2. s3putsign_batch → presigned PUT URL + final CDN URL per variant
-  const r2 = await doFetch(`${origin}/image_library/s3putsign_batch/${uploadId}`, {
+  const { res: r2, text: t2 } = await call("s3putsign_batch", `${origin}/image_library/s3putsign_batch/${uploadId}`, {
     method: "POST",
     headers: { ...session, "Content-Type": "application/json" },
     body: JSON.stringify(prepared.variants.map((v) => ({ variantName: v.variantName, name: v.name, size: v.bytes.length, type: v.type }))),
   });
-  const t2 = await r2.text();
   if (looksLikeAuthWall(r2.status, t2)) throw new UploadAuthError("s3putsign_batch", r2.status, t2.slice(0, 120));
   if (!r2.ok) throw new UploadStageError("s3putsign_batch", `HTTP ${r2.status} ${t2.slice(0, 200)}`, uploadId);
   let signed: Record<string, SignedVariant>;
@@ -176,7 +197,7 @@ export async function uploadPrepared(prepared: PreparedUpload, cred: UploadCrede
   for (const v of prepared.variants) {
     const s = signed[v.variantName];
     if (!s?.base || !s.additional) throw new UploadStageError(`sign:${v.variantName}`, "no presigned URL returned for this variant", uploadId);
-    const put = await doFetch(s.base + s.additional, {
+    const { res: put } = await call(`put:${v.variantName}`, s.base + s.additional, {
       method: "PUT",
       headers: { "Content-Type": v.type },
       body: new Uint8Array(v.bytes),
