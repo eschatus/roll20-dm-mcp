@@ -136,7 +136,7 @@ Roll20 access is **furnished, never minted**. The server reads two files out of 
 | File | Shape | Life | Needed for |
 |---|---|---|---|
 | `roll20-rt-token.json` | `{campaignId, customToken, databaseURL, harvestedAt}` | ~1 h from harvest (Firebase decides, not us) | Everything. The token is **campaign-scoped** and carries that campaign's RTDB shard. |
-| `roll20-upload-cache.json` | `{endpoint, cookies, harvestedAt}` | 8 h | Art upload only (`upload_and_place_map_image`). |
+| `roll20-upload-cache.json` | `{cookies, userAgent, harvestedAt}` | 8 h | Art upload only (`upload_and_place_map_image`, `batch_import_maps`, `upload_image`). |
 
 ### The supported path — the Gem harvests
 
@@ -207,7 +207,7 @@ The Gem is an Electron overlay that floats on your screen. It shows a glowing fa
 
 What matters from *this* side of the relationship:
 
-- The Gem pins this repository as a dependency by tag (currently `#v2.2.1`) and builds it in the clone, so you do not need a separate checkout of roll20-dm-mcp for the Gem to run. Changes here reach the Gem only when it re-pins.
+- The Gem pins this repository as a dependency by tag (currently `#v2.2.2`) and builds it in the clone, so you do not need a separate checkout of roll20-dm-mcp for the Gem to run. Changes here reach the Gem only when it re-pins.
 - It bundles `skills/dm-rules.md` and `mod-scripts/ai-relay.js` from this repo into its installer.
 - It furnishes the two credential files from step 5, and it is the only supported harvester.
 - It consumes the `/events` SSE stream, and it owns the two responsibilities this server gave up: deciding tactical plans (storing them via `set_mob_plan`) and answering player `!`-commands (off `chat-message` events).

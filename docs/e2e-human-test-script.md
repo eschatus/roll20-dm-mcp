@@ -77,7 +77,7 @@ ID `17491327`) is the project's control campaign (no real PCs) — skip Phase 1'
 | 0.2 | `npm install` (repo root) | clean install. **No `npx playwright install` step** — confirm `playwright` is absent from `package.json` dependencies | [ ] |
 | 0.3 | Confirm `.env` has `ANTHROPIC_API_KEY` | Needed **only** by the maps suite's `analyze_battlemap` (`src/tools/vision.ts` is the sole `@anthropic-ai/sdk` importer). The combat server reaches no Anthropic code — skip this if you skip Phase 2. **No DDB credential is needed or used.** | [ ] |
 | 0.4 | Confirm the data dir holds a **current** `roll20-rt-token.json` for the campaign you're about to test | `{campaignId, customToken, databaseURL, harvestedAt}`, well under an hour old, **matching this campaign** (tokens are campaign-scoped). The server never harvests one — refresh it from the gem. Data dir = `./data` unless `ROLL20_DATA_DIR` is set. | [ ] |
-| 0.5 | If you'll run Phase 2: confirm `roll20-upload-cache.json` too | `{endpoint, cookies, harvestedAt}`, < 8 h old. Missing/stale → `Roll20UploadCredentialError` on any upload. | [ ] |
+| 0.5 | If you'll run Phase 2: confirm `roll20-upload-cache.json` too | `{cookies, userAgent, harvestedAt}`, < 8 h old. Missing/stale/refused → `Roll20UploadCredentialError` on any upload. | [ ] |
 | 0.6 | `npm run build` | `tsc` exits 0 (required for the stdio maps server + `npm start`) | [ ] |
 | 0.7 | `npm test` | suite green — **34 files, 400 tests passing, 0 skipped** as of v2.0.0 | [ ] |
 | 0.8 | `npm run serve` | HTTP server boots; first run generates `ROLL20_MCP_TOKEN`, writes `.env`, injects `.mcp.json` | [ ] |

@@ -1,11 +1,11 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import path from "path";
+import { existsSync, readFileSync } from "fs";
 import { dataPath } from "../dataDir.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
 import { rtRelayCommand, rtGet } from "./roll20-rt.js";
 import { READONLY_ACTIONS, newNonce } from "./actions.js";
 import { recordSuccess, recordFailure, circuitOpen } from "./transport-health.js";
 import { ensureRelayVersionChecked } from "./relay-version-check.js";
+import { prepareUpload, uploadPrepared, UploadAuthError, type UploadCredential } from "./art-upload.js";
 
 const RELAY_TIMEOUT_MS = 30_000;
 
@@ -79,9 +79,13 @@ export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
 const UPLOAD_CACHE_PATH = dataPath("roll20-upload-cache.json");
 const UPLOAD_CACHE_TTL_MS = 8 * 60 * 60_000; // 8 h
 
-interface UploadCache {
-  endpoint: string;
-  cookies: Record<string, string>; // name→value for app.roll20.net
+/**
+ * The furnished upload credential: the logged-in browser's app.roll20.net cookies, plus that
+ * browser's User-Agent (Cloudflare binds `cf_clearance` to it). Written by whoever harvests it —
+ * the gem's own logged-in session, human present — never by this server (#177, #243). A file from
+ * before #243 also carries a dead `endpoint` field; it is ignored.
+ */
+interface UploadCache extends UploadCredential {
   harvestedAt: number;
 }
 
@@ -89,107 +93,44 @@ function readUploadCache(): UploadCache | null {
   try {
     if (!existsSync(UPLOAD_CACHE_PATH)) return null;
     const c = JSON.parse(readFileSync(UPLOAD_CACHE_PATH, "utf-8")) as UploadCache;
+    if (!c.cookies || typeof c.cookies !== "object" || !Object.keys(c.cookies).length) return null;
     if (Date.now() - c.harvestedAt > UPLOAD_CACHE_TTL_MS) return null;
     return c;
   } catch { return null; }
 }
 
-function writeUploadCache(c: UploadCache): void {
-  mkdirSync(path.dirname(UPLOAD_CACHE_PATH), { recursive: true });
-  writeFileSync(UPLOAD_CACHE_PATH, JSON.stringify(c), "utf-8");
-}
-
-function isCdnUrl(v: unknown): v is string {
-  return typeof v === "string" && (v.includes("d20.io") || v.includes("files.roll20")) && v.startsWith("http");
-}
-
-// Extract CDN URL from Roll20's upload response JSON. Roll20 has used several field names
-// across versions; try them all rather than assume one.
-function extractCdnUrl(body: unknown): string | null {
-  if (!body || typeof body !== "object") return null;
-  const b = body as Record<string, unknown>;
-  for (const key of ["imgsrc", "url", "imageUrl", "image_url", "src", "final"]) {
-    if (isCdnUrl(b[key])) return b[key] as string;
-  }
-  // Roll20 Jumpgate s3putsign_batch: {"thumb":{"final":"https://files.d20.io/.../thumb.webp",...}}
-  // Convert thumb URL → original.webp since that's the usable full-res asset URL.
-  if (b["thumb"] && typeof b["thumb"] === "object") {
-    const thumb = b["thumb"] as Record<string, unknown>;
-    if (isCdnUrl(thumb["final"])) {
-      return (thumb["final"] as string).replace(/\/thumb\.\w+(\?.*)?$/, "/original.webp");
-    }
-  }
-  // Recurse one level for other nested structures (e.g. { data: { imgsrc: "..." } })
-  for (const nested of Object.values(b)) {
-    const found = extractCdnUrl(nested);
-    if (found) return found;
-  }
-  return null;
-}
-
-// Attempt a direct HTTP upload using FURNISHED session credentials (roll20-upload-cache.json,
-// harvested in the gem where a human is present). Returns the CDN URL or throws — and a throw is
-// terminal. There is nothing to fall back TO: the Playwright uploader that used to catch this
-// harvested the credential itself, which is the capability #175/#177 removed. See uploadArt.
-async function uploadArtDirect(localAbsPath: string, cache: UploadCache): Promise<string> {
-  const { readFileSync } = await import("fs");
-
-  const ext = path.extname(localAbsPath).toLowerCase();
-  const mimeTypes: Record<string, string> = {
-    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-    ".gif": "image/gif", ".webp": "image/webp",
-  };
-  const mimeType = mimeTypes[ext] ?? "application/octet-stream";
-
-  const form = new FormData();
-  const fileBytes = readFileSync(localAbsPath);
-  form.append("file", new Blob([fileBytes], { type: mimeType }), path.basename(localAbsPath));
-
-  const cookieHeader = Object.entries(cache.cookies)
-    .map(([k, v]) => `${k}=${v}`)
-    .join("; ");
-
-  const res = await fetch(cache.endpoint, {
-    method: "POST",
-    headers: { Cookie: cookieHeader },
-    body: form,
-  });
-
-  if (!res.ok) throw new Error(`Roll20 upload HTTP ${res.status}`);
-  const body = await res.json().catch(() => null);
-  const url = extractCdnUrl(body);
-  if (!url) throw new Error(`Roll20 upload response missing CDN URL: ${JSON.stringify(body)}`);
-  return url;
-}
-
 /**
- * Raised when the furnished Roll20 upload credential is missing or stale. Uploads go over
- * a plain multipart POST (uploadArtDirect) — no browser — but the endpoint + session cookies
- * have to come from somewhere. Harvesting them is a human-attended act that belongs in the
- * gem's own logged-in session, not in an MCP server (#177).
+ * Raised when the furnished Roll20 upload credential is missing, stale, or refused by Roll20.
+ * Only those cases: any other upload failure is an UploadStageError naming the step, so a broken
+ * upload never sends someone off to refresh a credential that would not help (#243).
  */
 export class Roll20UploadCredentialError extends Error {
   constructor(reason: string) {
     super(
       `Roll20 art upload unavailable (${reason}). Uploads are browserless here — this server ` +
-      `POSTs the file itself but never harvests the credential. Refresh it from the gem's ` +
-      `logged-in Roll20 session, or point ROLL20_DATA_DIR at a data dir holding a current ` +
-      `roll20-upload-cache.json ({endpoint, cookies, harvestedAt}, ${UPLOAD_CACHE_TTL_MS / 3_600_000}h TTL).`
+      `runs Roll20's own upload flow itself but never harvests the credential. Refresh it from the ` +
+      `gem's logged-in Roll20 session, or point ROLL20_DATA_DIR at a data dir holding a current ` +
+      `roll20-upload-cache.json ({cookies, userAgent, harvestedAt}, ${UPLOAD_CACHE_TTL_MS / 3_600_000}h TTL).`
     );
     this.name = "Roll20UploadCredentialError";
   }
 }
 
+/**
+ * Upload a local image to the Roll20 Art Library and return its CDN URL — the `original`
+ * variant, which is what token `imgsrc` and map images use. Browserless by construction: Roll20's
+ * own three-step flow (reqimage → s3putsign_batch → four presigned PUTs), with the four size
+ * variants generated here the way Roll20's client generates them. See art-upload.ts.
+ */
 export async function uploadArt(localAbsPath: string): Promise<string> {
-  // Browserless by construction (#177): a direct multipart POST with furnished credentials.
-  // There is deliberately NO Playwright fallback — it used to harvest the credential itself,
-  // which is the capability being removed. If the file can't go over HTTP, it doesn't go.
   const cache = readUploadCache();
-  if (!cache) throw new Roll20UploadCredentialError("no roll20-upload-cache.json, or it is older than its TTL");
+  if (!cache) throw new Roll20UploadCredentialError("no roll20-upload-cache.json with cookies, or it is older than its TTL");
+  const prepared = await prepareUpload(localAbsPath, readFileSync(localAbsPath));
   try {
-    return await uploadArtDirect(localAbsPath, cache);
+    return await uploadPrepared(prepared, cache);
   } catch (e) {
-    throw new Roll20UploadCredentialError(`direct upload failed: ${(e as Error).message}`);
+    if (e instanceof UploadAuthError) throw new Roll20UploadCredentialError(e.message);
+    throw e;
   }
 }
 
