@@ -79,19 +79,25 @@ current user in a high-risk environment.
 
 ## 2. The furnished Roll20 upload credential (`roll20-upload-cache.json`)
 
-**What it is:** `<data dir>/roll20-upload-cache.json` — `{ endpoint, cookies, harvestedAt }`. Roll20
-session cookies plus the upload endpoint, used by `uploadArt` to POST a file to the Roll20 art library
-(`upload_image`, `upload_and_place_map_image`, `batch_import_maps`).
+**What it is:** `<data dir>/roll20-upload-cache.json` — `{ cookies, userAgent, harvestedAt }`. The
+logged-in browser's app.roll20.net cookies, and that browser's User-Agent (Cloudflare binds
+`cf_clearance` to it). `uploadArt` sends them on the two Roll20 calls of the Art Library upload
+(`reqimage`, `s3putsign_batch`), which back `upload_image`, `upload_and_place_map_image` and
+`batch_import_maps`. The four image PUTs that follow go to presigned S3 URLs and carry **no** cookies
+(#243). A file from before #243 may also carry an `endpoint` field; it is ignored.
 
 **Risk:** these are **Roll20 session cookies** — the highest-value secret this repo touches. Anyone who
 reads the file has your Roll20 session for as long as it is valid.
 
 **Mitigations:**
-- **The server never harvests it** — same rule as §1. `uploadArt` does a plain multipart POST with
-  furnished credentials and has **no Playwright fallback**; the fallback *was* the harvesting
-  capability being removed (#177).
+- **The server never harvests it** — same rule as §1. `uploadArt` runs Roll20's own upload flow over
+  plain HTTP with the furnished cookies and has **no Playwright fallback**; the fallback *was* the
+  harvesting capability being removed (#177).
 - **8 h TTL** (`UPLOAD_CACHE_TTL_MS`), after which the cache reads as absent.
-- Absent or stale → typed `Roll20UploadCredentialError` naming the file, its shape, and its TTL.
+- Absent, stale, or refused by Roll20 (HTTP 401/403 or a Cloudflare page) → typed
+  `Roll20UploadCredentialError` naming the file, its shape, and its TTL. Any other upload failure is
+  an `UploadStageError` naming the step, so a broken upload never sends anyone to refresh a
+  credential that would not help.
 - Under `data/` (gitignored).
 
 **Accepted limitation:** the cookie's scope cannot be narrowed — Roll20 offers no read-only or

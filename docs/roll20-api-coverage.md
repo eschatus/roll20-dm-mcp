@@ -390,11 +390,18 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | **event** `add:graphic` | (passive) | — | auto-rolls initiative for NPC tokens dropped during combat |
 | **event** `ready` | (passive) | — | logs `state.GM_AI_Bridge` restoration on (re)deploy |
 
-**Not in the relay at all:** `uploadArt` (`src/bridge/roll20.ts`) — a plain multipart POST to the
-Roll20 art CDN using the **furnished** `roll20-upload-cache.json` credential. Backs `upload_image`
-(combat) and `upload_and_place_map_image` / `batch_import_maps` (maps). No API path exists to upload
-art, and this server never harvests the credential — a missing/stale one raises
-`Roll20UploadCredentialError`. Likewise `rtCreatePage` (`src/bridge/roll20-rt.ts`) creates a page by
+**Not in the relay at all:** `uploadArt` (`src/bridge/roll20.ts` → `src/bridge/art-upload.ts`) runs
+Roll20's own Art Library upload over plain HTTP with the **furnished** `roll20-upload-cache.json`
+credential (#243). Step one, `POST /image_library/reqimage`, returns an upload id. Step two,
+`POST /image_library/s3putsign_batch/<id>`, returns a presigned S3 URL and the CDN URL for each
+variant. Step three PUTs the four variants with no cookies. The variants are generated here exactly
+as Roll20's client does: the longest side is capped at 200, 512, 2048 or 10000 px and never upscaled,
+and each is encoded as webp at quality 0.94 up to 16 MP, keeping the source type above that.
+Animated images (Roll20's transcode path) are refused. Backs `upload_image` (combat) and
+`upload_and_place_map_image` / `batch_import_maps` (maps). No API path exists to upload art, and this
+server never harvests the credential — a missing, stale or refused one raises
+`Roll20UploadCredentialError`. Verified live 2026-10-11: a 1200×600 upload stored 200×100 /
+512×256 / 1200×600 / 1200×600 webp. Likewise `rtCreatePage` (`src/bridge/roll20-rt.ts`) creates a page by
 writing the RTDB directly, mirroring an existing page's schema.
 
 ### Formerly browser-bridged (Playwright) — where each one went

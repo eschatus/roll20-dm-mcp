@@ -136,7 +136,7 @@ Roll20 access is **furnished, never minted**. The server reads two files out of 
 | File | Shape | Life | Needed for |
 |---|---|---|---|
 | `roll20-rt-token.json` | `{campaignId, customToken, databaseURL, harvestedAt}` | ~1 h from harvest (Firebase decides, not us) | Everything. The token is **campaign-scoped** and carries that campaign's RTDB shard. |
-| `roll20-upload-cache.json` | `{endpoint, cookies, harvestedAt}` | 8 h | Art upload only (`upload_and_place_map_image`). |
+| `roll20-upload-cache.json` | `{cookies, userAgent, harvestedAt}` | 8 h | Art upload only (`upload_and_place_map_image`, `batch_import_maps`, `upload_image`). |
 
 ### The supported path — the Gem harvests
 
