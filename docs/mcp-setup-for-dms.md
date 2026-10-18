@@ -206,6 +206,7 @@ Chrome or Edge, with your campaign's Roll20 **editor** open (the play screen, no
 Then in PowerShell, in the project folder:
 
 ```powershell
+cd <path-to>oll20-dm-mcp
 Get-Clipboard | npm run furnish:token -- --campaign 1234567 --db https://roll20-99913.firebaseio.com
 ```
 

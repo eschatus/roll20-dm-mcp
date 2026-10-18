@@ -165,6 +165,7 @@ You must be a **GM** of the campaign, and the campaign needs the relay Mod insta
 Then, within a few minutes, in the project folder (PowerShell):
 
 ```powershell
+cd <path-to>oll20-dm-mcp   # npm only finds the script from the project folder
 Get-Clipboard | npm run furnish:token -- --campaign <campaignId> --db <what step 1 printed>
 ```
 
