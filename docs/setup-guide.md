@@ -146,24 +146,37 @@ Harvest is **per-campaign**: point the Gem at the campaign you're about to run *
 
 > ⚠️ **The data-dir trap.** `ROLL20_DATA_DIR` (this server, default `./data`) and `DMW_DATA_DIR` (the Gem, default `%APPDATA%\DM Whisper` on Windows) must resolve to the **same directory**. If they don't, the Gem harvests into a folder the server never reads — and the two also keep separate campaign registries, so they silently disagree about which campaign is active.
 
-### Without the Gem — the honest gap
+### Without the Gem — furnish it by hand
 
-If you run this server on its own (plain Claude Code, no Gem), **there is currently no built-in way to obtain a token.** Your two options are to run the Gem once purely to harvest, or to build the file by hand. The manual route works but is fiddly, and the ~1-hour window means you do it right before starting the server.
+You don't need the Gem. The browser half is three DevTools steps in **your own** logged-in Roll20 tab; `npm run furnish:token` does the rest and checks your work before the server ever sees it. (The server still never opens a browser — you do the copying, the script only validates and writes.)
 
-With the campaign's Roll20 **editor** open in Chrome/Edge:
+You must be a **GM** of the campaign, and the campaign needs the relay Mod installed (§3) — which in turn needs the campaign creator's Pro subscription.
 
-- **`campaignId`** — the number in the campaign URL.
-- **`customToken`** — DevTools → **Network** → filter `signInWithCustomToken` → reload → open the request → **Payload** → copy the `token` field.
-- **`databaseURL`** — `https://<ns>.firebaseio.com`, where `<ns>` is the `ns=` query parameter on the editor's `firebaseio.com` **websocket** (Network → WS). Equivalently, read `window.FIREBASE_ROOT` in the Console.
-- **`harvestedAt`** — `Date.now()`.
+1. Open the campaign's **editor** (the play screen, not the details page) in Chrome or Edge, press **F12**, and in the **Console** run:
 
-Write those four fields to `<ROLL20_DATA_DIR>/roll20-rt-token.json` and start the server within the window.
+   ```js
+   indexedDB.deleteDatabase("firebaseLocalStorageDb"); window.FIREBASE_ROOT
+   ```
 
-Once a connection is established it stays live for the session — the token's lifetime governs *making* a connection (server start, campaign switch), not holding one. A mid-session restart means a fresh harvest.
+   Note what it prints (e.g. `https://roll20-99913.firebaseio.com`) — that's the campaign's database shard. The `deleteDatabase` matters: Roll20 normally restores its login from that cache on reload and **never sends the token**, so without it step 2 shows nothing.
+2. Switch to the **Network** tab, tick **Preserve log**, type `signInWithCustomToken` in the filter box, and **reload** the page.
+3. Right-click the request that appears → **Copy → Copy as cURL** (or open it → **Payload** and copy the `token` value — either works).
 
-> ⚠️ **A live server does not keep this file warm (#216).** Nothing in this repo ever writes `roll20-rt-token.json`; only the Gem's harvest does, and the Gem harvests reactively — when its *own* server hits a token failure. A connected server never hits one, so a Gem that has been up an hour reports `health: ok` while the file on disk has gone cold. The moment that bites is when you start a **second** reader of the same data dir — `roll20-dm-maps` over stdio, or a `tsx` script — and it cannot sign in at all. The server no longer refuses a token on age alone (Firebase is asked, and its answer is reported), and `transport_status` now carries an `rtToken: {ageMinutes, stale, note}` block so the staleness is visible before it bites. The fix is the same either way: press **Connect Roll20** in the Gem.
+Then, within a few minutes, in the project folder (PowerShell):
 
-There is no practical hand-built equivalent for `roll20-upload-cache.json`; without it, art upload fails cleanly and nothing else is affected.
+```powershell
+Get-Clipboard | npm run furnish:token -- --campaign <campaignId> --db <what step 1 printed>
+```
+
+`<campaignId>` is the number in the campaign's URL (`/campaigns/details/1234567`, `/join/1234567/…`). Leave `--campaign` off to use the active campaign. On macOS use `pbpaste |`; or run it without a pipe and paste at the prompt.
+
+The script pulls the token out of whatever you pasted, then proves it: the token **exchanges**, it belongs to **this** campaign, it is a **GM** session, and the database shard actually holds the campaign. Any miss is a one-line error saying which. Only then does it write `<ROLL20_DATA_DIR>/roll20-rt-token.json`, stamping `harvestedAt` from the token's own mint time so `transport_status` reports a true age. Run it with the same `ROLL20_DATA_DIR` the server will use — or add `--print` to get the JSON for `ROLL20_RT_TOKEN` instead (it overrides the file; handy for a stdio `roll20-dm-maps` or a script with no shared data dir).
+
+Start (or reconnect) the server inside the window it reports (the token's own expiry, about an hour from mint). Once connected, the connection stays live for the session — that hour governs *making* a connection (server start, campaign switch), not holding one. A mid-session restart means doing this again.
+
+> ⚠️ **A live server does not keep this file warm (#216).** Nothing in this repo ever writes `roll20-rt-token.json`; only the Gem's harvest does, and the Gem harvests reactively — when its *own* server hits a token failure. A connected server never hits one, so a Gem that has been up an hour reports `health: ok` while the file on disk has gone cold. The moment that bites is when you start a **second** reader of the same data dir — `roll20-dm-maps` over stdio, or a `tsx` script — and it cannot sign in at all. The server no longer refuses a token on age alone (Firebase is asked, and its answer is reported), and `transport_status` now carries an `rtToken: {ageMinutes, stale, note}` block so the staleness is visible before it bites. The fix is the same either way: press **Connect Roll20** in the Gem, or re-run `npm run furnish:token`.
+
+There is no hand path for `roll20-upload-cache.json` yet (it carries Roll20 session cookies, not a token). Without it, art upload fails cleanly and nothing else is affected — upload map art through Roll20's own UI.
 
 ---
 
@@ -191,7 +204,7 @@ Restart Claude Code so it picks up the `.mcp.json` from step 4. After restart, t
 
 You can verify this is working by asking Claude: `list_campaigns` or `active_campaign`.
 
-Use Claude Code for map prep, deploying tokens before a session, and anything that doesn't need split-second response at the table. During live play, the Gem is faster — but Claude Code works perfectly well for running combat if you don't have or want the Gem. (Note that without the Gem you'll need the manual token harvest from step 5.)
+Use Claude Code for map prep, deploying tokens before a session, and anything that doesn't need split-second response at the table. During live play, the Gem is faster — but Claude Code works perfectly well for running combat if you don't have or want the Gem. (Without the Gem, furnish the token with `npm run furnish:token` — step 5.)
 
 ---
 

@@ -40,7 +40,7 @@ import {
 export type { MapPing } from "./rt-helpers.js";
 
 // Public web config captured from the live editor (safe to embed — it's the client config).
-const FIREBASE_CONFIG = {
+export const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDSuyx7vpT7ZS0EdeX68qVKIQKv9MfSQN0",
   authDomain: "roll20-dev.firebaseapp.com",
   databaseURL: "https://roll20-99910.firebaseio.com/",
@@ -211,7 +211,8 @@ function remedyFor(source: TokenSource | null): string {
   }
   return (
     `This server reads the token but never harvests one — reconnect Roll20 in the gem to ` +
-    `re-harvest, or point ROLL20_DATA_DIR at the data dir holding a current ` +
+    `re-harvest, furnish one by hand with \`npm run furnish:token\` (docs/setup-guide.md §5), ` +
+    `or point ROLL20_DATA_DIR at the data dir holding a current ` +
     `roll20-rt-token.json for THIS campaign (the token is campaign-scoped).`
   );
 }
