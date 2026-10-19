@@ -193,35 +193,30 @@ sign in as normal, and it writes the token file for you. Switch the gem to the c
 > this one. Otherwise the gem harvests a token into a directory the server never reads, and you'll be staring at
 > "no token file" with a perfectly good token sitting on disk.
 
-**Without the gem — the manual way.** There is currently no built-in way to get a token without it, so you build
-the file yourself. It is genuinely fiddly, and the token is only accepted for about **an hour** after it's
-minted, so you have to do this shortly before you start the server. In Chrome or Edge, with your campaign's
-Roll20 **editor** open (the play screen, not the details page):
+**Without the gem.** You can do it by hand in about two minutes. You have to be a **GM** of the campaign. In
+Chrome or Edge, with your campaign's Roll20 **editor** open (the play screen, not the details page):
 
-1. **`campaignId`** — the number in the campaign URL, e.g. `app.roll20.net/editor/setcampaign/**1234567**`.
-2. **`customToken`** — open **DevTools** (F12) → **Network** tab → in the filter box type `signInWithCustomToken`
-   → reload the page → click the request that appears → **Payload** (or **Request**) → copy the value of the
-   `token` field. It's a very long string.
-3. **`databaseURL`** — still in the **Network** tab, switch the filter to `firebaseio.com` and find the
-   **WS** (websocket) entry. Its URL carries a `ns=` parameter, e.g. `ns=roll20-99922`. Your value is
-   `https://roll20-99922.firebaseio.com`. (Quicker alternative: type `window.FIREBASE_ROOT` in the DevTools
-   **Console** and use what it prints.)
+1. Press **F12**, click **Console**, paste this and press Enter:
+   `indexedDB.deleteDatabase("firebaseLocalStorageDb"); window.FIREBASE_ROOT`
+   Write down what it prints, e.g. `https://roll20-99913.firebaseio.com`.
+2. Click the **Network** tab, tick **Preserve log**, type `signInWithCustomToken` in the filter box, and reload
+   the page (F5).
+3. Right-click the one request that appears → **Copy** → **Copy as cURL**.
 
-Then create `data/roll20-rt-token.json` in the project folder:
+Then in PowerShell, in the project folder:
 
-```json
-{
-  "campaignId": "1234567",
-  "customToken": "the-very-long-string-from-step-2",
-  "databaseURL": "https://roll20-99922.firebaseio.com",
-  "harvestedAt": 1756200000000
-}
+```powershell
+cd <path-to>oll20-dm-mcp
+Get-Clipboard | npm run furnish:token -- --campaign 1234567 --db https://roll20-99913.firebaseio.com
 ```
 
-`harvestedAt` is the current time in **milliseconds** — paste `Date.now()` into the DevTools Console to get it.
+using your campaign number (from the campaign's URL) and what step 1 printed. It checks the token is for that
+campaign, that you're its GM, and that the database address is right, then writes `data/roll20-rt-token.json`
+and tells you how many minutes you have to start the server (about an hour). If something's wrong it says what,
+in one line.
 
-Start the server within the next hour. Once it has connected, the connection stays live for the rest of the
-evening; the limit only applies to *making* a connection, so a mid-session restart means redoing this.
+Once the server has connected, the connection stays live for the rest of the evening; the limit only applies to
+*making* a connection, so a mid-session restart means redoing this.
 
 > **Uploading your own battlemap art** needs a second file, `data/roll20-upload-cache.json`, which the gem also
 > writes and which expires after 8 hours. Without it, art upload fails with a clear message; everything else keeps
