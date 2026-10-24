@@ -192,13 +192,13 @@ moved to beyond-mcp with the code.)
   is structurally incapable of carrying `[[`/`@{`/`%{`/`&{` (`encodeURIComponent` turns `{` into
   `%7B`, `[` into `%5B`, `&` into `%26`); `parseAibridge` decodes it and still accepts the legacy
   marker for a campaign that hasn't been re-pasted. Enumerating Roll20's trigger syntax was the
-  losing move — that list never included `&{`. **There is currently NO chat-free way
-  to verify an attribute write.** The CDP dump scripts this note used to point at
-  (`scripts/dump-character-attrs.ts`, `scripts/find-character-by-name.ts`) are DELETED (#224): they
-  drove whatever logged-in Roll20 tab was open (an ambient credential, #83/#175) and imported
-  `playwright`, which isn't a dependency. A browserless RTDB attribute reader is tracked in **#230**
-  (blocked on locating the attribute node; probe in PR #231). Until it lands, don't read
-  `rollbase`-style fields back at all — nobody has confirmed the ≥2.7.0 encoding makes it safe.
+  losing move — that list never included `&{`. **The chat-free way to read attributes is direct RTDB (#230):**
+  `read_character_attributes` reads `char-attribs/char/<charId>` via `readCharacterAttributesRt`
+  (`src/bridge/attributes.ts`) — no relay, no chat, so `rollbase`-style values come back as plain
+  strings and are safe to read. A failed read throws `AttributeReadError`; there is deliberately
+  no fallback to the relay's `getCharacterAttributes` (still used by `get_attribute` and the save
+  helpers, so don't point those at `rollbase`-class fields). The CDP dump scripts this note used
+  to cite are DELETED (#224): they drove an ambient logged-in tab and imported `playwright`.
 - **Ability-score `_mod` attributes don't auto-derive either**, for the same sheet-worker-never-
   fires-on-the-API reason. `createCharacter`'s relay action now derives `<ability>_mod` from the
   raw score at creation time (an explicitly-passed `_mod` is left untouched) — see
