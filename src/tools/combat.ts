@@ -9,6 +9,7 @@ import {
   classifyToken,
 } from "./aoe.js";
 import { getLastPing, publishMobPlan } from "../bridge/roll20-rt.js";
+import { readCharacterAttributesRt } from "../bridge/attributes.js";
 import { KEEP_TURN_MIN_RELAY_VERSION, relayVersionAtLeast } from "../bridge/relay-version.js";
 import {
   type TurnEntry, type BatchResult,
@@ -954,7 +955,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "read_character_attributes",
-    "Read raw Roll20 character sheet attributes for a registered PC — useful for verifying sync results",
+    "Read raw Roll20 character sheet attributes for a registered PC — useful for verifying sync results. Reads straight from the campaign database (no chat), so it is safe on rollbase-style fields; fails loudly if the read fails.",
     {
       characterName: z.string().optional(),
       charSheetId: z.string().optional().describe("Query a specific Roll20 character sheet ID directly"),
@@ -962,11 +963,9 @@ export function registerCombatTools(server: McpServer): void {
     },
     async ({ characterName, charSheetId, names }) => {
       const resolvedCharId = await resolveCharSheetId(characterName, charSheetId);
-      const attrs = await roll20.relayCommand<Record<string, { current: unknown; max: unknown }>>({
-        action: "getCharacterAttributes",
-        charId: resolvedCharId,
-        names,
-      });
+      // Direct RTDB read (#230): never touches chat, so a rollbase-style value holding `@{`/`[[`
+      // cannot disable the Mod sandbox. No relay fallback — a failed read throws AttributeReadError.
+      const attrs = await readCharacterAttributesRt(resolvedCharId, names);
       return json({ charSheetId: resolvedCharId, attributes: attrs });
     }
   );
