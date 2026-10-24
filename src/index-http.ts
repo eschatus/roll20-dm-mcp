@@ -13,6 +13,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { buildCombatServer } from "./server-combat.js";
 import { onRtdbEvent, startRtdbSubscriptions } from "./bridge/roll20-rt.js";
 import { startWatchdog } from "./bridge/sandbox-watchdog.js";
+import { handleHealth } from "./http-health.js";
 
 // Long-running HTTP MCP server. One process owns the shared RT connection (the
 // src/bridge/roll20-rt.ts singletons) and serves multiple clients — the gem and
@@ -136,6 +137,9 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 const httpServer = http.createServer(async (req, res) => {
   if (!req.url) { res.writeHead(404).end("Not found"); return; }
+
+  // Data-dir/version probe for clients reusing this server (#247). Bearer-gated.
+  if (handleHealth(req, res, isAuthorized)) return;
 
   // SSE event stream for the gem HUD (RTDB push events for turn order, plans, inbox)
   if (req.url === "/events") {

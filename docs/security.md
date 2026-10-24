@@ -156,7 +156,7 @@ and the relay, and deploys are manual (§3).
 ## 5. HTTP MCP endpoint authentication (`ROLL20_MCP_TOKEN`)
 
 **What it is:** the combat server runs as an HTTP endpoint (`src/index-http.ts`, `npm run serve`).
-Every `/mcp` and `/events` request is gated by a `Bearer` token compared with `crypto.timingSafeEqual`.
+Every `/mcp`, `/events` and `/health` request is gated by a `Bearer` token compared with `crypto.timingSafeEqual`.
 The token (`ROLL20_MCP_TOKEN`) is auto-generated on first run (`randomUUID`), written to `.env`, and
 injected into `.mcp.json` so Claude Code picks it up. The `/mcp` route additionally has DNS-rebinding
 protection via Host/Origin allowlists (`localhost`, `127.0.0.1`, the configured host) enforced by
