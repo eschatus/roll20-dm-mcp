@@ -33,7 +33,7 @@ import { trackCustomState, getCustomStates as getCustomStatesStore } from "./rel
 import {
   hasAibridgeMarker, parseAibridge, cleanChat, resolveInlineRolls,
   parsePcHpBlock, writePcHpBlock, type PcHpEntry,
-  mapToken, parseTurnorder, stripUndefWrite,
+  mapToken, classUndecidableFromToken, parseTurnorder, stripUndefWrite,
   parseBroadcastPing, type MapPing,
 } from "./rt-helpers.js";
 
@@ -716,6 +716,9 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
         if (!pid) throw new Error("getTokens: no player page in RTDB → Mod fallback");
         const g = await rtGet<Record<string, Record<string, unknown>>>(`graphics/page/${pid}`);
         if (!g || Object.keys(g).length === 0) throw new Error(`getTokens: graphics/page/${pid} empty in RTDB → Mod fallback`);
+        // #242: a token that represents a sheet but has no controller of its own may be a
+        // sheet-controlled PC; the Mod resolves the character's controlledby, RTDB graphics can't.
+        if (Object.values(g).some(classUndecidableFromToken)) throw new Error("getTokens: token class needs the character's controlledby → Mod");
         const profile = (cmd.profile as string) || "full";
         return Object.values(g).map((t) => mapToken(t, profile));
       }
@@ -724,6 +727,7 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
         if (!pid) throw new Error("getTokenById: no player page in RTDB → Mod global lookup");
         const t = await rtGet<Record<string, unknown> | null>(`graphics/page/${pid}/${cmd.tokenId}`);
         if (!t) throw new Error(`getTokenById: token ${String(cmd.tokenId)} not on player page → Mod global lookup`);
+        if (classUndecidableFromToken(t)) throw new Error("getTokenById: token class needs the character's controlledby → Mod");
         return {
           id: t.id, name: t.name || "", represents: t.represents || "", layer: t.layer,
           controlledby: t.controlledby || "", left: t.left, top: t.top, width: t.width, height: t.height,

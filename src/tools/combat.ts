@@ -145,7 +145,7 @@ export function registerCombatTools(server: McpServer): void {
         if (!characterName) throw new Error("Provide characterName or tokenId");
         resolvedTokenId = await resolveTokenOrThrow(characterName);
       }
-      type TokenData = { id: string; name: string; represents?: string; bar1_value?: number | string; bar1_max?: number | string; controlledby?: string };
+      type TokenData = { id: string; name: string; represents?: string; bar1_value?: number | string; bar1_max?: number | string; controlledby?: string; charControlledby?: string };
       const tok = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId: resolvedTokenId });
       if (!tok) throw new Error(`Token not found: ${characterName ?? tokenId}`);
       const charId = tok.represents || undefined;
@@ -410,7 +410,7 @@ export function registerCombatTools(server: McpServer): void {
     },
     async ({ pageId }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
-      const tokens = await roll20.relayCommand<{ id: string; name: string; layer: string; controlledby: string; represents: string; bar1_value: number; bar1_max: number; statusmarkers: string }[]>({
+      const tokens = await roll20.relayCommand<{ id: string; name: string; layer: string; controlledby: string; charControlledby?: string; represents: string; bar1_value: number; bar1_max: number; statusmarkers: string }[]>({
         action: "getTokens",
         pageId: activePage,
       });
@@ -423,6 +423,7 @@ export function registerCombatTools(server: McpServer): void {
           name: t.name,
           layer: t.layer,
           controlledby: t.controlledby,
+          charControlledby: t.charControlledby,
           represents: t.represents,
           tokenClass: classifyToken(t, sidekickNames),
           // Real numbers, not "133/133" — see num() in combatHelpers.
@@ -648,7 +649,7 @@ export function registerCombatTools(server: McpServer): void {
       // they're eligible for the DDB HP auto-init below like any other NPC.
       const sidekickNames = registry.listSidekickNames();
 
-      const tokens = await roll20.relayCommand<{ id: string; name: string; layer: string; controlledby: string; bar1_value?: number | string; bar1_max?: number | string }[]>({
+      const tokens = await roll20.relayCommand<{ id: string; name: string; layer: string; controlledby: string; charControlledby?: string; bar1_value?: number | string; bar1_max?: number | string }[]>({
         action: "getTokens",
         pageId: activePage,
       });
@@ -1012,7 +1013,7 @@ export function registerCombatTools(server: McpServer): void {
         if (!characterName) throw new Error("Provide characterName or tokenId");
         resolvedTokenId = await resolveTokenOrThrow(characterName);
       }
-      type TokenData = { id: string; bar1_value: number; bar1_max: number; name: string; controlledby?: string };
+      type TokenData = { id: string; bar1_value: number; bar1_max: number; name: string; controlledby?: string; charControlledby?: string };
       const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId: resolvedTokenId });
       if (!token) throw new Error(`Token not found: ${characterName ?? tokenId}`);
 
@@ -1101,7 +1102,7 @@ export function registerCombatTools(server: McpServer): void {
     async ({ names, nameMatch, damage, heal }) => {
       if (damage === undefined && heal === undefined) throw new Error("Provide damage or heal");
       const pageId = await roll20.getCurrentPageId();
-      type Tk = { id: string; name: string; bar1_value: number; bar1_max: number; controlledby?: string };
+      type Tk = { id: string; name: string; bar1_value: number; bar1_max: number; controlledby?: string; charControlledby?: string };
       const tokens = await roll20.relayCommand<Tk[]>({ action: "getTokens", pageId });
 
       // names[] goes through the same resolveNamesToTokens matcher resolve_aoe

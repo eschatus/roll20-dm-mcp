@@ -308,12 +308,32 @@ function compact(obj) {
   return out;
 }
 
+// The represented character's controlledby. Roll20's "Can Be Edited & Controlled By" on a sheet
+// gives a player control of every token linked to it, so the token's own field is often blank
+// (#242). Surfaced to the TS classifier as `charControlledby`, and used by isPcToken below.
+// "" when the token represents nothing or the sheet is gone.
+function charControlledBy(t) {
+  var cid = t.get("represents");
+  if (!cid) return "";
+  var c = getObj("character", cid);
+  return c ? String(c.get("controlledby") || "") : "";
+}
+
+// Effective player controllers: token controlledby UNION its character's. "all" is dropped — it
+// means scenery/summon, not a player.
+function playerControllers(t) {
+  return (String(t.get("controlledby") || "") + "," + charControlledBy(t))
+    .split(",").map(function (x) { return x.trim(); })
+    .filter(function (x) { return x !== "" && x.toLowerCase() !== "all"; });
+}
+
 function tokenSummary(t, profile) {
   var s = compact({
     id: t.id,
     name: t.get("name"),
     represents: t.get("represents"),
     controlledby: t.get("controlledby"),
+    charControlledby: charControlledBy(t),
     layer: t.get("layer"),
   });
   if (profile === "lean") return s;
@@ -582,8 +602,7 @@ function stripZonePrefix(name) {
 // True when a token is a player character (a real player controls it) — as opposed to
 // an NPC/mob (no controller) or a shared summon (controlledby "all", no DDB sheet).
 function isPcToken(t) {
-  let cb = String(t.get("controlledby") || "").trim();
-  return cb !== "" && cb.toLowerCase() !== "all";
+  return playerControllers(t).length > 0;
 }
 
 function pcHpKey(name) { return String(name || "").split("\n")[0].trim().toLowerCase(); }
@@ -2342,8 +2361,7 @@ ACTIONS["mergeTurnOrder"] = function (args, msg, nonce, senderPlayerId) {
             if (String(entry.id) === "-1") return true; // keep round markers / custom rows
             let t = getObj("graphic", entry.id);
             if (!t) return false; // stale entry → remove
-            let cb = String(t.get("controlledby") || "").trim();
-            return cb !== "" && cb.toLowerCase() !== "all"; // keep player-controlled only
+            return isPcToken(t); // keep player-controlled only (token OR its sheet, #242)
           });
         }
         let incoming = args.entries || [];
@@ -2726,6 +2744,7 @@ ACTIONS["findTokensInRange"] = function (args, msg, nonce, senderPlayerId) {
               bar1_value: t.get("bar1_value"),
               bar1_max: t.get("bar1_max"),
               controlledby: t.get("controlledby") || "",
+              charControlledby: charControlledBy(t),
             });
           }
         });
@@ -4211,8 +4230,7 @@ on("change:campaign:turnorder", function(obj, prev) {
   // Check the persisted DM inbox for a preloaded intent from this token's controller
   let pendingIntent = null;
   if (token) {
-    let controlled = token.get("controlledby") || "";
-    let controllerIds = controlled.split(",").map(function(s){ return s.trim(); }).filter(Boolean);
+    let controllerIds = playerControllers(token);
     let inbox = bs.dmInbox;
     for (let di = 0; di < inbox.length; di++) {
       if (inbox[di].type === "intent" && controllerIds.indexOf(inbox[di].playerid) !== -1) {
@@ -4289,8 +4307,7 @@ on("add:graphic", function(obj) {
     if (order.some(function(e) { return e.id === tokenId; })) return;
 
     // Skip PCs — non-empty controlledby that isn't "all" means a specific player owns it
-    let controlled = token.get("controlledby") || "";
-    if (controlled && controlled !== "all") return;
+    if (isPcToken(token)) return;
 
     let tokenName = token.get("name") || "Unknown";
     let initBonus = 0;

@@ -164,6 +164,15 @@ export function parseBroadcastPing(raw: unknown): MapPing | null {
   };
 }
 
+// True when a raw graphics record's PC/NPC class cannot be decided from the record alone (#242):
+// it represents a character sheet but carries no controller of its own, and Roll20 grants a player
+// control of every token linked to a sheet they control. The graphics node has no character
+// controlledby, so such a read must be answered by the Mod (which resolves it) rather than served
+// off RTDB with a `controlledby` that would class a sheet-controlled PC as an NPC.
+export function classUndecidableFromToken(g: Record<string, unknown>): boolean {
+  return !!g.represents && !g.controlledby;
+}
+
 // Project a raw graphics-node record to the tokenSummary shape, by profile (lean/status/full).
 // Mirrors the Mod's tokenSummary; default-fills missing sparse fields.
 export function mapToken(g: Record<string, unknown>, profile: string): Record<string, unknown> {
