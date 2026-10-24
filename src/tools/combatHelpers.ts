@@ -201,15 +201,21 @@ export async function tokenIdExists(id: string): Promise<boolean> {
   }
 }
 
-// Resolve a spoken name to a Roll20 token id. Registered characters win; otherwise
-// fuzzy-match against token names on the current page. Returns the matched id, OR
+// Resolve a spoken name to a Roll20 token id. The LIVE PAGE is the source of truth
+// (issue #240): a registered character's stored roll20TokenId is honoured only if
+// that id is actually on the page. Each page carries its own copy of a PC token
+// with its own id, so after a page change the stored id is stale — it is then
+// ignored and the page is searched by name instead. Returns the matched id, OR
 // candidate names when the match is ambiguous/missing so the agent can ask the DM
-// "did you mean X / Y?" instead of guessing a fake name. Matching: registry →
-// exact → unique substring → else collect the closest candidates.
+// "did you mean X / Y?" instead of guessing a fake name. Matching: registry id
+// verified on the page → exact → unique substring → else the closest candidates.
+// `staleRegistryId` is set when the registry had an id for this name that the page
+// does not carry AND the name search found nothing, so the caller can say so
+// instead of blaming the transport.
 export async function resolveToken(
   name: string,
   tokenList?: { id: string; name: string }[],
-): Promise<{ id?: string; candidates?: string[] }> {
+): Promise<{ id?: string; candidates?: string[]; staleRegistryId?: string }> {
   // PR #198 review (Devin, finding 1): a punctuation-only name ("," / "...")
   // — or, for this required-string param, an outright empty/whitespace-only
   // one — normalizes to "". String.prototype.includes("") is true for every
@@ -223,14 +229,26 @@ export async function resolveToken(
   // that loop over many selectors (batch_exec's per-op resolution) report it
   // as a normal per-op failure instead of aborting the whole batch.
   if (!normalizeNameForMatch(name)) return {};
-  const entry = registry.lookup(name);
-  if (entry?.roll20TokenId) return { id: entry.roll20TokenId };
-  try {
-    // Caller may pass a pre-fetched token list (batch resolution fetches once).
-    const tokens = tokenList ?? await (async () => {
-      const pageId = await roll20.getCurrentPageId();
-      return roll20.relayCommand<{ id: string; name: string }[]>({ action: "getTokens", pageId });
-    })();
+  const storedId = registry.lookup(name)?.roll20TokenId;
+  // Caller may pass a pre-fetched token list (batch resolution fetches once).
+  // A failure to read the page propagates: it is a real transport error, and
+  // answering from the registry instead is exactly the stale-id bug (#240).
+  const tokens = tokenList ?? await (async () => {
+    const pageId = await roll20.getCurrentPageId();
+    return roll20.relayCommand<{ id: string; name: string }[]>({ action: "getTokens", pageId });
+  })();
+  if (storedId && tokens.some((t) => t.id === storedId)) return { id: storedId };
+  const byName = matchTokensByName(name, tokens);
+  if (!byName.id && storedId) return { ...byName, staleRegistryId: storedId };
+  return byName;
+}
+
+// Name-matching half of resolveToken: pure over one page's token list.
+function matchTokensByName(
+  name: string,
+  tokens: { id: string; name: string }[],
+): { id?: string; candidates?: string[] } {
+  {
     // norm(): display form (original case, first line, trimmed) — used only for
     // "did you mean" candidates. normalizeNameForMatch(): comparison form,
     // case- AND punctuation-folded (issue #195: "Bandit Captain, the Scarred"
@@ -283,8 +301,6 @@ export async function resolveToken(
       return words.some((w) => n.includes(w));
     }).map(norm);
     return { candidates: Array.from(new Set(near)).slice(0, 8) };
-  } catch {
-    return {};
   }
 }
 
@@ -295,6 +311,13 @@ export async function resolveTokenOrThrow(
   tokenList?: { id: string; name: string }[],
 ): Promise<string> {
   const r = await resolveToken(name, tokenList);
+  if (!r.id && r.staleRegistryId) {
+    throw new Error(
+      `Stale registry token id for "${name}": the registry has ${r.staleRegistryId}, which is not on the current page, and no token on this page matches that name.`
+      + (r.candidates?.length ? ` Closest on the page: ${r.candidates.join(", ")}.` : "")
+      + ` Each page has its own token for a character — place or rename the token on this page, or re-register the character with its token here. This is not a transport problem.`,
+    );
+  }
   if (!r.id) {
     const hint = r.candidates?.length ? ` Did you mean: ${r.candidates.join(", ")}?` : " No matching token on the page.";
     throw new Error(`Ambiguous target "${name}".${hint} Ask the DM to confirm, don't guess.`);
@@ -312,9 +335,12 @@ export async function resolveCharSheetId(
   if (!characterName) throw new Error("Provide characterName or charSheetId");
   const entry = registry.lookup(characterName);
   if (!entry?.roll20TokenId) throw new Error(`Character not registered: ${characterName}`);
+  // Verify the stored id against the live page, or find the page's own token —
+  // the stored id may belong to another page's copy of the token (#240).
+  const tokenId = await resolveTokenOrThrow(characterName);
   const tokenData = await roll20.relayCommand<{ represents: string } | null>({
     action: "getTokenById",
-    tokenId: entry.roll20TokenId,
+    tokenId,
   });
   if (!tokenData?.represents) throw new Error("Token has no linked character sheet");
   return tokenData.represents;
