@@ -125,7 +125,7 @@ On first run it generates an auth token, writes it to `.env`, and **creates `.mc
 
 If `.mcp.json` already exists (e.g. you hand-wrote one, or it's a re-run), it only fills in whichever of the `roll20-dm` / `roll20-dm-maps` entries are missing and refreshes the `roll20-dm` bearer header — any other servers you've added stay untouched. You don't need to write this file yourself; just restart Claude Code after the first `npm run serve` to pick it up.
 
-The server runs as long as the terminal stays open. Keep it running during play. Besides `/mcp` it serves `/events`, a bearer-authenticated SSE stream carrying `combat-update`, `mob-plan`, `inbox-item`, `sandbox-status`, `map-ping`, and `chat-message` events; that's how the Gem's HUD and its player-command handling stay in sync.
+The server runs as long as the terminal stays open. Keep it running during play. Besides `/mcp` it serves `/events`, a bearer-authenticated SSE stream carrying `combat-update`, `mob-plan`, `inbox-item`, `sandbox-status`, `map-ping`, and `chat-message` events; that's how the Gem's HUD and its player-command handling stay in sync. It also serves `GET /health` (same bearer), returning `{"ok":true,"version":"<build version>","dataDir":"<absolute ROLL20_DATA_DIR>"}`, so a client reusing an already-running server can check that it reads the same data dir as its own.
 
 ---
 
