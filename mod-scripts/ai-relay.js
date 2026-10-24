@@ -1634,7 +1634,8 @@ ACTIONS["createWalls"] = function (args, msg, nonce, senderPlayerId) {
             shape: "pol",
             barrierType: args.barrierType || "wall",
             points: JSON.stringify([[w.x1 - cx, w.y1 - cy], [w.x2 - cx, w.y2 - cy]]),
-            stroke: args.stroke || "#0044FF",
+            // Per-wall stroke first: auto_place_dl_walls sends its colour on each wall (#232).
+            stroke: w.stroke || args.stroke || "#0044FF",
             stroke_width: 5,
             controlledby: "",
           };
