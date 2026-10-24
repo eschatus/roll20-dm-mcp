@@ -14,7 +14,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { setupHarness, type Harness } from "./harness.js";
 import * as characters from "../src/registry/characters.js";
 import { classifyToken } from "../src/tools/aoe.js";
-import { classUndecidableFromToken } from "../src/bridge/rt-helpers.js";
+import { resolveCharControl, withCharControl } from "../src/bridge/rt-helpers.js";
 
 let h: Harness;
 let pageId: string;
@@ -111,10 +111,23 @@ describe("roll_initiative npcOnly skips the sheet-controlled PC", () => {
   });
 });
 
-describe("RT direct reads defer to the Mod when class is undecidable from the graphics node", () => {
-  it("a token that represents a sheet but has no controller of its own cannot be classed off RTDB", () => {
-    expect(classUndecidableFromToken({ represents: "-Nchar", controlledby: "" })).toBe(true);
-    expect(classUndecidableFromToken({ represents: "-Nchar", controlledby: "p1" })).toBe(false);
-    expect(classUndecidableFromToken({ represents: "", controlledby: "" })).toBe(false);
+describe("RT direct reads resolve the character controlledby per distinct id", () => {
+  it("reads each distinct represents id once, treats absent as empty, and attaches like tokenSummary", async () => {
+    const calls: string[] = [];
+    const store: Record<string, unknown> = { cA: "player-abi", cB: "all", cC: null };
+    const rows = [
+      { id: "1", represents: "cA" }, { id: "2", represents: "cA" },
+      { id: "3", represents: "cB" }, { id: "4", represents: "cC" }, { id: "5", represents: "" },
+    ];
+    const ctl = await resolveCharControl(rows, async (id) => { calls.push(id); return store[id]; });
+    expect(calls.sort()).toEqual(["cA", "cB", "cC"]);
+    expect(withCharControl({ id: "1" }, "cA", ctl)).toEqual({ id: "1", charControlledby: "player-abi" });
+    expect(withCharControl({ id: "3" }, "cB", ctl)).toEqual({ id: "3", charControlledby: "all" });
+    expect(withCharControl({ id: "4" }, "cC", ctl)).toEqual({ id: "4" });
+    expect(withCharControl({ id: "5" }, "", ctl)).toEqual({ id: "5" });
+  });
+
+  it("a failing per-id read rejects instead of guessing a class", async () => {
+    await expect(resolveCharControl([{ represents: "cA" }], async () => { throw new Error("boom"); })).rejects.toThrow("boom");
   });
 });
