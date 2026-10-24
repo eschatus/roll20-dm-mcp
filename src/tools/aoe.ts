@@ -76,6 +76,8 @@ export interface AoeToken {
   name: string;
   layer?: string;
   controlledby?: string;
+  /** The represented character's controlledby, resolved by the relay (#242). Roll20 gives a player control of every token linked to a sheet they control, so the token's own field is often blank. */
+  charControlledby?: string;
   represents?: string;
   bar1_value?: number | string;
   bar1_max?: number | string;
@@ -97,8 +99,9 @@ export interface AoeToken {
 // registry name ("tua").
 export type TokenClass = "pc" | "npc" | "sidekick";
 
+// Effective controllers = token controlledby UNION the represented character's (#242).
 function controlledByPlayer(t: AoeToken): boolean {
-  const controllers = (t.controlledby ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const controllers = `${t.controlledby ?? ""},${t.charControlledby ?? ""}`.split(",").map((s) => s.trim()).filter(Boolean);
   return controllers.some((c) => c !== "all");
 }
 

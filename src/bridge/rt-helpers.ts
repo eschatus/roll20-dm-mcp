@@ -164,6 +164,36 @@ export function parseBroadcastPing(raw: unknown): MapPing | null {
   };
 }
 
+// True when a raw graphics record's PC/NPC class cannot be decided from the record alone (#242):
+// it represents a character sheet but carries no controller of its own, and Roll20 grants a player
+// control of every token linked to a sheet they control. The graphics node has no character
+// controlledby, so such a read must be answered by the Mod (which resolves it) rather than served
+// off RTDB with a `controlledby` that would class a sheet-controlled PC as an NPC.
+export function classUndecidableFromToken(g: Record<string, unknown>): boolean {
+  return !!g.represents && !g.controlledby;
+}
+
+// Resolve the represented characters' controlledby for a set of raw graphics records (#242).
+// Roll20 grants a player control of every token linked to a sheet they control, and the graphics
+// node carries no character data, so the PC/NPC class needs `characters/<id>/controlledby`. Reads
+// each DISTINCT represents id once, in parallel (never the whole 1,000+ entry characters node).
+// The field is ABSENT when empty (live probe, cos-test 2026-10-24), so null/undefined -> "". A
+// failing read rejects: the caller must not guess a class.
+export async function resolveCharControl(
+  graphics: Array<Record<string, unknown>>,
+  readControlledby: (charId: string) => Promise<unknown>,
+): Promise<Map<string, string>> {
+  const ids = [...new Set(graphics.map((g) => g.represents).filter((r): r is string => typeof r === "string" && r !== ""))];
+  const vals = await Promise.all(ids.map((id) => readControlledby(id)));
+  return new Map(ids.map((id, i) => [id, typeof vals[i] === "string" ? (vals[i] as string) : ""]));
+}
+
+// Attach `charControlledby` the way the relay's tokenSummary does: omitted when empty.
+export function withCharControl<T extends Record<string, unknown>>(row: T, represents: unknown, ctl: Map<string, string>): T {
+  const c = typeof represents === "string" ? ctl.get(represents) : undefined;
+  return c ? { ...row, charControlledby: c } : row;
+}
+
 // Project a raw graphics-node record to the tokenSummary shape, by profile (lean/status/full).
 // Mirrors the Mod's tokenSummary; default-fills missing sparse fields.
 export function mapToken(g: Record<string, unknown>, profile: string): Record<string, unknown> {
