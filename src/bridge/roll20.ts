@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "fs";
 import { dataPath } from "../dataDir.js";
 import { getActiveCampaign } from "../registry/campaigns.js";
-import { rtRelayCommand, rtGet } from "./roll20-rt.js";
+import { rtRelayCommand, rtGet, RtModSilentError, RtRelayError } from "./roll20-rt.js";
 import { READONLY_ACTIONS, newNonce } from "./actions.js";
 import { recordSuccess, recordFailure, circuitOpen } from "./transport-health.js";
 import { ensureRelayVersionChecked } from "./relay-version-check.js";
@@ -55,7 +55,7 @@ export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
     if (gate.open) {
       throw new Error(
         `Roll20 RT circuit open after consecutive failures — skipping "${action}". ` +
-        `Will probe again in ${gate.secsLeft}s. Reconnect Roll20 in the gem to re-harvest the token.`,
+        `Will probe again in ${gate.secsLeft}s. ${lastFailureRemedy}`,
       );
     }
 
@@ -67,13 +67,47 @@ export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
       // No circuit/health recording here — rtRelayCommand already recorded the failure ("rt"),
       // which is what advances the shared circuit counter. We only reshape the error message.
       console.error(`[roll20] rt ${action} failed (browserless — no fallback): ${err.message}`);
-      throw new Error(
-        `Roll20 realtime transport failed for "${action}": ${err.message}. ` +
-        `Reconnect Roll20 in the gem to re-harvest the token. There is no browser fallback and no ` +
-        `browser in this server at all (#179) — RT is the only transport.`,
-      );
+      const failure = describeRelayFailure(action, err);
+      if (failure.remedy) lastFailureRemedy = failure.remedy;
+      throw new Error(failure.message);
     });
   }
+}
+
+const TOKEN_REMEDY =
+  `Reconnect Roll20 in the gem to re-harvest the token, or furnish one with \`npm run furnish:token\`.`;
+
+// The remedy the circuit-breaker message repeats: whatever the last real failure called for.
+let lastFailureRemedy = TOKEN_REMEDY;
+
+// #234: three failures used to share "re-harvest the token", which is only right for the first.
+// The DM following it for the other two re-harvests forever while the real fault sits elsewhere.
+function describeRelayFailure(action: string, err: Error): { message: string; remedy?: string } {
+  if (err instanceof RtModSilentError) {
+    // The command reached the campaign; its Mod never answered. Name the campaign and point at
+    // the sandbox, where the fix is.
+    const camp = getActiveCampaign();
+    const remedy =
+      `Open ${camp.name} (${camp.roll20CampaignId}) in Roll20 → Settings → API Scripts, check the ` +
+      `sandbox is running (restart it, or re-paste the relay), and look for the ` +
+      `"[GM_AI_Bridge] Relay script loaded" line in its console.`;
+    return {
+      message: `Roll20 campaign ${camp.name} (${camp.roll20CampaignId}) received "${action}" but its ` +
+        `Mod script never replied (${err.timeoutMs / 1000}s). ${remedy}`,
+      remedy,
+    };
+  }
+  if (err instanceof RtRelayError) {
+    // The Mod answered — the transport and the credential are both fine.
+    return { message: `Roll20 refused "${action}": ${err.message}` };
+  }
+  // Couldn't sign in, connect or push: a credential/connection problem. err.message is kept
+  // verbatim — dm-whisper re-harvests on its "No usable Roll20 realtime token" phrase.
+  return {
+    message: `Roll20 realtime transport failed for "${action}": ${err.message}. ${TOKEN_REMEDY} ` +
+      `There is no browser fallback and no browser in this server at all (#179) — RT is the only transport.`,
+    remedy: TOKEN_REMEDY,
+  };
 }
 
 const UPLOAD_CACHE_PATH = dataPath("roll20-upload-cache.json");
