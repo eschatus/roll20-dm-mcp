@@ -57,6 +57,21 @@ const RELAY_TIMEOUT_MS = 30_000;
 export class RtPreSendError extends Error {
   constructor(msg: string) { super(msg); this.name = "RtPreSendError"; }
 }
+
+// Thrown when the command WAS written to the campaign's chat but no AIBRIDGE_RESULT came back
+// (#234). The credential worked; the campaign's Mod sandbox is the problem (stopped, crashed, or
+// the relay isn't installed), so re-harvesting the token can't help.
+export class RtModSilentError extends Error {
+  constructor(readonly action: string, readonly timeoutMs: number) {
+    super(`rt relay timeout after ${timeoutMs}ms for action: ${action}`);
+    this.name = "RtModSilentError";
+  }
+}
+
+// The Mod answered and reported a failure of its own (bad id, refused write, …).
+export class RtRelayError extends Error {
+  constructor(detail: string) { super("Relay error: " + detail); this.name = "RtRelayError"; }
+}
 const TOKEN_CACHE = dataPath("roll20-rt-token.json");
 // A Firebase custom token is valid ~1h from mint and stays re-exchangeable until then.
 // `harvestedAt` is stamped at or after the mint, so the real deadline is at LEAST an hour past it.
@@ -428,7 +443,7 @@ function tryResolveContent(content: unknown): boolean {
   if (!p) return false; // not ours (or already timed out)
   pending.delete(parsed.nonce);
   clearTimeout(p.timer);
-  if (parsed.error) p.reject(new Error("Relay error: " + parsed.error));
+  if (parsed.error) p.reject(new RtRelayError(String(parsed.error)));
   else p.resolve(parsed.data);
   return true;
 }
@@ -1075,7 +1090,7 @@ export async function rtRelayCommand<T>(
     const timer = setTimeout(() => {
       pending.delete(nonce);
       if (!opts.probe) recordFailure("rt");
-      reject(new Error(`rt relay timeout after ${timeoutMs}ms for action: ${cmd.action}`));
+      reject(new RtModSilentError(String(cmd.action), timeoutMs));
     }, timeoutMs);
     pending.set(nonce, { resolve: resolve as (d: unknown) => void, reject, timer });
   });

@@ -733,6 +733,31 @@ export function registerCombatTools(server: McpServer): void {
       });
 
       if (combatants.length === 0) {
+        // #239: say WHICH filter emptied the board. "Not on the token layer" sent the caller
+        // to retry the same names when the PC filter had removed them, not the layer.
+        const wanted = tokens.filter((t) =>
+          (!hasSelection || matchesWanted(t)) && (!needle || normalizeNameForMatch(t.name).includes(needle)));
+        const unmatched = [...(names ?? []), ...entryList.map((e) => e.match)]
+          .filter((w) => !allTokenIds.has(w) && !isPunctuationOnlyInput(w) && !tokens.some((t) => nameMatches(w, t.name)));
+        const tally = (ts: typeof tokens) => {
+          const counts = new Map<string, number>();
+          for (const t of ts) counts.set(t.name, (counts.get(t.name) ?? 0) + 1);
+          return [...counts].map(([n, c]) => (c > 1 ? `${n} ×${c}` : n)).join(", ");
+        };
+        const reasons: string[] = [];
+        const offLayer = wanted.filter((t) => !TOKEN_LAYERS.has(t.layer));
+        for (const layer of [...new Set(offLayer.map((t) => t.layer))]) {
+          reasons.push(`${tally(offLayer.filter((t) => t.layer === layer))}: on ${layer}, not the token layer. Move them to the token layer first.`);
+        }
+        const onLayer = wanted.filter((t) => TOKEN_LAYERS.has(t.layer));
+        const pcs = npcOnly ? onLayer.filter((t) => isPcToken(t, sidekickNames)) : [];
+        if (pcs.length) reasons.push(`${tally(pcs)}: PC${pcs.length > 1 ? "s" : ""}, and npcOnly=true (players roll their own). Pass npcOnly=false to include them.`);
+        const far = nearIds ? onLayer.filter((t) => !pcs.includes(t) && !nearIds!.has(t.id)) : [];
+        if (far.length) reasons.push(`${tally(far)}: more than ${nearPcsFeet} ft from every PC (nearPcsFeet).`);
+        if (unmatched.length) reasons.push(`No token on this page matches: ${unmatched.join(", ")}.`);
+        if (reasons.length) {
+          return text(`No combatants to roll. ${wanted.length ? `Matched ${wanted.length} token${wanted.length > 1 ? "s" : ""}, but every one was filtered out:\n- ` : ""}${reasons.join("\n- ")}`);
+        }
         const layers = [...new Set(tokens.map((t) => t.layer))];
         return text(`No tokens found on token layer. All graphic layers on this page: [${layers.join(", ")}]. Try list_tokens for full details.`);
       }

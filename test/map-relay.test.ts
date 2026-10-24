@@ -175,6 +175,42 @@ describe("path / wall writes", () => {
     }
   });
 
+  // #232: auto_place_dl_walls puts its stroke on each wall, but createWalls only read the
+  // top-level args.stroke, so an advertised colour was silently replaced by the default.
+  it("createWalls honours a per-wall stroke over the top-level one and the default", () => {
+    const res = emu.relay<Array<{ id: string }>>({
+      action: "createWalls", pageId: pid, stroke: "#00AA00",
+      walls: [
+        { x1: 0, y1: 0, x2: 140, y2: 0, stroke: "#FF00FF" },
+        { x1: 0, y1: 0, x2: 0, y2: 140 },
+      ],
+    });
+    expect(res.map((r) => emu.getObj("pathv2", r.id)!.get("stroke"))).toEqual(["#FF00FF", "#00AA00"]);
+  });
+
+  it("auto_place_dl_walls lands a non-default strokeColor and a per-wall colour override", async () => {
+    const h = setupHarness({ seed: 11 });
+    try {
+      registerVisionTools(h.server as never);
+      const page = h.emu.createPage("Coloured walls");
+      await h.callTool("auto_place_dl_walls", {
+        pageId: page, strokeColor: "#FF00FF",
+        walls: [
+          { from: [0, 0], to: [140, 0] },
+          { from: [700, 700], to: [700, 840], color: "#00FFFF" },
+        ],
+      });
+      const strokes = h.emu.findObjs({ _type: "pathv2", _pageid: page, layer: "walls" })
+        .map((w) => w.get("stroke"));
+      expect(strokes.length).toBeGreaterThanOrEqual(2);
+      expect(strokes).toContain("#FF00FF");
+      expect(strokes).toContain("#00FFFF");
+      expect(strokes).not.toContain("#0044FF");
+    } finally {
+      h.teardown();
+    }
+  });
+
   it("clearLayer removes everything on the walls layer", () => {
     emu.relay({ action: "createPath", pageId: pid, layer: "walls",
       path: JSON.stringify([["M", 0, 0], ["L", 70, 0]]), left: 35, top: 0, width: 70, height: 1 });
