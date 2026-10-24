@@ -92,6 +92,7 @@ convenience would conflict with a rule below, the rule wins.
 - Downed PC: `set_pc_dying` (prone + unconscious, stays on token layer). Concentration break:
   `break_concentration` (marker + aura + linked zones, in one call).
 - Token visuals/position/layer: `set_token_props`. Auras: `set_token_aura`.
+- Bars that are NOT 5e HP (Shadowrun Physical/Matrix/Edge, etc.): `set_bar` (bar 1/2/3, `value` | `delta`, `max`) — no markers, thresholds or death; works on bar1.
 - Areas: `create_zone` / `clear_zone` / `list_zones`; `find_tokens_in_range` for AoE targeting.
 
 ## Conditions, deaths, wounds

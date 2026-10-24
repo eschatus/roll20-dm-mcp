@@ -8,6 +8,7 @@ import { registerTransportTools } from "./tools/transport.js";
 import { registerCharacterEditTools } from "./tools/characters-edit.js";
 import { registerSheetTools } from "./tools/sheet.js";
 import { registerZoneTools } from "./tools/zones.js";
+import { registerBarTools } from "./tools/bars.js";
 import { BUILD_VERSION } from "./build-version.js";
 
 // Single source of truth for the combat server's tool set, shared by the stdio
@@ -32,6 +33,8 @@ export function buildCombatServer(): McpServer {
   // (board vision). The prep-only analysis/wall tools (registerVisionTools) do NOT
   // belong here — see index-maps.ts.
   registerZoneTools(server);
+  // Semantics-free bar primitive (#246) — the one path that writes bar1 without 5e HP rules.
+  registerBarTools(server);
 
   return server;
 }

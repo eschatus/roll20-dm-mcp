@@ -2568,6 +2568,80 @@ ACTIONS["setTokenProps"] = function (args, msg, nonce, senderPlayerId) {
         return;
       }
       };
+ACTIONS["setBar"] = function (args, msg, nonce, senderPlayerId) {
+        // Semantics-free token-bar primitive (#246). No thresholds, markers, PC routing or layer
+        // moves — that is what makes it safe on bar1 (setTokenBar/adjustPcHp carry the 5e HP
+        // interpretation). Read-modify-write happens HERE so a delta is atomic per call, and the
+        // whole batch is validated and computed BEFORE the first write: one bad target throws and
+        // nothing lands. A linked bar (barN_link = attribute id) is written through its attribute
+        // (the source of truth) AND mirrored onto the token so the two cannot drift.
+        let targets = Array.isArray(args.targets) ? args.targets : [args];
+        if (targets.length === 0) throw new Error("setBar: targets is empty");
+        let num = function (v) {
+          if (v === undefined || v === null || v === "") return null;
+          let n = Number(v);
+          return isFinite(n) ? n : null;
+        };
+        let plan = targets.map(function (a, i) {
+          let label = "setBar target " + i + (a && a.tokenId ? " (" + a.tokenId + ")" : "");
+          if (!a || typeof a !== "object") throw new Error(label + ": not an object");
+          let t = getObj("graphic", a.tokenId);
+          if (!t) throw new Error(label + ": token not found");
+          let bar = Number(a.bar);
+          if (bar !== 1 && bar !== 2 && bar !== 3) throw new Error(label + ": bar must be 1, 2 or 3, got " + JSON.stringify(a.bar));
+          let hasValue = a.value !== undefined && a.value !== null;
+          let hasDelta = a.delta !== undefined && a.delta !== null;
+          let hasMax = a.max !== undefined && a.max !== null;
+          if (hasValue && hasDelta) throw new Error(label + ": pass value OR delta, not both");
+          if (!hasValue && !hasDelta && !hasMax) throw new Error(label + ": pass at least one of value, delta, max");
+          [["value", hasValue], ["delta", hasDelta], ["max", hasMax]].forEach(function (f) {
+            if (f[1] && num(a[f[0]]) === null) throw new Error(label + ": " + f[0] + " must be a finite number, got " + JSON.stringify(a[f[0]]));
+          });
+          // Linked bar: the attribute is the source of truth, so read the BEFORE state from it.
+          let linkId = t.get("bar" + bar + "_link");
+          let attr = null;
+          if (linkId) {
+            attr = getObj("attribute", linkId);
+            if (!attr) throw new Error(label + ": bar" + bar + "_link points at attribute " + linkId + " which does not exist (dangling link) — fix or clear the link");
+          }
+          let curRaw = attr ? attr.get("current") : t.get("bar" + bar + "_value");
+          let maxRaw = attr ? attr.get("max") : t.get("bar" + bar + "_max");
+          let before = { value: num(curRaw), max: num(maxRaw) };
+          let newMax = hasMax ? num(a.max) : before.max;
+          let newVal = before.value;
+          let clamped = false;
+          if (hasValue) {
+            newVal = num(a.value);
+          } else if (hasDelta) {
+            if (before.value === null) throw new Error(label + ": bar" + bar + " has no numeric value to apply a delta to (got " + JSON.stringify(curRaw) + ") — set it with value first");
+            newVal = before.value + num(a.delta);
+            if (a.clamp !== false) {
+              if (newMax === null) throw new Error(label + ": bar" + bar + " has no numeric max to clamp against (got " + JSON.stringify(maxRaw) + ") — pass max, or clamp:false to allow it unbounded");
+              let c = Math.min(Math.max(newVal, 0), newMax);
+              clamped = c !== newVal;
+              newVal = c;
+            }
+          }
+          return { t: t, bar: bar, attr: attr, writeValue: hasValue || hasDelta, writeMax: hasMax, before: before, after: { value: newVal, max: newMax }, clamped: clamped };
+        });
+        let results = plan.map(function (p) {
+          let tokProps = {};
+          if (p.writeValue) tokProps["bar" + p.bar + "_value"] = p.after.value;
+          if (p.writeMax) tokProps["bar" + p.bar + "_max"] = p.after.max;
+          let linked = null;
+          if (p.attr) {
+            let ap = {};
+            if (p.writeValue) ap.current = p.after.value;
+            if (p.writeMax) ap.max = p.after.max;
+            setSafe(p.attr, ap);
+            linked = { attributeId: p.attr.id, attributeName: p.attr.get("name"), wroteAttribute: true, wroteToken: true };
+          }
+          setSafe(p.t, tokProps);
+          return { tokenId: p.t.id, name: p.t.get("name"), bar: p.bar, before: p.before, after: p.after, clamped: p.clamped, linked: linked };
+        });
+        writeResult(nonce, { ok: true, results: results });
+        return;
+      };
 ACTIONS["setTokenAura"] = function (args, msg, nonce, senderPlayerId) {
         {
         // One aura slot, set or cleared, with its concentration ownership recorded (issue #210).
