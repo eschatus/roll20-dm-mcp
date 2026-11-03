@@ -26,24 +26,43 @@ const HP_KEY = "hp";
 
 const without = (notes: string, block: RegExp) => notes.replace(block, "").replace(/\s+$/, "");
 
+const BLOCKS = [VALS_RE, PCHP_RE];
+const MAX_LAYERS = 4;
+
+// Takes every copy of each block out of text, recording the newest (last) copy of a kind unless an
+// outer, newer layer already supplied one.
+function liftBlocks(text: string, found: Map<RegExp, string>): string {
+  let rest = text;
+  for (const re of BLOCKS) {
+    const all = rest.match(new RegExp(re.source, "g")) ?? [];
+    if (all.length && !found.has(re)) found.set(re, all[all.length - 1]);
+    rest = rest.replace(new RegExp(re.source, "g"), "");
+  }
+  return rest;
+}
+
 // Roll20 URL-encodes gmnotes when the GM edits them in the UI, blocks included, and adjustPcHp then
-// appends a raw %%PCHP%% to the encoded text. So raw blocks are lifted out and the rest decoded on
-// its own (a raw block's `%%` would make decodeURIComponent throw). A raw block is the newer copy,
-// so it replaces an encoded one of the same kind. Writing back this form drops the stale copies.
+// appends a raw %%PCHP%% to the encoded text, which the next UI edit encodes again. So the notes are
+// peeled a layer at a time: raw blocks are lifted out (a raw `%%` would make decodeURIComponent
+// throw) and the rest decoded, while decoding still reveals a block. An outer layer was written
+// later, so its copy of a block wins. Writing back this form drops every stale copy.
 function plainNotes(gm: unknown): string {
   const raw = String(gm ?? "");
-  const blocks = [VALS_RE, PCHP_RE];
-  const live = blocks.filter((re) => re.test(raw));
-  const rest = live.reduce(without, raw);
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(rest);
-  } catch {
-    return raw; // A stray `%`: these notes were never URL-encoded.
+  const found = new Map<RegExp, string>();
+  let rest = liftBlocks(raw, found);
+  for (let layer = 0; layer < MAX_LAYERS; layer++) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(rest);
+    } catch {
+      break; // A stray `%`: this layer was never URL-encoded.
+    }
+    if (!BLOCKS.some((re) => re.test(decoded))) break;
+    rest = liftBlocks(decoded, found);
   }
-  if (!blocks.some((re) => re.test(decoded))) return raw;
-  const kept = live.map((re) => raw.match(re)![0]);
-  return [live.reduce(without, decoded), ...kept].filter(Boolean).join(" ");
+  if (!found.size) return raw;
+  const kept = BLOCKS.flatMap((re) => found.get(re) ?? []);
+  return [rest.replace(/\s+$/, ""), ...kept].filter(Boolean).join(" ");
 }
 
 function parseValues(notes: string): TokenValues {

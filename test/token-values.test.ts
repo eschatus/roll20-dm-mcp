@@ -16,7 +16,7 @@ vi.mock("../src/bridge/roll20-rt.js", async (importOriginal) => {
 });
 
 import { readTokenValues, writeTokenValue, rtGetTokenValues, rtSetTokenValue, TokenValueError } from "../src/bridge/token-values.js";
-import { parsePcHpBlock } from "../src/bridge/rt-helpers.js";
+import { parsePcHpBlock, writePcHpBlock } from "../src/bridge/rt-helpers.js";
 import { FakeMcpServer } from "./harness.js";
 import { __setBridgeTestTransport } from "../src/bridge/roll20.js";
 import { registerValueTools } from "../src/tools/values.js";
@@ -72,6 +72,25 @@ describe("gmnotes block", () => {
     const stale = encodeURIComponent('%%PCHP={"current":1,"max":22,"name":"A","updated":1}%%');
     const gm = `${stale} %%PCHP={"current":9,"max":22,"name":"A","updated":2}%%`;
     expect(readTokenValues(gm).hp).toEqual({ current: 9, max: 22 });
+    expect((writeTokenValue(gm, "edge", 1, "A").match(/PCHP/g) ?? []).length).toBe(1);
+  });
+
+  it("keeps values through GM edit → adjustPcHp → GM edit, with no set in between", () => {
+    const gmEdit = (s: string) => encodeURIComponent(s);
+    const adjust = (s: string, current: number) => writePcHpBlock(s, { current, max: 22, name: "A", updated: current });
+    let gm = adjust(writeTokenValue("Keep me", "edge", 2, "A"), 10);
+    gm = gmEdit(adjust(gmEdit(gm), 7));
+    expect(readTokenValues(gm)).toEqual({ edge: 2, hp: { current: 7, max: 22 } });
+    const rewritten = writeTokenValue(gm, "edge", 3, "A");
+    expect(rewritten.startsWith("Keep me ")).toBe(true);
+    expect((rewritten.match(/%%VALS=/g) ?? []).length).toBe(1);
+    expect((rewritten.match(/%%PCHP=/g) ?? []).length).toBe(1);
+    expect(readTokenValues(gmEdit(rewritten))).toEqual({ edge: 3, hp: { current: 7, max: 22 } });
+  });
+
+  it("of two copies a GM edit encoded together, the later one wins", () => {
+    const gm = encodeURIComponent('Keep me %%PCHP={"current":10,"max":22,"name":"A","updated":1}%% %%PCHP={"current":7,"max":22,"name":"A","updated":2}%%');
+    expect(readTokenValues(gm).hp).toEqual({ current: 7, max: 22 });
     expect((writeTokenValue(gm, "edge", 1, "A").match(/PCHP/g) ?? []).length).toBe(1);
   });
 
