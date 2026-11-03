@@ -401,7 +401,8 @@ hand-synced table copies.)
   that had drifted on the argument name — `entries` vs `turnorder` — so a `batch_exec` setTurnOrder
   wrote `[]` and erased every player's initiative while reporting `ok:true`. Never re-fork them;
   `test/relay-actions.test.ts` pins both paths.)
-- **PC initiative is read-only** — players roll their own.
+- **PC initiative is read-only** — players roll their own. That is a 5e table rule: `set_initiatives`
+  (#246) writes caller-supplied totals for any token, for systems whose engine rolls outside Roll20.
 - `roll_initiative` always arms the turn hook itself. It no longer fires tactics — the gem plans
   and stores plans through `set_mob_plan` (#171).
 - **Never auto-advance the turn** — `advance_turn` only on the DM's explicit say-so.

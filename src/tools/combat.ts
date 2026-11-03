@@ -1894,6 +1894,41 @@ export function registerCombatTools(server: McpServer): void {
     }
   );
 
+  // Caller-supplied totals (#246): for a system whose rolls happen elsewhere, so Roll20 only mirrors
+  // them. No dice, no PC filter, no game rules; the Mod's mergeTurnOrder owns the pr-descending sort.
+  server.tool(
+    "set_initiatives",
+    "Write initiative totals you already have into the turn order, as one atomic upsert: no dice are rolled and Roll20 never re-rolls. Use it when initiative comes from outside Roll20 (e.g. a Shadowrun engine's rolled totals). An entry already in the order is updated rather than duplicated, every other entry is kept, and the order is left sorted highest first. That sort moves the active turn back to the top, so use it to start a combat or a pass, not mid-round. All names are resolved before the write, so one bad name changes nothing. In D&D, PC initiative stays read-only: use roll_initiative for NPCs instead. Example: {\"entries\":[{\"characterName\":\"Adept\",\"initiative\":17},{\"characterName\":\"Barghest\",\"initiative\":12}]}.",
+    {
+      entries: z.array(z.object({
+        characterName: z.string().optional().describe("Token name exactly as on the map."),
+        tokenId: z.string().optional().describe("Roll20 token ID — overrides characterName."),
+        initiative: z.number().refine(Number.isFinite, "must be a finite number").describe("The total. Never rolled or changed here."),
+      })).min(1).describe("One item per combatant."),
+    },
+    async ({ entries }) => {
+      const pageId = await roll20.getCurrentPageId();
+      const tokens = await roll20.relayCommand<{ id: string; name: string }[]>({ action: "getTokens", pageId });
+      const seen = new Set<string>();
+      const resolved: TurnEntry[] = [];
+      for (const [i, e] of entries.entries()) {
+        if (!e.tokenId && !e.characterName) throw new Error(`entries[${i}]: provide tokenId or characterName`);
+        const id = e.tokenId ?? await resolveTokenOrThrow(e.characterName!, tokens);
+        // Two totals for one token would leave whichever merged last, so refuse before writing.
+        if (seen.has(id)) throw new Error(`entries[${i}]: ${e.characterName ?? id} appears twice`);
+        seen.add(id);
+        resolved.push({ id, pr: String(e.initiative), custom: "", _pageid: pageId });
+      }
+      const merged = await roll20.relayCommand<{ ok: boolean; turnorder: TurnEntry[] }>({ action: "mergeTurnOrder", entries: resolved });
+      const nameOf = new Map(tokens.map((t) => [t.id, t.name]));
+      return json({
+        ok: true,
+        written: resolved.length,
+        turnorder: merged.turnorder.map((t) => ({ id: t.id, name: nameOf.get(t.id) ?? t.custom ?? "", pr: t.pr })),
+      });
+    }
+  );
+
   server.tool(
     "update_turn_order",
     "Insert, update, or remove a single turn-order entry while preserving all existing entries. Reads the full turn order, applies the modification, and rebuilds before sending back. Use to adjust an NPC's initiative mid-combat without affecting player slots.",
