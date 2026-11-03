@@ -215,7 +215,7 @@ export async function tokenIdExists(id: string): Promise<boolean> {
 export async function resolveToken(
   name: string,
   tokenList?: { id: string; name: string }[],
-): Promise<{ id?: string; candidates?: string[]; staleRegistryId?: string }> {
+): Promise<{ id?: string; candidates?: string[]; nearMiss?: boolean; staleRegistryId?: string }> {
   // PR #198 review (Devin, finding 1): a punctuation-only name ("," / "...")
   // — or, for this required-string param, an outright empty/whitespace-only
   // one — normalizes to "". String.prototype.includes("") is true for every
@@ -225,7 +225,7 @@ export async function resolveToken(
   // front — returning {} (no id, no candidates) rather than throwing keeps
   // this consistent with every other "couldn't resolve" outcome resolveToken
   // already produces: resolveTokenOrThrow turns it into the same loud
-  // "Ambiguous target … No matching token on the page" error, and callers
+  // "No token named …" error, and callers
   // that loop over many selectors (batch_exec's per-op resolution) report it
   // as a normal per-op failure instead of aborting the whole batch.
   if (!normalizeNameForMatch(name)) return {};
@@ -247,7 +247,7 @@ export async function resolveToken(
 function matchTokensByName(
   name: string,
   tokens: { id: string; name: string }[],
-): { id?: string; candidates?: string[] } {
+): { id?: string; candidates?: string[]; nearMiss?: boolean } {
   {
     // norm(): display form (original case, first line, trimmed) — used only for
     // "did you mean" candidates. normalizeNameForMatch(): comparison form,
@@ -289,8 +289,9 @@ function matchTokensByName(
     // outcome was decided two branches earlier, not rescued here. On a board
     // where every candidate shares a common word (e.g. four "Bandit Captain
     // the <epithet>" tokens all containing "bandit"), this returns ALL of
-    // them and the caller sees "Ambiguous target … Did you mean: …?" even for
-    // a name that was never actually ambiguous — the normalization above
+    // them. `nearMiss` tells the caller these only share a word: the name
+    // matched nothing, so it reports "No token named … Closest: …" rather than
+    // "Ambiguous target" (#257) — the normalization above
     // (issue #195) is what keeps queries like "the Scarred"/"Scarred" out of
     // this branch in the first place, by resolving them via the substring
     // pass instead. Don't read a near-miss here as something the next line
@@ -300,12 +301,14 @@ function matchTokensByName(
       const n = normalizeNameForMatch(norm(t));
       return words.some((w) => n.includes(w));
     }).map(norm);
-    return { candidates: Array.from(new Set(near)).slice(0, 8) };
+    return { candidates: Array.from(new Set(near)).slice(0, 8), nearMiss: true };
   }
 }
 
-// Resolve a name to a token id or throw the standard "ambiguous target" error
-// (with did-you-mean candidates). The single place the agent-facing wording lives.
+// Resolve a name to a token id or throw the standard error. The single place the
+// agent-facing wording lives, and the wording steers the model's recovery (#257):
+// "Ambiguous target" means two or more tokens fit the name, so pick between them;
+// "No token named" means none does, so there is nothing to pick from.
 export async function resolveTokenOrThrow(
   name: string,
   tokenList?: { id: string; name: string }[],
@@ -319,8 +322,11 @@ export async function resolveTokenOrThrow(
     );
   }
   if (!r.id) {
-    const hint = r.candidates?.length ? ` Did you mean: ${r.candidates.join(", ")}?` : " No matching token on the page.";
-    throw new Error(`Ambiguous target "${name}".${hint} Ask the DM to confirm, don't guess.`);
+    if (r.candidates?.length && !r.nearMiss) {
+      throw new Error(`Ambiguous target "${name}". Did you mean: ${r.candidates.join(", ")}? Ask the DM to confirm, don't guess.`);
+    }
+    const closest = r.candidates?.length ? ` Closest: ${r.candidates.join(", ")}.` : "";
+    throw new Error(`No token named "${name}" on this page.${closest} Ask the DM to confirm, don't guess.`);
   }
   return r.id;
 }
