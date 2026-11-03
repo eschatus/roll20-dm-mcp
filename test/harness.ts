@@ -18,6 +18,7 @@
 import { z } from "zod";
 import { Roll20Emulator } from "./roll20-emulator.js";
 import * as roll20 from "../src/bridge/roll20.js";
+import { __setAttributeTestSource } from "../src/bridge/attributes.js";
 import * as characters from "../src/registry/characters.js";
 import { registerCombatTools } from "../src/tools/combat.js";
 import { registerZoneTools } from "../src/tools/zones.js";
@@ -41,6 +42,9 @@ export class FakeMcpServer {
 }
 
 // ── Harness ───────────────────────────────────────────────────────────────────
+/** relayLog / failRelayAction name for the direct RTDB attribute read, which has no relay action. */
+export const CHAR_ATTRIB_READ = "rtdb:char-attribs";
+
 export interface Harness {
   emu: Roll20Emulator;
   server: FakeMcpServer;
@@ -103,6 +107,15 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
     },
   });
 
+  // Attribute reads go straight to RTDB (#230/#255), not over the relay. Logged and failable
+  // under CHAR_ATTRIB_READ, alongside the relay actions.
+  __setAttributeTestSource((charId) => {
+    relayLog.push(CHAR_ATTRIB_READ);
+    const injected = failingActions.get(CHAR_ATTRIB_READ);
+    if (injected) return Promise.reject(new Error(injected));
+    return Promise.resolve(emu.charAttribRecords(charId));
+  });
+
   const server = new FakeMcpServer();
   registerCombatTools(server as never);
   registerZoneTools(server as never);
@@ -130,6 +143,7 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
     clearRelayLog: () => { relayLog.length = 0; },
     teardown: () => {
       roll20.__setBridgeTestTransport(null);
+      __setAttributeTestSource(null);
     },
   };
 }

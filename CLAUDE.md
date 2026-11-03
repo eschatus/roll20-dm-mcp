@@ -183,7 +183,7 @@ moved to beyond-mcp with the code.)
   Non-attack entries (save effects, passive traits) don't need any of this — just
   `name`/`description`/`npc_options-flag: 0`. Legendary actions live in a parallel
   `repeating_npcaction-l_` section with the same schema. **Never read a field containing literal
-  `@{`/`[[` (e.g. `rollbase`) back through `getCharacterAttributes`/`read_character_attributes`**
+  `@{`/`[[` (e.g. `rollbase`) back through the relay's `getCharacterAttributes`**
   — Roll20's chat pipeline live-evaluates it on echo. **The old writeResult entity-escape did NOT
   prevent this**, whatever this file used to say: Roll20 decodes `&#91;` back to `[` before it
   scans for inline rolls, so the escape was undone in transit and one such read disabled the whole
@@ -195,9 +195,9 @@ moved to beyond-mcp with the code.)
   losing move — that list never included `&{`. **The chat-free way to read attributes is direct RTDB (#230):**
   `read_character_attributes` reads `char-attribs/char/<charId>` via `readCharacterAttributesRt`
   (`src/bridge/attributes.ts`) — no relay, no chat, so `rollbase`-style values come back as plain
-  strings and are safe to read. A failed read throws `AttributeReadError`; there is deliberately
-  no fallback to the relay's `getCharacterAttributes` (still used by `get_attribute` and the save
-  helpers, so don't point those at `rollbase`-class fields). The CDP dump scripts this note used
+  strings and are safe to read. `get_character_attribute` and `resolve_aoe`'s save bonuses read the
+  same way (#255). A failed read throws `AttributeReadError`; there is deliberately no fallback to
+  the relay's `getCharacterAttributes`, which no tool calls any more. The CDP dump scripts this note used
   to cite are DELETED (#224): they drove an ambient logged-in tab and imported `playwright`.
 - **Ability-score `_mod` attributes don't auto-derive either**, for the same sheet-worker-never-
   fires-on-the-API reason. `createCharacter`'s relay action now derives `<ability>_mod` from the

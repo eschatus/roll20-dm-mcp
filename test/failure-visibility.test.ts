@@ -11,7 +11,7 @@
 // success, and nothing is half-applied".
 // ─────────────────────────────────────────────────────────────────────────────
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
-import { setupHarness, type Harness } from "./harness.js";
+import { setupHarness, CHAR_ATTRIB_READ, type Harness } from "./harness.js";
 
 let h: Harness;
 let pageId: string;
@@ -109,7 +109,7 @@ describe("#191 resolve_aoe save bonuses", () => {
 
   it("fails loudly instead of rolling saves blind, and applies no damage", async () => {
     const before = { brute: hp(bruteId), nobody: hp(nobodyId) };
-    h.failRelayAction("getCharacterAttributes", "RTDB auth expired");
+    h.failRelayAction(CHAR_ATTRIB_READ, "RTDB auth expired");
 
     await expect(h.callTool("resolve_aoe", burst)).rejects.toThrow(/could not read save bonuses/i);
 
@@ -122,13 +122,13 @@ describe("#191 resolve_aoe save bonuses", () => {
   // SECOND damage total for the same effect, and the table had already seen the first.
   it("fails before the public damage roll, so a retry cannot post a second total", async () => {
     h.clearRelayLog();
-    h.failRelayAction("getCharacterAttributes", "RTDB auth expired");
+    h.failRelayAction(CHAR_ATTRIB_READ, "RTDB auth expired");
 
     await expect(h.callTool("resolve_aoe", burst)).rejects.toThrow(/could not read save bonuses/i);
 
     // rollFormulas is Roll20's PUBLIC roller — players see it. It must never have run.
     expect(h.relayLog).not.toContain("rollFormulas");
-    expect(h.relayLog).toContain("getCharacterAttributes");
+    expect(h.relayLog).toContain(CHAR_ATTRIB_READ);
   });
 
   // The happy-path half of the same guard: even when nothing fails, the sheet reads must
@@ -137,7 +137,7 @@ describe("#191 resolve_aoe save bonuses", () => {
   it("reads save bonuses before it touches the public roller", async () => {
     h.clearRelayLog();
     await h.callTool("resolve_aoe", burst);
-    const read = h.relayLog.indexOf("getCharacterAttributes");
+    const read = h.relayLog.indexOf(CHAR_ATTRIB_READ);
     const roll = h.relayLog.indexOf("rollFormulas");
     expect(read).toBeGreaterThanOrEqual(0);
     expect(roll).toBeGreaterThanOrEqual(0);

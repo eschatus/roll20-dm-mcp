@@ -927,13 +927,9 @@ export function registerCombatTools(server: McpServer): void {
     },
     async ({ attributeName, characterName, charSheetId }) => {
       const resolvedCharId = await resolveCharSheetId(characterName, charSheetId);
-      const attrs = await roll20.relayCommand<Record<string, { current: unknown; max: unknown } | string | number>>({
-        action: "getCharacterAttributes",
-        charId: resolvedCharId,
-        names: [attributeName],
-      });
-      // The relay's attr-collapse compaction returns a FLAT value (not {current,max}) when the
-      // attribute's max is empty — which is the common case. Handle both shapes.
+      const attrs = await readCharacterAttributesRt(resolvedCharId, [attributeName]);
+      // A FLAT value (not {current,max}) when the attribute's max is empty, which is the common
+      // case. Handle both shapes.
       const attr = attrs[attributeName];
       const isObj = attr !== null && typeof attr === "object";
       const current = isObj ? ((attr as { current: unknown }).current ?? null) : (attr ?? null);
@@ -1591,9 +1587,7 @@ export function registerCombatTools(server: McpServer): void {
         for (const npc of npcs) {
           const charId = npc.represents || "";
           if (!charId || bonusByChar.has(charId)) continue;
-          const attrs = await roll20.relayCommand<Record<string, { current: unknown }>>({
-            action: "getCharacterAttributes", charId, names: saveAttrNames(args.saveAbility),
-          }).catch((e: Error) => {
+          const attrs = await readCharacterAttributesRt(charId, saveAttrNames(args.saveAbility)).catch((e: Error) => {
             throw new Error(
               `${npc.name}: could not read save bonuses from character ${charId} (${e.message}). ` +
               `No damage rolled and nothing applied.${drawNote ? ` NOTE: ${drawNote}` : ""} Re-run resolve_aoe.`
