@@ -79,11 +79,10 @@ ID-token claims (read via `getIdTokenResult()`, no manual JWT decode):
 `currentcampaign` = the `<storagePath>`; `playerid`/`userid` populate the chat-write fields.
 
 > Live token VALUES are intentionally NOT recorded here. Treat them as secrets.
-> Longer-lived-credential follow-up (still not done, and now lower value): persist the firebase
-> refresh token and refresh ID tokens via `securetoken.googleapis.com` — but the official Auth SDK
-> has no Node API to ingest a raw refresh/ID token, so that path requires the zero-dep raw-wire
-> client instead of the SDK. It would extend how long a furnished credential stays usable; it would
-> not change *who* mints it, which is the point of #177.
+> Longer-lived credential: `refreshToken` in the same file replaces `customToken`. The Auth SDK
+> has no public call for a raw refresh token, so `src/bridge/rt-refresh-auth.ts` seeds its
+> persistence layer instead. It extends how long a furnished credential stays usable; it does not
+> change *who* mints it, which is the point of #177.
 
 ## Firebase RTDB wire protocol (as observed)
 

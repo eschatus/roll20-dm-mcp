@@ -55,6 +55,10 @@ exchangeable.
   enforces that — Firebase's rejection, not a local clock check. (The clock check used to be the
   gate; it refused tokens without ever asking Firebase, locking out every other reader of the data
   dir on a credential that was possibly still exchangeable, so it is now advisory only and surfaces via `transport_status.rtToken` — #216.)
+- **A refresh token gives up "short-lived".** `refreshToken` in the same object works after a
+  restart with no new harvest, and for an unknown time: it lasts until Firebase or Roll20 revokes
+  it. A stolen file then means GM access to that campaign for that long, not ~1 h. `furnish:token`
+  writes the file owner-only. Lifespan and whether a Roll20 sign-out revokes it are unverified.
 - **Env precedence is loud, not silent.** When `ROLL20_RT_TOKEN` is set it is the ONLY source read —
   the file is not consulted, even if the variable's token is stale or for another campaign. Export it
   in the shell for one short-lived process; don't put a live token in `.env`: the server loads `.env`
