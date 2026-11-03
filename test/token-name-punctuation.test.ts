@@ -369,7 +369,7 @@ describe("resolveToken — a punctuation-only characterName refuses rather than 
     const before = bar(ogreId);
 
     await expect(h.callTool("update_token_hp", { characterName: "...", damage: 5 }))
-      .rejects.toThrow(/Ambiguous target/i);
+      .rejects.toThrow(/No token named/);
 
     expect(bar(ogreId)).toBe(before);
   });
@@ -390,6 +390,6 @@ describe("resolveToken — the registry short-circuit does not bypass the ambigu
     // register() call happened to run first) via the registry short-circuit
     // in resolveToken/combatHelpers.ts.
     await expect(h.callTool("update_token_hp", { characterName: "Rook The Bound", damage: 1 }))
-      .rejects.toThrow(/Ambiguous target|No matching token/i);
+      .rejects.toThrow(/Ambiguous target|No token named/);
   });
 });
