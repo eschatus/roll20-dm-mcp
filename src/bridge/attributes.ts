@@ -19,6 +19,14 @@ export type AttributeValue = unknown;
 
 const CHAR_ID = /^[-_A-Za-z0-9]+$/;
 
+// Test seam, the RTDB analogue of roll20.ts's __setBridgeTestTransport: it stands in for the raw
+// read only, so the id guard, shape check and record mapping still run on an emulator's records.
+type CharAttribSource = (charId: string) => Promise<unknown>;
+let _testSource: CharAttribSource | null = null;
+export function __setAttributeTestSource(source: CharAttribSource | null): void {
+  _testSource = source;
+}
+
 /** RTDB record map -> the relay-shaped result: name -> flat current, or {current,max} when max is set. */
 export function mapAttributeRecords(
   records: Record<string, AttrRecord> | null | undefined,
@@ -47,7 +55,7 @@ export async function readCharacterAttributesRt(
   }
   let node: unknown;
   try {
-    node = await rtGet(`char-attribs/char/${charId}`);
+    node = _testSource ? await _testSource(charId) : await rtGet(`char-attribs/char/${charId}`);
   } catch (e) {
     throw new AttributeReadError(
       `RTDB read of char-attribs/char/${charId} failed: ${e instanceof Error ? e.message : String(e)}`,

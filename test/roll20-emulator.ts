@@ -620,6 +620,23 @@ export class Roll20Emulator {
     return char.id;
   }
 
+  /**
+   * A character's attributes as `char-attribs/char/<id>` holds them in RTDB: records keyed by
+   * attribute id, current/max omitted when empty, and null for a character with none.
+   */
+  charAttribRecords(charId: string): Record<string, Record<string, unknown>> | null {
+    const records: Record<string, Record<string, unknown>> = {};
+    for (const attr of this.findObjs({ _type: "attribute", _characterid: charId })) {
+      const rec: Record<string, unknown> = { id: attr.id, name: attr.get("name") };
+      for (const field of ["current", "max"]) {
+        const v = attr.get(field);
+        if (v !== "" && v !== undefined && v !== null) rec[field] = v;
+      }
+      records[attr.id] = rec;
+    }
+    return Object.keys(records).length ? records : null;
+  }
+
   /** Convenience: read a token's current props as a plain object for assertions. */
   tokenProps(id: string): Record<string, unknown> {
     const t = this.getObj("graphic", id);

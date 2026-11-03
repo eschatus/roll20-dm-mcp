@@ -32,7 +32,7 @@ export function saveAttrNames(ability: SaveAbility): string[] {
 // directly; score attrs become floor((score-10)/2). Empty/absent → next in
 // cascade; nothing usable → +0 flat d20.
 export function resolveSaveBonus(
-  attrs: Record<string, { current: unknown; max?: unknown } | string | number | null> | null | undefined,
+  attrs: Record<string, unknown> | null | undefined,
   ability: SaveAbility,
 ): { bonus: number; source: string } {
   // A null/undefined map means the read never landed — NOT "this sheet has no save for
@@ -46,8 +46,8 @@ export function resolveSaveBonus(
     const n = Number(v);
     return isFinite(n) ? n : null;
   };
-  // The relay's attr-collapse compaction returns a FLAT value (not {current,max}) when the
-  // attribute's max is empty — which is the COMMON case for NPC save attributes. Reading
+  // Attribute reads return a FLAT value (not {current,max}) when the attribute's max is
+  // empty — which is the COMMON case for NPC save attributes. Reading
   // only .current resolved every such sheet to source:"none" and rolled the save on a flat
   // d20, so a monster with a +7 CON save silently saved at +0. get_character_attribute has
   // always handled both shapes; this did not (found via #191's flat-d20 reporting).
