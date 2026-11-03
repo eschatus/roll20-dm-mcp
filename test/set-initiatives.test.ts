@@ -56,6 +56,18 @@ describe("set_initiatives (#246)", () => {
     expect(h.relayLog).not.toContain("mergeTurnOrder");
   });
 
+  it("refuses a stale or other-page tokenId instead of writing a phantom row", async () => {
+    await expect(h.callTool("set_initiatives", {
+      entries: [{ characterName: "Adept", initiative: 12 }, { tokenId: "-gone", initiative: 30 }],
+    })).rejects.toThrow(/entries\[1\]: token -gone is not on the current page/);
+    expect(h.relayLog).not.toContain("mergeTurnOrder");
+  });
+
+  it("treats an empty tokenId as absent", async () => {
+    const rows = await write([{ tokenId: "", characterName: "Adept", initiative: 12 }]);
+    expect(rows.map((r) => r.name)).toEqual(["Adept"]);
+  });
+
   it("refuses the same token twice, and an entry with no target", async () => {
     await expect(h.callTool("set_initiatives", {
       entries: [{ characterName: "Adept", initiative: 12 }, { tokenId: ids.Adept, initiative: 30 }],

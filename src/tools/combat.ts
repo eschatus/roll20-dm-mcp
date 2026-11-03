@@ -1913,7 +1913,11 @@ export function registerCombatTools(server: McpServer): void {
       const resolved: TurnEntry[] = [];
       for (const [i, e] of entries.entries()) {
         if (!e.tokenId && !e.characterName) throw new Error(`entries[${i}]: provide tokenId or characterName`);
-        const id = e.tokenId ?? await resolveTokenOrThrow(e.characterName!, tokens);
+        // mergeTurnOrder takes any id, so a stale or other-page one would leave a phantom row.
+        if (e.tokenId && !tokens.some((t) => t.id === e.tokenId)) {
+          throw new Error(`entries[${i}]: token ${e.tokenId} is not on the current page`);
+        }
+        const id = e.tokenId || await resolveTokenOrThrow(e.characterName!, tokens);
         // Two totals for one token would leave whichever merged last, so refuse before writing.
         if (seen.has(id)) throw new Error(`entries[${i}]: ${e.characterName ?? id} appears twice`);
         seen.add(id);
