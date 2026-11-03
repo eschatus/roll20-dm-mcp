@@ -495,6 +495,7 @@ These are the "stop hitting the wall" items. None need the browser.
 - **Sheet defaults** — `getSheetDefaultValue` → `get_sheet_default_values` (relay 2.9.0), the
   "unset vs. default" comparison `getCharacterAttributes` cannot make on its own.
 - **Handouts** — `createHandout` → `create_handout`.
+- **Token values** — direct RTDB transaction on a token's `gmnotes` (`%%VALS=…%%`, `hp` = `%%PCHP%%`) → `set_token_value`, `get_token_value` (#259, no relay action).
 - **Map pins** — direct RTDB at `pins/page/<pageId>/<pinId>` → `create_map_pin`, `list_map_pins`, `update_map_pin`, `delete_map_pin` (#203, no relay action). The Roll20-native primitive for module points of interest and for a marker revealed once the party finds it (`visibleTo: ""` → `"all"`).
 - **Character stubs** — `createCharacter` → `create_character_stub`.
 - **Token↔sheet default token** — `setDefaultTokenForCharacter` → `setDefaultToken` / `batch_exec`.

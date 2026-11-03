@@ -9,6 +9,7 @@ import { registerCharacterEditTools } from "./tools/characters-edit.js";
 import { registerSheetTools } from "./tools/sheet.js";
 import { registerZoneTools } from "./tools/zones.js";
 import { registerBarTools } from "./tools/bars.js";
+import { registerValueTools } from "./tools/values.js";
 import { BUILD_VERSION } from "./build-version.js";
 
 // Single source of truth for the combat server's tool set, shared by the stdio
@@ -35,6 +36,7 @@ export function buildCombatServer(): McpServer {
   registerZoneTools(server);
   // Semantics-free bar primitive (#246) — the one path that writes bar1 without 5e HP rules.
   registerBarTools(server);
+  registerValueTools(server);
 
   return server;
 }

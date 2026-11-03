@@ -342,6 +342,13 @@ registry override (`sidekick: true`, `src/registry/characters.ts`) is needed to 
   (`registry.listSidekickNames()`) so a sidekick routes as an NPC everywhere HP/death routing is
   decided. See issue #132.
 
+**Named values (#259):** `set_token_value`/`get_token_value` store semantics-free JSON on a token in
+a `%%VALS=<percent-encoded JSON>%%` gmnotes block, over direct RTDB (`src/bridge/token-values.ts`): no
+relay action, **no Mod redeploy**, and the Mod can't see them. The key `hp` is the existing `%%PCHP%%`
+block, not a VALS entry, so `adjustPcHp` and the turn hook keep working unchanged. A corrupt block
+throws on read and refuses a write. Nothing in the HP tools has moved onto this yet; that follows the
+gem taking HP policy (#171, dm-whisper#63).
+
 **Death and its undo:** `kill_token` is the one-call death procedure (dead marker + map layer);
 `revive_token` is its one-call inverse (#217) — HP (required, must be ≥ 1 or the auto-death
 threshold re-kills the token), clear `dead`, back to the `objects` layer, turn-order entry restored.
