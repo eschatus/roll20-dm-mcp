@@ -1361,7 +1361,7 @@ export function registerCombatTools(server: McpServer): void {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
       // Same resolver as every other name-targeted tool, against the page being searched, so an
       // ambiguous or absent center refuses (#258).
-      const centerId = centerTokenId ?? await resolveTokenOrThrow(
+      const centerId = centerTokenId || await resolveTokenOrThrow(
         centerTokenName!,
         await roll20.relayCommand<{ id: string; name: string }[]>({ action: "getTokens", pageId: activePage }),
       );

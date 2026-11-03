@@ -47,6 +47,11 @@ describe("find_tokens_in_range center (#258)", () => {
       .rejects.toThrow(/Ambiguous target "Twin"/);
   });
 
+  it("treats an empty centerTokenId as absent, as the required-center check does", async () => {
+    const { json } = await h.callTool("find_tokens_in_range", { centerTokenId: "", centerTokenName: "Brie Mossfrond", radiusFeet: 10 });
+    expect(rangeNames(json)).toContain("Close Ogre");
+  });
+
   it("requires a center", async () => {
     await expect(h.callTool("find_tokens_in_range", { radiusFeet: 10 }))
       .rejects.toThrow(/Provide centerTokenName or centerTokenId/);
