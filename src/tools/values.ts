@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import * as roll20 from "../bridge/roll20.js";
 import { rtGetTokenValues, rtSetTokenValue } from "../bridge/token-values.js";
 import { json, resolveTokenOrThrow } from "./combatHelpers.js";
 
@@ -19,10 +20,14 @@ const targetFields = {
   pageId: z.string().optional().describe("Page holding the token — defaults to the player and initiative pages."),
 };
 
-async function targetId(tokenId?: string, characterName?: string): Promise<string> {
+// A name resolves on pageId when given: each page has its own copy of a token.
+async function targetId(tokenId?: string, characterName?: string, pageId?: string): Promise<string> {
   if (tokenId) return tokenId;
   if (!characterName) throw new Error("Provide characterName or tokenId");
-  return resolveTokenOrThrow(characterName);
+  const tokens = pageId
+    ? await roll20.relayCommand<{ id: string; name: string }[]>({ action: "getTokens", pageId })
+    : undefined;
+  return resolveTokenOrThrow(characterName, tokens);
 }
 
 export function registerValueTools(server: McpServer): void {
@@ -35,7 +40,7 @@ export function registerValueTools(server: McpServer): void {
       value: z.unknown().refine((v) => v !== undefined, "value is required; pass null to delete the key").describe("Any JSON value, or null to delete the key."),
     },
     async ({ tokenId, characterName, pageId, key, value }) => {
-      const id = await targetId(tokenId, characterName);
+      const id = await targetId(tokenId, characterName, pageId);
       await rtSetTokenValue(id, key, value, pageId);
       return json({ ok: true, tokenId: id, key, deleted: value === null });
     }
@@ -49,7 +54,7 @@ export function registerValueTools(server: McpServer): void {
       key: keySchema.optional().describe("Value name. Omit for every value on the token."),
     },
     async ({ tokenId, characterName, pageId, key }) => {
-      const id = await targetId(tokenId, characterName);
+      const id = await targetId(tokenId, characterName, pageId);
       const values = await rtGetTokenValues(id, pageId);
       if (key === undefined) return json({ tokenId: id, values });
       return json({ tokenId: id, key, value: Object.hasOwn(values, key) ? values[key] : null });

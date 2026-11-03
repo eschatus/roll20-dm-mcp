@@ -24,19 +24,26 @@ export type TokenValues = Record<string, unknown>;
 const VALS_RE = /%%VALS=(\S*?)%%/;
 const HP_KEY = "hp";
 
-// Roll20 URL-encodes gmnotes when the GM edits them in the UI, blocks included, so decode when
-// that is the only form the blocks can be found in. Writing back decoded is what stops a stale
-// encoded block surviving next to a fresh raw one.
+const without = (notes: string, block: RegExp) => notes.replace(block, "").replace(/\s+$/, "");
+
+// Roll20 URL-encodes gmnotes when the GM edits them in the UI, blocks included, and adjustPcHp then
+// appends a raw %%PCHP%% to the encoded text. So raw blocks are lifted out and the rest decoded on
+// its own (a raw block's `%%` would make decodeURIComponent throw). A raw block is the newer copy,
+// so it replaces an encoded one of the same kind. Writing back this form drops the stale copies.
 function plainNotes(gm: unknown): string {
   const raw = String(gm ?? "");
-  if (VALS_RE.test(raw) || PCHP_RE.test(raw)) return raw;
+  const blocks = [VALS_RE, PCHP_RE];
+  const live = blocks.filter((re) => re.test(raw));
+  const rest = live.reduce(without, raw);
+  let decoded: string;
   try {
-    const decoded = decodeURIComponent(raw);
-    if (VALS_RE.test(decoded) || PCHP_RE.test(decoded)) return decoded;
+    decoded = decodeURIComponent(rest);
   } catch {
-    // Notes with a stray `%` are not URL-encoded, so raw was already the right form.
+    return raw; // A stray `%`: these notes were never URL-encoded.
   }
-  return raw;
+  if (!blocks.some((re) => re.test(decoded))) return raw;
+  const kept = live.map((re) => raw.match(re)![0]);
+  return [live.reduce(without, decoded), ...kept].filter(Boolean).join(" ");
 }
 
 function parseValues(notes: string): TokenValues {
@@ -50,8 +57,6 @@ function parseValues(notes: string): TokenValues {
   }
   throw new TokenValueError("The token's %%VALS%% block in gmnotes is corrupt. Repair or remove it in the token's GM notes.");
 }
-
-const without = (notes: string, block: RegExp) => notes.replace(block, "").replace(/\s+$/, "");
 
 /** Every value on a token: its VALS entries plus the PCHP block as `hp`. */
 export function readTokenValues(gm: unknown): TokenValues {

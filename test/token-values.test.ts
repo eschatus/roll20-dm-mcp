@@ -18,6 +18,7 @@ vi.mock("../src/bridge/roll20-rt.js", async (importOriginal) => {
 import { readTokenValues, writeTokenValue, rtGetTokenValues, rtSetTokenValue, TokenValueError } from "../src/bridge/token-values.js";
 import { parsePcHpBlock } from "../src/bridge/rt-helpers.js";
 import { FakeMcpServer } from "./harness.js";
+import { __setBridgeTestTransport } from "../src/bridge/roll20.js";
 import { registerValueTools } from "../src/tools/values.js";
 
 const GM = "graphics/page/p1/t1/gmnotes";
@@ -55,6 +56,23 @@ describe("gmnotes block", () => {
     const rewritten = writeTokenValue(encoded, "edge", null, "A");
     expect(rewritten).toBe("Keep me");
     expect(readTokenValues(rewritten)).toEqual({});
+  });
+
+  it("keeps encoded values when adjustPcHp has appended a raw PCHP block to encoded notes", () => {
+    const encoded = encodeURIComponent(writeTokenValue("Keep me", "edge", 2, "A"));
+    const gm = `${encoded} %%PCHP={"current":7,"max":22,"name":"A","updated":1}%%`;
+    expect(readTokenValues(gm)).toEqual({ edge: 2, hp: { current: 7, max: 22 } });
+    const rewritten = writeTokenValue(gm, "edge", 3, "A");
+    expect(rewritten.startsWith("Keep me ")).toBe(true);
+    expect((rewritten.match(/%%VALS=/g) ?? []).length).toBe(1);
+    expect(readTokenValues(rewritten)).toEqual({ edge: 3, hp: { current: 7, max: 22 } });
+  });
+
+  it("a raw PCHP block wins over a stale encoded one", () => {
+    const stale = encodeURIComponent('%%PCHP={"current":1,"max":22,"name":"A","updated":1}%%');
+    const gm = `${stale} %%PCHP={"current":9,"max":22,"name":"A","updated":2}%%`;
+    expect(readTokenValues(gm).hp).toEqual({ current: 9, max: 22 });
+    expect((writeTokenValue(gm, "edge", 1, "A").match(/PCHP/g) ?? []).length).toBe(1);
   });
 
   it("leaves notes with a stray percent sign alone", () => {
@@ -118,6 +136,24 @@ describe("tools", () => {
     const res = await server.handlers.get(name)!.handler(args);
     return JSON.parse(res.content[0].text) as Record<string, unknown>;
   };
+
+  it("resolves characterName on pageId, not the current page", async () => {
+    const asked: Record<string, unknown>[] = [];
+    __setBridgeTestTransport({
+      relay: async <T,>(cmd: Record<string, unknown>) => {
+        asked.push(cmd);
+        return [{ id: "t1", name: "Adept" }] as T;
+      },
+      evaluate: async () => { throw new Error("no page lookup expected"); },
+    });
+    try {
+      await call("set_token_value", { characterName: "Adept", pageId: "p1", key: "edge", value: 2 });
+    } finally {
+      __setBridgeTestTransport(null);
+    }
+    expect(asked).toEqual([{ action: "getTokens", pageId: "p1" }]);
+    expect(await rtGetTokenValues("t1")).toEqual({ edge: 2 });
+  });
 
   it("get with a key: the value, or null when missing, even for an Object.prototype name", async () => {
     await call("set_token_value", { tokenId: "t1", key: "edge", value: 2 });
