@@ -1350,19 +1350,30 @@ export function registerCombatTools(server: McpServer): void {
     "find_tokens_in_range",
     "Find all Roll20 tokens within radiusFeet of a center token. Use for AoE targeting — find who's in range of a spell or effect. Returns token names, HP, layer, and distance sorted nearest-first. After targeting, show an emanation that moves with the caster with set_token_aura (concentration:true when it is a concentration spell), or a fixed persistent area with create_zone.",
     {
-      centerTokenId: z.string().describe("Roll20 token ID of the caster / effect origin"),
+      centerTokenName: z.string().optional().describe("USE THIS to target. Name of the caster / effect origin exactly as on the map, e.g. 'Strahd'."),
+      centerTokenId: z.string().optional().describe("Roll20 token ID from a prior tool result — overrides centerTokenName. Never put a name here."),
       radiusFeet: z.number().describe("Effect radius in feet, e.g. 15 for Spiritual Guardians, 20 for Fireball"),
       pageId: z.string().optional().describe("Page to search — defaults to current player page"),
       layerFilter: z.string().optional().describe("Restrict to a layer, e.g. 'tokens' to exclude map art"),
     },
-    async ({ centerTokenId, radiusFeet, pageId, layerFilter }) => {
+    async ({ centerTokenName, centerTokenId, radiusFeet, pageId, layerFilter }) => {
+      if (!centerTokenName && !centerTokenId) throw new Error("Provide centerTokenName or centerTokenId");
       const activePage = pageId ?? (await roll20.getCurrentPageId());
+      // Same resolver as every other name-targeted tool, against the page being searched, so an
+      // ambiguous or absent center refuses (#258).
+      const centerId = centerTokenId ?? await resolveTokenOrThrow(
+        centerTokenName!,
+        await roll20.relayCommand<{ id: string; name: string }[]>({ action: "getTokens", pageId: activePage }),
+      );
       const results = await roll20.relayCommand({
         action: "findTokensInRange",
-        centerTokenId,
+        centerTokenId: centerId,
         radiusFeet,
         pageId: activePage,
         layerFilter,
+      }).catch((e: Error) => {
+        if (!centerTokenId || !/Center token not found/.test(e.message)) throw e;
+        throw new Error(`${e.message}. centerTokenId takes a Roll20 token id; pass a name as centerTokenName.`);
       });
       return json(results);
     }
