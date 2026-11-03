@@ -1162,6 +1162,12 @@ export async function rtGet<T = unknown>(relPath: string, opts: { shallow?: bool
   return snap.val() as T;
 }
 
+// Atomic read-modify-write of one node. `update` may run more than once, and throwing aborts it.
+export async function rtTransact(relPath: string, update: (current: unknown) => unknown): Promise<void> {
+  const conn = await getConn();
+  await runTransaction(ref(conn.db, `${conn.storagePath}/${relPath.replace(/^\/+|\/+$/g, "")}`), update);
+}
+
 // Expose the storage path for callers that need to build their own refs/paths.
 export async function rtStoragePath(): Promise<string> {
   return (await getConn()).storagePath;
