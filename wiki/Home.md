@@ -2,7 +2,7 @@
 
 # roll20-dm-mcp
 
-AI-assisted D&D 5e session management for **Roll20**. The DM speaks; the gem acts.
+AI-assisted D&D 5e session management for **Roll20**.
 
 ![The scrying gem over a live Roll20 encounter](https://raw.githubusercontent.com/eschatus/roll20-dm-mcp/master/assets/gem-in-play.png)
 
@@ -19,7 +19,7 @@ Mentor** subscription, because the servers work through Roll20's Mod (API) Scrip
 ## Guides (you don't need to clone the repo)
 
 - **[Setup](Setup)** — install, configure, and first run.
-- **[Voice HUD Gem](Voice-HUD-Gem)** — the push-to-talk scrying-gem overlay, and how it and the server fit together.
+- **[Voice HUD Gem](Voice-HUD-Gem)** — optional: the push-to-talk overlay, and how it and the server fit together.
 
 ## Related projects
 

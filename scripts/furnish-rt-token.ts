@@ -16,12 +16,14 @@
 //
 //   npm run furnish:token                  the whole job: gives you a Console line for the editor,
 //                                          then waits for what it produces. Stores a refresh token.
+//   Get-Clipboard | npm run furnish:token -- --upload      art-upload cookies from a Copy as cURL
 //   Get-Clipboard | npm run furnish:token -- --campaign 22125197 --db roll20-99913
 //   npx tsx scripts/furnish-rt-token.ts --db https://roll20-99913.firebaseio.com   (prompts; active campaign)
 //
 // Writes <ROLL20_DATA_DIR>/roll20-rt-token.json (default ./data) — the same dir the server you'll
 // start reads. --print instead emits the JSON on stdout for ROLL20_RT_TOKEN, which overrides the
 // file (useful for a stdio maps server or a script with no shared data dir).
+import "dotenv/config"; // First: the data dir must match the one the servers read from .env.
 import { writeFileSync, renameSync, mkdirSync } from "fs";
 import path from "path";
 import { spawnSync } from "child_process";
@@ -31,6 +33,7 @@ import { initializeApp, deleteApp } from "firebase/app";
 import { getAuth, signInWithCustomToken } from "firebase/auth";
 import { FIREBASE_CONFIG } from "../src/bridge/roll20-rt.js";
 import { restoreRefreshUser } from "../src/bridge/rt-refresh-auth.js";
+import { parseCurlCredential } from "../src/bridge/upload-credential.js";
 import { getActiveCampaign } from "../src/registry/campaigns.js";
 import { dataPath } from "../src/dataDir.js";
 
@@ -204,7 +207,24 @@ async function furnishRefreshToken(): Promise<void> {
   }
 }
 
+// A copied request has line breaks, so this reads a pipe rather than the single-line prompt.
+async function furnishUploadCookies(): Promise<void> {
+  if (process.stdin.isTTY) {
+    fail("copy a request first, then pipe it in: Get-Clipboard | npm run furnish:token -- --upload (macOS: pbpaste |). See docs/setup-guide.md §5.");
+  }
+  let credential;
+  try { credential = parseCurlCredential(await readPaste()); }
+  catch (e) { fail((e as Error).message); }
+  const file = dataPath("roll20-upload-cache.json");
+  mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ ...credential, harvestedAt: Date.now() }), { encoding: "utf-8", mode: 0o600 });
+  renameSync(tmp, file);
+  console.error(`✓ wrote ${file} (${Object.keys(credential.cookies).length} cookies). Good for 8 hours.`);
+}
+
 async function main() {
+  if (process.argv.includes("--upload")) return furnishUploadCookies();
   const dbArg = arg("db");
   if (!dbArg) return furnishRefreshToken();
   const databaseURL = normalizeDbUrl(dbArg);

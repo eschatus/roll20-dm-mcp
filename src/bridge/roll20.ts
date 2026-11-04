@@ -75,7 +75,7 @@ export function relayCommand<T>(cmd: Record<string, unknown>): Promise<T> {
 }
 
 const TOKEN_REMEDY =
-  `Reconnect Roll20 in the gem to re-harvest the token, or furnish one with \`npm run furnish:token\`.`;
+  `Furnish a token with \`npm run furnish:token\`, or reconnect Roll20 in the gem to re-harvest it.`;
 
 // The remedy the circuit-breaker message repeats: whatever the last real failure called for.
 let lastFailureRemedy = TOKEN_REMEDY;
@@ -116,7 +116,7 @@ const UPLOAD_CACHE_TTL_MS = 8 * 60 * 60_000; // 8 h
 /**
  * The furnished upload credential: the logged-in browser's app.roll20.net cookies, plus that
  * browser's User-Agent (Cloudflare binds `cf_clearance` to it). Written by whoever harvests it —
- * the gem's own logged-in session, human present — never by this server (#177, #243). A file from
+ * `furnish:token --upload` or the gem's own session, human present — never by this server (#177, #243). A file from
  * before #243 also carries a dead `endpoint` field; it is ignored.
  */
 interface UploadCache extends UploadCredential {
@@ -142,8 +142,8 @@ export class Roll20UploadCredentialError extends Error {
   constructor(reason: string) {
     super(
       `Roll20 art upload unavailable (${reason}). Uploads are browserless here — this server ` +
-      `runs Roll20's own upload flow itself but never harvests the credential. Refresh it from the ` +
-      `gem's logged-in Roll20 session, or point ROLL20_DATA_DIR at a data dir holding a current ` +
+      `runs Roll20's own upload flow itself but never harvests the credential. Refresh it with ` +
+      `\`npm run furnish:token -- --upload\` (docs/setup-guide.md §5), from the gem, or point ROLL20_DATA_DIR at a data dir holding a current ` +
       `roll20-upload-cache.json ({cookies, userAgent, harvestedAt}, ${UPLOAD_CACHE_TTL_MS / 3_600_000}h TTL).`
     );
     this.name = "Roll20UploadCredentialError";
