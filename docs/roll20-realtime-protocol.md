@@ -60,7 +60,7 @@ credential and never mints one:
    capture the custom token. The modular SDK only fires that call on a *fresh* auth, so if the
    editor restored from IndexedDB, `firebaseLocalStorageDb` is deleted and the page reloaded to
    force a fresh sign-in. The harvester writes `<data dir>/roll20-rt-token.json`
-   (`{campaignId, customToken, databaseURL, harvestedAt}`).
+   (`{campaignId, customToken or refreshToken, databaseURL, harvestedAt}`).
 2. **Read (here).** `getCustomToken` in `roll20-rt.ts` reads that file — or the same object inline in
    **`ROLL20_RT_TOKEN`**, which takes precedence and is meant for a caller with no shared writable
    data dir; a set-but-unusable variable throws rather than falling back to the file — and validates

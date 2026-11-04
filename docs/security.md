@@ -31,7 +31,7 @@ MCP server that a model can call on its own initiative.
 
 ## 1. The furnished Roll20 realtime credential (`roll20-rt-token.json`)
 
-**What it is:** `<data dir>/roll20-rt-token.json` — `{ campaignId, customToken, databaseURL, harvestedAt }`,
+**What it is:** `<data dir>/roll20-rt-token.json` — `{ campaignId, customToken or refreshToken, databaseURL, harvestedAt }`,
 or the same object inline in **`ROLL20_RT_TOKEN`** (which takes precedence; see below).
 The Firebase custom token for **one specific campaign**, plus that campaign's RTDB shard URL (Roll20
 shards campaigns across `roll20-99910`, `roll20-99922`, …). It is the credential every relay command

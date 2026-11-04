@@ -135,7 +135,7 @@ Roll20 access is **furnished, never minted**. The server reads two files out of 
 
 | File | Shape | Life | Needed for |
 |---|---|---|---|
-| `roll20-rt-token.json` | `{campaignId, customToken, databaseURL, harvestedAt}` | ~1 h from harvest (Firebase decides, not us) | Everything. The token is **campaign-scoped** and carries that campaign's RTDB shard. |
+| `roll20-rt-token.json` | `{campaignId, customToken or refreshToken, databaseURL, harvestedAt}` | `customToken`: ~1 h from harvest. `refreshToken`: until revoked, lifespan unknown. Firebase decides, not us | Everything. The token is **campaign-scoped** and carries that campaign's RTDB shard. |
 | `roll20-upload-cache.json` | `{cookies, userAgent, harvestedAt}` | 8 h | Art upload only (`upload_and_place_map_image`, `batch_import_maps`, `upload_image`). |
 
 ### The supported path — the Gem harvests
@@ -177,7 +177,7 @@ The script pulls the token out of whatever you pasted, then proves it: the token
 
 Start (or reconnect) the server inside the window it reports (the token's own expiry, about an hour from mint). Once connected, the connection stays live for the session — that hour governs *making* a connection (server start, campaign switch), not holding one. A mid-session restart means doing this again.
 
-> ⚠️ **A live server does not keep this file warm (#216).** Nothing in this repo ever writes `roll20-rt-token.json`; only the Gem's harvest does, and the Gem harvests reactively — when its *own* server hits a token failure. A connected server never hits one, so a Gem that has been up an hour reports `health: ok` while the file on disk has gone cold. The moment that bites is when you start a **second** reader of the same data dir — `roll20-dm-maps` over stdio, or a `tsx` script — and it cannot sign in at all. The server no longer refuses a token on age alone (Firebase is asked, and its answer is reported), and `transport_status` now carries an `rtToken: {ageMinutes, stale, note}` block so the staleness is visible before it bites. The fix is the same either way: press **Connect Roll20** in the Gem, or re-run `npm run furnish:token`.
+> ⚠️ **A live server does not keep a custom token warm (#216).** A refresh token avoids this. The server never writes `roll20-rt-token.json`; only `furnish:token` and the Gem's harvest do, and the Gem harvests reactively — when its *own* server hits a token failure. A connected server never hits one, so a Gem that has been up an hour reports `health: ok` while the file on disk has gone cold. The moment that bites is when you start a **second** reader of the same data dir — `roll20-dm-maps` over stdio, or a `tsx` script — and it cannot sign in at all. The server no longer refuses a token on age alone (Firebase is asked, and its answer is reported), and `transport_status` now carries an `rtToken: {ageMinutes, stale, note}` block so the staleness is visible before it bites. The fix is the same either way: press **Connect Roll20** in the Gem, or re-run `npm run furnish:token`.
 
 There is no hand path for `roll20-upload-cache.json` yet (it carries Roll20 session cookies, not a token). Without it, art upload fails cleanly and nothing else is affected — upload map art through Roll20's own UI.
 

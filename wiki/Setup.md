@@ -62,7 +62,7 @@ A `.env` file in the project root is optional — the defaults work. The setting
 | Variable | Default | What it does |
 |---|---|---|
 | `ROLL20_DATA_DIR` | `./data` | Where credentials and the campaign/character registries live. **Must be the same directory the Gem writes to** (see step 5). |
-| `ROLL20_RT_TOKEN` | *(unset)* | The realtime credential inline — the same `{campaignId, customToken, databaseURL, harvestedAt}` object as `roll20-rt-token.json`. Overrides the file; malformed or wrong-campaign fails loudly rather than falling back to it. |
+| `ROLL20_RT_TOKEN` | *(unset)* | The realtime credential inline — the same `{campaignId, customToken or refreshToken, databaseURL, harvestedAt}` object as `roll20-rt-token.json`. Overrides the file; malformed or wrong-campaign fails loudly rather than falling back to it. |
 | `ROLL20_MCP_TOKEN` | auto-generated | Bearer token for the HTTP server. Written for you on first run. |
 | `ROLL20_HTTP_PORT` / `ROLL20_HTTP_HOST` | `39200` / `127.0.0.1` | Where the combat server listens. |
 | `ANTHROPIC_API_KEY` | — | Only read by the maps suite's `analyze_battlemap`. |
@@ -138,7 +138,7 @@ Roll20 access is **furnished, never minted**. The server reads two files out of 
 
 | File | Shape | Life | Needed for |
 |---|---|---|---|
-| `roll20-rt-token.json` | `{campaignId, customToken, databaseURL, harvestedAt}` | ~1 h from harvest (Firebase decides, not us) | Everything. The token is **campaign-scoped** and carries that campaign's RTDB shard. |
+| `roll20-rt-token.json` | `{campaignId, customToken or refreshToken, databaseURL, harvestedAt}` | `customToken`: ~1 h from harvest. `refreshToken`: until revoked, lifespan unknown. Firebase decides, not us | Everything. The token is **campaign-scoped** and carries that campaign's RTDB shard. |
 | `roll20-upload-cache.json` | `{cookies, userAgent, harvestedAt}` | 8 h | Art upload only (`upload_and_place_map_image`, `batch_import_maps`, `upload_image`). |
 
 ### The supported path — the Gem harvests
@@ -151,7 +151,9 @@ Harvest is **per-campaign**: point the Gem at the campaign you're about to run *
 
 ### Without the Gem — furnish it by hand
 
-You don't need the Gem. The browser half is three DevTools steps in **your own** logged-in Roll20 tab; `npm run furnish:token` does the rest and checks your work before the server ever sees it. (The server still never opens a browser — you do the copying, the script only validates and writes.)
+**Quickest:** in the project folder, run `npm run furnish:token`. Paste the line it gives you into the **Console** of the campaign's editor, copy what pops up, and paste that into the waiting terminal. That stores a refresh token, which survives server restarts. It is a long-lived login that signing out of Roll20 does **not** end, so keep it out of chats. Open only one game at a time when you do this. Don't furnish one into the Gem's data dir yet: the Gem treats the file as stale after 40 minutes and overwrites it with a custom token.
+
+The rest of this section is the one-hour custom token. You don't need the Gem. The browser half is three DevTools steps in **your own** logged-in Roll20 tab; `npm run furnish:token` does the rest and checks your work before the server ever sees it. (The server still never opens a browser — you do the copying, the script only validates and writes.)
 
 You must be a **GM** of the campaign, and the campaign needs the relay Mod installed (§3) — which in turn needs the campaign creator's Pro subscription.
 
@@ -178,7 +180,7 @@ The script pulls the token out of whatever you pasted, then proves it: the token
 
 Start (or reconnect) the server inside the window it reports (the token's own expiry, about an hour from mint). Once connected, the connection stays live for the session — that hour governs *making* a connection (server start, campaign switch), not holding one. A mid-session restart means doing this again.
 
-> ⚠️ **A live server does not keep this file warm (#216).** Nothing in this repo ever writes `roll20-rt-token.json`; only the Gem's harvest does, and the Gem harvests reactively — when its *own* server hits a token failure. A connected server never hits one, so a Gem that has been up an hour reports `health: ok` while the file on disk has gone cold. The moment that bites is when you start a **second** reader of the same data dir — `roll20-dm-maps` over stdio, or a `tsx` script — and it cannot sign in at all. The server no longer refuses a token on age alone (Firebase is asked, and its answer is reported), and `transport_status` now carries an `rtToken: {ageMinutes, stale, note}` block so the staleness is visible before it bites. The fix is the same either way: press **Connect Roll20** in the Gem, or re-run `npm run furnish:token`.
+> ⚠️ **A live server does not keep a custom token warm (#216).** A refresh token avoids this. The server never writes `roll20-rt-token.json`; only `furnish:token` and the Gem's harvest do, and the Gem harvests reactively — when its *own* server hits a token failure. A connected server never hits one, so a Gem that has been up an hour reports `health: ok` while the file on disk has gone cold. The moment that bites is when you start a **second** reader of the same data dir — `roll20-dm-maps` over stdio, or a `tsx` script — and it cannot sign in at all. The server no longer refuses a token on age alone (Firebase is asked, and its answer is reported), and `transport_status` now carries an `rtToken: {ageMinutes, stale, note}` block so the staleness is visible before it bites. The fix is the same either way: press **Connect Roll20** in the Gem, or re-run `npm run furnish:token`.
 
 There is no hand path for `roll20-upload-cache.json` yet (it carries Roll20 session cookies, not a token). Without it, art upload fails cleanly and nothing else is affected — upload map art through Roll20's own UI.
 
