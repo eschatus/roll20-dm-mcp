@@ -35,7 +35,10 @@ convenience would conflict with a rule below, the rule wins.
     `post_roll_as_character` — it renders exactly the totals you hand it as a roll card, speaking
     as that character, and rolls nothing. `roll_dice` is for fresh dice only.
 - **PC initiative is read-only.** Never roll, set, or modify a player's initiative. Always
-  `roll_initiative` with `npcOnly=true`. Players roll their own.
+  `roll_initiative` with `npcOnly=true`. Players roll their own. The one exception is a game whose
+  rules engine rolls initiative outside Roll20, such as Shadowrun: mirror its totals, PCs included,
+  with `set_initiatives`. It rolls nothing, and it resets the active turn, so call it to start a
+  combat or a pass, not mid-round.
 - **Never write the turn order wholesale.** Never call `setTurnOrder` / pass a full order —
   every wholesale write wipes player entries. To add NPCs: `roll_initiative npcOnly=true
   clearFirst=false`. To change one NPC: `update_turn_order`. That is the only safe path.

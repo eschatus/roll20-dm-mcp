@@ -305,10 +305,18 @@ function matchTokensByName(
   }
 }
 
-// Resolve a name to a token id or throw the standard error. The single place the
-// agent-facing wording lives, and the wording steers the model's recovery (#257):
-// "Ambiguous target" means two or more tokens fit the name, so pick between them;
+// The single place the agent-facing wording lives, and the wording steers the model's recovery
+// (#257): "Ambiguous target" means two or more tokens fit the name, so pick between them;
 // "No token named" means none does, so there is nothing to pick from.
+export function describeUnresolved(name: string, r: { candidates?: string[]; nearMiss?: boolean }): string {
+  if (r.candidates?.length && !r.nearMiss) {
+    return `Ambiguous target "${name}". Did you mean: ${r.candidates.join(", ")}? Ask the DM to confirm, don't guess.`;
+  }
+  const closest = r.candidates?.length ? ` Closest: ${r.candidates.join(", ")}.` : "";
+  return `No token named "${name}" on this page.${closest} Ask the DM to confirm, don't guess.`;
+}
+
+// Resolve a name to a token id or throw the standard error.
 export async function resolveTokenOrThrow(
   name: string,
   tokenList?: { id: string; name: string }[],
@@ -321,13 +329,7 @@ export async function resolveTokenOrThrow(
       + ` Each page has its own token for a character — place or rename the token on this page, or re-register the character with its token here. This is not a transport problem.`,
     );
   }
-  if (!r.id) {
-    if (r.candidates?.length && !r.nearMiss) {
-      throw new Error(`Ambiguous target "${name}". Did you mean: ${r.candidates.join(", ")}? Ask the DM to confirm, don't guess.`);
-    }
-    const closest = r.candidates?.length ? ` Closest: ${r.candidates.join(", ")}.` : "";
-    throw new Error(`No token named "${name}" on this page.${closest} Ask the DM to confirm, don't guess.`);
-  }
+  if (!r.id) throw new Error(describeUnresolved(name, r));
   return r.id;
 }
 
