@@ -11,6 +11,9 @@ Two servers, one job each:
 - **`roll20-dm-maps`** — map prep, over stdio. Battlemap upload and placement, wall detection,
   dynamic-lighting walls and doors, page creation, token creation.
 
+This is an unofficial project, not affiliated with or endorsed by Roll20. You need **Roll20 Pro or
+Mentor**, because the servers depend on a Mod script, and you must be GM of the campaign.
+
 ## How a tool call reaches the table
 
 ```mermaid
