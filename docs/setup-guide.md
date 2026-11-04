@@ -148,7 +148,7 @@ Harvest is **per-campaign**: point the Gem at the campaign you're about to run *
 
 ### Without the Gem — furnish it by hand
 
-**Quickest:** run `npm run furnish:token -- --snippet`, paste what it prints into the **Console** of the campaign's editor, and paste the command that pops up into your terminal. That stores a refresh token, which survives server restarts. It is a long-lived login, so keep it out of chats; see `docs/security.md`. Open only one game at a time when you do this.
+**Quickest:** run `npm run furnish:token -- --snippet`, paste what it prints into the **Console** of the campaign's editor, and paste the command that pops up into your terminal. That stores a refresh token, which survives server restarts. It is a long-lived login that signing out of Roll20 does **not** end, so keep it out of chats; see `docs/security.md`. Open only one game at a time when you do this.
 
 The rest of this section is the one-hour custom token. You don't need the Gem. The browser half is three DevTools steps in **your own** logged-in Roll20 tab; `npm run furnish:token` does the rest and checks your work before the server ever sees it. (The server still never opens a browser — you do the copying, the script only validates and writes.)
 
