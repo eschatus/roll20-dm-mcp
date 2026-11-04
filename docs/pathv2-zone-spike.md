@@ -1,9 +1,7 @@
 # Spike: `pathv2` as the zone drawing primitive (issue #208)
 
-**Status: instrument built, live run PENDING.** Nothing below the "Results" heading is
-answered yet — the questions can only be settled against a real Roll20 sandbox, and this
-repo has no browser and no live campaign in CI. The probe is here so the run takes about
-five minutes once someone has a campaign open.
+**Status: run live on cos-test, 2026-11-03 (relay 2.10.0). Q1 and Q2 landed; see Results.** The
+follow-up that moves `createZone` onto `pathv2` is not done. The probe stays until it is.
 
 ## Why
 
@@ -91,7 +89,7 @@ tsx src/recon/pathv2-zone-probe.ts <pageId> [--campaign slug] [--x N --y N] [--r
 ```
 
 The script prints, per variant: what was sent, what the Mod read back, and — via a direct
-RTDB read of `pathv2/page/<pageId>/<id>` — what Roll20 actually persisted with no Mod
+RTDB read of `paths/page/<pageId>/<id>` (pathv2 objects live in the `paths` node) — what Roll20 actually persisted with no Mod
 accessor in the way. It then scores Q1 and Q3 **from that RTDB record**, and tells you where
 on the page to look for Q2.
 
@@ -112,16 +110,21 @@ failed.
 
 ## Results
 
-_Not yet run. Fill in each row from a live pass, then decide._
+Live pass on cos-test, 2026-11-03: sandbox 1.5, relay 2.10.0, over a battlemap. Data verdicts come
+from the RTDB record; render verdicts from a screenshot of the open page.
 
 | # | Verdict | Evidence |
 |---|---------|----------|
-| Q1 `fill` accepts `#RRGGBBAA` | TBD | |
-| Q1 `fill_opacity` works on `pathv2` | TBD | |
-| Q2 `eli` renders as a circle on the object layer | TBD | |
-| Q2 `rec` renders as a rectangle | TBD | |
-| Q2 renders on the `map` layer too | TBD | |
-| Q3 carries `name`/`gmnotes` | TBD | |
+| Q1 `fill` accepts `#RRGGBBAA` | **Yes** | Stored as `#aa00ff40`, and the map shows through it. |
+| Q1 `fill_opacity` works on `pathv2` | **No** | Absent from the record, and `eli-fillopacity` renders as opaque as `eli-fill6`. |
+| Q2 `eli` renders as a circle on the object layer | **Yes** | A clean circle. `eli-transparent` shows an outline only. |
+| Q2 `rec` renders as a rectangle | **Yes** | A translucent square. |
+| Q2 renders on the `map` layer too | **Yes** | `eli-map-layer` renders, translucent. |
+| Q3 carries `name`/`gmnotes` | **No** | Neither key is in the record, at create or after `set()`. |
+
+The `pol` control rendered, but offset down and right of its slot, which is the known pathv2
+re-anchoring (see CLAUDE.md). `eli` and `rec` landed where expected, which is a further reason to
+prefer them.
 
 ## Decision
 
@@ -129,7 +132,8 @@ _Not yet run. Fill in each row from a live pass, then decide._
 script and tests). It is a spike instrument, not a feature: it must not ship in relays
 indefinitely.
 
-_Pending results._ The shape of the call:
+**Q1 and Q2 landed, so the first branch below applies:** use `shape: "eli"` or `"rec"` with an
+8-digit `fill`, and drop any idea of `fill_opacity`. The original options, for the record:
 
 - **If Q1 and Q2 both land** — `createZone` switches to `createObj("pathv2", { shape: "eli" | "rec" })`
   and `withZoneAlpha()`'s "UNVERIFIED against the live renderer" caveat is replaced by a real
