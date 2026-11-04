@@ -80,8 +80,9 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
   campaign-scoped) and art uploads from `roll20-upload-cache.json`; both throw a typed error
   (`Roll20TokenUnavailableError`, `Roll20UploadCredentialError`) naming what to refresh instead of
   harvesting. A set-but-unusable `ROLL20_RT_TOKEN` throws rather than falling back to the file. Art upload is a
-  plain multipart POST — browserless, credential furnished. Harvesting happens in the gem's own
-  logged-in session, where a human is present. The legacy browser→chat relay is DELETED (#122/#179) —
+  plain multipart POST — browserless, credential furnished. A human furnishes both with
+  `npm run furnish:token` (`--upload` for the cookies, `src/bridge/upload-credential.ts`), or the gem
+  harvests them in its own logged-in session. The legacy browser→chat relay is DELETED (#122/#179) —
   RT is the only transport, and an RT failure is a loud hard stop, never a quiet fallback. Harvest
   is first-party session capture in the gem's own Electron browser (intercepting Roll20's
   `signInWithCustomToken`) — NOT OAuth, no registered client. (See #83, #177.)

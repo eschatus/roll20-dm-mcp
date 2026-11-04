@@ -11,12 +11,7 @@ This repository is **two MCP servers over Roll20 primitives**:
 
 Roll20 only. There is **no D&D Beyond** in this repo and **no browser** in it either (#171, #179) — see [What this is not](#what-this-is-not) below.
 
-There are two ways to talk to it:
-
-- **The Gem** (DM Whisper) — a floating overlay with voice push-to-talk and a chat panel. Lives in [its own repository](https://github.com/eschatus/dm-whisper) now.
-- **Claude Code** — the Claude CLI, useful for map prep, session setup, and live play alike.
-
-Both connect to the same server. You can run them simultaneously.
+You talk to it through any MCP client. **Claude Code** works for map prep, session setup and live play. For voice at the table there is an optional separate app, [the Gem](https://github.com/eschatus/dm-whisper) (see the end of this guide). Both connect to the same server, and you can run them together.
 
 ---
 
@@ -27,7 +22,7 @@ Both connect to the same server. You can run them simultaneously.
 | Node.js 20 or later | `node --version` to check (the TypeScript 6 build needs Node 20+) |
 | Roll20 Pro or Mentor subscription | Required for the Mod (API) Scripts feature — nothing works without it |
 | A Roll20 campaign | Where the Mod script will live (one deploy per campaign) |
-| A way to harvest the Roll20 realtime token | Normally the Gem. This server never harvests one — see step 5 |
+| A logged-in Chrome or Edge | One paste to furnish the Roll20 token. The server itself never opens a browser — see step 5 |
 | Anthropic API key | Only for the maps suite's `analyze_battlemap`. The combat server needs no model key |
 
 ---
@@ -37,8 +32,8 @@ Both connect to the same server. You can run them simultaneously.
 Three things this repo used to do and no longer does. If you have older notes, they are wrong:
 
 - **No browser.** There is no Playwright dependency, no Chromium to install, no `npx playwright install` step. Nothing here opens a browser window.
-- **No D&D Beyond.** The whole DDB bridge — auth, character reads, monster reads — moved to **[beyond-mcp](https://github.com/eschatus/beyond-mcp)**, which the Gem bundles and uses as its lookup backend. There are no `ddb_*` tools here and no DDB credential. `ddbCampaignId` survives in the campaign registry purely as a linkage id passed through to that server.
-- **No model call in the combat server.** Tactical planning is decided by the Gem and merely *stored* here (`set_mob_plan` / `get_mob_plans` / `clear_mob_plans`); the turn hook whispers the stored plan to the DM when that token's turn comes up. Player `!`-commands are likewise answered by the Gem — this server just forwards live chat as `chat-message` events on `/events`.
+- **No D&D Beyond.** The whole DDB bridge — auth, character reads, monster reads — moved to **[beyond-mcp](https://github.com/eschatus/beyond-mcp)**, a separate server. There are no `ddb_*` tools here and no DDB credential. `ddbCampaignId` survives in the campaign registry purely as a linkage id passed through to that server.
+- **No model call in the combat server.** Tactical planning is decided by your client and merely *stored* here (`set_mob_plan` / `get_mob_plans` / `clear_mob_plans`); the turn hook whispers the stored plan to the DM when that token's turn comes up. Player `!`-commands are likewise answered by your client — this server just forwards live chat as `chat-message` events on `/events`.
 
 ---
 
@@ -61,7 +56,7 @@ A `.env` file in the project root is optional — the defaults work. The setting
 
 | Variable | Default | What it does |
 |---|---|---|
-| `ROLL20_DATA_DIR` | `./data` | Where credentials and the campaign/character registries live. **Must be the same directory the Gem writes to** (see step 5). |
+| `ROLL20_DATA_DIR` | `./data` | Where credentials and the campaign/character registries live. If you run the Gem, this must be the directory it writes to (see step 5). |
 | `ROLL20_RT_TOKEN` | *(unset)* | The realtime credential inline — the same `{campaignId, customToken or refreshToken, databaseURL, harvestedAt}` object as `roll20-rt-token.json`. Overrides the file; malformed or wrong-campaign fails loudly rather than falling back to it. |
 | `ROLL20_MCP_TOKEN` | auto-generated | Bearer token for the HTTP server. Written for you on first run. |
 | `ROLL20_HTTP_PORT` / `ROLL20_HTTP_HOST` | `39200` / `127.0.0.1` | Where the combat server listens. |
@@ -134,55 +129,74 @@ The server runs as long as the terminal stays open. Keep it running during play.
 
 ## 5. Furnish the Roll20 credentials
 
-Roll20 access is **furnished, never minted**. The server reads two files out of `ROLL20_DATA_DIR` and, when one is absent, stale, or scoped to the wrong campaign, throws a typed error naming exactly what to refresh — `Roll20TokenUnavailableError` or `Roll20UploadCredentialError`. There is deliberately no browser fallback: a packaged install ships no browser, so a credential failure must surface rather than quietly reach for a Chromium that isn't there.
+Roll20 access is **furnished, never minted**. The server reads two files out of `ROLL20_DATA_DIR` and, when one is absent, stale, or scoped to the wrong campaign, throws a typed error naming exactly what to refresh — `Roll20TokenUnavailableError` or `Roll20UploadCredentialError`. Nothing here opens a browser: you do the copying, and `npm run furnish:token` validates and writes.
 
 | File | Shape | Life | Needed for |
 |---|---|---|---|
-| `roll20-rt-token.json` | `{campaignId, customToken or refreshToken, databaseURL, harvestedAt}` | `customToken`: ~1 h from harvest. `refreshToken`: until revoked, lifespan unknown. Firebase decides, not us | Everything. The token is **campaign-scoped** and carries that campaign's RTDB shard. |
+| `roll20-rt-token.json` | `{campaignId, customToken or refreshToken, databaseURL, harvestedAt}` | `refreshToken`: until revoked, lifespan unknown. `customToken`: ~1 h from harvest. Firebase decides, not us | Everything. The token is **campaign-scoped** and carries that campaign's RTDB shard. |
 | `roll20-upload-cache.json` | `{cookies, userAgent, harvestedAt}` | 8 h | Art upload only (`upload_and_place_map_image`, `batch_import_maps`, `upload_image`). |
-
-### The supported path — the Gem harvests
-
-The Gem's **Connect Roll20** button opens an Electron window, you sign in normally, and it writes both files. It is first-party session capture in the Gem's own browser (it intercepts Roll20's `signInWithCustomToken` call) — not OAuth, no registered client.
-
-Harvest is **per-campaign**: point the Gem at the campaign you're about to run *before* pressing Connect. A token minted for campaign A cannot read campaign B, and switching campaigns means reconnecting.
-
-> ⚠️ **The data-dir trap.** `ROLL20_DATA_DIR` (this server, default `./data`) and `DMW_DATA_DIR` (the Gem, default `%APPDATA%\DM Whisper` on Windows) must resolve to the **same directory**. If they don't, the Gem harvests into a folder the server never reads — and the two also keep separate campaign registries, so they silently disagree about which campaign is active.
-
-### Without the Gem — furnish it by hand
-
-**Quickest:** in the project folder, run `npm run furnish:token`. Paste the line it gives you into the **Console** of the campaign's editor, copy what pops up, and paste that into the waiting terminal. That stores a refresh token, which survives server restarts. It is a long-lived login that signing out of Roll20 does **not** end, so keep it out of chats. Open only one game at a time when you do this. Don't furnish one into the Gem's data dir yet: the Gem treats the file as stale after 40 minutes and overwrites it with a custom token.
-
-The rest of this section is the one-hour custom token. You don't need the Gem. The browser half is three DevTools steps in **your own** logged-in Roll20 tab; `npm run furnish:token` does the rest and checks your work before the server ever sees it. (The server still never opens a browser — you do the copying, the script only validates and writes.)
 
 You must be a **GM** of the campaign, and the campaign needs the relay Mod installed (§3) — which in turn needs the campaign creator's Pro subscription.
 
-1. Open the campaign's **editor** (the play screen, not the details page) in Chrome or Edge, press **F12**, and in the **Console** run:
+### The token
+
+Open **only that campaign's editor** (the play screen, not the details page) in Chrome or Edge. An open game can stop another one launching, and one file holds one campaign. Then, in the project folder:
+
+```powershell
+npm run furnish:token
+```
+
+1. It prints a line and copies it to your clipboard where it can. Press **F12** in the editor, and paste the line into the **Console**.
+2. A popup appears with the text selected. Press **Ctrl+C**, then **Enter**.
+3. Paste into the waiting terminal and press Enter. Nothing shows as you paste.
+
+It checks that this is a **GM** login, reads the campaign from the login itself, confirms the database holds that campaign, and writes `<ROLL20_DATA_DIR>/roll20-rt-token.json`. Add `--print` to get the JSON for `ROLL20_RT_TOKEN` instead (it overrides the file; handy for a stdio `roll20-dm-maps` or a script with no shared data dir). Changing tables means repeating this in the other campaign.
+
+That stores a **refresh token**, so server restarts need no new capture. It kept working after a Roll20 sign-out and with the browser closed, so **treat it like a password**: keep it out of chats, and know that you currently can't revoke it yourself. See `docs/security.md`.
+
+### Art upload
+
+Only needed to upload map art. The cookies last 8 hours here, and page scripts can't read them, so this one is a copied request. With the editor open and you logged in:
+
+1. Press **F12**, open the **Network** tab, and reload the page.
+2. Right-click the **top** request (named like `editor/`) → **Copy → Copy as cURL**. If Chrome offers two, pick **(bash)**.
+3. In the project folder:
+
+```powershell
+Get-Clipboard | npm run furnish:token -- --upload
+```
+
+On macOS use `pbpaste |`. Without this file, art upload fails cleanly and nothing else is affected, and you can upload map art through Roll20's own UI.
+
+### A one-hour token instead
+
+If you'd rather not store a long-lived login, you can furnish the one-shot custom token. The server must connect within about an hour of minting, and a restart means doing this again.
+
+1. In the editor's **Console**, run:
 
    ```js
    indexedDB.deleteDatabase("firebaseLocalStorageDb"); window.FIREBASE_ROOT
    ```
 
-   Note what it prints (e.g. `https://roll20-99913.firebaseio.com`) — that's the campaign's database shard. The `deleteDatabase` matters: Roll20 normally restores its login from that cache on reload and **never sends the token**, so without it step 2 shows nothing.
+   Note what it prints (e.g. `https://roll20-99913.firebaseio.com`). The `deleteDatabase` matters: Roll20 normally restores its login from that cache on reload and **never sends the token**, so without it step 2 shows nothing.
 2. Switch to the **Network** tab, tick **Preserve log**, type `signInWithCustomToken` in the filter box, and **reload** the page.
-3. Right-click the request that appears → **Copy → Copy as cURL** (or open it → **Payload** and copy the `token` value — either works).
+3. Right-click the request that appears → **Copy → Copy as cURL** (or open it → **Payload** and copy the `token` value).
 
-Then, within a few minutes, in the project folder (PowerShell):
+Then, within a few minutes, in the project folder:
 
 ```powershell
-cd <path-to>oll20-dm-mcp   # npm only finds the script from the project folder
 Get-Clipboard | npm run furnish:token -- --campaign <campaignId> --db <what step 1 printed>
 ```
 
-`<campaignId>` is the number in the campaign's URL (`/campaigns/details/1234567`, `/join/1234567/…`). Leave `--campaign` off to use the active campaign. On macOS use `pbpaste |`; or run it without a pipe and paste at the prompt.
+`<campaignId>` is the number in the campaign's URL (`/campaigns/details/1234567`, `/join/1234567/…`). On macOS use `pbpaste |`. A connected server stays connected: the hour governs *making* a connection, not holding one, and `transport_status` shows the token's age under `rtToken`.
 
-The script pulls the token out of whatever you pasted, then proves it: the token **exchanges**, it belongs to **this** campaign, it is a **GM** session, and the database shard actually holds the campaign. Any miss is a one-line error saying which. Only then does it write `<ROLL20_DATA_DIR>/roll20-rt-token.json`, stamping `harvestedAt` from the token's own mint time so `transport_status` reports a true age. Run it with the same `ROLL20_DATA_DIR` the server will use — or add `--print` to get the JSON for `ROLL20_RT_TOKEN` instead (it overrides the file; handy for a stdio `roll20-dm-maps` or a script with no shared data dir).
+### If you run the Gem
 
-Start (or reconnect) the server inside the window it reports (the token's own expiry, about an hour from mint). Once connected, the connection stays live for the session — that hour governs *making* a connection (server start, campaign switch), not holding one. A mid-session restart means doing this again.
+The Gem harvests both files itself with its **Connect Roll20** button, so you don't need the commands above. Harvest is per-campaign: point the Gem at the campaign you're about to run first.
 
-> ⚠️ **A live server does not keep a custom token warm (#216).** A refresh token avoids this. The server never writes `roll20-rt-token.json`; only `furnish:token` and the Gem's harvest do, and the Gem harvests reactively — when its *own* server hits a token failure. A connected server never hits one, so a Gem that has been up an hour reports `health: ok` while the file on disk has gone cold. The moment that bites is when you start a **second** reader of the same data dir — `roll20-dm-maps` over stdio, or a `tsx` script — and it cannot sign in at all. The server no longer refuses a token on age alone (Firebase is asked, and its answer is reported), and `transport_status` now carries an `rtToken: {ageMinutes, stale, note}` block so the staleness is visible before it bites. The fix is the same either way: press **Connect Roll20** in the Gem, or re-run `npm run furnish:token`.
+> ⚠️ **The data-dir trap.** `ROLL20_DATA_DIR` (this server, default `./data`) and `DMW_DATA_DIR` (the Gem, default `%APPDATA%\DM Whisper` on Windows) must resolve to the **same directory**. If they don't, the Gem harvests into a folder the server never reads, and the two keep separate campaign registries, so they silently disagree about which campaign is active.
 
-There is no hand path for `roll20-upload-cache.json` yet (it carries Roll20 session cookies, not a token). Without it, art upload fails cleanly and nothing else is affected — upload map art through Roll20's own UI.
+Don't furnish a refresh token into the Gem's data dir yet: the Gem treats the file as stale after 40 minutes and overwrites it with a custom token.
 
 ---
 
@@ -210,25 +224,25 @@ Restart Claude Code so it picks up the `.mcp.json` from step 4. After restart, t
 
 You can verify this is working by asking Claude: `list_campaigns` or `active_campaign`.
 
-Use Claude Code for map prep, deploying tokens before a session, and anything that doesn't need split-second response at the table. During live play, the Gem is faster — but Claude Code works perfectly well for running combat if you don't have or want the Gem. (Without the Gem, furnish the token with `npm run furnish:token` — step 5.)
+Use Claude Code for map prep, deploying tokens before a session, and running combat. It's complete on its own.
 
 ---
 
-## Track B — The Gem
+## Optional — the Gem
 
 The Gem is an Electron overlay that floats on your screen. It shows a glowing faceted gem that you hold PTT (push-to-talk) to talk to. An expanded "Scrying Ledger" panel gives you chat, player inbox, and configuration tabs.
 
 > **The Gem lives in its own repository now.** It was split out to
 > [`eschatus/dm-whisper`](https://github.com/eschatus/dm-whisper) on 2026-08-11 and is closed
 > source; this repository is the MCP server it talks to, and stays open under MIT. Everything in
-> Track B happens in that checkout, not this one — including its own setup instructions, which are
-> canonical. If you do not have access to it, Track A above is complete on its own.
+> this section happens in that checkout, not this one — including its own setup instructions, which are
+> canonical. You don't need it to use this server.
 
 What matters from *this* side of the relationship:
 
 - The Gem pins this repository as a dependency by tag (currently `#v2.3.0`) and builds it in the clone, so you do not need a separate checkout of roll20-dm-mcp for the Gem to run. Changes here reach the Gem only when it re-pins.
 - It bundles `skills/dm-rules.md` and `mod-scripts/ai-relay.js` from this repo into its installer.
-- It furnishes the two credential files from step 5, and it is the only supported harvester.
+- It harvests the two credential files from step 5 itself.
 - It consumes the `/events` SSE stream, and it owns the two responsibilities this server gave up: deciding tactical plans (storing them via `set_mob_plan`) and answering player `!`-commands (off `chat-message` events).
 - `DMW_DATA_DIR` and `ROLL20_DATA_DIR` must point at the **same** directory, or the Gem and the server keep separate registries and credentials and silently disagree.
 - The Gem calls the Anthropic API directly and needs its own `ANTHROPIC_API_KEY`, set in the Gem repo's `.env`. This server does not.
@@ -244,11 +258,11 @@ With the server running and Claude Code (or the Gem) connected:
 1. In Claude Code, ask: `transport_status` — reports this server's build, whether it can reach Roll20, the active campaign, and whether the deployed Mod relay's version matches `EXPECTED_RELAY_VERSION`. Start here; it names most failures outright.
 2. Drop a token onto the map and ask: `list_tokens` — your token should appear. That's the combat server round-tripping through the Mod script.
 3. If you registered `roll20-dm-maps`, ask: `get_current_page` — should return your current Roll20 page. (`get_current_page` is a maps-suite tool; the combat server doesn't have it.)
-4. Say or type to the Gem: `"who's on the map?"` — should list tokens.
+4. If you run the Gem, say or type: `"who's on the map?"` — should list tokens.
 
 If `list_tokens` fails, work down this list:
 
-- **"No usable Roll20 realtime token…"** — the credential from step 5 is missing, spent (Firebase refused it — custom tokens last about an hour), or belongs to another campaign; the message says which. Reconnect Roll20 in the Gem (pointed at *this* campaign), or redo the manual build. Check `transport_status.rtToken` first: a `stale: true` there means the Gem has been up long enough that its harvest has gone cold, even though the Gem itself looks fine (#216).
+- **"No usable Roll20 realtime token…"** — the credential from step 5 is missing, refused by Firebase, or belongs to another campaign; the message says which. Run `npm run furnish:token` with *this* campaign open (Gem users: reconnect Roll20 in the Gem). Check `transport_status.rtToken` first; `campaignMismatch: true` means the stored token is for a different game.
 - **Timeout / "sandbox unreachable"** — the Mod script isn't running. Check the campaign's API Output Console for the load banner (step 3) and re-paste if it's absent or the version is stale.
 - **Relay version mismatch in `transport_status`** — re-paste `mod-scripts/ai-relay.js` into that campaign.
 - **Map tools missing or failing to load** — run `npm run build`; `roll20-dm-maps` runs the compiled `dist/`.

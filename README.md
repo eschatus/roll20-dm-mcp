@@ -75,16 +75,17 @@ driving a browser against your live Roll20 account, which is a human-attended ac
 
 | file (in the data dir) | what it is | lifetime |
 |---|---|---|
-| `roll20-rt-token.json` | the realtime credential — **campaign-scoped**, carries that campaign's RTDB shard | ~1 h |
+| `roll20-rt-token.json` | the realtime credential — **campaign-scoped**, carries that campaign's RTDB shard | until revoked, or ~1 h for a one-shot token |
 | `roll20-upload-cache.json` | endpoint + cookies for art upload (uploads themselves are a plain HTTP POST) | 8 h |
 
 When one is missing, stale, or belongs to a different campaign, you get a typed error
 (`Roll20TokenUnavailableError`, `Roll20UploadCredentialError`) that names what to refresh.
 
-**DM Whisper is the supported harvester** — its *Connect Roll20* button opens a window, you log in,
-and it writes both files. Point `ROLL20_DATA_DIR` at the same directory the gem uses, or the two
-will silently diverge. Running without the gem means building the token file by hand; see
-[docs/mcp-setup-for-dms.md](docs/mcp-setup-for-dms.md).
+**`npm run furnish:token` furnishes both.** One Console paste and one terminal paste store a refresh
+token, so restarts need no new capture. It is a long-lived login that a Roll20 sign-out doesn't end;
+see [docs/security.md](docs/security.md). `--upload` adds the art-upload cookies from a copied
+request. Steps are in [docs/setup-guide.md](docs/setup-guide.md). DM Whisper, if you run it, harvests
+both itself; point `ROLL20_DATA_DIR` at the directory it uses.
 
 ## Quick start
 

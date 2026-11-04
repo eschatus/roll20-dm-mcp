@@ -43,7 +43,8 @@ exchangeable.
 
 **Mitigations:**
 - **The server never harvests it.** `getCustomToken` (`src/bridge/roll20-rt.ts`) reads the cache or
-  throws — there is no harvest fallback by design (#177). The gem (dm-whisper) is the sole harvester.
+  throws — there is no harvest fallback by design (#177). A human furnishes it with `npm run furnish:token`,
+  or the gem (dm-whisper) harvests it.
 - **Two furnish sources, one shape.** `ROLL20_RT_TOKEN` carries the same JSON object as the file, for
   a caller with the credential but no shared writable data dir; it wins over the file. A set-but-
   unusable variable **throws instead of falling through** — a silent fallback to a different

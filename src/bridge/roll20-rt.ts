@@ -231,8 +231,8 @@ function remedyFor(source: TokenSource | null): string {
     );
   }
   return (
-    `This server reads the token but never harvests one — reconnect Roll20 in the gem to ` +
-    `re-harvest, furnish one by hand with \`npm run furnish:token\` (docs/setup-guide.md §5), ` +
+    `This server reads the token but never harvests one — run \`npm run furnish:token\` with this ` +
+    `campaign open (docs/setup-guide.md §5), reconnect Roll20 in the gem if you use it, ` +
     `or point ROLL20_DATA_DIR at the data dir holding a current ` +
     `roll20-rt-token.json for THIS campaign (the token is campaign-scoped).`
   );
@@ -311,12 +311,12 @@ export function getRtTokenStatus(activeCampaignId: string | null): {
   if (!c) {
     return {
       present: false, source: null, campaignId: null, activeCampaignId, campaignMismatch: false, missingFields: [], ageMinutes: null, stale: true,
-      note: `${TOKEN_ENV} is unset and there is no ${path.basename(TOKEN_CACHE)} in the data dir — reconnect Roll20 in the gem to harvest one.`,
+      note: `${TOKEN_ENV} is unset and there is no ${path.basename(TOKEN_CACHE)} in the data dir — run \`npm run furnish:token\`, or reconnect Roll20 in the gem.`,
     };
   }
   const refresh = c.source === "env"
     ? `Update ${TOKEN_ENV} (it overrides the data-dir file, so reconnecting in the gem will not change what this server reads), or unset it.`
-    : `Reconnect Roll20 in the gem to refresh the file.`;
+    : `Run \`npm run furnish:token\`, or reconnect Roll20 in the gem, to refresh the file.`;
   const campaignId = c.campaignId ?? null;
   const campaignMismatch = activeCampaignId !== null && campaignId !== activeCampaignId;
   const harvestedAt = Number(c.harvestedAt) || 0;
@@ -341,7 +341,7 @@ export function getRtTokenStatus(activeCampaignId: string | null): {
       `campaign will be refused. ` +
       (c.source === "env"
         ? `Update or unset ${TOKEN_ENV}.`
-        : `Reconnect Roll20 in the gem on the active campaign to harvest a matching one.`),
+        : `Run \`npm run furnish:token\` in the active campaign, or reconnect Roll20 in the gem there, for a matching one.`),
     );
   }
   if (stale) {

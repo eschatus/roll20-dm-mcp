@@ -9,11 +9,11 @@ at whatever campaign you run. Plan on about **20–30 minutes**, most of which i
 > **Works on macOS and Windows.** The commands are the same on both; where a step differs, you'll see a **macOS**
 > line and a **Windows** line. (Linux works too — follow the macOS path.)
 
-> This is the friendly, group-oriented walkthrough. For the fuller technical reference (env vars, the two servers,
-> the Gem), see [`setup-guide.md`](setup-guide.md).
+> This is the friendly, group-oriented walkthrough. For the fuller technical reference (env vars, the two servers),
+> see [`setup-guide.md`](setup-guide.md).
 
 **Roll20 only.** This server does not touch D&D Beyond. DDB character and monster lookups moved to a separate
-server, [beyond-mcp](https://github.com/eschatus/beyond-mcp), which the DM Whisper gem bundles. Nothing you do
+server, [beyond-mcp](https://github.com/eschatus/beyond-mcp). Nothing you do
 here needs a D&D Beyond login.
 
 ---
@@ -27,10 +27,8 @@ here needs a D&D Beyond login.
   so just make sure the Roll20 account you use is the same account that GMs the game.
 - **Node.js 20 or newer** must be installed. Check with `node --version`. If you don't have it, get it from
   [nodejs.org](https://nodejs.org) (LTS) or via a package manager (Step 1).
-- **This server never logs you into Roll20 for you.** There is no browser in it at all. It reads a Roll20 access
-  token out of a file that something else has to put there — normally the **DM Whisper gem**, whose
-  "Connect Roll20" button opens a login window and writes the file. If you are not running the gem, Step 7 walks
-  through building that file by hand. It is fiddly. Read Step 7 before you commit to this.
+- **This server never logs you into Roll20 for you.** There is no browser in it at all. It reads a Roll20 token
+  out of a file, and Step 7 puts it there with two pastes.
 - **Folder gotcha:** keep the project out of synced/protected folders — on macOS that's
   Documents/Desktop/Downloads/iCloud, on Windows that's OneDrive-synced folders. Your home folder is safe
   (details in Step 2).
@@ -183,44 +181,32 @@ The server talks to Roll20 over Roll20's own realtime connection, and to do that
 missing, stale, or belongs to a different campaign, every Roll20 command fails with a message telling you exactly
 which of those it is.
 
-**The supported way — the DM Whisper gem.** The gem has a **Connect Roll20** button: it opens a login window, you
-sign in as normal, and it writes the token file for you. Switch the gem to the campaign you're about to run
-*first* — the token is tied to one campaign and can't read any other.
-
-> ⚠️ **If the gem and this server use different folders, they will silently disagree.** The gem keeps its data in
-> `%APPDATA%\DM Whisper` (Windows) by default; this server uses `./data` in the project folder. Point them at the
-> same place — set `ROLL20_DATA_DIR` in this project's `.env` to the gem's folder, or `DMW_DATA_DIR` in the gem to
-> this one. Otherwise the gem harvests a token into a directory the server never reads, and you'll be staring at
-> "no token file" with a perfectly good token sitting on disk.
-
-**Without the gem.** You can do it by hand in about two minutes. You have to be a **GM** of the campaign. In
-Chrome or Edge, with your campaign's Roll20 **editor** open (the play screen, not the details page):
-
-1. Press **F12**, click **Console**, paste this and press Enter:
-   `indexedDB.deleteDatabase("firebaseLocalStorageDb"); window.FIREBASE_ROOT`
-   Write down what it prints, e.g. `https://roll20-99913.firebaseio.com`.
-2. Click the **Network** tab, tick **Preserve log**, type `signInWithCustomToken` in the filter box, and reload
-   the page (F5).
-3. Right-click the one request that appears → **Copy** → **Copy as cURL**.
-
-Then in PowerShell, in the project folder:
+With only your campaign's Roll20 **editor** open in Chrome or Edge (the play screen, not the details page; you must
+be a **GM** of the campaign), run this in the project folder:
 
 ```powershell
-cd <path-to>oll20-dm-mcp
-Get-Clipboard | npm run furnish:token -- --campaign 1234567 --db https://roll20-99913.firebaseio.com
+npm run furnish:token
 ```
 
-using your campaign number (from the campaign's URL) and what step 1 printed. It checks the token is for that
-campaign, that you're its GM, and that the database address is right, then writes `data/roll20-rt-token.json`
-and tells you how many minutes you have to start the server (about an hour). If something's wrong it says what,
-in one line.
+1. It prints a long line and copies it to your clipboard where it can. Press **F12** in the editor, click
+   **Console**, paste the line and press Enter. If Chrome warns about pasting, type `allow pasting` first.
+2. A popup appears with the text selected. Press **Ctrl+C**, then **Enter**.
+3. Paste into the waiting terminal and press Enter. Nothing shows as you paste; that's normal.
 
-Once the server has connected, the connection stays live for the rest of the evening; the limit only applies to
-*making* a connection, so a mid-session restart means redoing this.
+It checks you're the GM and that the database address is right, then writes `data/roll20-rt-token.json`. If
+something's wrong it says what, in one line.
 
-> **Uploading your own battlemap art** needs a second file, `data/roll20-upload-cache.json`, which the gem also
-> writes and which expires after 8 hours. Without it, art upload fails with a clear message; everything else keeps
-> working. There's no practical hand-built version of this one.
+**This is a long-lived login.** It keeps working through server restarts, and also after you sign out of Roll20,
+and there's currently no way for you to cancel it. Never paste the popup's text into a chat. Keep the `data`
+folder private.
+
+> **Uploading your own battlemap art** needs a second file, which lasts 8 hours. With the editor open, press **F12**,
+> open **Network**, reload, right-click the top request (named like `editor/`) → **Copy** → **Copy as cURL**, then run
+> `Get-Clipboard | npm run furnish:token -- --upload` (macOS: `pbpaste | npm run furnish:token -- --upload`). Without
+> it, art upload fails with a clear message and everything else keeps working.
+
+> Running the DM Whisper gem? It does all of this with its **Connect Roll20** button. Point it and this server at the
+> same data folder; see [`setup-guide.md`](setup-guide.md).
 
 ### Step 8 — Connect Claude to the server
 
@@ -258,8 +244,8 @@ switch_campaign slugOrName="your-campaign-name"
 > put its ID here (the number at the end of `dndbeyond.com/campaigns/987654`); if you don't, `0` is fine.
 
 You only register a campaign once. To run several games, register each and use `switch_campaign` to change which
-one is live. **Remember that the Roll20 token from Step 7 is per-campaign** — switching games means the gem needs
-to reconnect to the new one.
+one is live. **Remember that the Roll20 token from Step 7 is per-campaign** — switching games means repeating Step 7 in the
+new one.
 
 ### Step 10 — Verify it works
 
@@ -330,13 +316,12 @@ you **restarted Claude after** the file was written. This restart-after step is 
 people miss.
 
 **"No usable Roll20 realtime token…"**
-Exactly what it says: the token file from Step 7 is missing, spent (about an hour after it was captured), or belongs to a
-different campaign — the message tells you which. Reconnect Roll20 in the gem (with the gem pointed at *this*
-campaign), then restart the server. If you're not running the gem, redo the manual build in Step 7.
+The token file from Step 7 is missing, was refused, or belongs to a different campaign — the message tells you
+which. Redo Step 7 with *this* campaign open, then restart the server.
 
 **Everything works except uploading map art.**
-That's the second credential — `data/roll20-upload-cache.json`, which expires after 8 hours. Refresh it from the
-gem. Combat is unaffected.
+That's the second credential — `data/roll20-upload-cache.json`, which expires after 8 hours. Redo the upload step
+at the end of Step 7. Combat is unaffected.
 
 **The gem says it connected, but the server still can't find a token.**
 The two are writing to and reading from different folders. See the `ROLL20_DATA_DIR` / `DMW_DATA_DIR` warning in
