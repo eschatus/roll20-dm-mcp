@@ -40,4 +40,19 @@ describe("resolveTokenOrThrow wording (#257)", () => {
     const err = await hurt("Goblin");
     expect(err).toMatch(/Ambiguous target "Goblin"\. Did you mean: Goblin Archer, Goblin Boss\?/);
   });
+
+  it("batch_exec reports each op with the same wording, and still runs the ops that resolved", async () => {
+    const { text } = await h.callTool("batch_exec", {
+      ops: ["Beholder", "Goblin Captain", "Goblin", "Ogre"].map((characterName) => ({
+        id: characterName, action: "toggleCondition", args: { characterName, condition: "prone", active: true },
+      })),
+    });
+    const results = JSON.parse(text.slice(text.lastIndexOf("\n\n"))) as { id: string; error?: string }[];
+    const errors = Object.fromEntries(results.map((r) => [r.id, r.error]));
+    expect(errors.Beholder).toMatch(/^No token named "Beholder" on this page\. Ask/);
+    expect(errors["Goblin Captain"]).toMatch(/^No token named "Goblin Captain" on this page\. Closest: /);
+    expect(errors["Goblin Captain"]).not.toMatch(/Did you mean/i);
+    expect(errors.Goblin).toMatch(/^Ambiguous target "Goblin"\. Did you mean:/);
+    expect(errors.Ogre).toBeUndefined();
+  });
 });

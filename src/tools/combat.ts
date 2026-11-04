@@ -14,7 +14,7 @@ import { KEEP_TURN_MIN_RELAY_VERSION, relayVersionAtLeast } from "../bridge/rela
 import {
   type TurnEntry, type BatchResult,
   text, fail, json, num, indexBatchResults, coerceStringArray, coerceBoolean, coerceObjectArray,
-  tokenIdExists, resolveToken, resolveTokenOrThrow, resolveCharSheetId, renderRollCard,
+  tokenIdExists, resolveToken, resolveTokenOrThrow, describeUnresolved, resolveCharSheetId, renderRollCard,
   renderMobPlanCard, NUM_PERMISSION,
 } from "./combatHelpers.js";
 import { normalizeNameForMatch, isPunctuationOnlyInput } from "./nameMatch.js";
@@ -531,7 +531,7 @@ export function registerCombatTools(server: McpServer): void {
             if (r.id) {
               args.tokenId = r.id;
             } else {
-              resolveErrors.set(i, { id: label, error: `Could not resolve "${sel}"${r.candidates?.length ? ` — did you mean: ${r.candidates.join(", ")}?` : " (no matching token)"}` });
+              resolveErrors.set(i, { id: label, error: describeUnresolved(sel, r) });
               continue; // don't relay an op we couldn't target
             }
           }
