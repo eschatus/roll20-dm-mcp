@@ -213,6 +213,10 @@ moved to beyond-mcp with the code.)
   arm is POSITIVE — `setAttrs` made the sheet generate `rollbase` and the companions itself; the
   `_mod` arm is INCONCLUSIVE on a Beacon sheet and needs a non-Beacon re-run. Nothing calls it yet
   and both workarounds stay until a follow-up reroutes the writes.
+- **An empty game has no Mod.** Roll20 parks the sandbox soon after the last player connection
+  leaves, so a relay command lands in `/chat` and is never answered (`RtModSilentError`). Direct RTDB
+  reads and writes still work, so a live connection with a silent Mod usually means nobody is in the
+  game, not a broken relay or token.
 - **When the sandbox dies, read the Mod console callstack FIRST.** Both crash classes above (an
   `undefined`/`NaN` value reaching `t.set()`, and `@{`/`[[` echoed back through chat) presented as
   nothing but a dead sandbox, and cost days each. That is no longer the only symptom available: on
