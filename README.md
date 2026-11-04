@@ -11,10 +11,6 @@ Two servers, one job each:
 - **`roll20-dm-maps`** — map prep, over stdio. Battlemap upload and placement, wall detection,
   dynamic-lighting walls and doors, page creation, token creation.
 
-**Roll20 only, and no browser anywhere.** `playwright` is not a dependency and neither server can
-open one. If a thing genuinely needs a browser, it isn't a tool here. The servers hold no game
-logic beyond what their tools document, and the combat server makes no model calls.
-
 ## How a tool call reaches the table
 
 ```mermaid
@@ -29,13 +25,11 @@ flowchart LR
 The Mod script executes most actions; the realtime database just carries them. Some reads and
 writes go straight to the database without troubling the Mod.
 
-**The realtime database is the only transport.** There is no fallback: if the connection fails, you
-get a loud, actionable error rather than a silent detour.
+If the connection fails, you get an error saying what to do.
 
-## Credentials are furnished, never minted
+## Credentials
 
-These servers **read** their credentials and never harvest them. Harvesting means driving a browser
-against a live Roll20 account, which is a human-attended act.
+The servers read two files from the data dir.
 
 | file (in the data dir) | what it is | lifetime |
 |---|---|---|
@@ -53,7 +47,7 @@ cookies from a copied browser request. Steps are in [docs/setup-guide.md](docs/s
 ## Quick start
 
 ```bash
-npm install          # Node 20+. No browser download.
+npm install          # Node 20+
 npm run serve        # roll20-dm on http://127.0.0.1:39200/mcp (+ /events)
 npm run build        # required for the stdio maps server
 ```
@@ -108,7 +102,7 @@ npm run lint
 ```
 
 The emulator loads `mod-scripts/ai-relay.js` into a Node `vm` with a fake Roll20 API, so relay
-behaviour is testable without a browser or a live game.
+behaviour is testable without a live game.
 
 Start with **[CLAUDE.md](CLAUDE.md)**: it's the orientation doc, and it documents the gotchas that
 have actually bitten this project.
