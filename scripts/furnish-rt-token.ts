@@ -23,6 +23,7 @@
 // Writes <ROLL20_DATA_DIR>/roll20-rt-token.json (default ./data) — the same dir the server you'll
 // start reads. --print instead emits the JSON on stdout for ROLL20_RT_TOKEN, which overrides the
 // file (useful for a stdio maps server or a script with no shared data dir).
+import "dotenv/config"; // First: the data dir must match the one the servers read from .env.
 import { writeFileSync, renameSync, mkdirSync } from "fs";
 import path from "path";
 import { spawnSync } from "child_process";
