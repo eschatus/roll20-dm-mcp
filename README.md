@@ -33,7 +33,7 @@ The servers read two files from the data dir.
 
 | file (in the data dir) | what it is | lifetime |
 |---|---|---|
-| `roll20-rt-token.json` | the realtime credential — **campaign-scoped**, carries that campaign's database shard | until revoked, or ~1 h for a one-shot token |
+| `roll20-rt-token.json` | the realtime credential — **campaign-scoped**, carries that campaign's database shard | a refresh token: unknown, still being measured (no off switch you control); a one-shot token: ~1 h |
 | `roll20-upload-cache.json` | Roll20 session cookies and User-Agent, for art upload | 8 h |
 
 When one is missing, stale, or belongs to a different campaign, you get a typed error
@@ -92,8 +92,9 @@ bar with no game rules attached.
 
 ### The event stream
 
-`GET /events` (bearer auth) is a Server-Sent Events stream: `combat-update`, `chat-message` (every
-live table message and `!`-command, forwarded raw), `mob-plan` (`plan: null` means cleared),
+`GET /events` (bearer auth) is a Server-Sent Events stream: `combat-update`, `chat-message` (table chat and
+`!`-commands, excluding the Mod's own output; HTML and links stripped, inline rolls resolved to totals,
+capped at 240 characters), `mob-plan` (`plan: null` means cleared),
 `inbox-item`, `map-ping`, `sandbox-status`. A client can follow the table with it instead of polling.
 
 ## Development
