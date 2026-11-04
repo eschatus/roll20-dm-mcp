@@ -124,9 +124,13 @@ desynced triple is set**: Roll20 treats them as synced from a linked handout, an
 there is nothing to sync from. When the GM enabled the notes in the pin editor, the client set the
 triple (and dropped `gmNotesVisibleTo`). So `create_map_pin`/`update_map_pin` set the triple by
 default when they write own content with no link and the caller didn't choose (`autoDesynced` in
-the response). Still unverified live: a bare pin (no icon/shape) rendering, delete propagating, and
-a whole-`pins/page` read, which every pageId-less call (`list_map_pins {}`, update/delete without a
-pageId) depends on.
+the response). **Verified live on cos-test, 2026-11-04 (#203):** a bare pin (no icon/shape) renders
+as Roll20's default dot; a text-icon pin (`useTextIcon` + `iconText`) renders on the painted label it
+replaces; delete over RTDB reaches an open GM client without a reload; and the whole-`pins/page` read
+that every pageId-less call depends on returned 1,059 pins across 59 pages. Two behaviours worth
+knowing: **a missing `visibleTo` means hidden** (the GM toolbar's un-hide wrote `visibleTo:"all"`), and
+**double-click opens the linked handout**, so an unlinked pin reports "Handout not found" even when
+desynced — its title and notes show in the hover tooltip instead.
 
 **Read/queryable but still NOT createObj-creatable:** `page`, `campaign`, `player`, `hand`,
 `jukeboxtrack`. `page`'s absence is what justifies `rtCreatePage` (#178) — the RTDB write is the

@@ -324,8 +324,12 @@ vision/wall tooling is maps-only.)
   — Roll20 treats them as synced from a linked handout, and with no link there is nothing to show.
   The pin tools therefore desync by default when they write own content with no `link` (reported as
   `autoDesynced`), and re-sync when an update newly links a handout without own content
-  (`autoResynced`); an explicit `desynced` always wins. Still unverified: a bare pin (no icon/shape)
-  rendering, delete propagating, and a whole-`pins/page` read, which every pageId-less call needs.
+  (`autoResynced`); an explicit `desynced` always wins. **A pin with no `visibleTo` is GM-only** —
+  Roll20 reads a missing value as hidden, and its toolbar's "Hidden" un-hide writes `visibleTo:"all"`
+  (cos-test, 2026-11-04, #203) — so pass `"all"` for a pin players should see now. Double-click opens
+  the linked handout, so an unlinked pin says "Handout not found" whatever its desync state; its
+  title and notes show on hover. Also verified there: a bare pin renders (default dot), delete
+  reaches an open client without a reload, and the whole-`pins/page` read works (1,059 pins, 59 pages).
 
 ## Combat development
 

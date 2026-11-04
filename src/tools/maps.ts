@@ -514,7 +514,7 @@ export function registerMapTools(server: McpServer): void {
     linkType: z.enum(["handout", ""]).optional(),
     subLink: z.string().optional(),
     subLinkType: z.enum(["headerPlayer", "headerGM", ""]).optional(),
-    visibleTo: pinAudience("the pin itself").optional(),
+    visibleTo: PIN_AUDIENCE.describe('Who sees the pin itself: "all" for everyone, "" for the GM only. LEFT UNSET THE PIN IS GM-ONLY: Roll20 treats a missing visibleTo as hidden (verified live, #203), so pass "all" for a pin players should see now; omit it for hidden-until-found and reveal later with update_map_pin.').optional(),
     tooltipVisibleTo: pinAudience("the tooltip").optional(),
     tooltipTitleVisibleTo: pinAudience("the tooltip title").optional(),
     nameplateVisibleTo: pinAudience("the nameplate").optional(),
