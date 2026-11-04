@@ -88,7 +88,8 @@ function describeRelayFailure(action: string, err: Error): { message: string; re
     // the sandbox, where the fix is.
     const camp = getActiveCampaign();
     const remedy =
-      `Open ${camp.name} (${camp.roll20CampaignId}) in Roll20 → Settings → API Scripts, check the ` +
+      `Someone must be in the game: Roll20 parks the Mod sandbox soon after the last player leaves. ` +
+      `If someone is, open ${camp.name} (${camp.roll20CampaignId}) in Roll20 → Settings → API Scripts, check the ` +
       `sandbox is running (restart it, or re-paste the relay), and look for the ` +
       `"[GM_AI_Bridge] Relay script loaded" line in its console.`;
     return {

@@ -263,6 +263,6 @@ With the server running and Claude Code (or the Gem) connected:
 If `list_tokens` fails, work down this list:
 
 - **"No usable Roll20 realtime token…"** — the credential from step 5 is missing, refused by Firebase, or belongs to another campaign; the message says which. Run `npm run furnish:token` with *this* campaign open (Gem users: reconnect Roll20 in the Gem). Check `transport_status.rtToken` first; `campaignMismatch: true` means the stored token is for a different game.
-- **Timeout / "sandbox unreachable"** — the Mod script isn't running. Check the campaign's API Output Console for the load banner (step 3) and re-paste if it's absent or the version is stale.
+- **Timeout / "sandbox unreachable"** — the Mod script isn't running. **Someone must be in the game:** Roll20 parks the sandbox soon after the last player leaves. If someone is, check the campaign's API Output Console for the load banner (step 3) and re-paste if it's absent or the version is stale.
 - **Relay version mismatch in `transport_status`** — re-paste `mod-scripts/ai-relay.js` into that campaign.
 - **Map tools missing or failing to load** — run `npm run build`; `roll20-dm-maps` runs the compiled `dist/`.

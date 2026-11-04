@@ -341,7 +341,8 @@ The project is in a synced or protected folder. **macOS:** move it out of Docume
 `C:\Users\you\roll20-dm-mcp`. Re-clone there if it's easier than moving.
 
 **A Roll20 command timed out / "sandbox unreachable."**
-The helper script in Roll20 may have stopped. Open your campaign's **Settings → API Scripts**, check the output
+**Someone has to be in the game.** Roll20 parks the helper script soon after the last player leaves, so open your
+game first. If you're already in it, the helper script may have stopped. Open your campaign's **Settings → API Scripts**, check the output
 console for errors, and re-paste `mod-scripts/ai-relay.js` if the load banner isn't there (Step 4). `transport_status`
 will also tell you if the deployed version is older than the one this server expects.
 
