@@ -73,7 +73,9 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` â†
   `package.json`. If a thing needs a browser, it is not an MCP tool here â€” that rule is why page
   creation was rebuilt over RTDB (#178) and why `screenshot_roll20` left. The browser recon
   instruments live in the sibling `roll20-recon` repo; the wall-dataset harvesters live in
-  `wall-seg`. Credentials are FURNISHED, never minted: the RT token is read from
+  `wall-seg`. Credentials are FURNISHED, never minted: the RT credential holds a one-shot
+  `customToken` or a long-lived `refreshToken` (`src/bridge/rt-refresh-auth.ts`; a Roll20 sign-out
+  does not revoke it, see `docs/security.md`), and is read from
   `ROLL20_RT_TOKEN` or `<data dir>/roll20-rt-token.json` (same object either way, env wins,
   campaign-scoped) and art uploads from `roll20-upload-cache.json`; both throw a typed error
   (`Roll20TokenUnavailableError`, `Roll20UploadCredentialError`) naming what to refresh instead of

@@ -14,6 +14,8 @@
 // harvestedAt is the token's own `iat`, not "now", so transport_status reports a true age. Age is
 // not refused here, mirroring the server (#216): Firebase's answer to the exchange is the verdict.
 //
+//   npm run furnish:token                  the whole job: gives you a Console line for the editor,
+//                                          then waits for what it produces. Stores a refresh token.
 //   Get-Clipboard | npm run furnish:token -- --campaign 22125197 --db roll20-99913
 //   npx tsx scripts/furnish-rt-token.ts --db https://roll20-99913.firebaseio.com   (prompts; active campaign)
 //
@@ -22,10 +24,13 @@
 // file (useful for a stdio maps server or a script with no shared data dir).
 import { writeFileSync, renameSync, mkdirSync } from "fs";
 import path from "path";
+import { spawnSync } from "child_process";
 import { createInterface } from "readline";
+import { Writable } from "stream";
 import { initializeApp, deleteApp } from "firebase/app";
 import { getAuth, signInWithCustomToken } from "firebase/auth";
 import { FIREBASE_CONFIG } from "../src/bridge/roll20-rt.js";
+import { restoreRefreshUser } from "../src/bridge/rt-refresh-auth.js";
 import { getActiveCampaign } from "../src/registry/campaigns.js";
 import { dataPath } from "../src/dataDir.js";
 
@@ -108,9 +113,100 @@ function normalizeDbUrl(v: string): string {
   fail(`--db must be the RTDB namespace (roll20-99913) or https://roll20-NNNNN.firebaseio.com — got "${v}"`);
 }
 
+interface TokenRecord { campaignId: string; customToken?: string; refreshToken?: string; databaseURL: string; harvestedAt: number }
+
+// --print emits the JSON for ROLL20_RT_TOKEN instead of writing the file.
+function emitRecord(record: TokenRecord): void {
+  if (process.argv.includes("--print")) {
+    process.stdout.write(JSON.stringify(record) + "\n");
+    console.error("✓ printed the ROLL20_RT_TOKEN value above.");
+    return;
+  }
+  const file = dataPath("roll20-rt-token.json");
+  mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(record), { encoding: "utf-8", mode: 0o600 });
+  renameSync(tmp, file);
+  console.error(`✓ wrote ${file}`);
+  if (process.env.ROLL20_RT_TOKEN !== undefined) {
+    console.error("  ⚠ ROLL20_RT_TOKEN is set in this shell and OVERRIDES that file — unset it.");
+  }
+}
+
+// The line a DM pastes into the editor's Console. Finds the Firebase login wherever this Roll20
+// build keeps it, and shows it in a prompt(), already selected. Chrome's `copy` helper is gone by
+// the time the async lookups finish, so it can't be used here.
+function consoleSnippet(): string {
+  return `(async()=>{const f=[],R=[];const scan=v=>{try{const o=typeof v==="string"?JSON.parse(v):v;const t=o&&o.stsTokenManager&&o.stsTokenManager.refreshToken;if(t)f.push(t)}catch{}};`
+    + `for(const n of["localStorage","sessionStorage"])Object.keys(window[n]).filter(x=>/firebase/i.test(x)).forEach(x=>scan(window[n][x]));`
+    + `for(const d of await indexedDB.databases()){if(!/firebase/i.test(d.name))continue;const db=await new Promise(r=>{const o=indexedDB.open(d.name);o.onsuccess=()=>r(o.result)});`
+    + `for(const n of db.objectStoreNames){const a=await new Promise(r=>{const g=db.transaction(n).objectStore(n).getAll();g.onsuccess=()=>r(g.result)});R.push(d.name+"/"+n+": "+a.length);a.forEach(x=>scan(x&&x.value))}db.close()}`
+    + `try{const u=window.firebase&&firebase.auth&&firebase.auth().currentUser;if(u&&u.refreshToken)f.push(u.refreshToken)}catch{}`
+    + `if(!f.length){console.log("NOT FOUND | "+location.href.split("?")[0]+" | "+R.join(" | "));return}`
+    + `prompt("Ctrl+C, then paste into the waiting terminal. Keep this out of chats: it is a login.",JSON.stringify({refreshToken:f[0],db:window.FIREBASE_ROOT}))})()`;
+}
+
+// A convenience: the snippet is printed either way, so a machine with no clipboard tool loses nothing.
+function copyToClipboard(text: string): boolean {
+  const [cmd, ...args] = process.platform === "win32" ? ["clip"]
+    : process.platform === "darwin" ? ["pbcopy"]
+    : ["xclip", "-selection", "clipboard"];
+  return spawnSync(cmd, args, { input: text }).status === 0;
+}
+
+// Read by this process, not the shell, so the token reaches neither shell history nor the process
+// list, and the muted output keeps it out of terminal scrollback.
+async function readHiddenLine(): Promise<string> {
+  const muted = new Writable({ write: (_chunk, _enc, done) => done() });
+  const rl = createInterface({ input: process.stdin, output: muted, terminal: Boolean(process.stdin.isTTY) });
+  const line = await new Promise<string>((resolve) => {
+    rl.once("line", resolve);
+    rl.once("close", () => resolve(""));
+  });
+  rl.close();
+  return line;
+}
+
+async function readLogin(): Promise<{ refreshToken: string; databaseURL: string }> {
+  if (process.stdin.isTTY) {
+    const snippet = consoleSnippet();
+    console.error(`\nPaste this into the Console (F12) of the campaign's editor:\n\n${snippet}\n`);
+    if (copyToClipboard(snippet)) console.error("It's already on your clipboard.");
+    console.error("Then paste what it gives you here and press Enter (nothing will show):");
+  }
+  let login: { refreshToken?: unknown; db?: unknown };
+  try { login = JSON.parse((await readHiddenLine()).trim().replace(/^\uFEFF/, "")); }
+  catch { fail("that isn't what the Console line gives you. Copy the popup's whole text."); }
+  if (typeof login.refreshToken !== "string" || typeof login.db !== "string") {
+    fail("the paste has no refreshToken or db. Copy the popup's whole text.");
+  }
+  return { refreshToken: login.refreshToken, databaseURL: normalizeDbUrl(login.db) };
+}
+
+// Exchanges exactly as the server will. The campaign comes from the token's own claim, because the
+// browser shares one login across campaigns: --campaign is a check here, not an input.
+async function furnishRefreshToken(): Promise<void> {
+  const { refreshToken, databaseURL } = await readLogin();
+  const app = initializeApp(FIREBASE_CONFIG, `furnish-${Date.now()}`);
+  try {
+    const user = await restoreRefreshUser(app, refreshToken).catch((e: Error) => fail(`${e.message} Copy a fresh one from the editor.`));
+    const { claims, token: idToken } = await user.getIdTokenResult();
+    const campaignId = arg("campaign") ?? String(claims.currentcampaign ?? "").match(/^campaign-(\d+)-/)?.[1] ?? "";
+    const storagePath = checkClaims(claims, campaignId, "this login");
+    const res = await fetch(`${databaseURL}/${storagePath}/campaign.json?shallow=true&auth=${encodeURIComponent(idToken)}`);
+    if (!res.ok) fail(`RTDB shard check failed (${res.status}) at ${databaseURL}: ${await res.text().catch(() => "")}`);
+    if ((await res.json()) == null) fail(`${databaseURL} has no data for campaign ${campaignId} — wrong shard.`);
+    console.error(`✓ campaign ${campaignId} (GM), shard ${databaseURL}`);
+    emitRecord({ campaignId, refreshToken, databaseURL, harvestedAt: Date.now() });
+    console.error("  Restarts no longer need a new token, until Firebase or Roll20 revokes this one.");
+  } finally {
+    await deleteApp(app).catch(() => {});
+  }
+}
+
 async function main() {
   const dbArg = arg("db");
-  if (!dbArg) fail("--db is required: the editor's window.FIREBASE_ROOT, or the ns= on its firebaseio.com websocket");
+  if (!dbArg) return furnishRefreshToken();
   const databaseURL = normalizeDbUrl(dbArg);
   const campaignId = arg("campaign") ?? getActiveCampaign().roll20CampaignId;
   if (!/^\d+$/.test(campaignId)) fail(`--campaign must be the numeric Roll20 campaign id — got "${campaignId}"`);
@@ -144,21 +240,8 @@ async function main() {
     const leftMin = exp !== null ? Math.round((exp * 1000 - Date.now()) / 60_000) : null;
     const within = leftMin !== null ? `within ${leftMin} min (the token's own expiry)` : "soon (the token carries no exp)";
     console.error(`✓ campaign ${campaignId} (GM), shard ${databaseURL}`);
-    if (process.argv.includes("--print")) {
-      process.stdout.write(JSON.stringify(record) + "\n");
-      console.error(`✓ printed the ROLL20_RT_TOKEN value above. Start the server with it set ${within}.`);
-    } else {
-      const file = dataPath("roll20-rt-token.json");
-      mkdirSync(path.dirname(file), { recursive: true });
-      const tmp = `${file}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify(record), "utf-8");
-      renameSync(tmp, file);
-      console.error(`✓ wrote ${file}`);
-      if (process.env.ROLL20_RT_TOKEN !== undefined) {
-        console.error("  ⚠ ROLL20_RT_TOKEN is set in this shell and OVERRIDES that file — unset it.");
-      }
-      console.error(`  Start (or reconnect) the server ${within}; once connected it stays up for the session.`);
-    }
+    emitRecord(record);
+    console.error(`  Start (or reconnect) the server ${within}; once connected it stays up for the session.`);
   } finally {
     await deleteApp(app).catch(() => {});
   }

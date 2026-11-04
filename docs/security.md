@@ -31,7 +31,7 @@ MCP server that a model can call on its own initiative.
 
 ## 1. The furnished Roll20 realtime credential (`roll20-rt-token.json`)
 
-**What it is:** `<data dir>/roll20-rt-token.json` — `{ campaignId, customToken, databaseURL, harvestedAt }`,
+**What it is:** `<data dir>/roll20-rt-token.json` — `{ campaignId, customToken or refreshToken, databaseURL, harvestedAt }`,
 or the same object inline in **`ROLL20_RT_TOKEN`** (which takes precedence; see below).
 The Firebase custom token for **one specific campaign**, plus that campaign's RTDB shard URL (Roll20
 shards campaigns across `roll20-99910`, `roll20-99922`, …). It is the credential every relay command
@@ -55,6 +55,11 @@ exchangeable.
   enforces that — Firebase's rejection, not a local clock check. (The clock check used to be the
   gate; it refused tokens without ever asking Firebase, locking out every other reader of the data
   dir on a credential that was possibly still exchangeable, so it is now advisory only and surfaces via `transport_status.rtToken` — #216.)
+- **A refresh token gives up "short-lived".** `refreshToken` in the same object works after a
+  restart with no new harvest, and for an unknown time: it lasts until Firebase or Roll20 revokes
+  it. A stolen file then means GM access to that campaign for that long, not ~1 h. `furnish:token`
+  writes the file owner-only. Verified on 2026-11-03: neither a Roll20 sign-out nor closing the
+  browser revokes it, so a DM has no known off switch. Its full lifespan is unverified.
 - **Env precedence is loud, not silent.** When `ROLL20_RT_TOKEN` is set it is the ONLY source read —
   the file is not consulted, even if the variable's token is stale or for another campaign. Export it
   in the shell for one short-lived process; don't put a live token in `.env`: the server loads `.env`

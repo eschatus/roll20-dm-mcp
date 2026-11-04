@@ -60,7 +60,7 @@ credential and never mints one:
    capture the custom token. The modular SDK only fires that call on a *fresh* auth, so if the
    editor restored from IndexedDB, `firebaseLocalStorageDb` is deleted and the page reloaded to
    force a fresh sign-in. The harvester writes `<data dir>/roll20-rt-token.json`
-   (`{campaignId, customToken, databaseURL, harvestedAt}`).
+   (`{campaignId, customToken or refreshToken, databaseURL, harvestedAt}`).
 2. **Read (here).** `getCustomToken` in `roll20-rt.ts` reads that file — or the same object inline in
    **`ROLL20_RT_TOKEN`**, which takes precedence and is meant for a caller with no shared writable
    data dir; a set-but-unusable variable throws rather than falling back to the file — and validates
@@ -79,11 +79,10 @@ ID-token claims (read via `getIdTokenResult()`, no manual JWT decode):
 `currentcampaign` = the `<storagePath>`; `playerid`/`userid` populate the chat-write fields.
 
 > Live token VALUES are intentionally NOT recorded here. Treat them as secrets.
-> Longer-lived-credential follow-up (still not done, and now lower value): persist the firebase
-> refresh token and refresh ID tokens via `securetoken.googleapis.com` — but the official Auth SDK
-> has no Node API to ingest a raw refresh/ID token, so that path requires the zero-dep raw-wire
-> client instead of the SDK. It would extend how long a furnished credential stays usable; it would
-> not change *who* mints it, which is the point of #177.
+> Longer-lived credential: `refreshToken` in the same file replaces `customToken`. The Auth SDK
+> has no public call for a raw refresh token, so `src/bridge/rt-refresh-auth.ts` seeds its
+> persistence layer instead. It extends how long a furnished credential stays usable; it does not
+> change *who* mints it, which is the point of #177.
 
 ## Firebase RTDB wire protocol (as observed)
 

@@ -21,6 +21,7 @@ import path from "path";
 import { dataPath } from "../dataDir.js";
 import { initializeApp, deleteApp, type FirebaseApp } from "firebase/app";
 import { getAuth, signInWithCustomToken, type User } from "firebase/auth";
+import { restoreRefreshUser } from "./rt-refresh-auth.js";
 import {
   getDatabase, ref, get, push, set, update, remove, runTransaction, serverTimestamp, query, limitToLast, onChildAdded, onValue,
   type Database, type DatabaseReference,
@@ -109,8 +110,11 @@ const TOKEN_STALE_MS = 50 * 60_000;
 // the remedy differs: a bad file is fixed by reconnecting in the gem (which rewrites it), but a bad
 // ROLL20_RT_TOKEN is not — the gem's re-harvest rewrites the very file the variable overrides.
 type TokenSource = "env" | "file";
-interface TokenCache { campaignId: string; customToken: string; databaseURL: string; harvestedAt: number; source: TokenSource }
-interface RtCredential { customToken: string; databaseURL: string; harvestedAt: number; source: TokenSource }
+//
+// A credential carries a one-shot customToken, a long-lived refreshToken, or both; refreshToken
+// wins, since it is the one that still works after a restart.
+type TokenCache = { campaignId: string; customToken?: string; refreshToken?: string; databaseURL: string; harvestedAt: number; source: TokenSource };
+type RtCredential = Omit<TokenCache, "campaignId">;
 
 // ROLL20_RT_TOKEN carries the SAME JSON object as roll20-rt-token.json — one documented shape,
 // not a second schema — for a caller that has the credential but no shared writable data dir
@@ -122,7 +126,7 @@ interface RtCredential { customToken: string; databaseURL: string; harvestedAt: 
 // is precisely the kind of quiet divergence #177 was filed about.
 const TOKEN_ENV = "ROLL20_RT_TOKEN";
 const TOKEN_ENV_SHAPE =
-  `it takes the same {campaignId, customToken, databaseURL, harvestedAt} object as ` +
+  `it takes the same {campaignId, customToken or refreshToken, databaseURL, harvestedAt} object as ` +
   `roll20-rt-token.json; unset it to fall back to that file`;
 
 function readEnvToken(): TokenCache | null {
@@ -141,7 +145,8 @@ function readEnvToken(): TokenCache | null {
   if (!t || typeof t !== "object" || Array.isArray(t)) {
     throw new Roll20TokenUnavailableError("(unknown)", `${TOKEN_ENV} is set but is not a JSON object — ${TOKEN_ENV_SHAPE}`, "env");
   }
-  const missing = (["campaignId", "customToken", "databaseURL"] as const).filter((k) => !t[k]);
+  const missing = (["campaignId", "customToken", "databaseURL"] as const)
+    .filter((k) => !t[k] && !(k === "customToken" && t.refreshToken));
   if (missing.length) {
     throw new Roll20TokenUnavailableError(
       String(t.campaignId ?? "(unknown)"),
@@ -167,7 +172,8 @@ function readEnvToken(): TokenCache | null {
   }
   return {
     campaignId: String(t.campaignId),
-    customToken: String(t.customToken),
+    ...(t.customToken ? { customToken: String(t.customToken) } : {}),
+    ...(t.refreshToken ? { refreshToken: String(t.refreshToken) } : {}),
     databaseURL: String(t.databaseURL),
     harvestedAt,
     source: "env",
@@ -255,8 +261,8 @@ function getCustomToken(campaignId: string): RtCredential {
     );
   }
   if (!c.databaseURL) throw new Roll20TokenUnavailableError(campaignId, "the token predates shard capture and has no databaseURL", c.source);
-  if (!c.customToken) throw new Roll20TokenUnavailableError(campaignId, "the token carries no customToken", c.source);
-  return { customToken: c.customToken, databaseURL: c.databaseURL, harvestedAt: Number(c.harvestedAt) || 0, source: c.source };
+  if (!c.customToken && !c.refreshToken) throw new Roll20TokenUnavailableError(campaignId, "the token carries no customToken or refreshToken", c.source);
+  return { customToken: c.customToken, refreshToken: c.refreshToken, databaseURL: c.databaseURL, harvestedAt: Number(c.harvestedAt) || 0, source: c.source };
 }
 
 // Test seam: the pre-flight credential read on its own, without the Firebase exchange that
@@ -315,11 +321,13 @@ export function getRtTokenStatus(activeCampaignId: string | null): {
   const campaignMismatch = activeCampaignId !== null && campaignId !== activeCampaignId;
   const harvestedAt = Number(c.harvestedAt) || 0;
   const ageMinutes = tokenAgeMinutes(harvestedAt);
-  const stale = harvestedAt <= 0 || Date.now() - harvestedAt >= TOKEN_STALE_MS;
+  // A refresh token has no local expiry to compare with; Firebase's answer at connect is the verdict.
+  const stale = !c.refreshToken && (harvestedAt <= 0 || Date.now() - harvestedAt >= TOKEN_STALE_MS);
   const notes: string[] = [];
   // The same structural checks getCustomToken refuses on. A fresh-but-malformed credential must
   // not read as healthy here while every connect fails on it (Devin, #233).
-  const missingFields = (["databaseURL", "customToken"] as const).filter((k) => !c![k]);
+  const missingFields = (["databaseURL", "customToken"] as const)
+    .filter((k) => !c![k] && !(k === "customToken" && c!.refreshToken));
   if (missingFields.length) {
     notes.push(
       `The Roll20 token (${describeSource(c.source)}) is missing ${missingFields.join(" and ")}, so every ` +
@@ -570,13 +578,15 @@ async function connect(): Promise<RtConn> {
   const harvested = getCustomToken(roll20CampaignId);
   const databaseURL = harvested.databaseURL;
   const app = initializeApp(FIREBASE_CONFIG, `roll20-rt-${roll20CampaignId}-${Date.now()}`);
-  let cred: Awaited<ReturnType<typeof signInWithCustomToken>>;
+  let user: User;
   try {
-    cred = await signInWithCustomToken(getAuth(app), harvested.customToken);
+    user = harvested.refreshToken
+      ? await restoreRefreshUser(app, harvested.refreshToken)
+      : (await signInWithCustomToken(getAuth(app), harvested.customToken!)).user;
   } catch (err) {
     await deleteApp(app).catch(() => {});
     const code = (err as { code?: string })?.code || "";
-    if (/custom-token|invalid-credential|token-expired/.test(code)) {
+    if (/custom-token|refresh-token|invalid-credential|token-expired/.test(code)) {
       const age = tokenAgeMinutes(harvested.harvestedAt);
       throw new Roll20TokenUnavailableError(
         roll20CampaignId,
@@ -588,12 +598,22 @@ async function connect(): Promise<RtConn> {
     throw err;
   }
 
-  const tokenResult = await cred.user.getIdTokenResult();
+  const tokenResult = await user.getIdTokenResult();
   const claims = tokenResult.claims as Record<string, unknown>;
   const storagePath = String(claims.currentcampaign || "");
   const playerid = String(claims.playerid || "");
   const userid = String(claims.userid || "");
   if (!storagePath || !playerid) throw new Error("roll20-rt: auth token missing currentcampaign/playerid claims");
+  // The token's own claim decides where every read and write lands, so the credential's campaignId
+  // field is not enough: one browser login is shared across campaigns.
+  if (!storagePath.startsWith(`campaign-${roll20CampaignId}-`)) {
+    await deleteApp(app).catch(() => {});
+    throw new Roll20TokenUnavailableError(
+      roll20CampaignId,
+      `the login is for ${storagePath.match(/^campaign-\d+/)?.[0] ?? "another campaign"}; tokens are campaign-scoped`,
+      harvested.source,
+    );
+  }
 
   // Connect to the campaign's actual RTDB shard (recorded with the token), not the config default.
   const db = getDatabase(app, databaseURL);
@@ -610,7 +630,7 @@ async function connect(): Promise<RtConn> {
     handleChatChild(snap.key, snap.val(), live);
   });
 
-  return { campaignId: roll20CampaignId, app, db, databaseURL, user: cred.user, chatRef, storagePath, playerid, avatar: `/users/avatar/${userid}/30` };
+  return { campaignId: roll20CampaignId, app, db, databaseURL, user, chatRef, storagePath, playerid, avatar: `/users/avatar/${userid}/30` };
 }
 
 async function getConn(): Promise<RtConn> {
