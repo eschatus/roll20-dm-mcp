@@ -67,9 +67,9 @@ exchangeable.
   on every start, so a line there silently beats every fresh token the gem harvests into the file.
 - **Fails loudly and actionably, naming the source.** Absent, Firebase-rejected, wrong-campaign, or
   shard-less → a typed `Roll20TokenUnavailableError` (`.source` = `"env"` | `"file"` | `null`) whose
-  message says which source it read and what to refresh: for the file, "reconnect Roll20 in the gem";
-  for the env var, update or unset `ROLL20_RT_TOKEN` — reconnecting in the gem would only rewrite the
-  file the variable overrides. With neither present it says both were checked. `transport_status.rtToken`
+  message says which source it read and what to refresh: for the file, run `npm run furnish:token`
+  (or reconnect Roll20 in the gem, if you use it); for the env var, update or unset `ROLL20_RT_TOKEN` —
+  refreshing the file would not change what the server reads, because the variable overrides it. With neither present it says both were checked. `transport_status.rtToken`
   carries the same `source`, and reports a malformed `ROLL20_RT_TOKEN` rather than failing. A
   silent fallback is precisely the failure mode #83 closed on the relay path; the same reasoning
   applies to the credential the relay runs on.
