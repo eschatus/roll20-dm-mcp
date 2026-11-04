@@ -154,7 +154,7 @@ walls usually mean the source-image dims weren't passed to 2.5/2.6.
 
 | # | Action | Expected | ✓ |
 |---|---|---|---|
-| 3.1 | **PC:** `create_pc_token { name: "Thorne", hp: 30, controlledBy: "<a Roll20 player id>", pageId, gridX: 5, gridY: 5 }` ⚠ | token created and registered; `controlledby` set via the follow-up `setTokenProps`, which is what makes `isPcToken` true and PC HP/death routing apply. **Without `controlledBy` it routes as an NPC** — the tool says so in its result. `ddbCharId` is optional and recorded for linkage only, never fetched. | [ ] |
+| 3.1 | **PC:** `create_pc_token { name: "Thorne", hp: 30, controlledBy: "<a Roll20 player id>", pageId, gridX: 5, gridY: 5 }` ⚠ | token created and registered; `controlledby` set via the follow-up `setTokenProps`, which is what makes `isPcToken` true and PC HP/death routing apply. **Without `controlledBy` it routes as an NPC** — the tool says so in its result. | [ ] |
 | 3.2 | **Cluster:** `create_npc_token { name: "Goblin A", hp: 7, ac: 15, pageId, gridX, gridY }` ×4 (A–D), placed adjacent | 4 goblins, bar1 = 7/7. `ac` comes back in the text as "not stored — no sheet on a bare token" | [ ] |
 | 3.3 | **Bruiser:** `create_npc_token { name: "Ogre", hp: 59, ac: 11, pageId }` ⚠ | bar1 = 59/59 | [ ] |
 | 3.4 | **Monster variant:** `create_monster_token { monsterName: "Goblin", hp: 7, ac: 15, cr: "1/4" }` ⚠ | creates from the stats YOU passed. Same bare token as 3.2 — the difference is only the wording of the result; `ac`/`cr` are reported, not stored | [ ] |

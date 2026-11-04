@@ -108,7 +108,7 @@ describe("revive_token — the four effects of an undone kill, in one call", () 
 
   it("resolves the target by name, like kill_token", async () => {
     const id = newToken("Bugbear the Heavy-Handed", 27);
-    characters.register("Bugbear the Heavy-Handed", id, 0);
+    characters.register("Bugbear the Heavy-Handed", id);
     await h.callTool("kill_token", { characterName: "Bugbear the Heavy-Handed" });
 
     const { json } = await h.callTool("revive_token", { characterName: "Bugbear the Heavy-Handed", hp: 12 });

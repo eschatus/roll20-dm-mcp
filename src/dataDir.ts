@@ -2,7 +2,7 @@ import * as path from "path";
 
 // Single source of truth for the directory holding live server state + credentials:
 // the campaign registry, RT/DDB tokens, relay state, upload/monster caches, the
-// browser session, campaign-context, etc.
+// browser session, etc.
 //
 // Override with ROLL20_DATA_DIR — the installer / supervising gem points this at a
 // per-user dir (e.g. %APPDATA%/dm-whisper) so a packaged install never writes inside

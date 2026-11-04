@@ -97,10 +97,10 @@ describe("create_pc_token — caller-supplied stats", () => {
     expect(Number(props(id).bar1_max)).toBe(27);
   });
 
-  it("records ddbCharId for linkage without looking anything up", async () => {
-    const { text } = await callTool("create_pc_token", { name: "Linked", hp: 15, pageId, ddbCharId: 130003005 });
-    expect(text).toContain("ddbCharId: 130003005");
-    expect(registry.lookup("Linked")?.ddbCharId).toBe(130003005);
+  it("registers the PC with no D&D Beyond linkage", async () => {
+    const { text } = await callTool("create_pc_token", { name: "Linked", hp: 15, pageId });
+    expect(text).not.toContain("ddb");
+    expect(registry.lookup("Linked")).toEqual({ roll20TokenId: expect.any(String) });
   });
 });
 

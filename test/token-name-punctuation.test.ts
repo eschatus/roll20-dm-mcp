@@ -381,8 +381,8 @@ describe("resolveToken — the registry short-circuit does not bypass the ambigu
     // the fold-collision path inside resolveCharacterKey specifically, not
     // the raw-exact-match fast path. Fake token ids: nothing here should
     // ever reach a relay write.
-    characters.register("Rook, The Bound", "-fake-tok-registry-collision-a", 0);
-    characters.register("Rook The Bound.", "-fake-tok-registry-collision-b", 0);
+    characters.register("Rook, The Bound", "-fake-tok-registry-collision-a");
+    characters.register("Rook The Bound.", "-fake-tok-registry-collision-b");
 
     // Neither registry entry AND no matching board token exist for this
     // exact phrase, so this refuses end to end — the point is that it does

@@ -26,7 +26,7 @@ beforeAll(() => {
   oldId = h.emu.createToken({ pageid: oldPage, name: "Heinz Craft", controlledby: "", bar1_value: 30, bar1_max: 30 }).id;
   newId = h.emu.createToken({ pageid: newPage, name: "Heinz Craft", controlledby: "", bar1_value: 30, bar1_max: 30 }).id;
   // Registered while the party was on the treasury map.
-  characters.register("Heinz Craft", oldId, 1);
+  characters.register("Heinz Craft", oldId);
   h.emu.setPlayerPage(newPage);
 });
 
@@ -60,7 +60,7 @@ describe("stale registry roll20TokenId after a page change (issue #240)", () => 
   });
 
   it("fails loudly naming the stale id when the page has no matching token", async () => {
-    characters.register("Ghost PC", "-Ghost000000000000000", 2);
+    characters.register("Ghost PC", "-Ghost000000000000000");
     const err = await h.callTool("update_token_hp", { characterName: "Ghost PC", damage: 1 }).then(
       () => new Error("expected rejection"),
       (e: Error) => e,

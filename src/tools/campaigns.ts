@@ -6,15 +6,14 @@ import { resetRelayProbeForCampaignSwitch } from "../bridge/relay-version-check.
 export function registerCampaignTools(server: McpServer): void {
   server.tool(
     "register_campaign",
-    "Register a campaign by name with its Roll20 id. ddbCampaignId is a linkage id passed through to a D&D Beyond lookup server (beyond-mcp) — nothing here reads D&D Beyond; pass \"0\" if unused.",
+    "Register a campaign by name with its Roll20 id.",
     {
       name: z.string().describe("Human-readable campaign name, e.g. 'Curse of Strahd'"),
       roll20CampaignId: z.string().describe("Roll20 campaign ID from the URL: app.roll20.net/campaigns/details/XXXXXX"),
-      ddbCampaignId: z.string().describe("D&D Beyond campaign ID from the URL: dndbeyond.com/campaigns/XXXXXX"),
       notes: z.string().optional().describe("Optional notes about this campaign"),
     },
-    async ({ name, roll20CampaignId, ddbCampaignId, notes }) => {
-      const slug = campaigns.registerCampaign(name, roll20CampaignId, ddbCampaignId, notes);
+    async ({ name, roll20CampaignId, notes }) => {
+      const slug = campaigns.registerCampaign(name, roll20CampaignId, notes);
       return {
         content: [
           {
@@ -47,7 +46,6 @@ export function registerCampaignTools(server: McpServer): void {
                 name: c.name,
                 active: c.active,
                 roll20CampaignId: c.roll20CampaignId,
-                ddbCampaignId: c.ddbCampaignId,
                 ...(c.notes ? { notes: c.notes } : {}),
               })),
               null,
@@ -61,7 +59,7 @@ export function registerCampaignTools(server: McpServer): void {
 
   server.tool(
     "switch_campaign",
-    "Switch the active campaign — all subsequent tool calls will use this campaign's Roll20 and DDB IDs",
+    "Switch the active campaign — all subsequent tool calls will use this campaign's Roll20 id",
     {
       slugOrName: z.string().describe("Campaign slug (e.g. 'curse-of-strahd') or partial name match"),
     },
@@ -75,7 +73,7 @@ export function registerCampaignTools(server: McpServer): void {
         content: [
           {
             type: "text",
-            text: `Active campaign set to "${entry.name}" (Roll20: ${entry.roll20CampaignId}, DDB: ${entry.ddbCampaignId})`,
+            text: `Active campaign set to "${entry.name}" (Roll20: ${entry.roll20CampaignId})`,
           },
         ],
       };
@@ -97,7 +95,6 @@ export function registerCampaignTools(server: McpServer): void {
                 slug: entry.slug,
                 name: entry.name,
                 roll20CampaignId: entry.roll20CampaignId,
-                ddbCampaignId: entry.ddbCampaignId,
               }),
             },
           ],

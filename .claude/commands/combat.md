@@ -16,8 +16,7 @@ This file covers only the combat-start choreography.
 2. **Check the battlefield** — `get_current_page` then `list_tokens`. Report: page name,
    NPC tokens (names + HP if set), PC tokens.
 3. **Build the roster** — from `list_tokens`: a token's `controlledby` names the player who owns
-   it and `represents` links it to a character sheet. Add `get_campaign_context` for the
-   campaign's spoken-alias nicknames ("Z" → "Zeno"). Keep this roster for the session — it
+   it and `represents` links it to a character sheet. Keep this roster for the session — it
    resolves DM references like "Ryan's character takes 12." (There is no
    `ddb_list_campaign_characters` here; if a DDB lookup server is connected, roster detail comes
    from there and you pass it in.)

@@ -57,7 +57,7 @@ This file records every non-obvious architectural choice made in this project. E
 
 ## 4. Character registry as a local JSON file
 
-**Choice:** `data/characters.json` — a flat JSON map from character name to `{ roll20TokenId, ddbCharId }` — rather than a database (SQLite, etc.).
+**Choice:** `data/characters.json` — a flat JSON map from character name to `{ roll20TokenId, ddbCharId }` — rather than a database (SQLite, etc.). (`ddbCharId` was removed in the next release: the server no longer stores client data, see #171.)
 
 **Why:** Single-machine tool. The DM runs this locally. There are ~5 PCs per campaign. A JSON file is readable, diffable, and requires zero setup. A database would add complexity with no benefit at this scale.
 
@@ -128,7 +128,7 @@ This file records every non-obvious architectural choice made in this project. E
 > switching to a campaign whose token was never harvested fails loudly with
 > `Roll20TokenUnavailableError` rather than navigating anywhere.
 
-**Choice:** Store all campaigns in `data/campaigns.json` (a named slug → `{ roll20CampaignId, ddbCampaignId }` map). The active campaign is persisted to `data/active-campaign.json` by `setActiveCampaign` and restored on startup by `restoreActiveCampaign` (in `src/registry/campaigns.ts`). The character registry is partitioned by campaign slug.
+**Choice:** Store all campaigns in `data/campaigns.json` (a named slug → `{ roll20CampaignId, ddbCampaignId }` map; `ddbCampaignId` was removed in the next release, since the server no longer stores client data, see #171). The active campaign is persisted to `data/active-campaign.json` by `setActiveCampaign` and restored on startup by `restoreActiveCampaign` (in `src/registry/campaigns.ts`). The character registry is partitioned by campaign slug.
 
 **Why:** The DM runs 13+ campaigns. A single `.env` variable for campaign ID only works for one. Campaigns are long-lived (months/years) so they persist in a file. The active campaign was *originally* in-memory (reset on restart), but that meant a mid-session server restart silently dropped the active campaign and the next tool could touch the wrong one. Persisting it to `active-campaign.json` survives restarts, so the DM does not have to re-`switch_campaign` after every restart.
 

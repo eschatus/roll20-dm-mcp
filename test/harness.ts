@@ -11,7 +11,7 @@
 // this harness drives calls a model. The warband's Int/Wis spread is kept because the
 // turn/HP/marker tests read it as ordinary token data.
 //
-// Isolation: ROLL20_DATA_DIR + ROLL20_CAMPAIGN_ID/DDB_CAMPAIGN_ID are set by
+// Isolation: ROLL20_DATA_DIR + ROLL20_CAMPAIGN_ID are set by
 // vitest.config so the character/campaign registries use a throwaway temp dir and
 // never touch the real ./data files.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -187,7 +187,7 @@ export function seedWarband(emu: Roll20Emulator): Warband {
       pageid: pageId, name, represents: charId, controlledby: playerId,
       bar1_value: hp, bar1_max: hp, left: x * CELL, top: y * CELL,
     });
-    characters.register(name, tok.id, 0);
+    characters.register(name, tok.id);
     return { name, id: tok.id, charId };
   };
 
@@ -198,7 +198,7 @@ export function seedWarband(emu: Roll20Emulator): Warband {
       bar1_value: hp, bar1_max: hp, left: x * CELL, top: y * CELL,
       gmnotes: tacdata(int, wis, abilities),
     });
-    characters.register(name, tok.id, 0);
+    characters.register(name, tok.id);
     return { name, id: tok.id, charId };
   };
 

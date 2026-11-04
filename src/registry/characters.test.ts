@@ -5,7 +5,7 @@ import {
 } from "./characters.js";
 
 function entry(): CharacterEntry {
-  return { roll20TokenId: "tok", ddbCharId: 1 };
+  return { roll20TokenId: "tok" };
 }
 
 describe("resolveCharacterKey", () => {
@@ -116,15 +116,14 @@ describe("sidekick registry round-trip (issue #132)", () => {
 
   it("register() preserves a prior sidekick flag instead of wiping it", () => {
     setSidekick("Salros Eventide", true);
-    register("Salros Eventide", "-tok123", 4242);
+    register("Salros Eventide", "-tok123");
     const entry = lookup("Salros Eventide") as CharacterEntry;
     expect(entry.sidekick).toBe(true);
     expect(entry.roll20TokenId).toBe("-tok123");
-    expect(entry.ddbCharId).toBe(4242);
   });
 
   it("register() does not mark a normal PC as a sidekick", () => {
-    register("Glint Klinkinski Golden Pair", "-tokPc", 1000);
+    register("Glint Klinkinski Golden Pair", "-tokPc");
     expect(isSidekick("Glint Klinkinski Golden Pair")).toBe(false);
     expect(listSidekickNames().has("glint klinkinski golden pair")).toBe(false);
   });
