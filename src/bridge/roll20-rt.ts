@@ -604,6 +604,16 @@ async function connect(): Promise<RtConn> {
   const playerid = String(claims.playerid || "");
   const userid = String(claims.userid || "");
   if (!storagePath || !playerid) throw new Error("roll20-rt: auth token missing currentcampaign/playerid claims");
+  // The token's own claim decides where every read and write lands, so the credential's campaignId
+  // field is not enough: one browser login is shared across campaigns.
+  if (!storagePath.startsWith(`campaign-${roll20CampaignId}-`)) {
+    await deleteApp(app).catch(() => {});
+    throw new Roll20TokenUnavailableError(
+      roll20CampaignId,
+      `the login is for ${storagePath.match(/^campaign-\d+/)?.[0] ?? "another campaign"}; tokens are campaign-scoped`,
+      harvested.source,
+    );
+  }
 
   // Connect to the campaign's actual RTDB shard (recorded with the token), not the config default.
   const db = getDatabase(app, databaseURL);

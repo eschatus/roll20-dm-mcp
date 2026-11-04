@@ -76,6 +76,14 @@ describe("connecting", () => {
     expect(signInWithCustomToken).not.toHaveBeenCalled();
   });
 
+  it("refuses a login whose campaign claim isn't the active campaign, whatever the file says", async () => {
+    writeFile({ refreshToken: "r" });
+    restoreRefreshUser.mockResolvedValue({
+      getIdTokenResult: async () => ({ claims: { currentcampaign: "campaign-22125197-abc", playerid: "p", userid: "u" } }),
+    });
+    await expect(rt.__connectForTest()).rejects.toThrow(/No usable Roll20 realtime token.*campaign-22125197/);
+  });
+
   it("a refused refresh token is the typed credential error, and a network failure is not", async () => {
     writeFile({ refreshToken: "r" });
     restoreRefreshUser.mockRejectedValue(Object.assign(new Error("no"), { code: "auth/invalid-refresh-token" }));
