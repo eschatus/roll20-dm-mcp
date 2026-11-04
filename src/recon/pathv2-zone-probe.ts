@@ -234,14 +234,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   // Direct RTDB read — what Roll20 actually persisted, with no Mod accessor in the way.
   // The same trick page-probe.ts uses; the verdicts below are scored from these records.
-  console.error(`\nRTDB pathv2/page/${pageId} (direct, no Mod):`);
+  console.error(`\nRTDB paths/page/${pageId} (direct, no Mod):`);
   const raws = new Map<string, RawRecord>();
   for (const v of res.variants) {
     if (!v.id) continue;
     try {
-      const raw = await rtGet<Record<string, unknown> | null>(`pathv2/page/${pageId}/${v.id}`);
+      const raw = await rtGet<Record<string, unknown> | null>(`paths/page/${pageId}/${v.id}`);
       raws.set(v.id, raw ?? null);
-      if (!raw) { console.error(`  ${v.key.padEnd(16)} (absent from pathv2/page — wrong node?)`); continue; }
+      if (!raw) { console.error(`  ${v.key.padEnd(16)} (absent from paths/page — wrong node?)`); continue; }
       console.error(`  ${v.key.padEnd(16)} shape=${JSON.stringify(raw.shape)} fill=${JSON.stringify(raw.fill)} ` +
         `fill_opacity=${JSON.stringify(raw.fill_opacity)} layer=${JSON.stringify(raw.layer)} ` +
         `name=${JSON.stringify(raw.name)} gmnotes=${JSON.stringify(raw.gmnotes)}`);
