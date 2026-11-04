@@ -167,7 +167,7 @@ describe("epithet disambiguation scales to large groups", () => {
         pageid: pageId, name: "Direwolf", represents: charId, controlledby: "",
         bar1_value: 37, bar1_max: 37, left: 70 + i * 10, top: 70,
       });
-      characters.register("Direwolf", tok.id, 0);
+      characters.register("Direwolf", tok.id);
     }
   });
   afterAll(() => hh.teardown());
@@ -201,7 +201,7 @@ describe("epithet escalation stays single-word past the bank (#185)", () => {
         pageid: pageId, name: "Fire Giant Trooper", represents: charId, controlledby: "",
         bar1_value: 162, bar1_max: 162, left: 70 + i * 10, top: 70,
       });
-      characters.register("Fire Giant Trooper", tok.id, 0);
+      characters.register("Fire Giant Trooper", tok.id);
     }
   });
   afterAll(() => hh.teardown());

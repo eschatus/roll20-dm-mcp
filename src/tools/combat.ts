@@ -647,7 +647,7 @@ export function registerCombatTools(server: McpServer): void {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
       // Sidekicks (issue #132) are player-controlled but route as NPCs for
       // initiative purposes too — npcOnly should still pick them up, and
-      // they're eligible for the DDB HP auto-init below like any other NPC.
+      // they take entries[].hp seeding like any other NPC.
       const sidekickNames = registry.listSidekickNames();
 
       const tokens = await roll20.relayCommand<{ id: string; name: string; layer: string; controlledby: string; charControlledby?: string; bar1_value?: number | string; bar1_max?: number | string }[]>({
@@ -1066,7 +1066,7 @@ export function registerCombatTools(server: McpServer): void {
         // NPC: the token bar IS the source of truth. Guard a missing bar (writing to it
         // silently no-ops); setHp is allowed — it establishes a value.
         if (setHp === undefined && !hasHpBar(token)) {
-          return fail(`${token.name}: no HP bar set (bar1_max is empty) — ${damage !== undefined ? "damage" : "healing"} not applied. Roll initiative to auto-init NPC HP from DDB, set the bar in Roll20, or use setHp to establish one.`);
+          return fail(`${token.name}: no HP bar set (bar1_max is empty) — ${damage !== undefined ? "damage" : "healing"} not applied. Seed it with roll_initiative entries[].hp, set the bar in Roll20, or use setHp to establish one.`);
         }
         maxHp = Number(token.bar1_max) || 0;
         const currentHp = Number(token.bar1_value) || 0;

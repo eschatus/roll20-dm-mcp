@@ -8,8 +8,6 @@ const REGISTRY_PATH = dataPath("characters.json");
 
 export interface CharacterEntry {
   roll20TokenId?: string;
-  ddbCharId?: number;
-  ddbCharacterUrl?: string;
   // Per-token override (issue #132): true for a player-controlled token whose
   // HP nonetheless lives in Roll20 bar1 and who dies like an NPC (Tua, Salros
   // Eventide, Amri in the Firebirds campaign) — `controlledby` alone can't
@@ -61,18 +59,16 @@ function getCampaignRegistry(full: FullRegistry): Record<string, CharacterEntry>
 
 export function register(
   name: string,
-  roll20TokenId: string,
-  ddbCharId: number,
-  ddbCharacterUrl?: string
+  roll20TokenId: string
 ): void {
   const full = load();
   const reg = getCampaignRegistry(full);
   const key = name.toLowerCase();
   // Merge over any existing entry (e.g. a prior set_token_class sidekick
   // override) rather than overwriting it — re-registering a character (token
-  // recreate, DDB relink) must not silently un-flag a sidekick.
+  // recreate) must not silently un-flag a sidekick.
   const existing = reg[key];
-  reg[key] = { ...existing, roll20TokenId, ddbCharId, ...(ddbCharacterUrl ? { ddbCharacterUrl } : {}) };
+  reg[key] = { ...existing, roll20TokenId };
   save(full);
 }
 

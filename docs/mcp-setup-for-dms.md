@@ -235,13 +235,9 @@ Then give Claude that ID and a name of your choosing. Easiest is plain English �
 
 ```
 register_campaign name="Your Campaign Name" \
-  roll20CampaignId="1234567" ddbCampaignId="0"
+  roll20CampaignId="1234567"
 switch_campaign slugOrName="your-campaign-name"
 ```
-
-> **What's `ddbCampaignId`?** Just a label. This server does no D&D Beyond lookups of any kind — it only stores
-> the number and hands it to the separate beyond-mcp server if you use one. If you have a D&D Beyond campaign,
-> put its ID here (the number at the end of `dndbeyond.com/campaigns/987654`); if you don't, `0` is fine.
 
 You only register a campaign once. To run several games, register each and use `switch_campaign` to change which
 one is live. **Remember that the Roll20 token from Step 7 is per-campaign** — switching games means repeating Step 7 in the

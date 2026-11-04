@@ -69,30 +69,29 @@ async function createTokenAt(a: CreateTokenArgs): Promise<{ id: string; max: num
 export function registerTokenTools(server: McpServer): void {
   server.tool(
     "create_pc_token",
-    "Create a Roll20 token for a player character from stats YOU supply, and register it. Resolve the stats first (e.g. ddb-mcp's ddb_get_party_snapshot, which carries authoritative max HP) — this tool performs no lookup of its own. Pass controlledBy with the player's Roll20 id so HP and death route as a PC; without it the token is treated as an NPC. ddbCharId is recorded for linkage only, never fetched.",
+    "Create a Roll20 token for a player character from stats YOU supply, and register it. Resolve the stats first (e.g. ddb-mcp's ddb_get_party_snapshot, which carries authoritative max HP) — this tool performs no lookup of its own. Pass controlledBy with the player's Roll20 id so HP and death route as a PC; without it the token is treated as an NPC.",
     {
       name: z.string().describe("Character name, exactly as it should read on the token."),
       hp: z.number().int().describe("Current HP → bar1."),
       maxHp: z.number().int().positive().optional().describe("Max HP → bar1_max. Defaults to hp."),
       imageUrl: z.string().optional().describe("Roll20-hosted avatar URL. Must be an uploaded Roll20 URL — external/thumb URLs are silently refused by createObj."),
       controlledBy: z.string().optional().describe("Roll20 player id (or 'all') to own the token. Sets controlledby, which is what makes PC HP/death routing apply."),
-      ddbCharId: z.number().int().positive().optional().describe("D&D Beyond character id, stored in the registry for linkage. NOT used to look anything up."),
       pageId: z.string().optional(),
       gridX: z.number().optional(),
       gridY: z.number().optional(),
     },
-    async ({ name, hp, maxHp, imageUrl, controlledBy, ddbCharId, pageId, gridX = 1, gridY = 1 }) => {
+    async ({ name, hp, maxHp, imageUrl, controlledBy, pageId, gridX = 1, gridY = 1 }) => {
       // NOTE bar1_num_permission is deliberately NOT set here (#204). Roll20's default ("")
       // lets the token's editors — the GM and the controlling player — read the number, which is
       // what a PC wants, and Beyond20 owns that bar anyway. A DM who wants it otherwise sets
       // bar1_num_permission with set_token_props.
       const { id, max } = await createTokenAt({ name, hp, maxHp, imageUrl, controlledBy, pageId, gridX, gridY });
       // 0 = "no DDB link" (the registry's existing sentinel).
-      registry.register(name, id, ddbCharId ?? 0);
+      registry.register(name, id);
       const routing = controlledBy
         ? "controlled by " + controlledBy + " → routes as a PC"
         : "no controlledBy → routes as an NPC (pass controlledBy to fix)";
-      return text(`Created PC token for ${name} (roll20Id: ${id}${ddbCharId ? `, ddbCharId: ${ddbCharId}` : ""}) at grid (${gridX}, ${gridY}). HP: ${hp}/${max}. Registered; ${routing}.`);
+      return text(`Created PC token for ${name} (roll20Id: ${id}) at grid (${gridX}, ${gridY}). HP: ${hp}/${max}. Registered; ${routing}.`);
     }
   );
 

@@ -3,7 +3,6 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import "dotenv/config";
 
 import { registerCampaignTools } from "./tools/campaigns.js";
-import { registerCampaignContextTools } from "./tools/campaignContext.js";
 import { registerMapTools } from "./tools/maps.js";
 import { registerTokenTools } from "./tools/tokens.js";
 import { registerVisionTools } from "./tools/vision.js";
@@ -20,7 +19,6 @@ const server = new McpServer({
 // analysis, token placement, batch import, zones, and screenshots. Zones +
 // screenshot are also registered in the combat server (shared, live-use).
 registerCampaignTools(server);
-registerCampaignContextTools(server);
 registerMapTools(server);
 registerTokenTools(server);
 registerVisionTools(server);

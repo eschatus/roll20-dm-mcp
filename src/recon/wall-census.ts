@@ -8,7 +8,7 @@ import { registerCampaign, setActiveCampaign, toSlug } from "../registry/campaig
 for (const arg of process.argv.slice(2)) {
   const [id, ...nameParts] = arg.split(":");
   const name = nameParts.join(":") || `census-${id}`;
-  const slug = registerCampaign(name, id, "0", "census candidate");
+  const slug = registerCampaign(name, id, "census candidate");
   setActiveCampaign(slug);
   try {
     const pagesObj = await rtGet<Record<string, { id: string; name: string }>>("pages");

@@ -19,7 +19,6 @@ fs.mkdirSync(dataDir, { recursive: true });
 
 // Single-campaign env fallback so getActiveCampaign() resolves without disk.
 process.env.ROLL20_CAMPAIGN_ID ??= "test-roll20";
-process.env.DDB_CAMPAIGN_ID ??= "test-ddb";
 
 // Allows the maps suite's vision module (`src/tools/vision.ts`) to construct its
 // module-level `new Anthropic()` when a test imports it — analyze_battlemap is the

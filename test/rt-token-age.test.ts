@@ -24,7 +24,6 @@ const MIN = 60_000;
 const saved = {
   dataDir: process.env.ROLL20_DATA_DIR,
   roll20: process.env.ROLL20_CAMPAIGN_ID,
-  ddb: process.env.DDB_CAMPAIGN_ID,
 };
 const restore = (key: keyof typeof saved, name: string) => {
   if (saved[key] === undefined) delete process.env[name];
@@ -49,7 +48,6 @@ beforeAll(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rt-token-age-"));
   process.env.ROLL20_DATA_DIR = tmp;
   process.env.ROLL20_CAMPAIGN_ID = CAMPAIGN;
-  process.env.DDB_CAMPAIGN_ID = "5201061";
   tokenFile = path.join(tmp, "roll20-rt-token.json");
   rt = await import("../src/bridge/roll20-rt.js");
 });
@@ -57,7 +55,6 @@ beforeAll(async () => {
 afterAll(() => {
   restore("dataDir", "ROLL20_DATA_DIR");
   restore("roll20", "ROLL20_CAMPAIGN_ID");
-  restore("ddb", "DDB_CAMPAIGN_ID");
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 

@@ -42,7 +42,7 @@ function seedTokens(h: Harness, pageId: string, name: string, count: number, sta
       pageid: pageId, name, represents: charId, controlledby: "",
       bar1_value: 10, bar1_max: 10, left: (startX + i) * CELL, top: 70,
     });
-    characters.register(name, tok.id, 0);
+    characters.register(name, tok.id);
     ids.push(tok.id);
   }
   return ids;

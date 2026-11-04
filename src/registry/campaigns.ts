@@ -17,7 +17,6 @@ const ACTIVE_CAMPAIGN_PATH = dataPath("active-campaign.json");
 export interface CampaignEntry {
   name: string;
   roll20CampaignId: string;
-  ddbCampaignId: string;
   notes?: string;
 }
 
@@ -53,12 +52,11 @@ export function toSlug(name: string): string {
 export function registerCampaign(
   name: string,
   roll20CampaignId: string,
-  ddbCampaignId: string,
   notes?: string
 ): string {
   const store = load();
   const slug = toSlug(name);
-  store[slug] = { name, roll20CampaignId, ddbCampaignId, ...(notes ? { notes } : {}) };
+  store[slug] = { name, roll20CampaignId, ...(notes ? { notes } : {}) };
   save(store);
   return slug;
 }
@@ -144,17 +142,15 @@ export function getActiveCampaign(): CampaignEntry & { slug: string } {
   // Fall back to env vars if no campaign set — supports single-campaign setups
   if (!_activeCampaignSlug) {
     const roll20Id = process.env.ROLL20_CAMPAIGN_ID;
-    const ddbId = process.env.DDB_CAMPAIGN_ID;
-    if (roll20Id && ddbId) {
+    if (roll20Id) {
       return {
         slug: "env-default",
         name: "Default (from .env)",
         roll20CampaignId: roll20Id,
-        ddbCampaignId: ddbId,
       };
     }
     throw new Error(
-      "No active campaign set. Use switch_campaign or set ROLL20_CAMPAIGN_ID / DDB_CAMPAIGN_ID in .env"
+      "No active campaign set. Use switch_campaign or set ROLL20_CAMPAIGN_ID in .env"
     );
   }
 

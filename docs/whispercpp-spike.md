@@ -24,6 +24,6 @@ holding a 900 ms live-partial budget on lighter targets.
 Only one thing, and it is a naming trap rather than a technical one: **STT mishears reach this
 server as tool arguments.** A misheard proper noun arrives as a `characterName` that must resolve
 against real Roll20 token names — which is why the fuzzy `resolveTokenOrThrow`
-(`src/tools/combat.ts`) and the campaign vocab/nickname registries exposed here (`add_vocab`,
-`add_nickname` in `src/tools/campaignContext.ts`) earn their keep. The correction layer itself is
+(`src/tools/combat.ts`) earns its keep. The campaign vocab/nickname tools that used to live here
+are gone: the server no longer stores client data (see #171). The correction layer itself is
 upstream in the gem; the failure surfaces down here as "no token matched".

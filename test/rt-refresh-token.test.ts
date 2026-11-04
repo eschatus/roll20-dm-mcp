@@ -15,7 +15,7 @@ vi.mock("firebase/auth", () => ({
 
 const CAMPAIGN = "21660022";
 const DAY = 86_400_000;
-const saved = { dir: process.env.ROLL20_DATA_DIR, id: process.env.ROLL20_CAMPAIGN_ID, ddb: process.env.DDB_CAMPAIGN_ID, env: process.env.ROLL20_RT_TOKEN };
+const saved = { dir: process.env.ROLL20_DATA_DIR, id: process.env.ROLL20_CAMPAIGN_ID, env: process.env.ROLL20_RT_TOKEN };
 const put = (name: string, v: string | undefined) => { if (v === undefined) delete process.env[name]; else process.env[name] = v; };
 
 let tmp: string;
@@ -28,7 +28,6 @@ beforeAll(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rt-refresh-"));
   process.env.ROLL20_DATA_DIR = tmp;
   process.env.ROLL20_CAMPAIGN_ID = CAMPAIGN;
-  process.env.DDB_CAMPAIGN_ID = "5201061";
   delete process.env.ROLL20_RT_TOKEN;
   rt = await import("../src/bridge/roll20-rt.js");
 });
@@ -36,7 +35,6 @@ beforeAll(async () => {
 afterAll(() => {
   put("ROLL20_DATA_DIR", saved.dir);
   put("ROLL20_CAMPAIGN_ID", saved.id);
-  put("DDB_CAMPAIGN_ID", saved.ddb);
   put("ROLL20_RT_TOKEN", saved.env);
   fs.rmSync(tmp, { recursive: true, force: true });
 });

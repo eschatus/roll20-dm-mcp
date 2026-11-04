@@ -23,7 +23,6 @@ const CAMPAIGN = "21660022";
 const saved = {
   dataDir: process.env.ROLL20_DATA_DIR,
   roll20: process.env.ROLL20_CAMPAIGN_ID,
-  ddb: process.env.DDB_CAMPAIGN_ID,
   rtToken: process.env.ROLL20_RT_TOKEN,
 };
 const restore = (key: keyof typeof saved, name: string) => {
@@ -57,7 +56,6 @@ beforeAll(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rt-furnished-"));
   process.env.ROLL20_DATA_DIR = tmp;
   process.env.ROLL20_CAMPAIGN_ID = CAMPAIGN;
-  process.env.DDB_CAMPAIGN_ID = "5201061";
   delete process.env.ROLL20_RT_TOKEN;
   rt = await import("../src/bridge/roll20-rt.js");
 });
@@ -70,7 +68,6 @@ afterEach(() => {
 afterAll(() => {
   restore("dataDir", "ROLL20_DATA_DIR");
   restore("roll20", "ROLL20_CAMPAIGN_ID");
-  restore("ddb", "DDB_CAMPAIGN_ID");
   restore("rtToken", "ROLL20_RT_TOKEN");
   fs.rmSync(tmp, { recursive: true, force: true });
 });

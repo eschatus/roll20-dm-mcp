@@ -29,7 +29,7 @@ describe("toSlug", () => {
 });
 
 function entry(name: string): CampaignEntry {
-  return { name, roll20CampaignId: "r", ddbCampaignId: "d" };
+  return { name, roll20CampaignId: "r" };
 }
 
 describe("resolveCampaignSlug", () => {

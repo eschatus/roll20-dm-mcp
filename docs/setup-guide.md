@@ -30,7 +30,7 @@ You talk to it through any MCP client. **Claude Code** works for map prep, sessi
 Three things this repo used to do and no longer does. If you have older notes, they are wrong:
 
 - **No browser.** There is no Playwright dependency, no Chromium to install, no `npx playwright install` step. Nothing here opens a browser window.
-- **No D&D Beyond.** The whole DDB bridge — auth, character reads, monster reads — moved to **[beyond-mcp](https://github.com/eschatus/beyond-mcp)**, a separate server. There are no `ddb_*` tools here and no DDB credential. `ddbCampaignId` survives in the campaign registry purely as a linkage id passed through to that server.
+- **No D&D Beyond.** The whole DDB bridge — auth, character reads, monster reads — moved to **[beyond-mcp](https://github.com/eschatus/beyond-mcp)**, a separate server. There are no `ddb_*` tools here, no DDB credential, and no DDB ids in the campaign registry.
 - **No model call in the combat server.** Tactical planning is decided by your client and merely *stored* here (`set_mob_plan` / `get_mob_plans` / `clear_mob_plans`); the turn hook whispers the stored plan to the DM when that token's turn comes up. Player `!`-commands are likewise answered by your client — this server just forwards live chat as `chat-message` events on `/events`.
 
 ---
@@ -58,7 +58,7 @@ A `.env` file in the project root is optional — the defaults work. The setting
 | `ROLL20_MCP_TOKEN` | auto-generated | Bearer token for the HTTP server. Written for you on first run. |
 | `ROLL20_HTTP_PORT` / `ROLL20_HTTP_HOST` | `39200` / `127.0.0.1` | Where the combat server listens. |
 | `ANTHROPIC_API_KEY` | — | Only read by the maps suite's `analyze_battlemap`. |
-| `ROLL20_CAMPAIGN_ID` / `DDB_CAMPAIGN_ID` | — | Single-campaign fallback if you'd rather not use `register_campaign` / `switch_campaign`. |
+| `ROLL20_CAMPAIGN_ID` | — | Single-campaign fallback if you'd rather not use `register_campaign` / `switch_campaign`. |
 
 You do **not** put a Roll20 password anywhere. The server authenticates with a harvested realtime token (step 5), not credentials.
 
@@ -204,12 +204,10 @@ Tell the server which Roll20 campaign to work with.
 In Claude Code (set it up via **Track A** below first, so the `roll20-dm` tools are available), run:
 
 ```
-register_campaign with name "My Campaign", roll20CampaignId "12345678", ddbCampaignId "0"
+register_campaign with name "My Campaign", roll20CampaignId "12345678"
 ```
 
 You can find your campaign ID in the Roll20 URL: `roll20.net/campaigns/details/12345678`.
-
-`ddbCampaignId` is required by the schema but inert here — nothing in this repo reads D&D Beyond. Pass your DDB campaign id if you run beyond-mcp alongside (it's the id that links the two), or `"0"` if you don't.
 
 Then `switch_campaign` to make it active. Remember that the realtime token from step 5 is campaign-scoped, so switching campaigns means a fresh harvest.
 
