@@ -12,7 +12,8 @@
 // the part that runs BEFORE the exchange — so they need no network: structural problems still
 // fail loudly, age never does, and transport_status can see the staleness the gem can't.
 //
-// TOKEN_CACHE is resolved at module load, so roll20-rt must be imported AFTER the env is set.
+// These write the old single file, which reaches the read path by being filed into the campaign's
+// slot (#279), so the rules below are pinned for a token arriving the way the gem delivers one.
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
@@ -58,7 +59,12 @@ afterAll(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-beforeEach(() => { fs.rmSync(tokenFile, { force: true }); });
+const clearTokens = () => {
+  fs.rmSync(tokenFile, { force: true });
+  fs.rmSync(path.join(tmp, "rt-tokens"), { recursive: true, force: true });
+};
+
+beforeEach(clearTokens);
 
 describe("the cached RT token's age is advisory, not a gate (#216)", () => {
   it("hands back a 56-minute-old token instead of refusing it — the reported lockout", () => {
@@ -73,13 +79,13 @@ describe("the cached RT token's age is advisory, not a gate (#216)", () => {
     expect(rt.__readRtCredentialForTest(CAMPAIGN).customToken).toContain("fake-custom-token");
   });
 
-  it("still fails loudly when the file is absent", () => {
-    expect(() => rt.__readRtCredentialForTest(CAMPAIGN)).toThrow(/nothing has harvested one/);
+  it("still fails loudly when no token is stored", () => {
+    expect(() => rt.__readRtCredentialForTest(CAMPAIGN)).toThrow(/nothing has furnished one/);
   });
 
-  it("still fails loudly when the token belongs to another campaign", () => {
+  it("still fails loudly when the only token belongs to another campaign", () => {
     writeToken({ campaignId: "21660022" });
-    expect(() => rt.__readRtCredentialForTest(CAMPAIGN)).toThrow(/campaign-scoped/);
+    expect(() => rt.__readRtCredentialForTest(CAMPAIGN)).toThrow(/a token for another campaign is never used/);
   });
 
   it("still fails loudly on a pre-shard-fix entry with no databaseURL", () => {
@@ -111,14 +117,24 @@ describe("transport_status can see the staleness the gem cannot (#216)", () => {
     expect(s.note).toMatch(/[Rr]econnect Roll20/);
   });
 
-  it("flags a missing token file rather than reporting it as fine", () => {
+  it("flags a missing token rather than reporting it as fine", () => {
     const s = rt.getRtTokenStatus(CAMPAIGN);
     expect(s).toMatchObject({ present: false, campaignId: null, ageMinutes: null, stale: true });
-    expect(s.note).toMatch(/roll20-rt-token\.json/);
+    expect(s.note).toMatch(/rt-tokens.17883987\.json/);
   });
 
-  it("flags a FRESH token for the wrong campaign — every connect would be refused", () => {
+  it("a FRESH token for another campaign does not count as the active campaign's", () => {
     writeToken({ campaignId: "21660022", harvestedAt: Date.now() - 5 * MIN });
+    const s = rt.getRtTokenStatus(CAMPAIGN);
+    expect(s).toMatchObject({ present: false, activeCampaignId: CAMPAIGN, campaignMismatch: false });
+    expect(s.note).toContain(CAMPAIGN);
+  });
+
+  it("flags a hand-copied slot holding the wrong campaign — every connect would be refused", () => {
+    fs.mkdirSync(path.join(tmp, "rt-tokens"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, "rt-tokens", `${CAMPAIGN}.json`), JSON.stringify({
+      campaignId: "21660022", customToken: "x", databaseURL: "https://roll20-9997.firebaseio.com/", harvestedAt: Date.now() - 5 * MIN,
+    }));
     const s = rt.getRtTokenStatus(CAMPAIGN);
     expect(s).toMatchObject({ present: true, campaignId: "21660022", activeCampaignId: CAMPAIGN, campaignMismatch: true, stale: false });
     expect(s.note).toContain("21660022");
@@ -133,17 +149,18 @@ describe("transport_status can see the staleness the gem cannot (#216)", () => {
     expect(s.stale).toBe(false);
     expect(s.missingFields).toEqual(["databaseURL"]);
     expect(s.note).toMatch(/missing databaseURL/);
+    clearTokens();
     writeToken({ harvestedAt: Date.now() - 5 * MIN, customToken: "" });
     s = rt.getRtTokenStatus(CAMPAIGN);
     expect(s.missingFields).toEqual(["customToken"]);
     expect(s.note).toMatch(/missing customToken/);
   });
 
-  it("skips the campaign check when no campaign is active", () => {
+  it("reports no token when no campaign is active, and says why", () => {
     writeToken({ harvestedAt: Date.now() - 5 * MIN });
     const s = rt.getRtTokenStatus(null);
-    expect(s.campaignMismatch).toBe(false);
-    expect(s.note).toBeUndefined();
+    expect(s).toMatchObject({ present: false, campaignMismatch: false });
+    expect(s.note).toMatch(/No campaign is active/);
   });
 
   it("says 'of unknown age' cleanly when harvestedAt is missing", () => {

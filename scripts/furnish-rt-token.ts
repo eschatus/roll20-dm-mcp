@@ -1,4 +1,4 @@
-// Furnish roll20-rt-token.json by hand — the no-gem path (#177 keeps harvesting out of the server).
+// Furnish a campaign's Roll20 realtime token by hand — the no-gem path (#177 keeps harvesting out of the server).
 //
 // A human copies the Firebase custom token out of their OWN logged-in Roll20 editor tab (DevTools,
 // see docs/setup-guide.md §5); this script validates it and writes the file the server reads. It
@@ -20,9 +20,10 @@
 //   Get-Clipboard | npm run furnish:token -- --campaign 22125197 --db roll20-99913
 //   npx tsx scripts/furnish-rt-token.ts --db https://roll20-99913.firebaseio.com   (prompts; active campaign)
 //
-// Writes <ROLL20_DATA_DIR>/roll20-rt-token.json (default ./data) — the same dir the server you'll
-// start reads. --print instead emits the JSON on stdout for ROLL20_RT_TOKEN, which overrides the
-// file (useful for a stdio maps server or a script with no shared data dir).
+// Writes <ROLL20_DATA_DIR>/rt-tokens/<campaignId>.json (default ./data) — the same dir the server
+// you'll start reads — and leaves every other campaign's token alone (#279). --print instead emits
+// the JSON on stdout for ROLL20_RT_TOKEN, which overrides the stored tokens (useful for a stdio
+// maps server or a script with no shared data dir).
 import "dotenv/config"; // First: the data dir must match the one the servers read from .env.
 import { writeFileSync, renameSync, mkdirSync } from "fs";
 import path from "path";
@@ -33,6 +34,7 @@ import { initializeApp, deleteApp } from "firebase/app";
 import { getAuth, signInWithCustomToken } from "firebase/auth";
 import { FIREBASE_CONFIG } from "../src/bridge/roll20-rt.js";
 import { restoreRefreshUser } from "../src/bridge/rt-refresh-auth.js";
+import { writeRtTokenSlot, type StoredRtToken } from "../src/bridge/rt-token-store.js";
 import { parseCurlCredential } from "../src/bridge/upload-credential.js";
 import { getActiveCampaign } from "../src/registry/campaigns.js";
 import { dataPath } from "../src/dataDir.js";
@@ -116,23 +118,16 @@ function normalizeDbUrl(v: string): string {
   fail(`--db must be the RTDB namespace (roll20-99913) or https://roll20-NNNNN.firebaseio.com — got "${v}"`);
 }
 
-interface TokenRecord { campaignId: string; customToken?: string; refreshToken?: string; databaseURL: string; harvestedAt: number }
-
-// --print emits the JSON for ROLL20_RT_TOKEN instead of writing the file.
-function emitRecord(record: TokenRecord): void {
+// --print emits the JSON for ROLL20_RT_TOKEN instead of writing the campaign's slot.
+function emitRecord(record: StoredRtToken): void {
   if (process.argv.includes("--print")) {
     process.stdout.write(JSON.stringify(record) + "\n");
     console.error("✓ printed the ROLL20_RT_TOKEN value above.");
     return;
   }
-  const file = dataPath("roll20-rt-token.json");
-  mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(record), { encoding: "utf-8", mode: 0o600 });
-  renameSync(tmp, file);
-  console.error(`✓ wrote ${file}`);
+  console.error(`✓ wrote ${writeRtTokenSlot(record)}`);
   if (process.env.ROLL20_RT_TOKEN !== undefined) {
-    console.error("  ⚠ ROLL20_RT_TOKEN is set in this shell and OVERRIDES that file — unset it.");
+    console.error("  ⚠ ROLL20_RT_TOKEN is set in this shell and OVERRIDES the stored tokens — unset it.");
   }
 }
 

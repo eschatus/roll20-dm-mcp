@@ -9,7 +9,7 @@ import { BUILD_VERSION } from "../build-version.js";
 export function registerTransportTools(server: McpServer): void {
   server.tool(
     "transport_status",
-    "Show this server's build version, RT transport health, circuit-breaker state, counters, active campaign, the age of the on-disk Roll20 realtime token, and the deployed Mod relay's version handshake",
+    "Show this server's build version, RT transport health, circuit-breaker state, counters, active campaign, whether that campaign has a Roll20 realtime token and how old it is, and the deployed Mod relay's version handshake",
     {},
     async () => {
       let activeCampaign = "(none)";
@@ -35,9 +35,9 @@ export function registerTransportTools(server: McpServer): void {
             // the default on 2026-09-02). null = not probed yet, or the deployed relay is older
             // than 2.6.0 and doesn't echo it.
             sandbox,
-            // Age and source (ROLL20_RT_TOKEN or the data-dir file) of the furnished RT token
-            // (#216). An already-connected server runs
-            // off its live socket and stays healthy long after this file goes cold, which is
+            // Whether the ACTIVE campaign has a furnished RT token (#279), and its age and source
+            // (ROLL20_RT_TOKEN or the campaign's data-dir slot) (#216). An already-connected server
+            // runs off its live socket and stays healthy long after the token goes cold, which is
             // exactly when every OTHER reader of the data dir (roll20-dm-maps over stdio, a CLI
             // script) gets locked out. Reporting it here is the only warning anyone gets. Also
             // flags a token harvested for a different campaign than the active one.

@@ -76,10 +76,16 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
   `wall-seg`. Credentials are FURNISHED, never minted: the RT credential holds a one-shot
   `customToken` or a long-lived `refreshToken` (`src/bridge/rt-refresh-auth.ts`; a Roll20 sign-out
   does not revoke it, see `docs/security.md`), and is read from
-  `ROLL20_RT_TOKEN` or `<data dir>/roll20-rt-token.json` (same object either way, env wins,
-  campaign-scoped) and art uploads from `roll20-upload-cache.json`; both throw a typed error
+  `ROLL20_RT_TOKEN` or the campaign's own slot, `<data dir>/rt-tokens/<campaignId>.json`
+  (`src/bridge/rt-token-store.ts`, #279; same object either way, env is a single override that wins,
+  and there is no fallback to another campaign's token) and art uploads from
+  `roll20-upload-cache.json`; both throw a typed error
   (`Roll20TokenUnavailableError`, `Roll20UploadCredentialError`) naming what to refresh instead of
-  harvesting. A set-but-unusable `ROLL20_RT_TOKEN` throws rather than falling back to the file. Art upload is a
+  harvesting. A set-but-unusable `ROLL20_RT_TOKEN` throws rather than falling back to a slot.
+  **`roll20-rt-token.json` is still live:** the gem writes every harvest there, so each read copies
+  it into the slot for the campaign IT holds. Never delete or move it: the gem force-harvests when
+  it is missing. A custom token does not displace a working refresh token, only one refused since
+  (`refusedAt`, stamped by `connect()`), or the gem's recovery could never heal a dead one. Art upload is a
   plain multipart POST — browserless, credential furnished. A human furnishes both with
   `npm run furnish:token` (`--upload` for the cookies, `src/bridge/upload-credential.ts`), or the gem
   harvests them in its own logged-in session. The legacy browser→chat relay is DELETED (#122/#179) —

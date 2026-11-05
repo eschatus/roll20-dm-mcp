@@ -8,7 +8,7 @@
 //                       would send the DM to re-harvest a credential that was never the problem.
 //
 // firebase/auth is mocked so no network is touched; the real firebase/app initialises locally.
-// TOKEN_CACHE is resolved at module load, so roll20-rt must be imported AFTER the env is set.
+// Imported dynamically, AFTER ROLL20_DATA_DIR is set.
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
