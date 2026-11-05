@@ -348,13 +348,13 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `createGraphic` | place_map_image, upload_and_place_map_image, batch_import_maps | maps | map-layer image |
 | `createPage` | — | — | **throws by design** — `createObj("page")` is unsupported in the sandbox. Page creation goes through `rtCreatePage` instead (see below). |
 | `createPath` / `createPaths` | (internal) | — | legacy path |
-| `createWalls` | auto_place_dl_walls, batch_import_maps | maps | creates native `pathv2` UDL barriers. Explicitly **not** direct-writable — Roll20's Firebase rules reject client writes to `pathv2/page/`, so this always goes through the Mod. |
-| `createPolylines` | place_polyline_walls | maps | one multi-vertex path; Mod-only for the same reason |
-| `createDLDoors` / `createDLWindows` | decorate_openings | maps | native UDL door/window (create only); direct-write path |
-| `clearDLOpenings` | decorate_openings | maps | delete doors+windows; direct-write path |
-| `getWalls` | get_walls | maps | reads `pathv2` barriers |
+| `createWalls` | auto_place_dl_walls, batch_import_maps, replace_page_walls | maps | creates native `pathv2` UDL barriers. Explicitly **not** direct-writable — Roll20's Firebase rules reject client writes to `pathv2/page/`, so this always goes through the Mod. |
+| `createPolylines` | place_polyline_walls, replace_page_walls (restore only) | maps | one multi-vertex path; Mod-only for the same reason |
+| `createDLDoors` / `createDLWindows` | decorate_openings, replace_page_walls | maps | native UDL door/window (create only); direct-write path, which `replace_page_walls` skips with `__forceMod` |
+| `clearDLOpenings` | decorate_openings, replace_page_walls | maps | delete doors+windows; direct-write path |
+| `getWalls` | get_walls, replace_page_walls | maps | reads `pathv2` barriers |
 | `getPaths` | get_paths | maps | path + optional graphic (direct-read path) |
-| `getDoors` | get_doors | maps | door/window read (direct-read path) |
+| `getDoors` | get_doors, replace_page_walls | maps | door/window read (direct-read path) |
 | `clearLayer` | clear_layer | maps | path+graphic+pathv2+wall |
 | `debugPage` | debug_page | maps | object-type census |
 | `drawLayerTest` | draw_layer_test | maps | creates `path` |
@@ -364,7 +364,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `setPageProps` | setup_roll20_page, rename_roll20_page, batch_import_maps | maps | name/size/scale/grid subset |
 | `setPageBackground` | (internal) | — | bg color only |
 | `createZone`/`clearZone`/`listZones`/`findTokensInZone`/`processRoundEndZones` | create_zone, clear_zone, list_zones, process_round_end_zones, resolve_aoe | both | path on the map layer; **metadata lives in `state.GM_AI_Bridge.zones`, not on the path object** (path objects silently drop `name`/`gmnotes`/`fill_opacity` — #162/#164). Whether `pathv2` (`shape:"eli"`/`"rec"`, real `fill`) is a better drawing primitive is an open spike — `docs/pathv2-zone-spike.md` (#208). |
-| `removeObject` | remove_object | combat | graphic or path |
+| `removeObject` | remove_object, replace_page_walls | combat, maps | graphic, path, or any type passed as `objectType` (`pathv2` here) |
 | `getTurnOrder`/`setTurnOrder`/`advanceTurn` | get_turn_order, clear_turn_order, advance_turn, update_turn_order, inject_round_marker, revive_token (read only), batch_exec | combat | `Campaign.turnorder`. **Never write `setTurnOrder` wholesale** — it erases player entries; only `clear_turn_order` does that deliberately. |
 | `mergeTurnOrder` | roll_initiative, inject_round_marker, update_turn_order, revive_token | combat | NPC-only upsert (preserves PC entries). `keepTurn:true` (relay 2.9.0, revive_token) splices into the live rotation without the pr-descending sort, so row 0 (the active turn) never changes |
 | `rollInitiativeForTokens` | roll_initiative, revive_token (silent re-roll when a kill took an NPC/sidekick entry; never for a true PC) | combat | real dice + epithets; honours per-combatant `bonusOverrides` from `entries[].bonus` (#172) |
@@ -409,6 +409,57 @@ server never harvests the credential — a missing, stale or refused one raises
 `Roll20UploadCredentialError`. Verified live 2026-10-11: a 1200×600 upload stored 200×100 /
 512×256 / 1200×600 / 1200×600 webp. Likewise `rtCreatePage` (`src/bridge/roll20-rt.ts`) creates a page by
 writing the RTDB directly, mirroring an existing page's schema.
+
+### Replacing a page's walls (`replace_page_walls`, #280)
+
+No relay change and no Mod redeploy: it composes `getWalls`, `getDoors`, `createWalls`,
+`createPolylines`, `createDLDoors`, `createDLWindows`, `clearDLOpenings` and `removeObject`, plus one
+direct `rtUpdate` for door state. The order is new walls, then openings, then removal of the old
+walls by id, so the page always has walls on it. Each `createWalls`/`createPolylines` batch is atomic
+(#207); across batches there is no transaction, so a failure re-reads the page and reports it.
+
+Choices that come from how Roll20 stores these objects, not from anything the emulator can show:
+
+- **Which walls it removes.** A `pathv2` of shape `pol` whose `barrierType` is `wall` or empty.
+  Roll20 does not store `barrierType` for a plain wall (`createObj` drops it, and the Mod reads
+  `"wall"` back), so requiring the value would be wrong. One-way and transparent barriers and
+  `rec`/`eli` shapes stay and are listed under `kept`, because no relay action can recreate them:
+  `createPolylines` hardcodes `barrierType:"wall"` and `shape:"pol"`, and `getWalls` does not report
+  `oneWayReversed`.
+- **Restoring a wall on its own anchor.** `createWalls` stores x,y = midpoint and `createPolylines`
+  stores x,y = first vertex, and Roll20 keeps both verbatim. A wall's `anchor` in `prior` picks the
+  action that rebuilds the same record, so it renders where it did under any reading of x,y.
+  Sending a midpoint-anchored wall through `createPolylines` would shift it by half its length. A
+  record matching neither stays on the page, under `kept`.
+- **Doors go through the Mod.** `__forceMod` skips the direct branch of `createDLDoors`, which writes
+  a record with no `id`. That record draws, but it blocks nothing and cannot be opened (live incident,
+  2026-10-11). `decorate_openings` still takes the direct branch.
+- **Door state is a separate RTDB write.** `createDLDoors` hardcodes `isOpen`/`isLocked` to false in
+  both branches and the Mod branch has no `isSecret`, so `isOpen`, `isLocked` and `isSecret` go through
+  `rtUpdate` on `doors/page/<pageId>/<id>` after creation.
+- **What a restore does not bring back.** A wall's custom stroke (`getWalls` does not report it, so
+  restored walls are blue) and vertices finer than a whole pixel (`includePoints` rounds).
+- **The fingerprint** is an id-free hash of wall points, kept barriers and opening geometry, colour,
+  lock and secret state. A correct restore reproduces it. `isOpen` is left out so a door opened in play
+  does not trip `expectedFingerprint`. The check is not a lock: an edit in the moment between the read
+  and the writes is not caught.
+
+**Needs a live run.** The emulator stores what it is given, so none of this is proven by the tests:
+
+- `removeObject` with `objectType:"pathv2"` on a real wall; so far it has only been used by the
+  zone-probe recon.
+- A hand-drawn `pol` wall classifying as `first`, with `barrierType` reading `wall`, and rendering in
+  the same place after a replace and restore. The same for a `createWalls` wall.
+- A door created with `__forceMod`, then given `isLocked`/`isSecret`/`isOpen` by `rtUpdate`: that an
+  open client, the lighting engine and the Mod all see the state. `isSecret` on a new secret door is
+  new behaviour that `decorate_openings` does not have.
+- `clearDLOpenings` over RTDB removing Mod-created doors with an open client watching.
+- A large page: the size of `getWalls` with `includePoints` over the relay, the time taken by
+  ten-at-a-time `removeObject` calls, and a `prior` block in the hundreds of walls.
+- A failure mid-call on a live page, including a timed-out `createWalls` batch that did land; its ids
+  never come back, so only the re-read shows those walls and a restore removes them.
+- Ghost walls: records the Mod cannot see are not listed by `getWalls`, so they survive and are not
+  counted.
 
 ### Formerly browser-bridged (Playwright) — where each one went
 The Playwright bridge is **deleted**. Nothing in this table is a live capability; it is here so the

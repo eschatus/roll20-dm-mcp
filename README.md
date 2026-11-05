@@ -85,7 +85,7 @@ reads and writes, stored plans (`set_mob_plan`, `get_mob_plans`, `clear_mob_plan
 narration and whispers, `batch_exec`, and campaign management.
 
 **`roll20-dm-maps`** — `analyze_battlemap`, `setup_roll20_page`, `upload_and_place_map_image`,
-`auto_place_dl_walls`, `decorate_openings`, `place_polyline_walls`, map pins, token creation, layer
+`auto_place_dl_walls`, `decorate_openings`, `place_polyline_walls`, `replace_page_walls`, map pins, token creation, layer
 and FX tools, and `batch_import_maps`.
 
 The HP tools route three ways: **PCs** track HP in a GM-only notes block and never touch their token
