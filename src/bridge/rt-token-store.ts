@@ -128,7 +128,12 @@ export function importLegacyRtToken(): string | null {
  */
 export function readRtTokenSlot(campaignId: string): { token: StoredRtToken | null; legacyProblem: string | null } {
   const legacyProblem = importLegacyRtToken();
-  return { token: readSlot(campaignId), legacyProblem };
+  try {
+    return { token: readSlot(campaignId), legacyProblem };
+  } catch (err) {
+    if (!legacyProblem) throw err;
+    throw new Error(`${(err as Error).message}; ${legacyProblem}`, { cause: err });
+  }
 }
 
 /**

@@ -272,6 +272,16 @@ describe("failures name the file and leak nothing", () => {
     expect(fs.existsSync(legacyFile())).toBe(true);
   });
 
+  // Linux reports ENOTDIR for a path under a file where Windows reports ENOENT, so the test above
+  // only reaches this path on Linux. A corrupt slot reaches it everywhere.
+  it("a slot that cannot be read does not hide why the import failed", () => {
+    gemHarvest(A);
+    fs.mkdirSync(path.join(tmp, "rt-tokens"), { recursive: true });
+    fs.writeFileSync(slotFile(A), "{not json");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => rt.__readRtCredentialForTest(A)).toThrow(/is not valid JSON.*could not be filed under its campaign/);
+  });
+
   it("no error or status text ever carries a token value", () => {
     furnish(B);
     gemHarvest(B);
