@@ -221,7 +221,7 @@ export function registerCharacterTools(server: McpServer): void {
       const r = await roll20.relayCommand<{ charId: string; character: string; fields: number; defaulttoken?: string }>({
         action: "setDefaultToken", tokenId, ...(charSheetId ? { charId: charSheetId } : {}),
       });
-      if (!r.defaulttoken) throw new Error("The deployed relay did not return the default token, so nothing was saved. Re-paste relay 2.12.0.");
+      if (!r.defaulttoken) throw new Error("The deployed relay did not return the default token, so nothing was saved. Re-paste relay 2.12.1.");
       await writeDefaultTokenRt(r.charId, r.defaulttoken);
       return json({ charSheetId: r.charId, character: r.character, fields: r.fields });
     }

@@ -14,6 +14,7 @@ import { rtGet } from "../bridge/roll20-rt.js";
 import { newRowId } from "../tools/character.js";
 import { adjustSheetHp } from "../tools/pcHp.js";
 import { writeDefaultTokenRt } from "../bridge/default-token.js";
+import { EXPECTED_RELAY_VERSION } from "../bridge/relay-version.js";
 
 type Read = { values: Record<string, unknown>; failed: string[]; reasons: Record<string, string>; sheet: unknown };
 type Attr = { id: string; name?: string };
@@ -27,6 +28,10 @@ function check(what: string, ok: boolean, detail: unknown): void {
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
+  const { version } = await relayCommand<{ version?: string }>({ action: "ping" });
+  if (version !== EXPECTED_RELAY_VERSION) {
+    throw new Error(`relay ${version ?? "unknown"} is deployed, this needs ${EXPECTED_RELAY_VERSION}: nothing here would prove anything`);
+  }
   const campaign = await rtGet<{ playerpageid?: string }>("campaign");
   const pid = campaign?.playerpageid;
   if (!pid) throw new Error("campaign has no player page");
@@ -60,6 +65,7 @@ async function main() {
 
     await relayCommand({ action: "linkToken", tokenId, charId, bars: [{ bar: 1, attribute: field }] });
     const def = await relayCommand<{ defaulttoken?: string }>({ action: "setDefaultToken", tokenId, charId });
+    check("relay returns the default token", !!def.defaulttoken, def.defaulttoken?.length);
     await writeDefaultTokenRt(charId, def.defaulttoken ?? "");
     const stamp = await rtGet(`characters/${charId}/defaulttoken`);
     check("default token lands in both nodes", typeof stamp === "number", stamp);
@@ -69,6 +75,7 @@ async function main() {
       const moved = await relayCommand<{ unlinked: number[] }>({ action: "linkToken", tokenId, charId: other.id });
       await pause(1500);
       const after = await rtGet<{ bar1_link?: string; represents?: string }>(`graphics/page/${pid}/${tokenId}`);
+      check("relay reports the unlinked bar", moved.unlinked?.includes(1) === true, moved);
       check("moving the token unlinks the old bar", !after?.bar1_link && after?.represents === other.id, { moved, after: after?.bar1_link });
     } finally {
       await relayCommand({ action: "linkToken", tokenId, charId, bars: [{ bar: 1, attribute: field }] });

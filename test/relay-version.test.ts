@@ -5,6 +5,7 @@
 // same pattern as test/marker-tables.test.ts locking the condition→marker tables.
 // ─────────────────────────────────────────────────────────────────────────────
 import { describe, it, expect, beforeEach } from "vitest";
+import { createHash } from "crypto";
 import { readFileSync } from "fs";
 import { EXPECTED_RELAY_VERSION } from "../src/bridge/relay-version.js";
 import {
@@ -24,6 +25,22 @@ function parseRelayVersion(): string {
   if (!m) throw new Error(`AI_RELAY_VERSION constant not found in ${RELAY_PATH}`);
   return m[1];
 }
+
+// The version in the banner is the only proof of which copy a campaign is running, so two different
+// relays must never share one. This always reads the source, even under --verify. It can't tell
+// whether the version moved when the hash did, so a hash edited alone still passes.
+describe("mod-scripts/relay-version.lock: a changed relay gets a new version", () => {
+  it("pins the relay source to its version", () => {
+    const src = readFileSync("mod-scripts/ai-relay.js", "utf8").replace(/\r\n/g, "\n");
+    const sha256 = createHash("sha256").update(src).digest("hex");
+    const lock = JSON.parse(readFileSync("mod-scripts/relay-version.lock", "utf8")) as { version: string; sha256: string };
+    expect(lock.version, "relay-version.lock is behind EXPECTED_RELAY_VERSION").toBe(EXPECTED_RELAY_VERSION);
+    expect(
+      sha256,
+      `ai-relay.js changed. Bump AI_RELAY_VERSION and EXPECTED_RELAY_VERSION past ${lock.version}, then set version and sha256 in relay-version.lock. New sha256: ${sha256}`
+    ).toBe(lock.sha256);
+  });
+});
 
 describe("ai-relay.js AI_RELAY_VERSION ↔ relay-version.ts EXPECTED_RELAY_VERSION agree", () => {
   it("the parsed relay constant equals the compiled-in expected version", () => {
