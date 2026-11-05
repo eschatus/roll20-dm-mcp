@@ -349,6 +349,18 @@ registry override (`sidekick: true`, `src/registry/characters.ts`) is needed to 
   (`registry.listSidekickNames()`) so a sidekick routes as an NPC everywhere HP/death routing is
   decided. See issue #132.
 
+**Sheet-carried PC HP (`set_pc_hp_source`):** a campaign can opt true PCs out of the tracked block and
+onto Roll20's own sheets, for a table whose players actually use them. It is per campaign
+(`pcSheetHp` in `campaigns.json`), not inferred from `bar1_link`: a Beyond20 table can have linked bars
+too. Every PC HP write goes through `adjustPcHp` in `src/tools/pcHp.ts`; never send the `adjustPcHp` relay
+action from a new call site, or that site will write the block on a sheet campaign. Built on
+`getSheetItem`/`setSheetItem`, so no relay action and no redeploy. A bad read refuses, never coerces,
+and there is no fallback to tracked. The token bar is still never written; a linked bar follows the
+write on its own (live, cos-test). **`setSheetItem`'s `written` is not evidence:** on a live Beacon
+sheet a field with no attribute record reports written and stores nothing, despite `allowThrow`, so
+every write is read back. `setAttrs` creates such a field. Status and limits:
+`docs/roll20-api-coverage.md` → "PC HP on Roll20 sheets".
+
 **Named values (#259):** `set_token_value`/`get_token_value` store semantics-free JSON on a token in
 a `%%VALS=<percent-encoded JSON>%%` gmnotes block, over direct RTDB (`src/bridge/token-values.ts`): no
 relay action, **no Mod redeploy**, and the Mod can't see them. The key `hp` is the existing `%%PCHP%%`

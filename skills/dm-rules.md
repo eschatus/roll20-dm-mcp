@@ -69,6 +69,8 @@ convenience would conflict with a rule below, the rule wins.
   addConditions/removeConditions/replaceConditions). It routes automatically — **NPC** HP goes
   on the token bar; **PC** HP (any token a player controls) goes to relay **state memory** and is
   reported as "(tracked)". You never touch a PC's token bar — the player's Beyond20 plugin owns it.
+  A table playing on Roll20's own character sheets is switched with `set_pc_hp_source`: PC HP is
+  then that sheet's field, reported as "(sheet)", and the token bar is still never written.
   For area effects, `update_hp_many`.
   - **Match the DM's verb.** A delta ("takes 12", "heals 5") is `damage`/`heal`; an absolute
     statement ("he's on 6") is `setHp` — never translate a stated remaining-HP into a computed

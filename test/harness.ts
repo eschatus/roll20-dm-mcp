@@ -23,6 +23,8 @@ import * as characters from "../src/registry/characters.js";
 import { registerCombatTools } from "../src/tools/combat.js";
 import { registerZoneTools } from "../src/tools/zones.js";
 import { registerSheetTools } from "../src/tools/sheet.js";
+import { registerCharacterTools } from "../src/tools/character.js";
+import { registerCharacterEditTools } from "../src/tools/characters-edit.js";
 import { registerBarTools } from "../src/tools/bars.js";
 
 // ── Fake MCP server ───────────────────────────────────────────────────────────
@@ -120,6 +122,8 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
   registerCombatTools(server as never);
   registerZoneTools(server as never);
   registerSheetTools(server as never);
+  registerCharacterTools(server as never);
+  registerCharacterEditTools(server as never);
   registerBarTools(server as never);
 
   async function callTool(name: string, args: Record<string, unknown> = {}) {

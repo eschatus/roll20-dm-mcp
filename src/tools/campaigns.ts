@@ -26,6 +26,29 @@ export function registerCampaignTools(server: McpServer): void {
   );
 
   server.tool(
+    "set_pc_hp_source",
+    "Choose where the ACTIVE campaign keeps a true PC's HP. 'tracked' (the default) keeps it in a GM-only block on the token, for tables whose players' sheets live outside Roll20 (D&D Beyond with Beyond20, a companion app). 'sheet' is for tables that play on Roll20's own character sheets: update_token_hp, update_hp_many, resolve_aoe healing and revive_token then read and write that sheet field, reported as '(sheet)'. The token bar is never written either way; a bar linked to the sheet field follows it. NPCs and sidekicks stay on bar1. Saved per campaign.",
+    {
+      source: z.enum(["tracked", "sheet"]).describe("'sheet' = Roll20's character sheet holds PC HP; 'tracked' = the GM-only token block does."),
+      attribute: z.string().min(1).optional().describe("Sheet field holding HP when source is 'sheet'. Default 'hp'. get_sheet_summary lists a Beacon sheet's names."),
+    },
+    async ({ source, attribute }) => {
+      if (source === "tracked" && attribute) throw new Error("attribute only applies to source 'sheet'.");
+      const field = source === "sheet" ? (attribute ?? "hp") : null;
+      campaigns.setPcSheetHp(field);
+      const name = campaigns.getActiveCampaign().name;
+      return {
+        content: [{
+          type: "text",
+          text: field
+            ? `${name}: PC HP now lives on the character sheet ('${field}'). Tracked HP already on tokens is not copied across, and turn announcements keep showing a tracked value while its block remains on the token.`
+            : `${name}: PC HP is tracked on the token again. Sheet values are not copied across.`,
+        }],
+      };
+    }
+  );
+
+  server.tool(
     "list_campaigns",
     "List all registered campaigns and which one is currently active",
     {},
@@ -47,6 +70,7 @@ export function registerCampaignTools(server: McpServer): void {
                 active: c.active,
                 roll20CampaignId: c.roll20CampaignId,
                 ...(c.notes ? { notes: c.notes } : {}),
+                pcHpSource: c.pcSheetHp ? "sheet" : "tracked",
               })),
               null,
               2

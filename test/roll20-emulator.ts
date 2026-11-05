@@ -64,7 +64,7 @@ function makeRng(seed: number): () => number {
 
 export interface R20Obj {
   id: string;
-  get(prop: string): unknown;
+  get(prop: string, callback?: (value: unknown) => void): unknown;
   set(prop: string | Record<string, unknown>, value?: unknown): void;
   remove(): void;
 }
@@ -125,6 +125,8 @@ export interface SheetCarrierOptions {
   actions?: string[];
   /** Action names whose promise rejects. */
   failActions?: string[];
+  /** setSheetItem resolves on a field with no stored value and keeps nothing, as a live Beacon sheet does. */
+  dropsMissingFields?: boolean;
   /** Property names whose getSheetItem/setSheetItem promise rejects. */
   failItems?: string[];
   /** Property/action names whose promise NEVER settles — exercises the relay's async timeout. */
@@ -221,8 +223,11 @@ export class Roll20Emulator {
     setProp("id", id);
     const obj: R20Obj = {
       id,
-      get(prop: string) {
-        return bag[prop] !== undefined ? bag[prop] : "";
+      get(prop: string, callback?: (value: unknown) => void) {
+        const value = bag[prop] !== undefined ? bag[prop] : "";
+        // A character's blobs (bio, gmnotes, defaulttoken) arrive only through this callback.
+        if (callback) { void Promise.resolve().then(() => callback(value)); return undefined; }
+        return value;
       },
       set(prop: string | Record<string, unknown>, value?: unknown) {
         if (typeof prop === "object") {
@@ -748,6 +753,8 @@ export class Roll20Emulator {
         }
         const attr = legacy(charId, prop);
         if (attr) { attr.set(valtype, value); return Promise.resolve(); }
+        // Seen live on an ogl5e Beacon sheet: reported as written, stored nowhere.
+        if (model.dropsMissingFields) return Promise.resolve();
         if (options.createAttr === false) return refuse(`attribute ${prop} does not exist and createAttr is off`);
         this.createObj("attribute", { characterid: charId, name: prop, [valtype]: value });
         return Promise.resolve();

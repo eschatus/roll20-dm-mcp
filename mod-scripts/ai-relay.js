@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.11.0";
+var AI_RELAY_VERSION = "2.12.0";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -3806,6 +3806,133 @@ ACTIONS["editCharacter"] = function (args, msg, nonce, senderPlayerId) {
         return;
       }
       };
+
+// ── Character primitives ─────────────────────────────────────────────────────
+// What the attribute and Beacon carriers leave out: finding a character, its own fields, its
+// abilities, deleting attributes, and linking a token. Every result goes through writeResult,
+// whose percent-encoding carries bios and macro text holding `@{`/`[[` safely.
+ACTIONS["listCharacters"] = function (args, msg, nonce, senderPlayerId) {
+  let rows = findObjs({ _type: "character" }).filter(function (c) {
+    return args.includeArchived || !c.get("archived");
+  }).map(function (c) {
+    return {
+      id: c.id,
+      name: c.get("name"),
+      controlledby: c.get("controlledby"),
+      inplayerjournals: c.get("inplayerjournals"),
+      archived: !!c.get("archived"),
+      avatar: c.get("avatar"),
+    };
+  });
+  writeResult(nonce, rows);
+};
+
+ACTIONS["getCharacter"] = function (args, msg, nonce, senderPlayerId) {
+  let ch = getObj("character", args.charId);
+  if (!ch) throw new Error("Character not found: " + args.charId);
+  // bio, gmnotes and defaulttoken are blobs: Roll20 hands them over only through a callback.
+  function blob(prop) {
+    return new Promise(function (resolve) { ch.get(prop, resolve); });
+  }
+  settleSheetAsync(nonce, "getCharacter", Promise.all([blob("bio"), blob("gmnotes"), blob("defaulttoken")]), function (b) {
+    return {
+      id: ch.id,
+      name: ch.get("name"),
+      controlledby: ch.get("controlledby"),
+      inplayerjournals: ch.get("inplayerjournals"),
+      archived: !!ch.get("archived"),
+      avatar: ch.get("avatar"),
+      bio: b[0],
+      gmnotes: b[1],
+      defaulttoken: b[2],
+    };
+  });
+};
+
+ACTIONS["listAbilities"] = function (args, msg, nonce, senderPlayerId) {
+  if (!args.charId) throw new Error("listAbilities: charId is required");
+  writeResult(nonce, findObjs({ _type: "ability", _characterid: args.charId }).map(function (a) {
+    return {
+      id: a.id,
+      name: a.get("name"),
+      description: a.get("description"),
+      action: a.get("action"),
+      istokenaction: !!a.get("istokenaction"),
+    };
+  }));
+};
+
+// The macro text travels as `abilityAction`: the dispatcher consumes a command's `action` field.
+ACTIONS["setAbility"] = function (args, msg, nonce, senderPlayerId) {
+  if (!args.charId) throw new Error("setAbility: charId is required");
+  if (!getObj("character", args.charId)) throw new Error("Character not found: " + args.charId);
+  let found = null;
+  if (args.abilityId) {
+    found = getObj("ability", args.abilityId);
+    if (!found || found.get("characterid") !== args.charId) {
+      throw new Error("Ability " + args.abilityId + " not found on character " + args.charId);
+    }
+  } else {
+    let named = findObjs({ _type: "ability", _characterid: args.charId, name: args.name });
+    if (named.length > 1) throw new Error(named.length + " abilities are named '" + args.name + "': pass abilityId");
+    found = named[0] || null;
+  }
+  let props = stripUndef({
+    name: args.name,
+    action: args.abilityAction,
+    description: args.description,
+    istokenaction: args.istokenaction,
+  });
+  if (found) {
+    if (Object.keys(props).length === 0) throw new Error("setAbility: nothing to change");
+    setSafe(found, props);
+    writeResult(nonce, { id: found.id, created: false, changed: Object.keys(props) });
+    return;
+  }
+  props.characterid = args.charId;
+  let made = createObj("ability", props);
+  if (!made) throw new Error("createObj('ability') returned nothing");
+  writeResult(nonce, { id: made.id, created: true, changed: Object.keys(props) });
+};
+
+// Deletes by exact names, or by a whole-row prefix. The prefix must be a repeating row's, so no
+// call can reach a character's plain attributes by accident.
+ACTIONS["deleteAttributes"] = function (args, msg, nonce, senderPlayerId) {
+  if (!args.charId) throw new Error("deleteAttributes: charId is required");
+  let attrs = findObjs({ _type: "attribute", _characterid: args.charId });
+  let targets;
+  let missing = [];
+  if (args.prefix) {
+    if (!/^repeating_.+_$/.test(args.prefix)) throw new Error("deleteAttributes: prefix must be repeating_<section>_<row>_");
+    targets = attrs.filter(function (a) { return a.get("name").indexOf(args.prefix) === 0; });
+  } else if (args.names && args.names.length) {
+    targets = attrs.filter(function (a) { return args.names.indexOf(a.get("name")) !== -1; });
+    let have = targets.map(function (a) { return a.get("name"); });
+    missing = args.names.filter(function (n) { return have.indexOf(n) === -1; });
+  } else {
+    throw new Error("deleteAttributes: pass names or prefix");
+  }
+  let removed = targets.map(function (a) { return a.get("name"); });
+  targets.forEach(function (a) { a.remove(); });
+  writeResult(nonce, { removed: removed, missing: missing });
+};
+
+ACTIONS["linkToken"] = function (args, msg, nonce, senderPlayerId) {
+  let t = getObj("graphic", args.tokenId);
+  if (!t) throw new Error("Token not found: " + args.tokenId);
+  if (!getObj("character", args.charId)) throw new Error("Character not found: " + args.charId);
+  let props = { represents: args.charId };
+  // Every attribute is found before anything is written, so a bad name changes nothing.
+  (args.bars || []).forEach(function (b) {
+    let attr = findObjs({ _type: "attribute", _characterid: args.charId, name: b.attribute })[0];
+    if (!attr) throw new Error("No attribute '" + b.attribute + "' on character " + args.charId + " to link to bar " + b.bar);
+    props["bar" + b.bar + "_link"] = attr.id;
+    props["bar" + b.bar + "_value"] = attr.get("current");
+    props["bar" + b.bar + "_max"] = attr.get("max");
+  });
+  setSafe(t, props);
+  writeResult(nonce, { ok: true, tokenId: t.id, charId: args.charId, set: Object.keys(props) });
+};
 
 // ── Beacon sheet carriers (issue #205) ────────────────────────────────────────────────────────
 // Roll20's own signatures, which differ between the two families and are easy to get backwards:
