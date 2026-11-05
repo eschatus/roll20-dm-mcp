@@ -55,8 +55,11 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
   naming what to refresh; harvesting belongs to the gem, where a human is watching one window.
 - **Relay version handshake:** `AI_RELAY_VERSION` (`mod-scripts/ai-relay.js`) and
   `EXPECTED_RELAY_VERSION` (`src/bridge/relay-version.ts`) are a hand-synced pair, locked by
-  `test/relay-version.test.ts` — bump BOTH when changing `ai-relay.js` in a way worth flagging to a
-  DM on a stale deploy. A mismatch warns once (never throws) and surfaces via `transport_status`.
+  `test/relay-version.test.ts` — **bump BOTH on every change to `ai-relay.js`, before anyone is asked
+  to paste it**, even mid-branch and unreleased: the version is the only proof of which copy a campaign
+  runs, so two different relays must never share one. `mod-scripts/relay-version.lock` pins the source
+  hash, and an edit without a new lock fails the test. A mismatch warns once (never throws) and surfaces
+  via `transport_status`.
 - `src/recon/*` are manual live scripts (real campaign), run with `tsx` — the smoke/soak layer.
   They are excluded from the prod build.
 
