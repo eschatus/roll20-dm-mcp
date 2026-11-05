@@ -4,6 +4,7 @@ import { readFileSync, statSync } from "fs";
 import path from "path";
 import * as roll20 from "../bridge/roll20.js";
 import { rtCreatePage } from "../bridge/roll20-rt.js";
+import { failJson } from "./combatHelpers.js";
 import { createPin, deletePin, listPins, toPinFields, updatePin, withOwnContentDesync } from "../bridge/pins.js";
 
 // --- Local-asset confinement ---------------------------------------------------
@@ -47,55 +48,79 @@ export function resolveConfinedImage(inputPath: string): { abs: string; mediaTyp
   return { abs, mediaType, size: st.size };
 }
 
+type PageRow = { id: string; name: string; width: number; height: number; dynamic_lighting_enabled?: boolean };
+const listPages = () => roll20.relayCommand<PageRow[]>({ action: "listPages" });
+const describePage = (p: PageRow) => ({ pageId: p.id, name: p.name, width: p.width, height: p.height });
+
 export function registerMapTools(server: McpServer): void {
   server.tool(
     "setup_roll20_page",
-    "Find or create a Roll20 page by name, then configure it (dimensions, scale). Creates the page automatically if it does not exist.",
+    "Create a Roll20 page and configure it (dimensions, scale). REFUSES if a page with this name already exists (case-insensitive) and changes nothing, naming that page: a same-named page is usually a different map. Pass reuseExisting:true only to resume work on that page. Reports dynamic_lighting_enabled as Roll20 stores it, or null if the page does not carry it.",
     {
       name: z.string(),
-      widthSquares: z.number().int().positive().default(30),
-      heightSquares: z.number().int().positive().default(20),
-      scaleNumber: z.number().positive().default(5),
-      scaleUnits: z.enum(["ft", "m"]).default("ft"),
+      widthSquares: z.number().int().positive().optional().describe("Default 30 on a new page. On reuse, omit to keep the page's width."),
+      heightSquares: z.number().int().positive().optional().describe("Default 20 on a new page. On reuse, omit to keep the page's height."),
+      scaleNumber: z.number().positive().optional().describe("Default 5 on a new page. On reuse, omit to keep the page's scale."),
+      scaleUnits: z.enum(["ft", "m"]).optional().describe("Default ft on a new page. On reuse, omit to keep the page's units."),
+      reuseExisting: z.boolean().default(false).describe("Configure the existing page of this name instead of refusing. Only what you pass is changed. Still refuses if several pages share the name."),
     },
-    async ({ name, widthSquares, heightSquares, scaleNumber, scaleUnits }) => {
-      const pages = await roll20.relayCommand<{ id: string; name: string; width: number; height: number }[]>({
-        action: "listPages",
-      });
+    async ({ name, widthSquares, heightSquares, scaleNumber, scaleUnits, reuseExisting }) => {
+      const sameName = (await listPages()).filter((p) => p.name.toLowerCase() === name.toLowerCase());
 
-      let page = pages.find((p) => p.name.toLowerCase() === name.toLowerCase());
-      let created = false;
-
-      if (!page) {
-        // Browserless (#178): RTDB creates the page, then setPageProps below fills in the fields
-        // the RTDB page does not carry (scale_number/scale_units/showgrid).
-        const newId = await rtCreatePage({ name, widthSquares, heightSquares });
-        page = { id: newId, name, width: widthSquares, height: heightSquares };
-        created = true;
+      if (sameName.length > 0 && !reuseExisting) {
+        return failJson({
+          error: `A page named "${sameName[0]!.name}" already exists (${sameName.map((p) => p.id).join(", ")}). Nothing was changed. Use a different name, or pass reuseExisting:true if you mean to work on that page.`,
+          existing: sameName.map(describePage),
+        });
+      }
+      if (sameName.length > 1) {
+        return failJson({
+          error: `${sameName.length} pages are named "${name}", so reuseExisting cannot tell which you mean. Nothing was changed. Rename the others with rename_roll20_page first.`,
+          existing: sameName.map(describePage),
+        });
       }
 
-      await roll20.relayCommand({
-        action: "setPageProps",
-        pageId: page.id,
-        width: widthSquares,
-        height: heightSquares,
-        scale_number: scaleNumber,
-        scale_units: scaleUnits,
-        showgrid: true,
-      });
+      const existing = sameName[0];
+      let pageId: string;
+      let props: Record<string, unknown>;
+      if (existing) {
+        pageId = existing.id;
+        props = {
+          ...(widthSquares !== undefined && { width: widthSquares }),
+          ...(heightSquares !== undefined && { height: heightSquares }),
+          ...(scaleNumber !== undefined && { scale_number: scaleNumber }),
+          ...(scaleUnits !== undefined && { scale_units: scaleUnits }),
+        };
+      } else {
+        const width = widthSquares ?? 30;
+        const height = heightSquares ?? 20;
+        // Browserless (#178): RTDB creates the page, then setPageProps below fills in the fields
+        // the RTDB page does not carry (scale_number/scale_units/showgrid).
+        pageId = await rtCreatePage({ name, widthSquares: width, heightSquares: height });
+        props = { width, height, scale_number: scaleNumber ?? 5, scale_units: scaleUnits ?? "ft", showgrid: true };
+      }
+
+      if (Object.keys(props).length > 0) {
+        await roll20.relayCommand({ action: "setPageProps", pageId, ...props });
+      }
+
+      // A new page's value is read back, not assumed: rtCreatePage mirrors it from a template page.
+      const row = existing ?? (await listPages()).find((p) => p.id === pageId);
+      const created = !existing;
 
       return {
         content: [
           {
             type: "text",
             text: JSON.stringify({
-              pageId: page.id,
-              name: page.name,
-              widthSquares,
-              heightSquares,
-              scale: `${scaleNumber}${scaleUnits}`,
+              pageId,
+              name: existing?.name ?? name,
+              widthSquares: props.width ?? existing?.width,
+              heightSquares: props.height ?? existing?.height,
+              scale: `${props.scale_number ?? ""}${props.scale_units ?? ""}` || "unchanged",
               created,
-              note: `Page ${created ? "created" : "found and configured"}. Pass pageId "${page.id}" to auto_place_dl_walls and decorate_openings.`,
+              dynamic_lighting_enabled: row?.dynamic_lighting_enabled ?? null,
+              note: `Page ${created ? "created" : "reused"}. Pass pageId "${pageId}" to auto_place_dl_walls and decorate_openings.`,
             }),
           },
         ],
@@ -392,21 +417,22 @@ export function registerMapTools(server: McpServer): void {
     "List all Roll20 pages in the campaign with their IDs, names, and dimensions.",
     {},
     async () => {
-      const pages = await roll20.relayCommand<{ id: string; name: string; width: number; height: number }[]>({ action: "listPages" });
-      return { content: [{ type: "text", text: JSON.stringify(pages) }] };
+      return { content: [{ type: "text", text: JSON.stringify(await listPages()) }] };
     }
   );
 
   server.tool(
     "get_current_page",
-    "Return the Roll20 page ID and name that players are currently on (the player page).",
+    "Return the Roll20 page ID and name that players are currently on (the player page), with dynamic_lighting_enabled as Roll20 stores it, or null if the page does not carry it.",
     {},
     async () => {
       const pageId = await roll20.getCurrentPageId();
-      const pages = await roll20.relayCommand<{ id: string; name: string; width: number; height: number }[]>({ action: "listPages" });
-      const page = pages.find((p) => p.id === pageId);
+      const page = (await listPages()).find((p) => p.id === pageId);
       return {
-        content: [{ type: "text", text: JSON.stringify({ pageId, name: page?.name ?? "unknown", width: page?.width, height: page?.height }) }],
+        content: [{ type: "text", text: JSON.stringify({
+          pageId, name: page?.name ?? "unknown", width: page?.width, height: page?.height,
+          dynamic_lighting_enabled: page?.dynamic_lighting_enabled ?? null,
+        }) }],
       };
     }
   );

@@ -272,7 +272,10 @@ vision/wall tooling is maps-only.)
 2. `setup_roll20_page(...)` — creates the page **browserlessly via `rtCreatePage`** (a direct RTDB
    write to the `pages` node, #178 — `createObj("page")` is a MOD-sandbox limitation only), then
    `setPageProps` over the Mod for the fields the RTDB page doesn't carry (scale_number/scale_units/
-   showgrid). NB page `width`/`height` are **70px units, not cells**.
+   showgrid). NB page `width`/`height` are **70px units, not cells**. **Refuses a name that already
+   exists** (#277; it used to resize whatever page matched) unless `reuseExisting: true`, which
+   changes only the fields passed. `batch_import_maps` has its own `skipExisting`/`reuseExisting`,
+   and `reuseExisting` wins. `rtCreatePage` copies `dynamic_lighting_enabled` from its template page.
 3. `auto_place_dl_walls({walls, strokeColor})` — places DL `pathv2` walls.
 4. `decorate_openings({doors, windows, secretDoors})` — creates **native Roll20 DL door/window
    objects** (not map-layer rectangles): doors `#FF0000`, windows `#00FFFF`, secret doors `#9932CC`.
