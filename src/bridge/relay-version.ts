@@ -7,7 +7,7 @@
 // marker table lock in test/marker-tables.test.ts). Bump BOTH on EVERY change to ai-relay.js, and
 // update mod-scripts/relay-version.lock, because the version is the only proof of which copy is
 // deployed. See src/bridge/relay-version-check.ts for how a mismatch gets reported.
-export const EXPECTED_RELAY_VERSION = "2.12.1";
+export const EXPECTED_RELAY_VERSION = "2.12.2";
 
 // The first relay version whose `mergeTurnOrder` honours `keepTurn` (issue #217). An older relay
 // ignores the flag and runs the legacy pr-descending sort, which rotates the active turn back to
