@@ -442,7 +442,8 @@ Choices that come from how Roll20 stores these objects, not from anything the em
 - **The fingerprint** is an id-free hash of wall points, kept barriers and opening geometry, colour,
   lock and secret state. A correct restore reproduces it. `isOpen` is left out so a door opened in play
   does not trip `expectedFingerprint`. The check is not a lock: an edit in the moment between the read
-  and the writes is not caught.
+  and the writes is not caught. The failure report compares with `isOpen` included, so a door left shut
+  by a failed state write is reported as needing a restore.
 
 **Needs a live run.** The emulator stores what it is given, so none of this is proven by the tests:
 

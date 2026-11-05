@@ -329,6 +329,24 @@ describe("partial failure", () => {
 
   const LONG_WALLS = { ...NEW_CONTENT, walls: Array.from({ length: 30 }, (_, i) => ({ from: [i * 100, 0], to: [i * 100 + 50, 0] })) };
 
+  it("a failed state write that leaves a door closed is not reported as nothing to restore", async () => {
+    const [door] = doors();
+    door.set({ isLocked: false });
+    h.emu.findObjs({}).filter((o) => o !== door && ["pathv2", "window"].includes(String(o.get("_type")))).forEach((o) => o.remove());
+    expect(door.get("isOpen")).toBe(true);
+
+    const { r: seen } = await call({ dryRun: true });
+    rt.apply = () => Promise.reject(new Error("injected rtUpdate failure"));
+    const { r, isError } = await call({ restore: seen.prior });
+
+    expect(isError).toBe(true);
+    expect(r.stage).toBe("set-opening-state");
+    expect(doors()[0].get("isOpen")).toBe(false);
+    expect(r.leftOnPage.matchesPrior).toBe(false);
+    expect(r.error).not.toMatch(/nothing needs restoring/);
+    expect(r.error).toMatch(/To restore it/);
+  });
+
   it("wall placement fails first: page untouched, nothing to restore", async () => {
     h.failRelayAction("createWalls");
     const { r, isError } = await call(NEW_CONTENT);

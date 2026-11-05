@@ -72,6 +72,8 @@ interface PageState {
   windows: PriorOpening[];
   unreadableOpenings: number;
   fingerprint: string;
+  /** The fingerprint with isOpen included. Internal: decides whether a failed call left repair work. */
+  exactFingerprint: string;
 }
 
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
@@ -112,12 +114,13 @@ function captureOpening(o: LiveOpening): PriorOpening | null {
 
 // Order-independent and id-free, so a restore that really reproduced the page gets the same value
 // back. isOpen is left out on purpose: a door opened in play is not an edit to the map. Wall stroke
-// is out because getWalls does not report it.
-function fingerprintOf(walls: HeldWall[], kept: LiveWall[], doors: PriorOpening[], windows: PriorOpening[]): string {
+// is out because getWalls does not report it. withOpen adds isOpen back for the failure report, where
+// a door left shut by a failed state write is real damage and not play.
+function fingerprintOf(walls: HeldWall[], kept: LiveWall[], doors: PriorOpening[], windows: PriorOpening[], withOpen = false): string {
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const opening = (type: string, o: PriorOpening) => JSON.stringify([
     type, r2(o.x), r2(o.y), r2(o.handle0.x), r2(o.handle0.y), r2(o.handle1.x), r2(o.handle1.y),
-    o.color ?? "", o.isLocked, o.isSecret,
+    o.color ?? "", o.isLocked, o.isSecret, ...(withOpen ? [o.isOpen] : []),
   ]);
   const lines = [
     ...walls.map((w) => JSON.stringify(["wall", w.points])),
@@ -147,6 +150,7 @@ async function readPage(pageId: string): Promise<PageState> {
     totalWalls: raw.length, walls, kept, doors, windows,
     unreadableOpenings: live.doors.length + live.windows.length - doors.length - windows.length,
     fingerprint: fingerprintOf(walls, keptRaw, doors, windows),
+    exactFingerprint: fingerprintOf(walls, keptRaw, doors, windows, true),
   };
 }
 
@@ -311,7 +315,7 @@ async function reportFailure(pageId: string, before: PageState, ledger: Ledger, 
   const liveIds = new Set(after?.walls.map((w) => w.id));
   const oldLeft = before.walls.filter((w) => liveIds.has(w.id)).length;
   const newLeft = ledger.newWallIds.filter((id) => liveIds.has(id));
-  const unchanged = after?.fingerprint === before.fingerprint;
+  const unchanged = after?.exactFingerprint === before.exactFingerprint;
 
   const where = after
     ? `Left on the page: ${after.totalWalls} walls (${oldLeft} of the ${before.walls.length} prior, ` +
