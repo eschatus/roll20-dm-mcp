@@ -134,6 +134,8 @@ describe("a write that cannot be done changes nothing and says so", () => {
     const id = makePc("Brie", charId);
     await expect(h.callTool("update_token_hp", { tokenId: id, setHp: 3 })).rejects.toThrow(/reported success/);
     expect(await sheet("hp")).toBeNull();
+    // An empty field must not pass as a zero that landed.
+    await expect(h.callTool("update_token_hp", { tokenId: id, setHp: 0 })).rejects.toThrow(/reported success/);
   });
 
   it("fails loudly on a sandbox with no sheet carriers rather than falling back to tracked", async () => {

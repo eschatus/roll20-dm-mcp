@@ -19,6 +19,7 @@ import { z } from "zod";
 import { Roll20Emulator } from "./roll20-emulator.js";
 import * as roll20 from "../src/bridge/roll20.js";
 import { __setAttributeTestSource } from "../src/bridge/attributes.js";
+import { __setDefaultTokenTestStore } from "../src/bridge/default-token.js";
 import * as characters from "../src/registry/characters.js";
 import { registerCombatTools } from "../src/tools/combat.js";
 import { registerZoneTools } from "../src/tools/zones.js";
@@ -64,6 +65,8 @@ export interface Harness {
    * clearRelayFailures() too.
    */
   stubRelayAction(action: string, result: unknown): void;
+  /** The default tokens written to RTDB, by character id. */
+  readonly defaultTokens: Map<string, { blob: string; stamp: number }>;
   /** Every relay action ATTEMPTED, in order — lets a test prove a side effect never ran. */
   readonly relayLog: string[];
   clearRelayLog(): void;
@@ -89,6 +92,7 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
   const failingActions = new Map<string, string>();
   const stubbedActions = new Map<string, unknown>();
   const relayLog: string[] = [];
+  const defaultTokens = new Map<string, { blob: string; stamp: number }>();
 
   roll20.__setBridgeTestTransport({
     relay: <T>(cmd: Record<string, unknown>) => {
@@ -118,6 +122,13 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
     return Promise.resolve(emu.charAttribRecords(charId));
   });
 
+  // The default token's two RTDB nodes, which the emulator's Mod write never reaches: that it
+  // doesn't is the live bug (#277), so these are kept apart from the character object.
+  __setDefaultTokenTestStore({
+    write: async (charId, blob, stamp) => { relayLog.push("rtdb:defaulttoken"); defaultTokens.set(charId, { blob, stamp }); },
+    read: async (charId) => defaultTokens.get(charId)?.blob ?? null,
+  });
+
   const server = new FakeMcpServer();
   registerCombatTools(server as never);
   registerZoneTools(server as never);
@@ -144,6 +155,7 @@ export function setupHarness(opts: HarnessOptions = {}): Harness {
     clearRelayFailures: () => { failingActions.clear(); stubbedActions.clear(); },
     stubRelayAction: (action: string, result: unknown) => void stubbedActions.set(action, result),
     relayLog,
+    defaultTokens,
     clearRelayLog: () => { relayLog.length = 0; },
     teardown: () => {
       roll20.__setBridgeTestTransport(null);

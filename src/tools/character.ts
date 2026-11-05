@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as roll20 from "../bridge/roll20.js";
 import { readCharacterAttributesRt, type AttributeValue } from "../bridge/attributes.js";
+import { writeDefaultTokenRt } from "../bridge/default-token.js";
 import { fail, failJson, json, resolveCharSheetId, resolveTokenOrThrow } from "./combatHelpers.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -194,7 +195,7 @@ export function registerCharacterTools(server: McpServer): void {
 
   server.tool(
     "link_token_to_character",
-    "Make a token represent a character and optionally link its bars to sheet attributes, so a bar and the attribute follow each other. Each bar takes the attribute's current values. Linking checks every attribute first and changes nothing if one is missing. A Beacon sheet's computed property is not an attribute, so it can't be linked here. A token linked this way on a Beyond20 table hands that bar to the sheet.",
+    "Make a token represent a character and optionally link its bars to sheet attributes, so a bar and the attribute follow each other. Each bar takes the attribute's current values. Linking checks every attribute first and changes nothing if one is missing. When the token moves to a different character, any bar not relinked in this call is unlinked and listed under unlinked, because it would otherwise keep editing the previous character. A Beacon sheet's computed property is not an attribute, so it can't be linked here. A token linked this way on a Beyond20 table hands that bar to the sheet.",
     {
       tokenId: z.string().optional(),
       tokenName: z.string().optional().describe("Token name on the current page, if no tokenId"),
@@ -214,9 +215,15 @@ export function registerCharacterTools(server: McpServer): void {
 
   server.tool(
     "set_default_token",
-    "Save a token as its character's default token, the one Roll20 places when the sheet is dragged onto a map. Uses the character the token represents unless charSheetId is given.",
+    "Save a token as its character's default token, the one Roll20 places when the sheet is dragged onto a map. Uses the character the token represents unless charSheetId is given. The saved token is read back before this reports success.",
     { tokenId: z.string().min(1), charSheetId: z.string().optional() },
-    async ({ tokenId, charSheetId }) =>
-      json(await roll20.relayCommand({ action: "setDefaultToken", tokenId, ...(charSheetId ? { charId: charSheetId } : {}) }))
+    async ({ tokenId, charSheetId }) => {
+      const r = await roll20.relayCommand<{ charId: string; character: string; fields: number; defaulttoken?: string }>({
+        action: "setDefaultToken", tokenId, ...(charSheetId ? { charId: charSheetId } : {}),
+      });
+      if (!r.defaulttoken) throw new Error("The deployed relay did not return the default token, so nothing was saved. Re-paste relay 2.12.0.");
+      await writeDefaultTokenRt(r.charId, r.defaulttoken);
+      return json({ charSheetId: r.charId, character: r.character, fields: r.fields });
+    }
   );
 }

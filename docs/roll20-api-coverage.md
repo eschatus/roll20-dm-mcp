@@ -351,7 +351,7 @@ slots, inventory, attacks and resources are attributes or rows named by the shee
 | Repeating rows | `get_repeating_section` | `set_repeating_row`, `delete_repeating_row` | relay paths live: minted row id, delete |
 | Computed properties, Beacon actions | `get_sheet_item`, `get_computed_property` | `set_sheet_item`, `set_computed_property`, `perform_sheet_action` | #205 |
 | Abilities | `list_character_abilities` | `set_character_ability`, `delete_character_ability` | live |
-| Token link and default token | `get_token` | `link_token_to_character`, `set_default_token` | link: live; default token: emulator |
+| Token link and default token | `get_token` | `link_token_to_character`, `set_default_token` | link: live; default token writes the RTDB nodes (#277), the Mod's own set stores nothing |
 
 "Live" means `src/recon/pc-sheet-hp-it.ts` on cos-test, 2026-11-04: relay 2.12.0, sandbox 1.5, `ogl5e`
 with `beacon:true`. No non-Beacon sheet has been run.

@@ -6,6 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { setupHarness, type Harness } from "./harness.js";
 import { groupRepeatingRows, newRowId, parseRepeatingName } from "../src/tools/character.js";
+import { __setDefaultTokenTestStore } from "../src/bridge/default-token.js";
 
 let h: Harness;
 let charId: string;
@@ -209,12 +210,61 @@ describe("tokens", () => {
     expect(t.get("bar1_link")).toBe("");
   });
 
-  it("set_default_token saves onto the represented character", async () => {
+  it("moving a token to another character unlinks the bars not relinked", async () => {
+    await h.callTool("set_character_attribute", { charSheetId: charId, attributeName: "mana", value: 5 });
+    const other = h.emu.createCharacter("Noor", { hp: 9 }, "player-1");
+    const page = h.emu.campaignModel.get("playerpageid") as string;
+    const t = h.emu.createToken({ pageid: page, name: "Brie" });
+    await h.callTool("link_token_to_character", {
+      tokenId: t.id, charSheetId: charId, bars: [{ bar: 1, attribute: "hp" }, { bar: 2, attribute: "mana" }],
+    });
+    const { json } = await h.callTool("link_token_to_character", { tokenId: t.id, charSheetId: other, bars: [{ bar: 1, attribute: "hp" }] });
+    expect(json).toMatchObject({ unlinked: [2] });
+    expect(t.get("bar2_link")).toBe("");
+    const noorHp = Object.values(h.emu.charAttribRecords(other)!)[0];
+    expect(t.get("bar1_link")).toBe(noorHp.id);
+  });
+
+  it("relinking on the same character leaves its other bars alone", async () => {
+    await h.callTool("set_character_attribute", { charSheetId: charId, attributeName: "mana", value: 5 });
+    const page = h.emu.campaignModel.get("playerpageid") as string;
+    const t = h.emu.createToken({ pageid: page, name: "Brie" });
+    await h.callTool("link_token_to_character", { tokenId: t.id, charSheetId: charId, bars: [{ bar: 2, attribute: "mana" }] });
+    const linked = t.get("bar2_link");
+    await h.callTool("link_token_to_character", { tokenId: t.id, charSheetId: charId, bars: [{ bar: 1, attribute: "hp" }] });
+    expect(t.get("bar2_link")).toBe(linked);
+  });
+
+  it("keeps a by-name sheetattr link when the character changes", async () => {
+    const other = h.emu.createCharacter("Noor", {}, "player-1");
+    const page = h.emu.campaignModel.get("playerpageid") as string;
+    const t = h.emu.createToken({ pageid: page, name: "Brie", represents: charId, bar3_link: "sheetattr_hp" });
+    await h.callTool("link_token_to_character", { tokenId: t.id, charSheetId: other });
+    expect(t.get("bar3_link")).toBe("sheetattr_hp");
+  });
+
+  it("set_default_token writes the blob and timestamp nodes Roll20 reads", async () => {
     const page = h.emu.campaignModel.get("playerpageid") as string;
     const t = h.emu.createToken({ pageid: page, name: "Brie", represents: charId });
     await h.callTool("set_default_token", { tokenId: t.id });
-    const { json } = await h.callTool("get_character", { charSheetId: charId });
-    expect(String((json as { defaulttoken: string }).defaulttoken)).toContain("Brie");
+    const saved = h.defaultTokens.get(charId)!;
+    expect(JSON.parse(saved.blob)).toMatchObject({ name: "Brie", represents: charId });
+    expect(saved.stamp).toBeGreaterThan(0);
+  });
+
+  it("set_default_token fails when the blob doesn't hold what was written", async () => {
+    __setDefaultTokenTestStore({ write: async () => {}, read: async () => "" });
+    const page = h.emu.campaignModel.get("playerpageid") as string;
+    const t = h.emu.createToken({ pageid: page, name: "Brie", represents: charId });
+    await expect(h.callTool("set_default_token", { tokenId: t.id })).rejects.toThrow(/did not land/);
+  });
+
+  it("set_default_token refuses a relay too old to return the token", async () => {
+    h.stubRelayAction("setDefaultToken", { charId, character: "Brie", fields: 3 });
+    const page = h.emu.campaignModel.get("playerpageid") as string;
+    const t = h.emu.createToken({ pageid: page, name: "Brie", represents: charId });
+    await expect(h.callTool("set_default_token", { tokenId: t.id })).rejects.toThrow(/Re-paste relay/);
+    expect(h.defaultTokens.size).toBe(0);
   });
 });
 

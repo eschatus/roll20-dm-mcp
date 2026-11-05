@@ -13,6 +13,7 @@ import { relayCommand } from "../bridge/roll20.js";
 import { rtGet } from "../bridge/roll20-rt.js";
 import { newRowId } from "../tools/character.js";
 import { adjustSheetHp } from "../tools/pcHp.js";
+import { writeDefaultTokenRt } from "../bridge/default-token.js";
 
 type Read = { values: Record<string, unknown>; failed: string[]; reasons: Record<string, string>; sheet: unknown };
 type Attr = { id: string; name?: string };
@@ -56,6 +57,23 @@ async function main() {
     await pause(2500);
     const tok = await rtGet<{ bar1_value?: unknown; bar1_link?: string }>(`graphics/page/${pid}/${tokenId}`);
     check("linked bar follows the sheet write", Number(tok?.bar1_value) === 18, tok);
+
+    await relayCommand({ action: "linkToken", tokenId, charId, bars: [{ bar: 1, attribute: field }] });
+    const def = await relayCommand<{ defaulttoken?: string }>({ action: "setDefaultToken", tokenId, charId });
+    await writeDefaultTokenRt(charId, def.defaulttoken ?? "");
+    const stamp = await rtGet(`characters/${charId}/defaulttoken`);
+    check("default token lands in both nodes", typeof stamp === "number", stamp);
+
+    const other = await relayCommand<{ id: string }>({ action: "createCharacter", name: "RT-SHEET-HP-TEST-2" });
+    try {
+      const moved = await relayCommand<{ unlinked: number[] }>({ action: "linkToken", tokenId, charId: other.id });
+      await pause(1500);
+      const after = await rtGet<{ bar1_link?: string; represents?: string }>(`graphics/page/${pid}/${tokenId}`);
+      check("moving the token unlinks the old bar", !after?.bar1_link && after?.represents === other.id, { moved, after: after?.bar1_link });
+    } finally {
+      await relayCommand({ action: "linkToken", tokenId, charId, bars: [{ bar: 1, attribute: field }] });
+      await relayCommand({ action: "removeObject", objectType: "character", objectId: other.id });
+    }
 
     const dropped = await adjustSheetHp({ id: tokenId, name: "scratch", represents: charId }, "rt_no_such_field", { setHp: 5 })
       .then((v) => ({ threw: false, v }), (e: Error) => ({ threw: true, v: e.message }));

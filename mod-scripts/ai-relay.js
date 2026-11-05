@@ -709,8 +709,11 @@ function setDefaultTokenForChar(t, args) {
     if (v === "" && EMPTY_MEANINGFUL.indexOf(k) === -1) return;
     props[k] = v;
   });
-  ch.set("defaulttoken", JSON.stringify(props));
-  return { ok: true, charId: charId, character: ch.get("name"), fields: Object.keys(props).length };
+  // This set reports success and leaves the blob empty (#277), so the JSON goes back to the caller,
+  // which writes the RTDB nodes Roll20 reads (src/bridge/default-token.ts).
+  var blob = JSON.stringify(props);
+  ch.set("defaulttoken", blob);
+  return { ok: true, charId: charId, character: ch.get("name"), fields: Object.keys(props).length, defaulttoken: blob };
 }
 
 // --- Helpers ---
@@ -3922,6 +3925,9 @@ ACTIONS["linkToken"] = function (args, msg, nonce, senderPlayerId) {
   if (!t) throw new Error("Token not found: " + args.tokenId);
   if (!getObj("character", args.charId)) throw new Error("Character not found: " + args.charId);
   let props = { represents: args.charId };
+  // A link holds an attribute id, so on a change of character any bar not relinked below would keep
+  // editing the previous character's attribute. A sheetattr_ link is by name and follows the token.
+  let moving = t.get("represents") !== args.charId;
   // Every attribute is found before anything is written, so a bad name changes nothing.
   (args.bars || []).forEach(function (b) {
     let attr = findObjs({ _type: "attribute", _characterid: args.charId, name: b.attribute })[0];
@@ -3930,8 +3936,18 @@ ACTIONS["linkToken"] = function (args, msg, nonce, senderPlayerId) {
     props["bar" + b.bar + "_value"] = attr.get("current");
     props["bar" + b.bar + "_max"] = attr.get("max");
   });
+  let unlinked = [];
+  if (moving) {
+    [1, 2, 3].forEach(function (n) {
+      let key = "bar" + n + "_link";
+      let cur = String(t.get(key) || "");
+      if (!cur || props[key] !== undefined || cur.indexOf("sheetattr_") === 0) return;
+      props[key] = "";
+      unlinked.push(n);
+    });
+  }
   setSafe(t, props);
-  writeResult(nonce, { ok: true, tokenId: t.id, charId: args.charId, set: Object.keys(props) });
+  writeResult(nonce, { ok: true, tokenId: t.id, charId: args.charId, set: Object.keys(props), unlinked: unlinked });
 };
 
 // ── Beacon sheet carriers (issue #205) ────────────────────────────────────────────────────────

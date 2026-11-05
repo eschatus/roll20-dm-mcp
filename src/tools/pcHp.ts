@@ -33,9 +33,12 @@ export class PcSheetHpError extends Error {
 
 const isBlank = (v: unknown) => v === undefined || v === null || (typeof v === "string" && v.trim() === "");
 
+// NaN unless v really is a number. Number() alone is no good here: it turns null and "" into 0.
+const strictNumber = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN);
+
 // A sheet field is free text. Refuse what isn't a number: 0 for "2d6+3" would look like a downed PC.
 function sheetNumber(v: unknown, what: string): number {
-  const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+  const n = strictNumber(v);
   if (!Number.isFinite(n)) {
     throw new PcSheetHpError(`${what} is ${JSON.stringify(v)}, which is not a number — no HP was changed.`);
   }
@@ -85,7 +88,7 @@ export async function adjustSheetHp(token: PcToken, attr: string, op: PcHpOp): P
   // `written` is not evidence. Live on an ogl5e Beacon sheet, setSheetItem reports a field with no
   // attribute record as written and stores nothing, createAttr:false and allowThrow notwithstanding.
   const landed = await readField(charId, attr, "current", who);
-  if (Number(landed) !== next) {
+  if (strictNumber(landed) !== next) {
     throw new PcSheetHpError(
       `${who}: the write to '${attr}' reported success but the sheet now holds ${JSON.stringify(landed)}, not ${next}. ` +
       "HP did not change. The sheet has no stored value for that field: a player opening the sheet, or " +
