@@ -12,19 +12,19 @@
 //     through createPolylines builds a different record, which renders somewhere else. Matching
 //     the anchor reproduces the record, so a restored wall lands where it was however Roll20
 //     interprets x,y.
-//   - Open/locked/secret are written straight to RTDB afterwards. The Mod's create actions hardcode
-//     them, and carrying them there would need a Mod redeploy.
+//   - Open/locked/secret are written straight to RTDB afterwards (see openings.ts).
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import * as roll20 from "../bridge/roll20.js";
-import { rtUpdate } from "../bridge/roll20-rt.js";
 import { fail, json } from "./combatHelpers.js";
-import { prepareWallSegments, toDLOpening, type DLOpeningDef, type Opening, type PageScaleArgs, type Point } from "./vision.js";
+import { prepareWallSegments, toDLOpening, type Opening, type PageScaleArgs, type Point } from "./vision.js";
+import {
+  OPENING_COLORS as COLORS, WRITE_BATCH, openingLine, placeOpenings, planFromPriorOpening, priorOpeningSchema, readOpenings,
+  type OpeningPlan, type PriorOpening,
+} from "./openings.js";
 
 const WALL_COLOR = "#0044FF";
-const COLORS = { door: "#FF0000", window: "#00FFFF", secretDoor: "#9932CC" };
-const WRITE_BATCH = 20;
 const REMOVE_CONCURRENCY = 10;
 const ANCHOR_TOLERANCE_PX = 1; // getWalls rounds vertices to whole pixels; it does not round x,y
 
@@ -41,26 +41,10 @@ export interface LiveWall {
   left?: number; top?: number; width?: number; height?: number; stroke?: string;
 }
 
-interface LiveOpening {
-  x?: number; y?: number;
-  handle0?: { x?: number; y?: number };
-  handle1?: { x?: number; y?: number };
-  color?: string;
-  isOpen?: boolean; isLocked?: boolean; isSecret?: boolean;
-}
-
 export type WallAnchor = "center" | "first";
 export interface PriorWall { points: Point[]; anchor: WallAnchor }
 interface HeldWall extends PriorWall { id: string }
 interface KeptWall { id: string; kind: string; reason: string }
-
-export interface PriorOpening {
-  x: number; y: number;
-  handle0: { x: number; y: number };
-  handle1: { x: number; y: number };
-  color?: string;
-  isOpen: boolean; isLocked: boolean; isSecret: boolean;
-}
 
 interface PageState {
   totalWalls: number;
@@ -98,41 +82,24 @@ export function classifyWall(w: LiveWall): { wall: HeldWall } | { kept: KeptWall
   return keep("anchored neither at its midpoint nor its first vertex, so it cannot be recreated in place");
 }
 
-function captureOpening(o: LiveOpening): PriorOpening | null {
-  const { x, y, handle0: h0, handle1: h1 } = o;
-  if (!isNum(x) || !isNum(y) || !isNum(h0?.x) || !isNum(h0?.y) || !isNum(h1?.x) || !isNum(h1?.y)) return null;
-  return {
-    x, y,
-    handle0: { x: h0.x, y: h0.y },
-    handle1: { x: h1.x, y: h1.y },
-    ...(o.color ? { color: o.color } : {}),
-    isOpen: o.isOpen === true, isLocked: o.isLocked === true, isSecret: o.isSecret === true,
-  };
-}
-
 // Order-independent and id-free, so a restore that really reproduced the page gets the same value
 // back. isOpen is left out on purpose: a door opened in play is not an edit to the map. Wall stroke
 // is out because getWalls does not report it. withOpen adds isOpen back for the failure report, where
 // a door left shut by a failed state write is real damage and not play.
 function fingerprintOf(walls: HeldWall[], kept: LiveWall[], doors: PriorOpening[], windows: PriorOpening[], withOpen = false): string {
-  const r2 = (n: number) => Math.round(n * 100) / 100;
-  const opening = (type: string, o: PriorOpening) => JSON.stringify([
-    type, r2(o.x), r2(o.y), r2(o.handle0.x), r2(o.handle0.y), r2(o.handle1.x), r2(o.handle1.y),
-    o.color ?? "", o.isLocked, o.isSecret, ...(withOpen ? [o.isOpen] : []),
-  ]);
   const lines = [
     ...walls.map((w) => JSON.stringify(["wall", w.points])),
     ...kept.map(({ id: _id, ...rest }) =>
       JSON.stringify(["kept", Object.entries(rest).sort(([k1], [k2]) => k1.localeCompare(k2))])),
-    ...doors.map((o) => opening("door", o)),
-    ...windows.map((o) => opening("window", o)),
+    ...doors.map((o) => openingLine("door", o, withOpen)),
+    ...windows.map((o) => openingLine("window", o, withOpen)),
   ].sort();
   return createHash("sha256").update(lines.join("\n")).digest("hex").slice(0, 16);
 }
 
 async function readPage(pageId: string): Promise<PageState> {
   const raw = await roll20.relayCommand<LiveWall[]>({ action: "getWalls", pageId, includePoints: true });
-  const live = await roll20.relayCommand<{ doors: LiveOpening[]; windows: LiveOpening[] }>({ action: "getDoors", pageId });
+  const { doors, windows, unreadable } = await readOpenings(pageId);
   const walls: HeldWall[] = [];
   const kept: KeptWall[] = [];
   const keptRaw: LiveWall[] = [];
@@ -141,12 +108,9 @@ async function readPage(pageId: string): Promise<PageState> {
     if ("wall" in c) walls.push(c.wall);
     else { kept.push(c.kept); keptRaw.push(w); }
   }
-  const readable = (o: PriorOpening | null): o is PriorOpening => o !== null;
-  const doors = live.doors.map(captureOpening).filter(readable);
-  const windows = live.windows.map(captureOpening).filter(readable);
   return {
     totalWalls: raw.length, walls, kept, doors, windows,
-    unreadableOpenings: live.doors.length + live.windows.length - doors.length - windows.length,
+    unreadableOpenings: unreadable,
     fingerprint: fingerprintOf(walls, keptRaw, doors, windows),
     exactFingerprint: fingerprintOf(walls, keptRaw, doors, windows, true),
   };
@@ -162,29 +126,15 @@ const priorOf = (s: PageState) => ({
 // ─── The write plan ───────────────────────────────────────────────────────────
 
 interface SegmentDef { x1: number; y1: number; x2: number; y2: number; stroke: string }
-interface OpeningState { isOpen?: boolean; isLocked?: boolean; isSecret?: boolean }
-interface OpeningPlan { def: DLOpeningDef & { color: string }; state: OpeningState; secret: boolean }
 interface WritePlan { segments: SegmentDef[]; polylines: Point[][]; doors: OpeningPlan[]; windows: OpeningPlan[] }
 
 function planFromPrior(prior: { walls: PriorWall[]; doors: PriorOpening[]; windows: PriorOpening[] }): WritePlan {
-  const opening = (o: PriorOpening, fallback: string): OpeningPlan => {
-    const state: OpeningState = {};
-    if (o.isOpen) state.isOpen = true;
-    if (o.isLocked) state.isLocked = true;
-    if (o.isSecret) state.isSecret = true;
-    return {
-      // getDoors returns page coordinates; the create actions take y negated.
-      def: { x: o.x, y: -o.y, x0: o.handle0.x, y0: -o.handle0.y, x1: o.handle1.x, y1: -o.handle1.y, color: o.color ?? fallback },
-      state,
-      secret: o.isSecret,
-    };
-  };
   return {
     segments: prior.walls.filter((w) => w.anchor === "center")
       .map(({ points: [a, b] }) => ({ x1: a[0], y1: a[1], x2: b[0], y2: b[1], stroke: WALL_COLOR })),
     polylines: prior.walls.filter((w) => w.anchor === "first").map((w) => w.points),
-    doors: prior.doors.map((o) => opening(o, COLORS.door)),
-    windows: prior.windows.map((o) => opening(o, COLORS.window)),
+    doors: prior.doors.map((o) => planFromPriorOpening(o, COLORS.door)),
+    windows: prior.windows.map((o) => planFromPriorOpening(o, COLORS.window)),
   };
 }
 
@@ -244,29 +194,6 @@ async function placeWalls(pageId: string, plan: WritePlan, ledger: Ledger): Prom
     const polylines = batch.map((points) => ({ points, closed: false, stroke: WALL_COLOR }));
     await createWallBatch(pageId, { action: "createPolylines", polylines }, ledger);
   }
-}
-
-async function placeOpenings(pageId: string, kind: "door" | "window", plans: OpeningPlan[], ledger: Ledger): Promise<void> {
-  const [action, key] = kind === "door" ? ["createDLDoors", "doors"] : ["createDLWindows", "windows"];
-  const withState: { id: string; state: OpeningState }[] = [];
-  for (const batch of chunks(plans, WRITE_BATCH)) {
-    const results = await roll20.relayCommand<{ id?: string; error?: string }[]>({
-      action, pageId, [key]: batch.map((p) => p.def),
-    });
-    let miss: string | undefined;
-    results.forEach((r, i) => {
-      if (!r.id) { miss ??= r.error ?? `${action} returned no id`; return; }
-      const plan = batch[i];
-      if (kind === "window") ledger.placed.windows++;
-      else if (plan.secret) ledger.placed.secretDoors++;
-      else ledger.placed.doors++;
-      if (Object.keys(plan.state).length) withState.push({ id: r.id, state: plan.state });
-    });
-    if (miss) throw new Error(miss);
-  }
-  ledger.stage = "set-opening-state";
-  for (const { id, state } of withState) await rtUpdate(`${key}/page/${pageId}/${id}`, { ...state });
-  ledger.stage = "swap-openings";
 }
 
 // Removes until a batch fails, returning how many went and the first error. Never throws, so the
@@ -344,11 +271,6 @@ async function reportFailure(pageId: string, before: PageState, ledger: Ledger, 
 const coord = z.number().finite();
 const point = z.tuple([coord, coord]);
 const openingSchema = z.object({ center: point, widthPx: coord, angleDeg: coord });
-const handle = z.object({ x: coord, y: coord });
-const priorOpeningSchema = z.object({
-  x: coord, y: coord, handle0: handle, handle1: handle, color: z.string().optional(),
-  isOpen: z.boolean(), isLocked: z.boolean(), isSecret: z.boolean(),
-});
 
 export function registerWallReplaceTools(server: McpServer): void {
   server.tool(

@@ -418,7 +418,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `createPath` / `createPaths` | (internal) | — | legacy path |
 | `createWalls` | auto_place_dl_walls, batch_import_maps, replace_page_walls | maps | creates native `pathv2` UDL barriers. Explicitly **not** direct-writable — Roll20's Firebase rules reject client writes to `pathv2/page/`, so this always goes through the Mod. |
 | `createPolylines` | place_polyline_walls, replace_page_walls (restore only) | maps | one multi-vertex path; Mod-only for the same reason |
-| `createDLDoors` / `createDLWindows` | decorate_openings, replace_page_walls | maps | native UDL door/window (create only); direct-write path, which `replace_page_walls` skips with `__forceMod` |
+| `createDLDoors` / `createDLWindows` | decorate_openings, replace_page_walls | maps | native UDL door/window (create only); through the Mod, so it needs someone in the game |
 | `clearDLOpenings` | decorate_openings, replace_page_walls | maps | delete doors+windows; direct-write path |
 | `getWalls` | get_walls, replace_page_walls | maps | reads `pathv2` barriers |
 | `getPaths` | get_paths | maps | path + optional graphic (direct-read path) |
@@ -501,7 +501,10 @@ Choices that come from how Roll20 stores these objects, not from anything the em
   record matching neither stays on the page, under `kept`.
 - **Doors go through the Mod.** `createDLDoors` and `createDLWindows` have no direct branch any more: it
   wrote a record with no `id`, which draws but cannot block or open (the walls incident of 2026-10-11).
-  `decorate_openings` used it too, and left secret doors purple but not secret.
+  `decorate_openings` used it too, and left secret doors purple but not secret. Its clear is still a
+  direct RTDB write, so a create can fail after the clear has landed. It refuses first if the Mod does not
+  answer, and on a later failure puts the prior openings back, state included, and reads them back. If that
+  fails as well, its error carries them as `prior` for `{ pageId, restore: prior }`.
 - **Door state is a separate RTDB write.** `createDLDoors` hardcodes `isOpen`/`isLocked` to false in
   both branches and the Mod branch has no `isSecret`, so `isOpen`, `isLocked` and `isSecret` go through
   `rtUpdate` on `doors/page/<pageId>/<id>` after creation.

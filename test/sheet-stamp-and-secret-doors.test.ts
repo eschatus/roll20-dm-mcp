@@ -8,6 +8,7 @@ const rt = vi.hoisted(() => ({
   store: new Map<string, unknown>(),
   dropWrites: false,
   failWrites: false,
+  onWrite: (_path: string, _props: Record<string, unknown>): void => undefined,
 }));
 vi.mock("../src/bridge/roll20-rt.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/bridge/roll20-rt.js")>()),
@@ -15,6 +16,7 @@ vi.mock("../src/bridge/roll20-rt.js", async (importOriginal) => ({
     if (rt.failWrites) throw new Error("injected rtUpdate failure");
     if (rt.dropWrites) return;
     for (const [k, v] of Object.entries(props)) rt.store.set(`${path}/${k}`, v);
+    rt.onWrite(path, props);
   },
   rtGet: async (path: string) => rt.store.get(path) ?? null,
 }));
@@ -34,6 +36,7 @@ beforeEach(() => {
   rt.store.clear();
   rt.dropWrites = false;
   rt.failWrites = false;
+  rt.onWrite = () => undefined;
   h.clearRelayLog();
 });
 afterEach(() => h.teardown());
@@ -106,9 +109,90 @@ describe("decorate_openings secret doors", () => {
     expect(h.relayLog).not.toContain("clearDLOpenings");
   });
 
-  it("says so when a secret door cannot be marked, rather than reporting it placed", async () => {
+  it("takes the door back off when it cannot be marked secret, so players never see it", async () => {
     rt.failWrites = true;
-    await expect(h.callTool("decorate_openings", { pageId: page, doors: [], windows: [], secretDoors: [OPENING] }))
-      .rejects.toThrow(/players can see it/);
+    const { isError, text } = await h.callTool("decorate_openings", { pageId: page, doors: [], windows: [], secretDoors: [OPENING] });
+    expect(isError).toBe(true);
+    expect(text).toMatch(/injected rtUpdate failure/);
+    expect(h.emu.findObjs({ _type: "door", _pageid: page })).toHaveLength(0);
+  });
+});
+
+describe("decorate_openings keeps the page's openings when a swap fails", () => {
+  const NEW = { center: [350, 350], widthPx: 70, angleDeg: 0 };
+  const decorate = async (args: Record<string, unknown>) => {
+    const res = await h.callTool("decorate_openings", { pageId: page, ...args });
+    return { ...res, r: res.json as { error: string; restored: boolean; restoreError?: string; prior: Record<string, unknown> } };
+  };
+  const live = () => h.emu.findObjs({ _type: "door", _pageid: page });
+  const liveWindows = () => h.emu.findObjs({ _type: "window", _pageid: page });
+  const coloured = (c: string) => live().find((d) => d.get("color") === c)!;
+  const applyToEmulator = (path: string, props: Record<string, unknown>) => {
+    const [node, , , id] = path.split("/");
+    h.emu.getObj(node === "doors" ? "door" : "window", id)!.set(props);
+  };
+
+  beforeEach(() => {
+    rt.onWrite = applyToEmulator;
+    const [secret, locked] = h.emu.relay<{ id: string }[]>({
+      action: "createDLDoors", pageId: page, doors: [
+        { x: 210, y: -105, x0: -30, y0: 5, x1: 50, y1: -5, color: "#9932CC" },
+        { x: 70, y: -70, x0: 0, y0: 35, x1: 0, y1: -35, color: "#123456" },
+      ],
+    });
+    h.emu.getObj("door", secret.id)!.set({ isSecret: true, isOpen: true });
+    h.emu.getObj("door", locked.id)!.set({ isLocked: true });
+    h.emu.relay({ action: "createDLWindows", pageId: page, windows: [{ x: 140, y: -70, x0: 0, y0: 35, x1: 0, y1: -35 }] });
+    h.clearRelayLog();
+  });
+
+  it("puts the prior openings back, state included, when a swap fails part-way", async () => {
+    // Only the first state write fails: the new secret door's. The rollback's own writes go through.
+    let failNext = true;
+    rt.onWrite = (path, props) => {
+      if (failNext) { failNext = false; throw new Error("injected state failure"); }
+      applyToEmulator(path, props);
+    };
+    const { isError, r } = await decorate({ secretDoors: [NEW] });
+    expect(isError).toBe(true);
+    expect(r.restored).toBe(true);
+    expect(r.error).toMatch(/2 doors and 1 windows are back in place/);
+    expect(live()).toHaveLength(2);
+    expect(liveWindows()).toHaveLength(1);
+    expect(coloured("#9932CC").get("isSecret")).toBe(true);
+    expect(coloured("#9932CC").get("isOpen")).toBe(true);
+    expect(coloured("#123456").get("isLocked")).toBe(true);
+  });
+
+  it("leaves the records alone when the clear itself fails", async () => {
+    const ids = live().map((d) => d.id);
+    h.failRelayAction("clearDLOpenings");
+    const { isError, r } = await decorate({ doors: [NEW] });
+    expect(isError).toBe(true);
+    expect(r.restored).toBe(true);
+    expect(live().map((d) => d.id)).toEqual(ids);
+  });
+
+  it("hands back prior when it cannot restore, and restore rebuilds the page", async () => {
+    h.failRelayAction("createDLDoors");
+    const { isError, r } = await decorate({ doors: [NEW] });
+    expect(isError).toBe(true);
+    expect(r.restored).toBe(false);
+    expect(r.restoreError).toMatch(/createDLDoors/);
+    expect(r.error).toMatch(/restore: prior/);
+    expect(live()).toHaveLength(0);
+
+    h.clearRelayFailures();
+    const again = await decorate({ restore: r.prior });
+    expect(again.isError).toBe(false);
+    expect(live()).toHaveLength(2);
+    expect(liveWindows()).toHaveLength(1);
+    expect(coloured("#9932CC").get("isSecret")).toBe(true);
+  });
+
+  it("refuses restore alongside new openings, with nothing changed", async () => {
+    const { isError } = await decorate({ doors: [NEW], restore: { doors: [], windows: [] } });
+    expect(isError).toBe(true);
+    expect(h.relayLog).not.toContain("clearDLOpenings");
   });
 });

@@ -5,8 +5,12 @@ import * as path from "path";
 import sharp from "sharp";
 import Anthropic from "@anthropic-ai/sdk";
 import * as roll20 from "../bridge/roll20.js";
-import { rtUpdate } from "../bridge/roll20-rt.js";
 import { resolveConfinedImage } from "./maps.js";
+import { fail } from "./combatHelpers.js";
+import {
+  OPENING_COLORS, placeOpenings, planFromPriorOpening, priorOpeningSchema, readOpenings, rollBackOpenings,
+  type OpeningLedger, type OpeningPlan,
+} from "./openings.js";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -917,7 +921,7 @@ export function registerVisionTools(server: McpServer): void {
 
   server.tool(
     "decorate_openings",
-    "Second-pass tool: place native Roll20 Dynamic Lighting door/window objects at the door, window, and secret-door positions returned by analyze_battlemap, sized to the opening width. Color-coded: doors red, windows cyan, secret doors purple.",
+    "Second-pass tool: place native Roll20 Dynamic Lighting door/window objects at the door, window, and secret-door positions returned by analyze_battlemap, sized to the opening width. Color-coded: doors red, windows cyan, secret doors purple, and secret doors are marked secret. Replaces every door and window on the page. If that fails part-way the prior openings are put back; if they cannot be, the error carries them as `prior`, and { pageId, restore: prior } rebuilds them.",
     {
       pageId: z.string().optional(),
       doors: z.array(z.object({
@@ -940,46 +944,59 @@ export function registerVisionTools(server: McpServer): void {
       sourceImageHeight: z.number().optional(),
       pageWidthSquares: z.number().optional(),
       pageHeightSquares: z.number().optional(),
+      restore: z.object({ doors: z.array(priorOpeningSchema), windows: z.array(priorOpeningSchema) }).optional()
+        .describe("The `prior` block from a failed call, passed back unchanged. Used instead of doors, windows and secretDoors."),
     },
-    async ({ pageId, doors, windows, secretDoors, sourceImageWidth, sourceImageHeight, pageWidthSquares, pageHeightSquares }) => {
+    async ({ pageId, doors, windows, secretDoors, restore, sourceImageWidth, sourceImageHeight, pageWidthSquares, pageHeightSquares }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
       const scaleArgs = { sourceImageWidth, sourceImageHeight, pageWidthSquares, pageHeightSquares };
 
-      async function placeDL(openings: Opening[], action: "createDLDoors" | "createDLWindows", color: string, secret = false): Promise<number> {
-        if (!openings.length) return 0;
-        const key = action === "createDLDoors" ? "doors" : "windows";
-        const defs = openings.map((o) => ({ ...toDLOpening(o, scaleArgs), color }));
-        const results = await roll20.relayCommand<{ id?: string; error?: string }[]>({
-          action, pageId: activePage, [key]: defs,
-        });
-        const placed = results.filter((r) => r.id);
-        // The Mod's create action has no isSecret, and a colour alone leaves the door visible to players.
-        if (secret) {
-          for (const { id } of placed) {
-            await rtUpdate(`doors/page/${activePage}/${id}`, { isSecret: true }).catch((err: unknown) => {
-              throw new Error(`Secret door ${id} was placed but could not be marked secret, so players can see it: ${String(err)}`);
-            });
-          }
-        }
-        return placed.length;
+      if (restore && (doors.length || windows.length || secretDoors.length)) {
+        return fail("Pass either restore or new doors, windows and secret doors, not both. Nothing was changed.");
       }
 
       // Creating needs the Mod but clearing is a direct RTDB write, so in an empty game the clear
       // would land and the doors would not. This throws before anything is touched.
       await roll20.relayCommand({ action: "ping" });
 
-      // Clear any previously placed DL door/window objects before re-placing
-      await roll20.relayCommand<{ removed: number }>({ action: "clearDLOpenings", pageId: activePage });
+      const before = await readOpenings(activePage);
+      if (before.unreadable) {
+        return fail(`Refused: ${before.unreadable} door or window on this page has unreadable geometry, so it could not be put back if this failed. Nothing was changed.`);
+      }
 
-      const placedDoors   = await placeDL(doors,       "createDLDoors",   "#FF0000");
-      const placedWindows = await placeDL(windows,     "createDLWindows", "#00FFFF");
-      const placedSecrets = await placeDL(secretDoors, "createDLDoors",   "#9932CC", true);
+      const plan = (o: Opening, color: string, secret: boolean): OpeningPlan => ({
+        def: { ...toDLOpening(o, scaleArgs), color }, state: secret ? { isSecret: true } : {}, secret,
+      });
+      const doorPlans = restore
+        ? restore.doors.map((o) => planFromPriorOpening(o, OPENING_COLORS.door))
+        : [...doors.map((o) => plan(o, OPENING_COLORS.door, false)), ...secretDoors.map((o) => plan(o, OPENING_COLORS.secretDoor, true))];
+      const windowPlans = restore
+        ? restore.windows.map((o) => planFromPriorOpening(o, OPENING_COLORS.window))
+        : windows.map((o) => plan(o, OPENING_COLORS.window, false));
+
+      const ledger: OpeningLedger = { stage: "swap-openings", placed: { doors: 0, windows: 0, secretDoors: 0 } };
+      try {
+        await roll20.relayCommand<{ removed: number }>({ action: "clearDLOpenings", pageId: activePage });
+        await placeOpenings(activePage, "door", doorPlans, ledger);
+        await placeOpenings(activePage, "window", windowPlans, ledger);
+      } catch (err) {
+        const rollback = await rollBackOpenings(activePage, before);
+        const counts = `${before.doors.length} doors and ${before.windows.length} windows`;
+        const left = "unknown" in rollback.left
+          ? `What is on the page is unknown: ${rollback.left.readError}.`
+          : `Left on the page: ${rollback.left.doors} doors, ${rollback.left.windows} windows.`;
+        const what = rollback.restored
+          ? `The page's ${counts} are back in place, confirmed by reading them back.`
+          : `Its prior ${counts} could not be put back${rollback.restoreError ? ` (${rollback.restoreError})` : ""}. ${left} ` +
+            "A secret door among them may be visible to players. Call decorate_openings with { pageId, restore: prior } using the prior block in this result; the Mod must be answering, so someone has to be in the game.";
+        return fail(JSON.stringify({
+          error: `decorate_openings failed at ${ledger.stage}: ${String(err)}. ${what}`,
+          stage: ledger.stage, pageId: activePage, ...rollback, prior: { doors: before.doors, windows: before.windows },
+        }));
+      }
 
       return {
-        content: [{ type: "text", text: JSON.stringify({
-          placed: { doors: placedDoors, windows: placedWindows, secretDoors: placedSecrets },
-          failed: { doors: doors.length - placedDoors, windows: windows.length - placedWindows, secretDoors: secretDoors.length - placedSecrets },
-        }) }],
+        content: [{ type: "text", text: JSON.stringify({ placed: ledger.placed }) }],
       };
     }
   );

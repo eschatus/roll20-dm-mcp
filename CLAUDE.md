@@ -288,6 +288,7 @@ vision/wall tooling is maps-only.)
 3. `auto_place_dl_walls({walls, strokeColor})` — places DL `pathv2` walls.
 4. `decorate_openings({doors, windows, secretDoors})` — creates **native Roll20 DL door/window
    objects** (not map-layer rectangles): doors `#FF0000`, windows `#00FFFF`, secret doors `#9932CC`.
+   Replaces every opening on the page; a failed swap puts the prior ones back, or returns `prior` for `{ restore: prior }`.
 
 **Map gotchas:**
 - **Wall color:** `auto_place_dl_walls` and `place_polyline_walls` default `strokeColor` to blue
