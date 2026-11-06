@@ -110,12 +110,12 @@ export interface OpeningLedger {
 export async function placeOpenings(pageId: string, kind: "door" | "window", plans: OpeningPlan[], ledger: OpeningLedger): Promise<void> {
   const [action, key] = kind === "door" ? ["createDLDoors", "doors"] : ["createDLWindows", "windows"];
   const stage = ledger.stage;
-  const withState: { id: string; state: OpeningState }[] = [];
   for (const batch of chunks(plans, WRITE_BATCH)) {
     const results = await roll20.relayCommand<{ id?: string; error?: string }[]>({
       action, pageId, [key]: batch.map((p) => p.def),
     });
     let miss: string | undefined;
+    const withState: { id: string; state: OpeningState }[] = [];
     results.forEach((r, i) => {
       if (!r.id) { miss ??= r.error ?? `${action} returned no id`; return; }
       const plan = batch[i];
@@ -124,11 +124,13 @@ export async function placeOpenings(pageId: string, kind: "door" | "window", pla
       else ledger.placed.doors++;
       if (Object.keys(plan.state).length) withState.push({ id: r.id, state: plan.state });
     });
+    // State goes on per batch, before the next create, so a secret door is never left visible
+    // while later batches are placed.
+    ledger.stage = "set-opening-state";
+    for (const { id, state } of withState) await rtUpdate(`${key}/page/${pageId}/${id}`, { ...state });
+    ledger.stage = stage;
     if (miss) throw new Error(miss);
   }
-  ledger.stage = "set-opening-state";
-  for (const { id, state } of withState) await rtUpdate(`${key}/page/${pageId}/${id}`, { ...state });
-  ledger.stage = stage;
 }
 
 export interface OpeningsRollback {

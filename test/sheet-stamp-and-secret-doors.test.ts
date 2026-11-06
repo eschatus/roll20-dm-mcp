@@ -109,6 +109,20 @@ describe("decorate_openings secret doors", () => {
     expect(h.relayLog).not.toContain("clearDLOpenings");
   });
 
+  it("marks each batch of secret doors secret before creating the next batch", async () => {
+    const secretAtEachCreate: number[] = [];
+    const real = h.emu.relayAsync.bind(h.emu);
+    vi.spyOn(h.emu, "relayAsync").mockImplementation((cmd) => {
+      if ((cmd as { action?: string }).action === "createDLDoors") secretAtEachCreate.push(held().length);
+      return real(cmd) as never;
+    });
+    const secretDoors = Array.from({ length: 25 }, (_, i) => ({ ...OPENING, center: [70 + i * 70, 350] }));
+    const { isError } = await h.callTool("decorate_openings", { pageId: page, doors: [], windows: [], secretDoors });
+    expect(isError).toBeFalsy();
+    expect(secretAtEachCreate).toEqual([0, 20]);
+    expect(held()).toHaveLength(25);
+  });
+
   it("takes the door back off when it cannot be marked secret, so players never see it", async () => {
     rt.failWrites = true;
     const { isError, text } = await h.callTool("decorate_openings", { pageId: page, doors: [], windows: [], secretDoors: [OPENING] });
