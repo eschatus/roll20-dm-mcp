@@ -49,6 +49,15 @@ export function resolveConfinedImage(inputPath: string): { abs: string; mediaTyp
 }
 
 type PageRow = { id: string; name: string; width: number; height: number; dynamic_lighting_enabled?: boolean };
+
+// What a call wrote, not what the page now holds: listPages carries no scale, so half a change can't
+// be completed into a whole scale here.
+function describeScale(number: unknown, units: unknown): string {
+  if (number !== undefined && units !== undefined) return `${number}${units}`;
+  if (number !== undefined) return `number set to ${number}, units unchanged`;
+  if (units !== undefined) return `units set to ${units}, number unchanged`;
+  return "unchanged";
+}
 const listPages = () => roll20.relayCommand<PageRow[]>({ action: "listPages" });
 const describePage = (p: PageRow) => ({ pageId: p.id, name: p.name, width: p.width, height: p.height });
 
@@ -117,7 +126,7 @@ export function registerMapTools(server: McpServer): void {
               name: existing?.name ?? name,
               widthSquares: props.width ?? existing?.width,
               heightSquares: props.height ?? existing?.height,
-              scale: `${props.scale_number ?? ""}${props.scale_units ?? ""}` || "unchanged",
+              scale: describeScale(props.scale_number, props.scale_units),
               created,
               dynamic_lighting_enabled: row?.dynamic_lighting_enabled ?? null,
               note: `Page ${created ? "created" : "reused"}. Pass pageId "${pageId}" to auto_place_dl_walls and decorate_openings.`,
@@ -417,7 +426,8 @@ export function registerMapTools(server: McpServer): void {
     "List all Roll20 pages in the campaign with their IDs, names, and dimensions.",
     {},
     async () => {
-      return { content: [{ type: "text", text: JSON.stringify(await listPages()) }] };
+      const pages = (await listPages()).map((p) => ({ ...p, dynamic_lighting_enabled: p.dynamic_lighting_enabled ?? null }));
+      return { content: [{ type: "text", text: JSON.stringify(pages) }] };
     }
   );
 
@@ -540,7 +550,7 @@ export function registerMapTools(server: McpServer): void {
     linkType: z.enum(["handout", ""]).optional(),
     subLink: z.string().optional(),
     subLinkType: z.enum(["headerPlayer", "headerGM", ""]).optional(),
-    visibleTo: pinAudience("the pin itself").optional(),
+    visibleTo: PIN_AUDIENCE.describe('Who sees the pin itself: "all" for everyone, "" for the GM only. LEFT UNSET THE PIN IS GM-ONLY: Roll20 treats a missing visibleTo as hidden (verified live, #203), so pass "all" for a pin players should see now; omit it for hidden-until-found and reveal later with update_map_pin.').optional(),
     tooltipVisibleTo: pinAudience("the tooltip").optional(),
     tooltipTitleVisibleTo: pinAudience("the tooltip title").optional(),
     nameplateVisibleTo: pinAudience("the nameplate").optional(),

@@ -7,12 +7,11 @@
 // can't tell that from a quiet table, and proceeds on an invented number.
 //
 // Nothing here is mocked: pointing ROLL20_DATA_DIR at an empty scratch dir means there is no
-// roll20-rt-token.json to read, so getCustomToken() throws Roll20TokenUnavailableError on the
+// stored token to read, so getCustomToken() throws Roll20TokenUnavailableError on the
 // real path, exactly as it does on an expired one. getActiveCampaign()'s env fallback supplies
 // the campaign, so no registry files are touched either.
 //
-// TOKEN_CACHE is resolved at module load, so roll20-rt must be imported AFTER the env is set —
-// hence the dynamic import.
+// Imported dynamically, AFTER ROLL20_DATA_DIR is set.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
 import * as os from "os";

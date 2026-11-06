@@ -168,7 +168,34 @@ describe("batch_import_maps on a page that already exists", () => {
   }, 10_000); // batch waits 2.5s after the page step
 });
 
+describe("partial scale on reuse", () => {
+  const reuse = async (args: Record<string, unknown>) => {
+    h.emu.createPage("Scaled", { width: 10, height: 10 });
+    return (await h.callTool("setup_roll20_page", { name: "Scaled", reuseExisting: true, ...args })).json as { scale: string };
+  };
+
+  it("says which half changed instead of reporting a bare number", async () => {
+    expect((await reuse({ scaleNumber: 10 })).scale).toBe("number set to 10, units unchanged");
+  });
+
+  it("says so when only the units change", async () => {
+    expect((await reuse({ scaleUnits: "m" })).scale).toBe("units set to m, number unchanged");
+  });
+
+  it("reports both when both change, and unchanged when neither does", async () => {
+    expect((await reuse({ scaleNumber: 10, scaleUnits: "m" })).scale).toBe("10m");
+    h.emu.findObjs({ _type: "page", name: "Scaled" }).forEach((p) => p.set({ name: "Gone" }));
+    expect((await reuse({})).scale).toBe("unchanged");
+  });
+});
+
 describe("dynamic_lighting_enabled reads", () => {
+  it("list_pages reports a page without the field as null, not by omitting it", async () => {
+    h.stubRelayAction("listPages", [{ id: "bare", name: "Bare", width: 10, height: 10 }]);
+    const pages = (await h.callTool("list_pages")).json as { id: string; dynamic_lighting_enabled?: boolean | null }[];
+    expect(pages.find((p) => p.id === "bare")).toHaveProperty("dynamic_lighting_enabled", null);
+  });
+
   it("get_current_page reports the page's value, false as well as true", async () => {
     const dark = h.emu.createPage("Keep", { width: 10, height: 10, dynamic_lighting_enabled: false });
     h.emu.setPlayerPage(dark);

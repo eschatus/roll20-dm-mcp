@@ -29,51 +29,65 @@ MCP server that a model can call on its own initiative.
 
 ---
 
-## 1. The furnished Roll20 realtime credential (`roll20-rt-token.json`)
+## 1. The furnished Roll20 realtime credentials (`rt-tokens/<campaignId>.json`)
 
-**What it is:** `<data dir>/roll20-rt-token.json` — `{ campaignId, customToken or refreshToken, databaseURL, harvestedAt }`,
-or the same object inline in **`ROLL20_RT_TOKEN`** (which takes precedence; see below).
+**What it is:** `<data dir>/rt-tokens/<campaignId>.json`, one file per campaign (#279) —
+`{ campaignId, customToken or refreshToken, databaseURL, harvestedAt }`, or the same object inline in
+**`ROLL20_RT_TOKEN`** (which takes precedence; see below).
 The Firebase custom token for **one specific campaign**, plus that campaign's RTDB shard URL (Roll20
 shards campaigns across `roll20-99910`, `roll20-99922`, …). It is the credential every relay command
 rides on. The data dir is `./data` by default, overridable with `ROLL20_DATA_DIR` (the packaged gem
 points this at a per-user dir so an install never writes inside the app bundle).
 
-**Risk:** anyone who reads the file gets RTDB access to that campaign for as long as the token is
-exchangeable.
+**Risk:** anyone who reads a file gets RTDB access to that campaign for as long as the token is
+exchangeable, and the data dir now holds one such login for every campaign furnished, so reading the
+`rt-tokens` directory yields all of them.
+
+**The old single file is a second copy.** `<data dir>/roll20-rt-token.json` is read and copied into the
+slot for the campaign it holds, and it is left in place, because the gem still writes every harvest
+there and force-harvests when it is missing. A refresh token that was in it therefore stays on disk in
+both places. With no gem on that data dir, delete the old file by hand once the slot exists.
 
 **Mitigations:**
 - **The server never harvests it.** `getCustomToken` (`src/bridge/roll20-rt.ts`) reads the cache or
   throws — there is no harvest fallback by design (#177). A human furnishes it with `npm run furnish:token`,
   or the gem (dm-whisper) harvests it.
-- **Two furnish sources, one shape.** `ROLL20_RT_TOKEN` carries the same JSON object as the file, for
-  a caller with the credential but no shared writable data dir; it wins over the file. A set-but-
+- **Two furnish sources, one shape.** `ROLL20_RT_TOKEN` carries the same JSON object as a stored
+  token, for a caller with the credential but no shared writable data dir; it is a single override
+  that wins over every stored token. A set-but-
   unusable variable **throws instead of falling through** — a silent fallback to a different
   campaign's token is the quiet divergence #177 was filed about. Env vars are readable to anything
   that can see the process environment and land in shell history, so the file remains the default;
   prefer the variable only for a short-lived process (a `tsx` script, a one-job stdio server).
-- **Campaign-scoped.** A token for campaign A is refused for campaign B rather than silently used.
+- **Campaign-scoped.** The connect path reads only the slot of the campaign being connected, and
+  `connect()` still checks the login's own campaign claim. There is no fallback to another campaign's
+  token, and a campaign with none gets a typed error naming it.
+- **No path from an id to a filename outside the store.** The campaign id names the slot and arrives
+  from the registry as a free-form string, so a non-numeric id is refused before any path is used.
 - **Short-lived.** A Firebase custom token is spent ~1 h after mint, and the exchange is what
   enforces that — Firebase's rejection, not a local clock check. (The clock check used to be the
   gate; it refused tokens without ever asking Firebase, locking out every other reader of the data
   dir on a credential that was possibly still exchangeable, so it is now advisory only and surfaces via `transport_status.rtToken` — #216.)
 - **A refresh token gives up "short-lived".** `refreshToken` in the same object works after a
   restart with no new harvest, and for an unknown time: it lasts until Firebase or Roll20 revokes
-  it. A stolen file then means GM access to that campaign for that long, not ~1 h. `furnish:token`
-  writes the file owner-only. Verified on 2026-11-03: neither a Roll20 sign-out nor closing the
+  it. A stolen file then means GM access to that campaign for that long, not ~1 h. Slots are written
+  owner-only, in an owner-only directory, wherever the OS honours those modes (Windows does not, so
+  there the data dir's own ACL is what protects them). Verified on 2026-11-03: neither a Roll20 sign-out nor closing the
   browser revokes it, so a DM has no known off switch. Its full lifespan is unverified.
 - **Env precedence is loud, not silent.** When `ROLL20_RT_TOKEN` is set it is the ONLY source read —
-  the file is not consulted, even if the variable's token is stale or for another campaign. Export it
+  the data dir is not consulted, even if the variable's token is stale or for another campaign. Export it
   in the shell for one short-lived process; don't put a live token in `.env`: the server loads `.env`
-  on every start, so a line there silently beats every fresh token the gem harvests into the file.
-- **Fails loudly and actionably, naming the source.** Absent, Firebase-rejected, wrong-campaign, or
-  shard-less → a typed `Roll20TokenUnavailableError` (`.source` = `"env"` | `"file"` | `null`) whose
-  message says which source it read and what to refresh: for the file, run `npm run furnish:token`
+  on every start, so a line there silently beats every fresh token the gem harvests into the data dir.
+- **Fails loudly and actionably, naming the source.** Absent, Firebase-rejected, wrong-campaign,
+  corrupt, or shard-less → a typed `Roll20TokenUnavailableError` (`.source` = `"env"` | `"file"` | `null`) whose
+  message says which source it read and what to refresh: for the slot, run `npm run furnish:token`
   (or reconnect Roll20 in the gem, if you use it); for the env var, update or unset `ROLL20_RT_TOKEN` —
-  refreshing the file would not change what the server reads, because the variable overrides it. With neither present it says both were checked. `transport_status.rtToken`
-  carries the same `source`, and reports a malformed `ROLL20_RT_TOKEN` rather than failing. A
+  refreshing the slot would not change what the server reads, because the variable overrides it. With neither present it says both were checked. `transport_status.rtToken`
+  answers for the active campaign (`present`, `ageMinutes`), carries the same `source`, and reports a
+  malformed `ROLL20_RT_TOKEN` or a corrupt slot rather than failing. A
   silent fallback is precisely the failure mode #83 closed on the relay path; the same reasoning
   applies to the credential the relay runs on.
-- Under `data/`, which is gitignored, so it is never committed.
+- Under `data/`, which is gitignored, so neither the slots nor the old file are ever committed.
 
 **Note:** the Firebase *web config* embedded in `roll20-rt.ts` (`apiKey`, `projectId`, …) is the public
 client config captured from the live editor. It is not a secret and grants nothing on its own.
