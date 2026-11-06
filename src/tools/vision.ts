@@ -5,6 +5,7 @@ import * as path from "path";
 import sharp from "sharp";
 import Anthropic from "@anthropic-ai/sdk";
 import * as roll20 from "../bridge/roll20.js";
+import { rtUpdate } from "../bridge/roll20-rt.js";
 import { resolveConfinedImage } from "./maps.js";
 
 const anthropic = new Anthropic({
@@ -944,14 +945,23 @@ export function registerVisionTools(server: McpServer): void {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
       const scaleArgs = { sourceImageWidth, sourceImageHeight, pageWidthSquares, pageHeightSquares };
 
-      async function placeDL(openings: Opening[], action: "createDLDoors" | "createDLWindows", color: string): Promise<number> {
+      async function placeDL(openings: Opening[], action: "createDLDoors" | "createDLWindows", color: string, secret = false): Promise<number> {
         if (!openings.length) return 0;
         const key = action === "createDLDoors" ? "doors" : "windows";
         const defs = openings.map((o) => ({ ...toDLOpening(o, scaleArgs), color }));
         const results = await roll20.relayCommand<{ id?: string; error?: string }[]>({
           action, pageId: activePage, [key]: defs,
         });
-        return results.filter((r) => r.id).length;
+        const placed = results.filter((r) => r.id);
+        // The Mod's create action has no isSecret, and a colour alone leaves the door visible to players.
+        if (secret) {
+          for (const { id } of placed) {
+            await rtUpdate(`doors/page/${activePage}/${id}`, { isSecret: true }).catch((err: unknown) => {
+              throw new Error(`Secret door ${id} was placed but could not be marked secret, so players can see it: ${String(err)}`);
+            });
+          }
+        }
+        return placed.length;
       }
 
       // Clear any previously placed DL door/window objects before re-placing
@@ -959,7 +969,7 @@ export function registerVisionTools(server: McpServer): void {
 
       const placedDoors   = await placeDL(doors,       "createDLDoors",   "#FF0000");
       const placedWindows = await placeDL(windows,     "createDLWindows", "#00FFFF");
-      const placedSecrets = await placeDL(secretDoors, "createDLDoors",   "#9932CC");
+      const placedSecrets = await placeDL(secretDoors, "createDLDoors",   "#9932CC", true);
 
       return {
         content: [{ type: "text", text: JSON.stringify({

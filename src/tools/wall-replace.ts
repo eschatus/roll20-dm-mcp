@@ -12,8 +12,6 @@
 //     through createPolylines builds a different record, which renders somewhere else. Matching
 //     the anchor reproduces the record, so a restored wall lands where it was however Roll20
 //     interprets x,y.
-//   - Doors and windows are created with __forceMod. The direct RTDB branch of createDLDoors writes
-//     a record with no `id`, which draws but blocks nothing and cannot be opened.
 //   - Open/locked/secret are written straight to RTDB afterwards. The Mod's create actions hardcode
 //     them, and carrying them there would need a Mod redeploy.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -253,7 +251,7 @@ async function placeOpenings(pageId: string, kind: "door" | "window", plans: Ope
   const withState: { id: string; state: OpeningState }[] = [];
   for (const batch of chunks(plans, WRITE_BATCH)) {
     const results = await roll20.relayCommand<{ id?: string; error?: string }[]>({
-      action, pageId, [key]: batch.map((p) => p.def), __forceMod: true,
+      action, pageId, [key]: batch.map((p) => p.def),
     });
     let miss: string | undefined;
     results.forEach((r, i) => {
