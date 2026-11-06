@@ -25,7 +25,7 @@ usage.
 >   `!rules` are not handled here. The server **forwards** table chat as an SSE
 >   `chat-message` event; the gem answers.
 > - **Credentials are furnished, never minted.** The server reads
->   `roll20-rt-token.json` and `roll20-upload-cache.json` from the data dir and never
+>   `rt-tokens/<campaignId>.json` and `roll20-upload-cache.json` from the data dir and never
 >   harvests either. The gem is the sole harvester.
 > - **Mod deploy is a human-attended paste.** `deploy_mod_script` and
 >   `npm run release:mod` are deleted.
@@ -76,7 +76,7 @@ ID `17491327`) is the project's control campaign (no real PCs) — skip Phase 1'
 | 0.1 | `node --version` | ≥ v20 | [ ] |
 | 0.2 | `npm install` (repo root) | clean install. **No `npx playwright install` step** — confirm `playwright` is absent from `package.json` dependencies | [ ] |
 | 0.3 | Confirm `.env` has `ANTHROPIC_API_KEY` | Needed **only** by the maps suite's `analyze_battlemap` (`src/tools/vision.ts` is the sole `@anthropic-ai/sdk` importer). The combat server reaches no Anthropic code — skip this if you skip Phase 2. **No DDB credential is needed or used.** | [ ] |
-| 0.4 | Confirm the data dir holds a **current** `roll20-rt-token.json` for the campaign you're about to test | `{campaignId, customToken, databaseURL, harvestedAt}`, well under an hour old, **matching this campaign** (tokens are campaign-scoped). The server never harvests one — refresh it from the gem. Data dir = `./data` unless `ROLL20_DATA_DIR` is set. | [ ] |
+| 0.4 | Confirm the data dir holds a **current** token for the campaign you're about to test: `transport_status.rtToken` shows `present: true`, or look in `rt-tokens/<campaignId>.json` | `{campaignId, customToken, databaseURL, harvestedAt}`, well under an hour old, **matching this campaign** (tokens are campaign-scoped). The server never harvests one — refresh it from the gem. Data dir = `./data` unless `ROLL20_DATA_DIR` is set. | [ ] |
 | 0.5 | If you'll run Phase 2: confirm `roll20-upload-cache.json` too | `{cookies, userAgent, harvestedAt}`, < 8 h old. Missing/stale/refused → `Roll20UploadCredentialError` on any upload. | [ ] |
 | 0.6 | `npm run build` | `tsc` exits 0 (required for the stdio maps server + `npm start`) | [ ] |
 | 0.7 | `npm test` | suite green — **34 files, 400 tests passing, 0 skipped** as of v2.0.0 | [ ] |
@@ -86,8 +86,9 @@ ID `17491327`) is the project's control campaign (no real PCs) — skip Phase 1'
 **PASS criteria:** server is listening on `:39200`, token exists. If 0.7 fails on
 `_ is not defined`, the emulator's underscore shim regressed — stop and fix first.
 
-**Negative check (the furnished-credential contract):** temporarily move
-`roll20-rt-token.json` aside and call any combat tool. It must fail with a typed
+**Negative check (the furnished-credential contract):** temporarily move BOTH
+`rt-tokens/<campaignId>.json` and `roll20-rt-token.json` aside (the old file would just be copied
+back into the slot) and call any combat tool. It must fail with a typed
 `Roll20TokenUnavailableError` naming what to refresh — **not** hang, and **not**
 quietly try to open a browser. `[ ]`
 
@@ -528,7 +529,8 @@ Output JSON:
   (`npm run release:mod` and `deploy_mod_script` are deleted.)
 - **Transport:** RT (Firebase RTDB) only. No browser, no Playwright, no chromium step.
 - **Credentials:** furnished, never minted — the server reads
-  `roll20-rt-token.json` (campaign-scoped, ~1 h) and `roll20-upload-cache.json`
+  `rt-tokens/<campaignId>.json` (one per campaign, filled by `npm run furnish:token`
+  or copied from the gem's `roll20-rt-token.json`) and `roll20-upload-cache.json`
   (8 h) from the data dir (`ROLL20_DATA_DIR`, default `./data`) and raises
   `Roll20TokenUnavailableError` / `Roll20UploadCredentialError` when they're missing
   or stale. The gem harvests them — reactively, only when its own server fails, so a

@@ -28,7 +28,7 @@ The Gem's **Connect Roll20** button opens a login window, you sign in as normal,
 
 | File | What it's for | How long it lasts |
 |---|---|---|
-| `roll20-rt-token.json` | Everything. **Campaign-scoped** — a token for one game cannot read another. | ~1 hour from harvest |
+| `roll20-rt-token.json` | Everything. **Campaign-scoped** — a token for one game cannot read another. The server copies each one into `rt-tokens/<campaignId>.json`, so switching games doesn't lose the last game's token. | ~1 hour from harvest |
 | `roll20-upload-cache.json` | Uploading your own battlemap art | 8 hours |
 
 Practical consequences:

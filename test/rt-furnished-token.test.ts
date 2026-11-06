@@ -8,8 +8,7 @@
 // (__readRtCredentialForTest) and getRtTokenStatus instead, neither of which touches the network.
 // The env var is read per call (not at import), so each case just sets it.
 //
-// TOKEN_CACHE is resolved at module load, so roll20-rt must be imported AFTER ROLL20_DATA_DIR is
-// set — hence the dynamic import, same as test/rt-dead-token.test.ts.
+// Imported dynamically, AFTER ROLL20_DATA_DIR is set, same as test/rt-dead-token.test.ts.
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
@@ -63,6 +62,7 @@ beforeAll(async () => {
 afterEach(() => {
   delete process.env.ROLL20_RT_TOKEN;
   fs.rmSync(path.join(tmp, "roll20-rt-token.json"), { force: true });
+  fs.rmSync(path.join(tmp, "rt-tokens"), { recursive: true, force: true });
 });
 
 afterAll(() => {
@@ -79,8 +79,8 @@ describe("the RT token is read from ROLL20_RT_TOKEN or the data dir, never harve
     expect(err).toBeInstanceOf(rt.Roll20TokenUnavailableError);
     // dm-whisper matches this prefix — it must survive any rewording of the rest.
     expect(err!.message).toMatch(/^No usable Roll20 realtime token/i);
-    expect(err!.message).toMatch(/checked ROLL20_RT_TOKEN and .*roll20-rt-token\.json/);
-    expect(err!.message).toMatch(/ROLL20_RT_TOKEN is unset and there is no token file — nothing has harvested one/);
+    expect(err!.message).toMatch(/checked ROLL20_RT_TOKEN and .*rt-tokens.21660022\.json/);
+    expect(err!.message).toMatch(/ROLL20_RT_TOKEN is unset and this campaign has no stored token — nothing has furnished one/);
     expect(err!.source).toBeNull();
   });
 
@@ -172,12 +172,14 @@ describe("every refusal names its source, and the remedy fits it", () => {
     expect(err!.message).toMatch(/update ROLL20_RT_TOKEN/);
   });
 
-  it("a file-sourced refusal names the file and keeps the reconnect-in-the-gem remedy", async () => {
-    fs.writeFileSync(path.join(tmp, "roll20-rt-token.json"), token({ campaignId: "111111" }));
+  it("a file-sourced refusal names the slot and keeps the reconnect-in-the-gem remedy", async () => {
+    // Only a hand-copied slot can hold another campaign's token; the store never files one there.
+    fs.mkdirSync(path.join(tmp, "rt-tokens"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, "rt-tokens", `${CAMPAIGN}.json`), token({ campaignId: "111111" }));
     const err = refusal();
     const msg = err!.message;
     expect(msg).toMatch(/^No usable Roll20 realtime token/i);
-    expect(msg).toMatch(/from .*roll20-rt-token\.json: the token belongs to campaign 111111/);
+    expect(msg).toMatch(/from .*rt-tokens.21660022\.json: the token belongs to campaign 111111/);
     expect(msg).toMatch(/reconnect Roll20 in the gem/);
     expect(err!.source).toBe("file");
   });
@@ -200,7 +202,7 @@ describe("getRtTokenStatus reports a broken ROLL20_RT_TOKEN instead of throwing"
   it("with neither source, says both were checked", () => {
     const s = rt.getRtTokenStatus(CAMPAIGN);
     expect(s).toMatchObject({ present: false, source: null });
-    expect(s.note).toMatch(/ROLL20_RT_TOKEN is unset and there is no roll20-rt-token\.json/);
+    expect(s.note).toMatch(/ROLL20_RT_TOKEN is unset and campaign 21660022 has no stored token/);
   });
 
   it("names the file source for a file token", () => {

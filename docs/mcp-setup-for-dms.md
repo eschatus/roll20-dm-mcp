@@ -176,10 +176,10 @@ it again, just `npm run serve` from the same folder.
 
 ### Step 7 — Give the server a Roll20 access token
 
-The server talks to Roll20 over Roll20's own realtime connection, and to do that it needs a token file at
-`data/roll20-rt-token.json` inside the project folder. **The server never fetches this itself.** If the file is
-missing, stale, or belongs to a different campaign, every Roll20 command fails with a message telling you exactly
-which of those it is.
+The server talks to Roll20 over Roll20's own realtime connection, and to do that it needs a token file for each
+campaign you run, in `data/rt-tokens/` inside the project folder. **The server never fetches this itself.** If the
+campaign has no token, or its token has stopped working, every Roll20 command fails with a message telling you
+exactly which of those it is.
 
 With only your campaign's Roll20 **editor** open in Chrome or Edge (the play screen, not the details page; you must
 be a **GM** of the campaign), run this in the project folder:
@@ -195,8 +195,8 @@ npm run furnish:token
    says Ctrl+C), then press **Enter**.
 3. Paste into the waiting terminal and press Enter. Nothing shows as you paste; that's normal.
 
-It checks you're the GM and that the database address is right, then writes `data/roll20-rt-token.json`. If
-something's wrong it says what, in one line.
+It checks you're the GM and that the database address is right, then writes `data/rt-tokens/<campaign id>.json`.
+Other campaigns' tokens are left alone, so do this once per campaign. If something's wrong it says what, in one line.
 
 **This is a long-lived login.** It keeps working through server restarts, and also after you sign out of Roll20,
 and there's currently no way for you to cancel it. Never paste the popup's text into a chat. Keep the `data`

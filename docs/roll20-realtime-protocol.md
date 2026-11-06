@@ -60,10 +60,12 @@ credential and never mints one:
    capture the custom token. The modular SDK only fires that call on a *fresh* auth, so if the
    editor restored from IndexedDB, `firebaseLocalStorageDb` is deleted and the page reloaded to
    force a fresh sign-in. The harvester writes `<data dir>/roll20-rt-token.json`
-   (`{campaignId, customToken or refreshToken, databaseURL, harvestedAt}`).
-2. **Read (here).** `getCustomToken` in `roll20-rt.ts` reads that file — or the same object inline in
+   (`{campaignId, customToken or refreshToken, databaseURL, harvestedAt}`), and the server copies
+   that into the slot for the campaign it holds, `<data dir>/rt-tokens/<campaignId>.json` (#279).
+2. **Read (here).** `getCustomToken` in `roll20-rt.ts` reads the slot of the campaign being connected
+   — or the same object inline in
    **`ROLL20_RT_TOKEN`**, which takes precedence and is meant for a caller with no shared writable
-   data dir; a set-but-unusable variable throws rather than falling back to the file — and validates
+   data dir; a set-but-unusable variable throws rather than falling back to a slot — and validates
    three things —
    it is for **this** campaign (tokens are campaign-scoped), it carries a `databaseURL` (pre-shard-
    fix caches don't, and would reconnect to the wrong shard), and it is inside the max age. Any miss
