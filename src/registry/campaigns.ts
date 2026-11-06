@@ -18,6 +18,9 @@ export interface CampaignEntry {
   name: string;
   roll20CampaignId: string;
   notes?: string;
+  // Present = this table plays on Roll20's own character sheets, so a true PC's HP lives in this
+  // sheet field, not in the tracked %%PCHP%% block. See src/tools/pcHp.ts. Absent = tracked.
+  pcSheetHp?: { attribute: string };
 }
 
 type CampaignStore = Record<string, CampaignEntry>; // key = slug e.g. "curse-of-strahd"
@@ -56,7 +59,9 @@ export function registerCampaign(
 ): string {
   const store = load();
   const slug = toSlug(name);
-  store[slug] = { name, roll20CampaignId, ...(notes ? { notes } : {}) };
+  // Re-registering updates the name, id and notes; it must not quietly switch a table's PC HP back.
+  const pcSheetHp = store[slug]?.pcSheetHp;
+  store[slug] = { name, roll20CampaignId, ...(notes ? { notes } : {}), ...(pcSheetHp ? { pcSheetHp } : {}) };
   save(store);
   return slug;
 }
@@ -158,6 +163,23 @@ export function getActiveCampaign(): CampaignEntry & { slug: string } {
   const entry = store[_activeCampaignSlug];
   if (!entry) throw new Error(`Active campaign slug "${_activeCampaignSlug}" not found in registry`);
   return { slug: _activeCampaignSlug, ...entry };
+}
+
+/** The active campaign's sheet-HP setting, or null when PC HP is tracked (the default). */
+export function getPcSheetHp(): { attribute: string } | null {
+  return getActiveCampaign().pcSheetHp ?? null;
+}
+
+/** Set where the active campaign keeps PC HP: a sheet field, or null for tracked. */
+export function setPcSheetHp(attribute: string | null): void {
+  const { slug } = getActiveCampaign();
+  const store = load();
+  if (!store[slug]) {
+    throw new Error(`Campaign "${slug}" comes from .env and has no registry entry to hold this setting. Run register_campaign and switch_campaign first.`);
+  }
+  if (attribute === null) delete store[slug].pcSheetHp;
+  else store[slug].pcSheetHp = { attribute };
+  save(store);
 }
 
 export function listCampaigns(): Array<{ slug: string; active: boolean } & CampaignEntry> {

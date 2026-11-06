@@ -43,6 +43,8 @@ beforeEach(() => {
   restoreRefreshUser.mockReset();
   signInWithCustomToken.mockReset();
   delete process.env.ROLL20_RT_TOKEN;
+  fs.rmSync(path.join(tmp, "roll20-rt-token.json"), { force: true });
+  fs.rmSync(path.join(tmp, "rt-tokens"), { recursive: true, force: true });
 });
 
 describe("reading a refreshToken credential", () => {

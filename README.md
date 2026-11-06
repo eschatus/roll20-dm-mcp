@@ -36,7 +36,7 @@ The servers read two files from the data dir.
 
 | file (in the data dir) | what it is | lifetime |
 |---|---|---|
-| `roll20-rt-token.json` | the realtime credential — **campaign-scoped**, carries that campaign's database shard | a refresh token: unknown, still being measured (no off switch you control); a one-shot token: ~1 h |
+| `rt-tokens/<campaignId>.json` | the realtime credential, one per campaign — **campaign-scoped**, carries that campaign's database shard | a refresh token: unknown, still being measured (no off switch you control); a one-shot token: ~1 h |
 | `roll20-upload-cache.json` | Roll20 session cookies and User-Agent, for art upload | 8 h |
 
 When one is missing, stale, or belongs to a different campaign, you get a typed error
@@ -68,7 +68,7 @@ once deployed. **You deploy it by hand:** run `npm run build:mod`, then paste
 `mod-scripts/.ai-relay.deploy.js` into the campaign's *Settings → API Scripts* and save.
 
 - **Verify the load, not the save.** The Mod console must print
-  `[GM_AI_Bridge] Relay script loaded (v2.11.0)`. A successful paste is not a running script.
+  `[GM_AI_Bridge] Relay script loaded (v2.12.2)`. A successful paste is not a running script.
 - **Someone must be in the game.** Roll20 parks the Mod sandbox soon after the last player leaves, and
   tools that go through the Mod then time out. Tools that go straight to the database still work.
 - **Deploys are per-campaign.** Each campaign carries its own copy, so one table can be running an

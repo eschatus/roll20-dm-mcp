@@ -55,8 +55,11 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
   naming what to refresh; harvesting belongs to the gem, where a human is watching one window.
 - **Relay version handshake:** `AI_RELAY_VERSION` (`mod-scripts/ai-relay.js`) and
   `EXPECTED_RELAY_VERSION` (`src/bridge/relay-version.ts`) are a hand-synced pair, locked by
-  `test/relay-version.test.ts` — bump BOTH when changing `ai-relay.js` in a way worth flagging to a
-  DM on a stale deploy. A mismatch warns once (never throws) and surfaces via `transport_status`.
+  `test/relay-version.test.ts` — **bump BOTH on every change to `ai-relay.js`, before anyone is asked
+  to paste it**, even mid-branch and unreleased: the version is the only proof of which copy a campaign
+  runs, so two different relays must never share one. `mod-scripts/relay-version.lock` pins the source
+  hash, and an edit without a new lock fails the test. A mismatch warns once (never throws) and surfaces
+  via `transport_status`.
 - `src/recon/*` are manual live scripts (real campaign), run with `tsx` — the smoke/soak layer.
   They are excluded from the prod build.
 
@@ -76,10 +79,16 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
   `wall-seg`. Credentials are FURNISHED, never minted: the RT credential holds a one-shot
   `customToken` or a long-lived `refreshToken` (`src/bridge/rt-refresh-auth.ts`; a Roll20 sign-out
   does not revoke it, see `docs/security.md`), and is read from
-  `ROLL20_RT_TOKEN` or `<data dir>/roll20-rt-token.json` (same object either way, env wins,
-  campaign-scoped) and art uploads from `roll20-upload-cache.json`; both throw a typed error
+  `ROLL20_RT_TOKEN` or the campaign's own slot, `<data dir>/rt-tokens/<campaignId>.json`
+  (`src/bridge/rt-token-store.ts`, #279; same object either way, env is a single override that wins,
+  and there is no fallback to another campaign's token) and art uploads from
+  `roll20-upload-cache.json`; both throw a typed error
   (`Roll20TokenUnavailableError`, `Roll20UploadCredentialError`) naming what to refresh instead of
-  harvesting. A set-but-unusable `ROLL20_RT_TOKEN` throws rather than falling back to the file. Art upload is a
+  harvesting. A set-but-unusable `ROLL20_RT_TOKEN` throws rather than falling back to a slot.
+  **`roll20-rt-token.json` is still live:** the gem writes every harvest there, so each read copies
+  it into the slot for the campaign IT holds. Never delete or move it: the gem force-harvests when
+  it is missing. A custom token does not displace a working refresh token, only one refused since
+  (`refusedAt`, stamped by `connect()`), or the gem's recovery could never heal a dead one. Art upload is a
   plain multipart POST — browserless, credential furnished. A human furnishes both with
   `npm run furnish:token` (`--upload` for the cookies, `src/bridge/upload-credential.ts`), or the gem
   harvests them in its own logged-in session. The legacy browser→chat relay is DELETED (#122/#179) —
@@ -272,7 +281,10 @@ vision/wall tooling is maps-only.)
 2. `setup_roll20_page(...)` — creates the page **browserlessly via `rtCreatePage`** (a direct RTDB
    write to the `pages` node, #178 — `createObj("page")` is a MOD-sandbox limitation only), then
    `setPageProps` over the Mod for the fields the RTDB page doesn't carry (scale_number/scale_units/
-   showgrid). NB page `width`/`height` are **70px units, not cells**.
+   showgrid). NB page `width`/`height` are **70px units, not cells**. **Refuses a name that already
+   exists** (#277; it used to resize whatever page matched) unless `reuseExisting: true`, which
+   changes only the fields passed. `batch_import_maps` has its own `skipExisting`/`reuseExisting`,
+   and `reuseExisting` wins. `rtCreatePage` copies `dynamic_lighting_enabled` from its template page.
 3. `auto_place_dl_walls({walls, strokeColor})` — places DL `pathv2` walls.
 4. `decorate_openings({doors, windows, secretDoors})` — creates **native Roll20 DL door/window
    objects** (not map-layer rectangles): doors `#FF0000`, windows `#00FFFF`, secret doors `#9932CC`.
@@ -352,6 +364,18 @@ registry override (`sidekick: true`, `src/registry/characters.ts`) is needed to 
   (npcOnly / `entries[].hp` seeding) all read the same `sidekickNames` set
   (`registry.listSidekickNames()`) so a sidekick routes as an NPC everywhere HP/death routing is
   decided. See issue #132.
+
+**Sheet-carried PC HP (`set_pc_hp_source`):** a campaign can opt true PCs out of the tracked block and
+onto Roll20's own sheets, for a table whose players actually use them. It is per campaign
+(`pcSheetHp` in `campaigns.json`), not inferred from `bar1_link`: a Beyond20 table can have linked bars
+too. Every PC HP write goes through `adjustPcHp` in `src/tools/pcHp.ts`; never send the `adjustPcHp` relay
+action from a new call site, or that site will write the block on a sheet campaign. Built on
+`getSheetItem`/`setSheetItem`, so no relay action and no redeploy. A bad read refuses, never coerces,
+and there is no fallback to tracked. The token bar is still never written; a linked bar follows the
+write on its own (live, cos-test). **`setSheetItem`'s `written` is not evidence:** on a live Beacon
+sheet a field with no attribute record reports written and stores nothing, despite `allowThrow`, so
+every write is read back. `setAttrs` creates such a field. Status and limits:
+`docs/roll20-api-coverage.md` → "PC HP on Roll20 sheets".
 
 **Named values (#259):** `set_token_value`/`get_token_value` store semantics-free JSON on a token in
 a `%%VALS=<percent-encoded JSON>%%` gmnotes block, over direct RTDB (`src/bridge/token-values.ts`): no

@@ -36,6 +36,11 @@ Call `setup_roll20_page({ name, widthSquares, heightSquares, scaleNumber, scaleU
 
 Ask the DM for the page name if not provided. Default: 30×20 squares, 5ft scale.
 
+If a page of that name already exists the tool refuses and changes nothing; its error names the
+page. A same-named page is usually a different map, so tell the DM and ask for another name. When
+the DM confirms you are resuming work on that very page, call it again with `reuseExisting: true`.
+Only what you pass is changed then, so leave the size out unless the page really needs resizing.
+
 ### 4. Place DL walls and decorate openings
 
 Call `auto_place_dl_walls` with the walls from step 2. DL walls are blue `#0044FF` — the tool's
@@ -142,6 +147,8 @@ Report:
 
 Then:
 > "Red = doors, cyan = windows, purple = secret doors — placed as native Roll20 DL door/window objects. Tune or remove them in the Dynamic Lighting editor (they're DL objects, not images to swap). Enable Dynamic Lighting on this page when ready."
+
+`setup_roll20_page` reports `dynamic_lighting_enabled`. A new page takes it from another page in the campaign, so it may already be on; `null` means the page does not carry the field.
 
 ## Tuning guidance (if the DM wants to adjust)
 

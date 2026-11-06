@@ -18,6 +18,8 @@ import {
   renderMobPlanCard, NUM_PERMISSION,
 } from "./combatHelpers.js";
 import { normalizeNameForMatch, isPunctuationOnlyInput } from "./nameMatch.js";
+import { adjustPcHp, pcHpTag } from "./pcHp.js";
+import { getPcSheetHp } from "../registry/campaigns.js";
 
 // ONE canonical condition table — Roll20 status marker tags for D&D 5e
 // conditions, keyed by natural-language / DDB condition name. The marker-tag→
@@ -186,10 +188,8 @@ export function registerCombatTools(server: McpServer): void {
       const isPc = isPcToken(tok, registry.listSidekickNames());
       const hpStr = await step("hp", async () => {
         if (isPc) {
-          const res = await roll20.relayCommand<{ current: number; max: number }>({
-            action: "adjustPcHp", tokenId: resolvedTokenId, setHp: hp,
-          });
-          return `${res.current}${res.max ? `/${res.max}` : ""} (tracked)`;
+          const res = await adjustPcHp({ ...tok, id: resolvedTokenId }, { setHp: hp });
+          return `${res.current}${res.max ? `/${res.max}` : ""}${pcHpTag(res.carrier)}`;
         }
         // A dead NPC normally still has its bar1_max; if it has none, `hp` establishes one,
         // otherwise every later damage call would refuse for want of a bar.
@@ -947,10 +947,17 @@ export function registerCombatTools(server: McpServer): void {
       max: z.number().optional().describe("The max value to set (e.g. max HP). If provided, sets both current and max on the same attribute."),
       characterName: z.string().optional(),
       charSheetId: z.string().optional().describe("Target a character sheet directly by its Roll20 ID"),
+      withWorker: z.boolean().optional().describe("Write through the sheet's own workers (Roll20 setAttrs). The way to store a value on a Beacon field that has none yet, which this tool otherwise refuses. Check the result with read_character_attributes."),
     },
-    async ({ attributeName, value, max, characterName, charSheetId }) => {
+    async ({ attributeName, value, max, characterName, charSheetId, withWorker }) => {
       const resolvedCharId = await resolveCharSheetId(characterName, charSheetId);
       const attrValue = max !== undefined ? { current: value, max } : value;
+      if (withWorker) {
+        const r = await roll20.relayCommand<{ written: string[]; workersExecuted: boolean | null; note: string | null }>({
+          action: "setAttrs", charId: resolvedCharId, attributes: { [attributeName]: attrValue },
+        });
+        return json({ charSheetId: resolvedCharId, attribute: attributeName, value, max, written: r.written, workersExecuted: r.workersExecuted, note: r.note }, false);
+      }
       const result = await roll20.relayCommand<{
         updated: string[]; created: string[]; failed: string[];
         reasons?: Record<string, string>;
@@ -1012,7 +1019,7 @@ export function registerCombatTools(server: McpServer): void {
 
   server.tool(
     "update_token_hp",
-    "The SINGLE HP primitive — replaces the old apply_damage and heal_character tools. Apply damage (clamps at 0), healing (clamps at max), or set HP to an exact value on ANY Roll20 token. Routes automatically by controlledby: a player-controlled token (PC) has its HP tracked in relay state (a block in the token's gmnotes) and its visible token bar is NEVER touched (Beyond20 owns it) — reported as '(tracked)'; an NPC's HP is its token bar1. Resolve by characterName (fuzzy/registry) or tokenId. Roll20-only — D&D Beyond is read-only and is NOT written. For CONDITIONS (poisoned, prone, dead, etc.) use set_token_marker instead — not this. (The condition args here are legacy/bulk-only.) EXAMPLE — 'the ogre takes 39': {\"characterName\":\"Ogre\",\"damage\":39}. 'heal Thorne 12': {\"characterName\":\"Thorne\",\"heal\":12}. damage/heal/setHp are bare NUMBERS (39), NEVER quoted strings (\"39\").",
+    "The SINGLE HP primitive — replaces the old apply_damage and heal_character tools. Apply damage (clamps at 0), healing (clamps at max), or set HP to an exact value on ANY Roll20 token. Routes automatically by controlledby: a player-controlled token (PC) has its HP tracked in relay state (a block in the token's gmnotes) and its visible token bar is NEVER touched (Beyond20 owns it) — reported as '(tracked)', or, in a campaign set to set_pc_hp_source 'sheet', held on its Roll20 character sheet and reported as '(sheet)'; an NPC's HP is its token bar1. Resolve by characterName (fuzzy/registry) or tokenId. Roll20-only — D&D Beyond is read-only and is NOT written. For CONDITIONS (poisoned, prone, dead, etc.) use set_token_marker instead — not this. (The condition args here are legacy/bulk-only.) EXAMPLE — 'the ogre takes 39': {\"characterName\":\"Ogre\",\"damage\":39}. 'heal Thorne 12': {\"characterName\":\"Thorne\",\"heal\":12}. damage/heal/setHp are bare NUMBERS (39), NEVER quoted strings (\"39\").",
     {
       characterName: z.string().optional().describe("USE THIS. The token/character name exactly as it appears on the map, e.g. 'Brie Mossfrond', 'Skeleton the Armored'. Resolved to the token automatically."),
       tokenId: z.string().optional().describe("Internal Roll20 ID only. Do NOT invent or guess this — if you don't have a real ID from a prior tool result, use characterName instead."),
@@ -1033,7 +1040,7 @@ export function registerCombatTools(server: McpServer): void {
         if (!characterName) throw new Error("Provide characterName or tokenId");
         resolvedTokenId = await resolveTokenOrThrow(characterName);
       }
-      type TokenData = { id: string; bar1_value: number; bar1_max: number; name: string; controlledby?: string; charControlledby?: string };
+      type TokenData = { id: string; bar1_value: number; bar1_max: number; name: string; controlledby?: string; charControlledby?: string; represents?: string };
       const token = await roll20.relayCommand<TokenData | null>({ action: "getTokenById", tokenId: resolvedTokenId });
       if (!token) throw new Error(`Token not found: ${characterName ?? tokenId}`);
 
@@ -1048,20 +1055,19 @@ export function registerCombatTools(server: McpServer): void {
       let newHp: number;
       let maxHp: number;
       let thresholdNote = "";
+      let pcTag = "";
 
       if (isPc) {
-        // PC HP is tracked in relay state (a block in the token's gmnotes), routed by
-        // controlledby — NEVER the visible token bar (Beyond20 owns a player's bar1).
-        // adjustPcHp reads the tracked block, computes, and writes it back.
-        const res = await roll20.relayCommand<{ current: number; max: number; name: string }>({
-          action: "adjustPcHp",
-          tokenId: resolvedTokenId,
+        // PC HP lives on the campaign's carrier (tracked block or character sheet), routed by
+        // controlledby — NEVER the visible token bar.
+        const res = await adjustPcHp({ ...token, id: resolvedTokenId }, {
           ...(damage !== undefined ? { damage } : {}),
           ...(heal !== undefined ? { heal } : {}),
           ...(setHp !== undefined ? { setHp } : {}),
         });
         newHp = res.current;
         maxHp = res.max;
+        pcTag = pcHpTag(res.carrier);
       } else {
         // NPC: the token bar IS the source of truth. Guard a missing bar (writing to it
         // silently no-ops); setHp is allowed — it establishes a value.
@@ -1096,7 +1102,7 @@ export function registerCombatTools(server: McpServer): void {
         }
       }
 
-      const hpStr = (maxHp ? `${newHp}/${maxHp}` : String(newHp)) + (isPc ? " (tracked)" : "");
+      const hpStr = (maxHp ? `${newHp}/${maxHp}` : String(newHp)) + pcTag;
       const delta = damage !== undefined ? `-${damage}` : heal !== undefined ? `+${heal}` : `→${newHp}`;
       const condNote = replaceConditions !== undefined
         ? ` | conditions set: [${replaceConditions.join(", ") || "none"}]`
@@ -1174,7 +1180,9 @@ export function registerCombatTools(server: McpServer): void {
           _name: (t.name || "").split("\n")[0].trim(), _pc: false, _nv: nv, _max: max,
         });
       }
-      for (const t of pcs) {
+      // On the sheet carrier a PC is a read and a write, which a relay batch can't express.
+      const onSheet = getPcSheetHp() !== null;
+      for (const t of onSheet ? [] : pcs) {
         // adjustPcHp reads the tracked block and computes; the result carries the new value.
         ops.push({
           id: t.id, action: "adjustPcHp",
@@ -1206,6 +1214,16 @@ export function registerCombatTools(server: McpServer): void {
           }
         } else {
           failLines.push(`${op._name}: FAILED (${r.error ?? "no result returned by relay"})`);
+        }
+      }
+
+      for (const t of onSheet ? pcs : []) {
+        const name = (t.name || "").split("\n")[0].trim();
+        try {
+          const res = await adjustPcHp(t, damage !== undefined ? { damage } : { heal });
+          okLines.push(`${name}: ${res.current}${res.max ? "/" + res.max : ""}${pcHpTag(res.carrier)}`);
+        } catch (e) {
+          failLines.push(`${name}: FAILED (${e instanceof Error ? e.message : String(e)})`);
         }
       }
 
@@ -1542,18 +1560,30 @@ export function registerCombatTools(server: McpServer): void {
           const max = Number(n.bar1_max) || 0;
           ops.push({ id: `heal:${n.id}`, action: "setTokenBar", args: { tokenId: n.id, value: max ? Math.min(max, cur + heal) : cur + heal, max: max || undefined } });
         }
-        for (const p of pcs) {
+        const onSheet = getPcSheetHp() !== null;
+        for (const p of onSheet ? [] : pcs) {
           ops.push({ id: `heal:${p.id}`, action: "adjustPcHp", args: { tokenId: p.id, heal } });
         }
         const batch = ops.length ? await roll20.relayCommand<BatchResult[]>({ action: "batchExec", ops }) : [];
         const opRes = indexBatchResults(batch, ops.map((o) => o.id));
+
+        // On the sheet carrier a PC is a read and a write, which a relay batch can't express.
+        for (const p of onSheet ? pcs : []) {
+          try {
+            const res = await adjustPcHp(p, { heal });
+            opRes.set(`heal:${p.id}`, { id: `heal:${p.id}`, ok: true, data: { current: res.current, max: res.max } });
+          } catch (e) {
+            opRes.set(`heal:${p.id}`, { id: `heal:${p.id}`, ok: false, error: e instanceof Error ? e.message : String(e) });
+          }
+        }
 
         const healLines = [...pcs, ...npcs].map((t) => {
           const r = opRes.get(`heal:${t.id}`);
           if (r && !r.ok) return `${t.name}: heal FAILED (${r.error ?? "failed"})`;
           // adjustPcHp returns the new {current,max}; for NPCs we computed it ourselves.
           const data = r?.data as { current?: number; max?: number } | undefined;
-          const max = Number(t.bar1_max) || data?.max || 0;
+          // A sheet PC's max is the sheet's; its bar1_max may be stale or unset.
+          const max = (onSheet && pcs.includes(t) ? data?.max : Number(t.bar1_max) || data?.max) || 0;
           const newHp = data?.current ?? (max ? Math.min(max, (Number(t.bar1_value) || 0) + heal) : (Number(t.bar1_value) || 0) + heal);
           return `${t.name}: +${heal}${max ? ` (${newHp}/${max})` : ` (→${newHp})`}`;
         });

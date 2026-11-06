@@ -333,6 +333,19 @@ export async function resolveTokenOrThrow(
   return r.id;
 }
 
+// An unregistered name: find it in the journal. Exact match only, and never a guess between two:
+// a sheet write to the wrong character is not recoverable.
+async function journalCharacterId(name: string): Promise<string> {
+  const rows = await roll20.relayCommand<{ id: string; name: string }[]>({ action: "listCharacters", includeArchived: true });
+  const want = normalizeNameForMatch(name);
+  const hits = rows.filter((c) => normalizeNameForMatch(c.name) === want);
+  if (hits.length === 1) return hits[0].id;
+  if (hits.length > 1) {
+    throw new Error(`${hits.length} characters are named ${name}: pass charSheetId (${hits.map((c) => c.id).join(", ")}).`);
+  }
+  throw new Error(`Character not registered and not in the journal: ${name}`);
+}
+
 // Resolve a registered character name (or an explicit charSheetId) to a Roll20
 // character-sheet id, following token.represents. Shared by the attribute tools.
 export async function resolveCharSheetId(
@@ -342,7 +355,7 @@ export async function resolveCharSheetId(
   if (charSheetId) return charSheetId;
   if (!characterName) throw new Error("Provide characterName or charSheetId");
   const entry = registry.lookup(characterName);
-  if (!entry?.roll20TokenId) throw new Error(`Character not registered: ${characterName}`);
+  if (!entry?.roll20TokenId) return journalCharacterId(characterName);
   // Verify the stored id against the live page, or find the page's own token —
   // the stored id may belong to another page's copy of the token (#240).
   const tokenId = await resolveTokenOrThrow(characterName);

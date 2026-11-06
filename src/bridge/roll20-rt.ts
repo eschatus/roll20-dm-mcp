@@ -10,18 +10,17 @@
 //   logged-in browser  ──intercept signInWithCustomToken request──▶  Firebase custom token
 //   custom token  ──firebase signInWithCustomToken──▶  ID token (RTDB cred, ~1h, SDK auto-refreshes)
 //
-// The custom token is FURNISHED, never minted here (#177): read from ROLL20_RT_TOKEN or
-// <data dir>/roll20-rt-token.json, and a loud typed error when there is nothing usable. Whoever
+// The custom token is FURNISHED, never minted here (#177): read from ROLL20_RT_TOKEN or the
+// campaign's slot, <data dir>/rt-tokens/<campaignId>.json (#279), and a loud typed error when
+// there is nothing usable. Whoever
 // harvests it does so in a first-party, human-attended session (the gem's Electron browser) —
 // there is no browser in this repo (#179) and no fallback that could open one. All traffic here
 // is the socket. RT is the only transport (#122/#179) — there is no runtime switch for it.
 
-import { existsSync, readFileSync } from "fs";
-import path from "path";
-import { dataPath } from "../dataDir.js";
 import { initializeApp, deleteApp, type FirebaseApp } from "firebase/app";
 import { getAuth, signInWithCustomToken, type User } from "firebase/auth";
 import { restoreRefreshUser } from "./rt-refresh-auth.js";
+import { importLegacyRtToken, markRtTokenRefused, readRtTokenSlot, rtTokenSlotPath } from "./rt-token-store.js";
 import {
   getDatabase, ref, get, push, set, update, remove, runTransaction, serverTimestamp, query, limitToLast, onChildAdded, onValue,
   type Database, type DatabaseReference,
@@ -73,7 +72,6 @@ export class RtModSilentError extends Error {
 export class RtRelayError extends Error {
   constructor(detail: string) { super("Relay error: " + detail); this.name = "RtRelayError"; }
 }
-const TOKEN_CACHE = dataPath("roll20-rt-token.json");
 // A Firebase custom token is valid ~1h from mint and stays re-exchangeable until then.
 // `harvestedAt` is stamped at or after the mint, so the real deadline is at LEAST an hour past it.
 //
@@ -85,14 +83,14 @@ const TOKEN_CACHE = dataPath("roll20-rt-token.json");
 // stdio, a tsx script) died on local bookkeeping while the credential on disk was still good.
 // Firebase is the authority on whether a token is spent: offer it, and report what it says.
 const TOKEN_LIFETIME_MS = 60 * 60_000;
-// How old the file has to be before `transport_status` calls it stale. Short of the lifetime, so
+// How old a token has to be before `transport_status` calls it stale. Short of the lifetime, so
 // the warning lands while there is still time to reconnect rather than after the fact.
 const TOKEN_STALE_MS = 50 * 60_000;
 
 // --- The furnished Firebase custom token (READ here, minted elsewhere) ---
 //
-// This server does NOT harvest (#177). It reads the credential from ROLL20_RT_TOKEN or from
-// <data dir>/roll20-rt-token.json, and when there is nothing usable it throws — there is no
+// This server does NOT harvest (#177). It reads the credential from ROLL20_RT_TOKEN or from the
+// campaign's slot in the data dir (rt-token-store.ts), and when there is nothing usable it throws — there is no
 // browser here to reach for, and a server that could open one against a live account on its own
 // initiative is the capability the issue removed.
 //
@@ -107,8 +105,8 @@ const TOKEN_STALE_MS = 50 * 60_000;
 // campaigns on another shard read empty. Recorded by whoever harvested the token.
 //
 // `source` records WHICH furnish path the credential came from. Every refusal names it, because
-// the remedy differs: a bad file is fixed by reconnecting in the gem (which rewrites it), but a bad
-// ROLL20_RT_TOKEN is not — the gem's re-harvest rewrites the very file the variable overrides.
+// the remedy differs: a bad slot is fixed by reconnecting in the gem (whose harvest is filed into
+// it), but a bad ROLL20_RT_TOKEN is not — the variable overrides everything the data dir holds.
 type TokenSource = "env" | "file";
 //
 // A credential carries a one-shot customToken, a long-lived refreshToken, or both; refreshToken
@@ -116,18 +114,19 @@ type TokenSource = "env" | "file";
 type TokenCache = { campaignId: string; customToken?: string; refreshToken?: string; databaseURL: string; harvestedAt: number; source: TokenSource };
 type RtCredential = Omit<TokenCache, "campaignId">;
 
-// ROLL20_RT_TOKEN carries the SAME JSON object as roll20-rt-token.json — one documented shape,
-// not a second schema — for a caller that has the credential but no shared writable data dir
-// (a tsx script, a stdio maps server spawned for one job, a packaged install). It takes
-// precedence over the file: an explicitly furnished credential is the more deliberate act.
+// ROLL20_RT_TOKEN carries the SAME JSON object as a stored token — one documented shape, not a
+// second schema — for a caller that has the credential but no shared writable data dir
+// (a tsx script, a stdio maps server spawned for one job, a packaged install). It is one credential
+// for one campaign, not a second store: it takes precedence over every slot, because an explicitly
+// furnished credential is the more deliberate act.
 //
-// Set-but-unusable throws rather than quietly falling through to the file. An operator who
+// Set-but-unusable throws rather than quietly falling through to a slot. An operator who
 // exported this variable meant to use it, and a silent fallback to a different campaign's token
 // is precisely the kind of quiet divergence #177 was filed about.
 const TOKEN_ENV = "ROLL20_RT_TOKEN";
 const TOKEN_ENV_SHAPE =
   `it takes the same {campaignId, customToken or refreshToken, databaseURL, harvestedAt} object as ` +
-  `roll20-rt-token.json; unset it to fall back to that file`;
+  `a stored token; unset it to use the campaign's token in the data dir`;
 
 function readEnvToken(): TokenCache | null {
   const value = process.env[TOKEN_ENV];
@@ -180,15 +179,24 @@ function readEnvToken(): TokenCache | null {
   };
 }
 
-function readTokenCache(): TokenCache | null {
+// The credential for one campaign: the env override if set, otherwise that campaign's own slot and
+// never another's. A null campaign means none is active, so there is no slot to read.
+//
+// `legacyProblem` says the old single file could not be imported. It is not a reason to refuse: the
+// campaign's slot may be fine, and the file may belong to a different campaign.
+function readTokenCache(campaignId: string | null): { token: TokenCache | null; legacyProblem: string | null } {
   const env = readEnvToken();
-  if (env) return env;
+  if (env) return { token: env, legacyProblem: null };
+  if (campaignId === null) return { token: null, legacyProblem: importLegacyRtToken() };
+  let slot;
   try {
-    if (!existsSync(TOKEN_CACHE)) return null;
-    const c = JSON.parse(readFileSync(TOKEN_CACHE, "utf-8")) as Omit<TokenCache, "source">;
-    return { ...c, source: "file" };
+    slot = readRtTokenSlot(campaignId);
+  } catch (err) {
+    throw new Roll20TokenUnavailableError(campaignId, (err as Error).message, "file");
   }
-  catch { return null; }
+  const { token, legacyProblem } = slot;
+  if (legacyProblem) console.error(`[rt-token] ${legacyProblem}`);
+  return { token: token ? { ...token, source: "file" } : null, legacyProblem };
 }
 
 /**
@@ -203,38 +211,38 @@ function readTokenCache(): TokenCache | null {
 export class Roll20TokenUnavailableError extends Error {
   /**
    * `source` is the furnish path the refused credential came from — "env" (ROLL20_RT_TOKEN),
-   * "file" (<data dir>/roll20-rt-token.json), or null when neither held one. It picks the remedy.
+   * "file" (the campaign's slot in the data dir), or null when neither held one. It picks the remedy.
    * The message always opens "No usable Roll20 realtime token" — dm-whisper matches that prefix.
    */
   constructor(readonly campaignId: string, reason: string, readonly source: TokenSource | null = null) {
     super(
-      `No usable Roll20 realtime token for campaign ${campaignId} (${describeSource(source)}: ${reason}). ` +
+      `No usable Roll20 realtime token for campaign ${campaignId} (${describeSource(source, campaignId)}: ${reason}). ` +
       remedyFor(source)
     );
     this.name = "Roll20TokenUnavailableError";
   }
 }
 
-function describeSource(source: TokenSource | null): string {
+function describeSource(source: TokenSource | null, campaignId: string): string {
   if (source === "env") return `from ${TOKEN_ENV}`;
-  if (source === "file") return `from ${TOKEN_CACHE}`;
-  return `checked ${TOKEN_ENV} and ${TOKEN_CACHE}`;
+  if (source === "file") return `from ${rtTokenSlotPath(campaignId)}`;
+  return `checked ${TOKEN_ENV} and ${rtTokenSlotPath(campaignId)}`;
 }
 
 function remedyFor(source: TokenSource | null): string {
   if (source === "env") {
     return (
-      `The token came from ${TOKEN_ENV}, which overrides the data dir's roll20-rt-token.json — ` +
+      `The token came from ${TOKEN_ENV}, which overrides every token in the data dir — ` +
       `update ${TOKEN_ENV} with a current token for THIS campaign (the token is campaign-scoped), ` +
-      `or unset it to read the file. Reconnecting Roll20 in the gem will not help while it is set: ` +
-      `a re-harvest rewrites the file this variable overrides. This server never harvests a token.`
+      `or unset it to read the data dir. Reconnecting Roll20 in the gem will not help while it is set: ` +
+      `a re-harvest writes to the data dir this variable overrides. This server never harvests a token.`
     );
   }
   return (
     `This server reads the token but never harvests one — run \`npm run furnish:token\` with this ` +
     `campaign open (docs/setup-guide.md §5), reconnect Roll20 in the gem if you use it, ` +
     `or point ROLL20_DATA_DIR at the data dir holding a current ` +
-    `roll20-rt-token.json for THIS campaign (the token is campaign-scoped).`
+    `token for THIS campaign (the token is campaign-scoped).`
   );
 }
 
@@ -243,14 +251,16 @@ function tokenAgeMinutes(harvestedAt: number): number | null {
 }
 
 // Read the furnished credential. No harvest fallback by design (#177): read it or fail loudly.
-// Only structural problems fail here — a missing file, the wrong campaign, a pre-shard-fix entry
+// Only structural problems fail here — no token for this campaign, a slot holding another
+// campaign's token, a pre-shard-fix entry
 // with no databaseURL. Age does not (#216); the exchange in connect() settles that.
 function getCustomToken(campaignId: string): RtCredential {
-  const c = readTokenCache();
+  const { token: c, legacyProblem } = readTokenCache(campaignId);
   if (!c) {
     throw new Roll20TokenUnavailableError(
       campaignId,
-      `${TOKEN_ENV} is unset and there is no token file — nothing has harvested one`,
+      `${TOKEN_ENV} is unset and this campaign has no stored token — nothing has furnished one, and ` +
+      `a token for another campaign is never used` + (legacyProblem ? `; ${legacyProblem}` : ""),
     );
   }
   if (c.campaignId !== campaignId) {
@@ -270,21 +280,20 @@ function getCustomToken(campaignId: string): RtCredential {
 export const __readRtCredentialForTest = getCustomToken;
 
 /**
- * State of the on-disk RT credential, for `transport_status` (#216).
+ * State of the active campaign's RT credential, for `transport_status` (#216, #279).
  *
- * The gem is the sole harvester and only rewrites the token file on a full re-harvest, so a
- * long-running gem reports perfect health on its own live socket while the file every OTHER
- * reader of the data dir shares has gone cold. Nothing used to say so — the error surfaced only
- * in the locked-out process, pointing the DM at the wrong component. This is that signal.
+ * A long-running gem reports perfect health on its own live socket while the stored token every
+ * OTHER reader of the data dir shares has gone cold. Nothing used to say so — the error surfaced
+ * only in the locked-out process, pointing the DM at the wrong component. This is that signal.
  *
- * `activeCampaignId` is the Roll20 campaign this server would connect to. Tokens are
- * campaign-scoped, so a perfectly fresh token for a DIFFERENT campaign is as useless as an
- * expired one — getCustomToken refuses it on every connect — and must not read as healthy.
- * Pass null when no campaign is active; the mismatch check is then skipped (nothing to compare).
+ * `activeCampaignId` is the Roll20 campaign this server would connect to, and `present` answers
+ * for that campaign alone. A token held for some other campaign does not count. A mismatch can
+ * still happen, from ROLL20_RT_TOKEN or a hand-copied slot, and must not read as healthy.
+ * Pass null when no campaign is active: `present` is false, as there is nothing to hold a token for.
  */
 export function getRtTokenStatus(activeCampaignId: string | null): {
   present: boolean;
-  /** Which furnish path was read: ROLL20_RT_TOKEN ("env") or the data-dir file ("file"). */
+  /** Which furnish path was read: ROLL20_RT_TOKEN ("env") or the campaign's data-dir slot ("file"). */
   source: TokenSource | null;
   campaignId: string | null;
   activeCampaignId: string | null;
@@ -299,24 +308,30 @@ export function getRtTokenStatus(activeCampaignId: string | null): {
   // Here it must be REPORTED, not raised: transport_status is the tool a DM runs to find out what
   // is wrong, and failing outright on the very fault it should describe would hide it.
   let c: TokenCache | null;
+  let legacyProblem: string | null;
   try {
-    c = readTokenCache();
+    ({ token: c, legacyProblem } = readTokenCache(activeCampaignId));
   } catch (err) {
     if (!(err instanceof Roll20TokenUnavailableError)) throw err;
     return {
-      present: false, source: "env", campaignId: null, activeCampaignId, campaignMismatch: false, missingFields: [],
+      present: false, source: err.source, campaignId: null, activeCampaignId, campaignMismatch: false, missingFields: [],
       ageMinutes: null, stale: true, note: err.message,
     };
   }
   if (!c) {
+    const why = activeCampaignId === null
+      ? `No campaign is active, so there is no token to report.`
+      : `${TOKEN_ENV} is unset and campaign ${activeCampaignId} has no stored token (${rtTokenSlotPath(activeCampaignId)}) — ` +
+        `run \`npm run furnish:token\` with that campaign open, or reconnect Roll20 in the gem there.`;
     return {
       present: false, source: null, campaignId: null, activeCampaignId, campaignMismatch: false, missingFields: [], ageMinutes: null, stale: true,
-      note: `${TOKEN_ENV} is unset and there is no ${path.basename(TOKEN_CACHE)} in the data dir — run \`npm run furnish:token\`, or reconnect Roll20 in the gem.`,
+      note: legacyProblem ? `${why} ${legacyProblem}.` : why,
     };
   }
   const refresh = c.source === "env"
-    ? `Update ${TOKEN_ENV} (it overrides the data-dir file, so reconnecting in the gem will not change what this server reads), or unset it.`
-    : `Run \`npm run furnish:token\`, or reconnect Roll20 in the gem, to refresh the file.`;
+    ? `Update ${TOKEN_ENV} (it overrides the data dir, so reconnecting in the gem will not change what this server reads), or unset it.`
+    : `Run \`npm run furnish:token\`, or reconnect Roll20 in the gem, to refresh it.`;
+  const where = describeSource(c.source, activeCampaignId ?? c.campaignId);
   const campaignId = c.campaignId ?? null;
   const campaignMismatch = activeCampaignId !== null && campaignId !== activeCampaignId;
   const harvestedAt = Number(c.harvestedAt) || 0;
@@ -330,13 +345,13 @@ export function getRtTokenStatus(activeCampaignId: string | null): {
     .filter((k) => !c![k] && !(k === "customToken" && c!.refreshToken));
   if (missingFields.length) {
     notes.push(
-      `The Roll20 token (${describeSource(c.source)}) is missing ${missingFields.join(" and ")}, so every ` +
+      `The Roll20 token (${where}) is missing ${missingFields.join(" and ")}, so every ` +
       `connect will refuse it regardless of age. ${refresh}`,
     );
   }
   if (campaignMismatch) {
     notes.push(
-      `The Roll20 token (${describeSource(c.source)}) belongs to campaign ${campaignId ?? "(none recorded)"} but the active ` +
+      `The Roll20 token (${where}) belongs to campaign ${campaignId ?? "(none recorded)"} but the active ` +
       `campaign is ${activeCampaignId}; tokens are campaign-scoped, so every connect for the active ` +
       `campaign will be refused. ` +
       (c.source === "env"
@@ -347,12 +362,13 @@ export function getRtTokenStatus(activeCampaignId: string | null): {
   if (stale) {
     const ageText = ageMinutes === null ? "of unknown age" : `${ageMinutes}m old`;
     notes.push(
-      `The Roll20 token (${describeSource(c.source)}) is ${ageText} and custom tokens last ~` +
+      `The Roll20 token (${where}) is ${ageText} and custom tokens last ~` +
       `${Math.round(TOKEN_LIFETIME_MS / 60_000)}m. An already-connected server keeps working off its ` +
       `live socket, but any OTHER process sharing this credential — roll20-dm-maps over stdio, a CLI ` +
       `script — cannot sign in once it expires. ${refresh}`,
     );
   }
+  if (legacyProblem) notes.push(`${legacyProblem}.`);
   return {
     present: true,
     source: c.source,
@@ -588,6 +604,12 @@ async function connect(): Promise<RtConn> {
     const code = (err as { code?: string })?.code || "";
     if (/custom-token|refresh-token|invalid-credential|token-expired/.test(code)) {
       const age = tokenAgeMinutes(harvested.harvestedAt);
+      // Lets a custom token the gem harvests from here on take the slot (rt-token-store.ts). The
+      // rejection below is the failure that matters, so a failed note must not replace it.
+      if (harvested.refreshToken && harvested.source === "file") {
+        try { markRtTokenRefused(roll20CampaignId, harvested.refreshToken, Date.now()); }
+        catch (e) { console.error(`[rt-token] could not record the refused token for campaign ${roll20CampaignId}: ${(e as Error).message}`); }
+      }
       throw new Roll20TokenUnavailableError(
         roll20CampaignId,
         `Firebase rejected the cached token (${code})` +
@@ -735,9 +757,7 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
       case "listPages": {
         const pages = await rtGet<Record<string, Record<string, unknown>>>("pages");
         if (!pages) throw new Error("listPages: no pages in RTDB → Mod fallback");
-        return Object.values(pages).map((p) => ({
-          id: p.id, name: p.name, width: p.width, height: p.height,
-        }));
+        return Object.values(pages).map(mapPageRow);
       }
       case "getTurnOrder": {
         const campaign = await rtGet<Record<string, unknown>>("campaign");
@@ -1191,6 +1211,12 @@ export async function rtTransact(relPath: string, update: (current: unknown) => 
 // Expose the storage path for callers that need to build their own refs/paths.
 export async function rtStoragePath(): Promise<string> {
   return (await getConn()).storagePath;
+}
+
+// One `listPages` row off an RTDB `pages/<id>` node. dynamic_lighting_enabled is passed through
+// untouched (#277): a node without it stays undefined rather than reading as "off".
+export function mapPageRow(p: Record<string, unknown>): Record<string, unknown> {
+  return { id: p.id, name: p.name, width: p.width, height: p.height, dynamic_lighting_enabled: p.dynamic_lighting_enabled };
 }
 
 // Recon escape hatch: raw handle to the connected RTDB instance so diagnostic
