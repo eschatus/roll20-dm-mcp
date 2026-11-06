@@ -28,7 +28,7 @@ The Gem's **Connect Roll20** button opens a login window, you sign in as normal,
 
 | File | What it's for | How long it lasts |
 |---|---|---|
-| `roll20-rt-token.json` | Everything. **Campaign-scoped** — a token for one game cannot read another. | ~1 hour from harvest |
+| `roll20-rt-token.json` | Everything. **Campaign-scoped** — a token for one game cannot read another. The server copies each one into `rt-tokens/<campaignId>.json`, so switching games doesn't lose the last game's token. | ~1 hour from harvest |
 | `roll20-upload-cache.json` | Uploading your own battlemap art | 8 hours |
 
 Practical consequences:
@@ -81,7 +81,7 @@ D&D Beyond at all.
 
 ### The Gem pins this repository
 
-The Gem installs roll20-dm-mcp as a dependency at a fixed tag — currently **`#v2.4.0`** — and builds it in its
+The Gem installs roll20-dm-mcp as a dependency at a fixed tag — currently **`#v2.5.0`** — and builds it in its
 own clone. So you do not need a separate checkout of this repo for the Gem to run, and changes made here reach
 the Gem only when it re-pins. It also bundles this repo's `skills/dm-rules.md` and `mod-scripts/ai-relay.js`
 into its installer.

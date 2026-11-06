@@ -72,7 +72,7 @@ Beyond the new RTDB code, cover the pure logic everywhere:
 > **Rewritten for v2.0.0.** The original goal was a DDB ↔ Roll20 sync test. There is no DDB here any
 > more (#171 Phase 2) and no `full_sync_character` / `sync_character_state` to test — stats arrive
 > caller-supplied (`roll_initiative entries[]`, the token tools). What remains worth proving live is
-> the **Roll20 half**, gated behind `RUN_LIVE_IT=1` (needs a furnished `roll20-rt-token.json` for the
+> the **Roll20 half**, gated behind `RUN_LIVE_IT=1` (needs a furnished token for the
 > test campaign); never in plain CI.
 - **MCP → Roll20 write pump:** write a PC's tracked HP into its Roll20 token (gmnotes PCHP block)
   via the RT transport; read it back via BOTH the direct RTDB read and the Mod relay; assert they agree.

@@ -112,7 +112,7 @@ carries its own copy.
 Look at the **API Output Console** on that same page; you want to see:
 
 ```
-[GM_AI_Bridge] Relay script loaded (v2.7.0)
+[GM_AI_Bridge] Relay script loaded (v2.11.0)
 ```
 
 If you see a red error instead, the paste was incomplete — clear the box and paste again.
@@ -176,10 +176,10 @@ it again, just `npm run serve` from the same folder.
 
 ### Step 7 — Give the server a Roll20 access token
 
-The server talks to Roll20 over Roll20's own realtime connection, and to do that it needs a token file at
-`data/roll20-rt-token.json` inside the project folder. **The server never fetches this itself.** If the file is
-missing, stale, or belongs to a different campaign, every Roll20 command fails with a message telling you exactly
-which of those it is.
+The server talks to Roll20 over Roll20's own realtime connection, and to do that it needs a token file for each
+campaign you run, in `data/rt-tokens/` inside the project folder. **The server never fetches this itself.** If the
+campaign has no token, or its token has stopped working, every Roll20 command fails with a message telling you
+exactly which of those it is.
 
 With only your campaign's Roll20 **editor** open in Chrome or Edge (the play screen, not the details page; you must
 be a **GM** of the campaign), run this in the project folder:
@@ -188,20 +188,22 @@ be a **GM** of the campaign), run this in the project folder:
 npm run furnish:token
 ```
 
-1. It prints a long line and copies it to your clipboard where it can. Press **F12** in the editor, click
-   **Console**, paste the line and press Enter. If Chrome warns about pasting, type `allow pasting` first.
-2. A popup appears with the text selected. Press **Ctrl+C**, then **Enter**.
+1. It prints a long line and copies it to your clipboard where it can. Open the browser console in the editor
+   (**Windows:** F12, then **Console**; **macOS:** Cmd+Option+J), paste the line and press Enter. If Chrome warns
+   about pasting, type `allow pasting` first.
+2. A popup appears with the text selected. Copy it (**Windows:** Ctrl+C; **macOS:** Cmd+C, even though the popup
+   says Ctrl+C), then press **Enter**.
 3. Paste into the waiting terminal and press Enter. Nothing shows as you paste; that's normal.
 
-It checks you're the GM and that the database address is right, then writes `data/roll20-rt-token.json`. If
-something's wrong it says what, in one line.
+It checks you're the GM and that the database address is right, then writes `data/rt-tokens/<campaign id>.json`.
+Other campaigns' tokens are left alone, so do this once per campaign. If something's wrong it says what, in one line.
 
 **This is a long-lived login.** It keeps working through server restarts, and also after you sign out of Roll20,
 and there's currently no way for you to cancel it. Never paste the popup's text into a chat. Keep the `data`
 folder private.
 
-> **Uploading your own battlemap art** needs a second file, which lasts 8 hours. With the editor open, press **F12**,
-> open **Network**, reload, right-click the top request (named like `editor/`) → **Copy** → **Copy as cURL**, then run
+> **Uploading your own battlemap art** needs a second file, which lasts 8 hours. With the editor open, open developer tools
+> (**F12**; macOS **Cmd+Option+I**), open **Network**, reload, right-click the top request (named like `editor/`) → **Copy** → **Copy as cURL**, then run
 > `Get-Clipboard | npm run furnish:token -- --upload` (macOS: `pbpaste | npm run furnish:token -- --upload`). Without
 > it, art upload fails with a clear message and everything else keeps working.
 
@@ -320,8 +322,8 @@ That's the second credential — `data/roll20-upload-cache.json`, which expires 
 at the end of Step 7. Combat is unaffected.
 
 **The gem says it connected, but the server still can't find a token.**
-The two are writing to and reading from different folders. See the `ROLL20_DATA_DIR` / `DMW_DATA_DIR` warning in
-Step 7.
+The two are writing to and reading from different folders. Point both at the same one; see the Gem section of
+[`setup-guide.md`](setup-guide.md).
 
 **`which claude` (macOS) or `where claude` (Windows) comes back empty.**
 The command shell Claude runs in is sandboxed and doesn't have your normal PATH — that's expected and harmless.

@@ -57,7 +57,7 @@ A `.env` file in the project root is optional — the defaults work. The setting
 | Variable | Default | What it does |
 |---|---|---|
 | `ROLL20_DATA_DIR` | `./data` | Where credentials and the campaign/character registries live. If you run the Gem, this must be the directory it writes to (see step 5). |
-| `ROLL20_RT_TOKEN` | *(unset)* | The realtime credential inline — the same `{campaignId, customToken or refreshToken, databaseURL, harvestedAt}` object as `roll20-rt-token.json`. Overrides the file; malformed or wrong-campaign fails loudly rather than falling back to it. |
+| `ROLL20_RT_TOKEN` | *(unset)* | The realtime credential inline — the same `{campaignId, customToken or refreshToken, databaseURL, harvestedAt}` object as a stored token. A single override: it wins over every stored token, and malformed or wrong-campaign fails loudly rather than falling back to one. |
 | `ROLL20_MCP_TOKEN` | auto-generated | Bearer token for the HTTP server. Written for you on first run. |
 | `ROLL20_HTTP_PORT` / `ROLL20_HTTP_HOST` | `39200` / `127.0.0.1` | Where the combat server listens. |
 | `ANTHROPIC_API_KEY` | — | Only read by the maps suite's `analyze_battlemap`. |
@@ -133,7 +133,7 @@ Roll20 access is **furnished, never minted**. The server reads two files out of 
 
 | File | Shape | Life | Needed for |
 |---|---|---|---|
-| `roll20-rt-token.json` | `{campaignId, customToken or refreshToken, databaseURL, harvestedAt}` | `refreshToken`: until revoked, lifespan unknown. `customToken`: ~1 h from harvest. Firebase decides, not us | Everything. The token is **campaign-scoped** and carries that campaign's RTDB shard. |
+| `rt-tokens/<campaignId>.json` (one per campaign) | `{campaignId, customToken or refreshToken, databaseURL, harvestedAt}` | `refreshToken`: until revoked, lifespan unknown. `customToken`: ~1 h from harvest. Firebase decides, not us | Everything. The token is **campaign-scoped** and carries that campaign's RTDB shard. |
 | `roll20-upload-cache.json` | `{cookies, userAgent, harvestedAt}` | 8 h | Art upload only (`upload_and_place_map_image`, `batch_import_maps`, `upload_image`). |
 
 You must be a **GM** of the campaign, and the campaign needs the relay Mod installed (§3) — which in turn needs the campaign creator's Pro subscription.
@@ -150,7 +150,7 @@ npm run furnish:token
 2. A popup appears with the text selected. Press **Ctrl+C**, then **Enter**.
 3. Paste into the waiting terminal and press Enter. Nothing shows as you paste.
 
-It checks that this is a **GM** login, reads the campaign from the login itself, confirms the database holds that campaign, and writes `<ROLL20_DATA_DIR>/roll20-rt-token.json`. Add `--print` to get the JSON for `ROLL20_RT_TOKEN` instead (it overrides the file; handy for a stdio `roll20-dm-maps` or a script with no shared data dir). Changing tables means repeating this in the other campaign.
+It checks that this is a **GM** login, reads the campaign from the login itself, confirms the database holds that campaign, and writes `<ROLL20_DATA_DIR>/rt-tokens/<campaignId>.json`, leaving every other campaign's token alone. Add `--print` to get the JSON for `ROLL20_RT_TOKEN` instead (it overrides the stored tokens; handy for a stdio `roll20-dm-maps` or a script with no shared data dir). Each campaign you run needs this once, and after that `switch_campaign` picks that campaign's token by itself. An older `roll20-rt-token.json` is copied into the slot for the campaign it holds the first time the server reads a token.
 
 That stores a **refresh token**, so server restarts need no new capture. It kept working after a Roll20 sign-out and with the browser closed, so **treat it like a password**: keep it out of chats, and know that you currently can't revoke it yourself. See `docs/security.md`.
 
@@ -238,7 +238,7 @@ The Gem is an Electron overlay that floats on your screen. It shows a glowing fa
 
 What matters from *this* side of the relationship:
 
-- The Gem pins this repository as a dependency by tag (currently `#v2.4.0`) and builds it in the clone, so you do not need a separate checkout of roll20-dm-mcp for the Gem to run. Changes here reach the Gem only when it re-pins.
+- The Gem pins this repository as a dependency by tag (currently `#v2.5.0`) and builds it in the clone, so you do not need a separate checkout of roll20-dm-mcp for the Gem to run. Changes here reach the Gem only when it re-pins.
 - It bundles `skills/dm-rules.md` and `mod-scripts/ai-relay.js` from this repo into its installer.
 - It harvests the two credential files from step 5 itself.
 - It consumes the `/events` SSE stream, and it owns the two responsibilities this server gave up: deciding tactical plans (storing them via `set_mob_plan`) and answering player `!`-commands (off `chat-message` events).
@@ -260,7 +260,7 @@ With the server running and Claude Code (or the Gem) connected:
 
 If `list_tokens` fails, work down this list:
 
-- **"No usable Roll20 realtime token…"** — the credential from step 5 is missing, refused by Firebase, or belongs to another campaign; the message says which. Run `npm run furnish:token` with *this* campaign open (Gem users: reconnect Roll20 in the Gem). Check `transport_status.rtToken` first; `campaignMismatch: true` means the stored token is for a different game.
+- **"No usable Roll20 realtime token…"** — this campaign has no stored token from step 5, or Firebase refused it; the message says which, and a token for another campaign is never used. Run `npm run furnish:token` with *this* campaign open (Gem users: reconnect Roll20 in the Gem). Check `transport_status.rtToken` first: `present` and `ageMinutes` describe the active campaign's token, and `campaignMismatch: true` means `ROLL20_RT_TOKEN` is set for a different game.
 - **Timeout / "sandbox unreachable"** — the Mod script isn't running. **Someone must be in the game:** Roll20 parks the sandbox soon after the last player leaves. If someone is, check the campaign's API Output Console for the load banner (step 3) and re-paste if it's absent or the version is stale.
 - **Relay version mismatch in `transport_status`** — re-paste `mod-scripts/ai-relay.js` into that campaign.
 - **Map tools missing or failing to load** — run `npm run build`; `roll20-dm-maps` runs the compiled `dist/`.

@@ -36,7 +36,7 @@ The servers read two files from the data dir.
 
 | file (in the data dir) | what it is | lifetime |
 |---|---|---|
-| `roll20-rt-token.json` | the realtime credential — **campaign-scoped**, carries that campaign's database shard | a refresh token: unknown, still being measured (no off switch you control); a one-shot token: ~1 h |
+| `rt-tokens/<campaignId>.json` | the realtime credential, one per campaign — **campaign-scoped**, carries that campaign's database shard | a refresh token: unknown, still being measured (no off switch you control); a one-shot token: ~1 h |
 | `roll20-upload-cache.json` | Roll20 session cookies and User-Agent, for art upload | 8 h |
 
 When one is missing, stale, or belongs to a different campaign, you get a typed error
