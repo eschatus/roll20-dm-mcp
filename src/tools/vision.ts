@@ -964,6 +964,10 @@ export function registerVisionTools(server: McpServer): void {
         return placed.length;
       }
 
+      // Creating needs the Mod but clearing is a direct RTDB write, so in an empty game the clear
+      // would land and the doors would not. This throws before anything is touched.
+      await roll20.relayCommand({ action: "ping" });
+
       // Clear any previously placed DL door/window objects before re-placing
       await roll20.relayCommand<{ removed: number }>({ action: "clearDLOpenings", pageId: activePage });
 

@@ -62,11 +62,22 @@ describe("create_character_stub stamps the sheet name", () => {
     expect(created().get("name")).toBe("Vex");
   });
 
-  it("fails loudly, naming the character, when the stamp does not land", async () => {
+  it("still returns the id when the stamp does not land, so a retry can't make a duplicate", async () => {
     h.emu.installSheetCarriers({ sheetName: "ogl5e" });
     rt.dropWrites = true;
-    await expect(h.callTool("create_character_stub", { name: "Vex" })).rejects.toThrow(/did not land/);
-    await expect(h.callTool("create_character_stub", { name: "Vex" })).rejects.toThrow(/was created/);
+    const { isError, text } = await h.callTool("create_character_stub", { name: "Vex" });
+    expect(isError).toBeFalsy();
+    expect(text).toContain(created().id);
+    expect(text).toMatch(/did not land/);
+    expect(text).toMatch(/Do not create it again/);
+  });
+
+  it("still returns the id when the sheet name can't be read", async () => {
+    h.failRelayAction("ping");
+    const { isError, text } = await h.callTool("create_character_stub", { name: "Vex" });
+    expect(isError).toBeFalsy();
+    expect(text).toContain(created().id);
+    expect(text).toMatch(/WARNING/);
   });
 });
 
@@ -87,6 +98,12 @@ describe("decorate_openings secret doors", () => {
     await h.callTool("decorate_openings", { pageId: page, doors: [OPENING], windows: [OPENING], secretDoors: [] });
     expect(h.relayLog).toEqual(expect.arrayContaining(["createDLDoors", "createDLWindows"]));
     expect(held()).toEqual([]);
+  });
+
+  it("touches nothing when the Mod isn't answering, so an empty game keeps its doors", async () => {
+    h.failRelayAction("ping");
+    await expect(h.callTool("decorate_openings", { pageId: page, doors: [OPENING], windows: [], secretDoors: [] })).rejects.toThrow();
+    expect(h.relayLog).not.toContain("clearDLOpenings");
   });
 
   it("says so when a secret door cannot be marked, rather than reporting it placed", async () => {

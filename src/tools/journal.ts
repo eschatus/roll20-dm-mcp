@@ -74,9 +74,16 @@ export function registerJournalTools(server: McpServer): void {
         avatar: avatarUrl,
         attributes,
       });
-      const { sheetName } = await roll20.relayCommand<{ sheetName?: string | null }>({ action: "ping" });
-      if (sheetName) await stampSheetName(result.id, sheetName);
-      return { content: [{ type: "text", text: `character ${result.id} (${name})` }] };
+      // The character exists by now, so a failure here must still hand back its id: an error would
+      // send the caller round to create a duplicate.
+      let warning = "";
+      try {
+        const { sheetName } = await roll20.relayCommand<{ sheetName?: string | null }>({ action: "ping" });
+        if (sheetName) await stampSheetName(result.id, sheetName);
+      } catch (err) {
+        warning = ` WARNING: the character was created, but its sheet name was not stamped: ${err instanceof Error ? err.message : String(err)} Do not create it again.`;
+      }
+      return { content: [{ type: "text", text: `character ${result.id} (${name})${warning}` }] };
     }
   );
 
