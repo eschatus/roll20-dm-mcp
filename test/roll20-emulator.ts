@@ -642,6 +642,13 @@ export class Roll20Emulator {
     return Object.keys(records).length ? records : null;
   }
 
+  /** Read one property of any object, for assertions. An unset property reads as "", as get() does. */
+  objectProp(type: string, id: string, prop: string): unknown {
+    const o = this.getObj(type, id);
+    if (!o) throw new Error(`No ${type} ${id}`);
+    return o.get(prop);
+  }
+
   /** Convenience: read a token's current props as a plain object for assertions. */
   tokenProps(id: string): Record<string, unknown> {
     const t = this.getObj("graphic", id);

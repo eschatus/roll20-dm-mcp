@@ -47,10 +47,10 @@ can be moved back to 1.0 by hand. `ACTIONS["ping"]` echoes `Campaign().sandboxVe
 surfaces them under `sandbox` — that is how you find out which one a campaign is on. A `sandbox` of
 `null` there means the *relay* is older than 2.7.0, not that the sandbox is old.
 
-Last analyzed: **2026-09-26** (docs re-read live; repo v2.5.0). Relay version string: `2.12.1`
+Last analyzed: **2026-09-26** (docs re-read live; repo v2.5.0). Relay version string: `2.12.2`
 (reported by the `ping` action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
-(`[GM_AI_Bridge] Relay script loaded (v2.12.1)`), not the save.
+(`[GM_AI_Bridge] Relay script loaded (v2.12.2)`), not the save.
 
 ---
 
@@ -131,6 +131,23 @@ that every pageId-less call depends on returned 1,059 pins across 59 pages. Two 
 knowing: **a missing `visibleTo` means hidden** (the GM toolbar's un-hide wrote `visibleTo:"all"`), and
 **double-click opens the linked handout**, so an unlinked pin reports "Handout not found" even when
 desynced — its title and notes show in the hover tooltip instead.
+
+### `charactersheetname` on API characters (#277)
+
+A character built through `createCharacter` was found with `charactersheetname` unset. Relay 2.12.0
+writes `Campaign().sheetName` there through `setSafe`, and writes nothing when the sandbox gives no
+`sheetName` (v1.0). **This is the safest reading, not a confirmed one.** The emulator stores any
+property, so its test proves only that the write is made. Three things are still unknown:
+
+- whether Roll20 keeps the property on an API write, or drops it the way `path` objects drop
+  unsupported properties;
+- whether a UI character's value is spelled like `Campaign().sheetName`. The one live reading of
+  `sheetName` in this repo is `ogl5e` on cos-test; the display names in the test fixtures are made up;
+- whether the property has anything to do with `setSheetItem` writes that vanish on fresh API
+  characters. That link is a guess.
+
+To settle the first two, in a throwaway campaign: create a character here and one in the Roll20 UI,
+then compare `characters/<id>/charactersheetname` on both over RTDB.
 
 **Read/queryable but still NOT createObj-creatable:** `page`, `campaign`, `player`, `hand`,
 `jukeboxtrack`. `page`'s absence is what justifies `rtCreatePage` (#178) — the RTDB write is the
@@ -442,12 +459,12 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `batchExec` | batch_exec, update_hp_many, resolve_aoe, roll_initiative (HP seeding) | combat | runs N token actions in one relay round-trip |
 | `getJournalFolder`/`setJournalFolder` | get_journal_folder, set_journal_folder | combat | journal folder tree read/write (direct paths) |
 | `createHandout` | create_handout | combat | lore/player handout (name, notes, gmnotes) |
-| `createCharacter` | create_character_stub | combat | `createObj('character')` stub; derives `<ability>_mod` from the raw score at creation (sheet workers never fire on API-created attrs) |
+| `createCharacter` | create_character_stub | combat | `createObj('character')` stub; derives `<ability>_mod` from the raw score at creation (sheet workers never fire on API-created attrs); stamps `charactersheetname` from `Campaign().sheetName` (**unverified live**, see "`charactersheetname` on API characters") |
 | `sendPing` | send_ping | maps | "look here" / pull player view to a spot |
 | `spawnFx` / `spawnFxBetweenPoints` | spawn_fx, spawn_fx_between_points | maps | explosions, beams, spell nova |
 | `toFront` / `toBack` | to_front, to_back | maps | z-order (all-the-way front/back) |
 | `toAbove` / `toBelow` | to_above, to_below | maps | z-order **relative** to another object. **Sandbox v1.5 only** — refuses on v1.0 naming the version and the `toFront`/`toBack` fallback. Both objects must share a page **and** a layer (z-order is page- and layer-local; either mismatch is refused rather than reported as an `ok:true` no-op). **Maps server only**, matching `to_front`/`to_back` — z-order is map-prep work; a combat-side registration is a follow-up if the table ever needs it live. |
-| `ping` | (health check) | — | reports relay version (2.12.1); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
+| `ping` | (health check) | — | reports relay version (2.12.2); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
 | **event** `chat:message` | (passive) | — | buffers chat, parses `!dm`. Player `!`-commands are **forwarded, not answered** — `forwardChat` broadcasts them as an SSE `chat-message`; the gem decides what to do. |
 | **event** `change:campaign:turnorder` | (passive) | — | turn/round announcements |
 | **event** `add:graphic` | (passive) | — | auto-rolls initiative for NPC tokens dropped during combat |
@@ -529,7 +546,7 @@ Legend: ✅ exposed · 🟡 partial · ❌ API-reachable but **not exposed** (ad
 - **`pathv2` DL barriers** — *read* via `getWalls`; `createWalls` *creates* native `pathv2` only — no legacy-`path` fallback (#207); a `pathv2` miss throws and rolls back the walls that call already placed. `drawLayerTest` deliberately creates `path`.
 - **Door/window** — create/read/delete only; **no update** (open/close, lock, toggle secret) — all API-reachable.
 - **Repeating sections** — read only; **no write** (no row-id generation / `generateRowID` helper); read has a row cap (maxRows default 60, `__truncated` flag) but no field projection. Since tactics moved to the gem, `getRepeatingSection` has **no MCP tool calling it** — the relay action is live but unreachable from a tool. (Writing rows is also the `rollbase` minefield — see `CLAUDE.md`.)
-- **Page properties** — only name/size/scale/grid/bg; UDL lighting/fog/explorer-mode/grid-type/diagonal props not exposed (all API-reachable).
+- **Page properties** — only name/size/scale/grid/bg, plus a read of `dynamic_lighting_enabled` (`list_pages`, `get_current_page`, `setup_roll20_page`; #277 saw it on the RTDB page node, and the relay's `listPages` passes on the Mod's value); writing it and the other UDL lighting/fog/explorer-mode/grid-type/diagonal props is not exposed (all API-reachable).
 - **Token↔sheet linking** — `setDefaultTokenForCharacter` IS exposed (via `setDefaultToken` / `batch_exec`), but `createToken` still doesn't set `represents` on creation, so freshly-created tokens aren't sheet-bound until a default-token call runs.
 - **Events** — `chat:message`, `change:campaign:turnorder`, `add:graphic`, and `ready` wired; `destroy:graphic`, `change:graphic:statusmarkers`, etc. still unused. On the server side these surface as the `/events` SSE stream: `combat-update`, `mob-plan` (`plan: null` = cleared), `inbox-item`, `sandbox-status`, `map-ping`, `chat-message`.
 

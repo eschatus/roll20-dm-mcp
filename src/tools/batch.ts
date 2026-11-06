@@ -57,7 +57,7 @@ export function registerBatchTools(server: McpServer): void {
       folderPath: z.string().default(".").describe("Subfolder within the asset base (data/maps). Use '.' for the root, or a relative subfolder like 'CoS'."),
       pageNamePrefix: z.string().optional().describe("Optional prefix for page names, e.g. 'CoS' → 'CoS - Tavern'."),
       wallMode: z.enum(["none", "hough", "llm"]).default("hough").describe("none: import image only, no walls. hough: place Python CV Hough candidates as walls (fast, free, rough). llm: full LLM wall tracing (slow, paid, best quality)."),
-      skipExisting: z.boolean().default(true).describe("Skip images where a Roll20 page with that name already exists."),
+      skipExisting: z.boolean().default(true).describe("Skip images where a Roll20 page with that name already exists. reuseExisting takes precedence."),
       reuseExisting: z.boolean().default(false).describe("If a page with this name already exists, reuse it (skip page creation) but still upload the image and place walls. Useful for resuming a batch where pages were created but uploads failed."),
       dryRun: z.boolean().default(false).describe("Analyse images but skip page creation, upload, and wall placement. Returns what would be created."),
       fileFilter: z.string().optional().describe("Case-insensitive substring filter on filenames, e.g. 'tavern'."),
@@ -126,7 +126,7 @@ export function registerBatchTools(server: McpServer): void {
         const baseName = path.basename(filename, path.extname(filename));
         const pageName = pageNamePrefix ? `${pageNamePrefix} - ${baseName}` : baseName;
 
-        if (!dryRun && skipExisting && existingPageNames.has(pageName.toLowerCase())) {
+        if (!dryRun && skipExisting && !reuseExisting && existingPageNames.has(pageName.toLowerCase())) {
           results.push({ image: filename, pageName, status: "skipped", reason: "page already exists" });
           skipCount++;
           continue;

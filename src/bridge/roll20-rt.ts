@@ -757,9 +757,7 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
       case "listPages": {
         const pages = await rtGet<Record<string, Record<string, unknown>>>("pages");
         if (!pages) throw new Error("listPages: no pages in RTDB → Mod fallback");
-        return Object.values(pages).map((p) => ({
-          id: p.id, name: p.name, width: p.width, height: p.height,
-        }));
+        return Object.values(pages).map(mapPageRow);
       }
       case "getTurnOrder": {
         const campaign = await rtGet<Record<string, unknown>>("campaign");
@@ -1213,6 +1211,12 @@ export async function rtTransact(relPath: string, update: (current: unknown) => 
 // Expose the storage path for callers that need to build their own refs/paths.
 export async function rtStoragePath(): Promise<string> {
   return (await getConn()).storagePath;
+}
+
+// One `listPages` row off an RTDB `pages/<id>` node. dynamic_lighting_enabled is passed through
+// untouched (#277): a node without it stays undefined rather than reading as "off".
+export function mapPageRow(p: Record<string, unknown>): Record<string, unknown> {
+  return { id: p.id, name: p.name, width: p.width, height: p.height, dynamic_lighting_enabled: p.dynamic_lighting_enabled };
 }
 
 // Recon escape hatch: raw handle to the connected RTDB instance so diagnostic

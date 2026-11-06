@@ -8,7 +8,7 @@
 // TS side (src/bridge/relay-version.ts EXPECTED_RELAY_VERSION) can detect a stale/wrong-build
 // deploy — bump this whenever ai-relay.js changes in a way worth flagging. Keep the two in sync
 // (test/relay-version.test.ts locks them, same pattern as the marker-table hand-synced copies).
-var AI_RELAY_VERSION = "2.12.1";
+var AI_RELAY_VERSION = "2.12.2";
 
 // Results are whispered to GM, wrapped in a CSS-targetable div so the campaign
 // stylesheet can hide or style them without touching legitimate whispers.
@@ -1333,6 +1333,11 @@ function runBatchOp(action, args) {
         archived: false,
       });
       if (!ch) throw new Error("createObj('character') returned undefined");
+      // #277: a UI-made character carries `charactersheetname`; one made here did not. UNPROVEN
+      // live: nothing yet shows Roll20 keeps this property on an API write, or that it wants
+      // Campaign().sheetName's value rather than some other spelling. sheetName is v1.5 only, and
+      // setSafe drops the null a v1.0 sandbox gives. See docs/roll20-api-coverage.md.
+      setSafe(ch, { charactersheetname: sheetContext().sheetName });
       if (args.bio !== undefined) ch.set("bio", args.bio);
       if (args.gmnotes !== undefined) ch.set("gmnotes", args.gmnotes);
       if (args.avatar) ch.set("avatar", args.avatar);
@@ -1746,6 +1751,7 @@ ACTIONS["listPages"] = function (args, msg, nonce, senderPlayerId) {
           name: p.get("name"),
           width: p.get("width"),
           height: p.get("height"),
+          dynamic_lighting_enabled: p.get("dynamic_lighting_enabled"),
         })));
         return;
       }
