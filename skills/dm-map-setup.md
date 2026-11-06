@@ -85,6 +85,30 @@ After placing DL walls, immediately call `decorate_openings` with the `doors`, `
 
 This is automatic — do not ask the DM before doing it.
 
+### 4a. Replacing walls on a page that already has them
+
+When a page already has walls, use `replace_page_walls` rather than `clear_layer`,
+`auto_place_dl_walls` and `decorate_openings` in sequence. `clear_layer` also removes every other path
+and graphic on that layer, and a failure between those calls leaves the page half done.
+
+1. `replace_page_walls({ pageId, dryRun: true })` reads the page and writes nothing. Keep its
+   `fingerprint`. Its `kept` list shows what will stay.
+2. Call it again with `walls`, `doors`, `windows`, optional `secretDoors`, the same scaling arguments
+   as above, and `expectedFingerprint`. All three arrays are required, and `[]` means none: every door
+   and window on the page is replaced. If the DM edited the page since step 1, the call refuses and
+   changes nothing. Tell the DM and read again rather than dropping the check.
+3. Check `placed` and `after.verified`, and tell the DM about anything under `kept`. Those barriers are
+   still on the page: other paths, one-way and transparent barriers, and rectangles or ellipses.
+4. Save `prior` for as long as the DM might want the old walls back.
+
+To undo, call `replace_page_walls({ pageId, restore: prior })` with the block unchanged. It brings back
+wall geometry and door state, including locked, open and secret. Walls that had a custom colour come
+back blue. `after.matchesRestoredFingerprint: true` means the geometry and doors match.
+
+If the call returns an error, its `error` text says what is left on the page. When `leftOnPage.matchesPrior`
+is true, nothing needs restoring. Otherwise fix the cause, then run the restore with the error's `prior`
+block, leaving `expectedFingerprint` off because the page has legitimately changed.
+
 ### 4b. Mark points of interest (optional)
 
 If the map has keyed locations — a module's numbered rooms, a shrine, a stash — drop a

@@ -31,7 +31,7 @@ export interface Wall {
   category?: "exterior" | "interior";
 }
 
-interface Opening {
+export interface Opening {
   center: Point;
   widthPx: number;
   angleDeg: number;
@@ -133,6 +133,70 @@ export function processWalls(walls: Wall[], opts: { endpointInsetPx: number; cor
   return walls
     .map((w) => adjustEndpoints(w, corners, opts.endpointInsetPx, opts.cornerOverlapPx))
     .flatMap((w) => splitSegment(w, opts.maxSegmentPx));
+}
+
+// Source-image-to-page transform shared by every tool that takes analyze_battlemap coordinates.
+export interface PageScaleArgs {
+  sourceImageWidth?: number;
+  sourceImageHeight?: number;
+  pageWidthSquares?: number;
+  pageHeightSquares?: number;
+}
+
+const ROLL20_CELL_PX = 70;
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+function pageScale({ sourceImageWidth, sourceImageHeight, pageWidthSquares, pageHeightSquares }: PageScaleArgs) {
+  return {
+    scaleX: (sourceImageWidth && pageWidthSquares) ? (pageWidthSquares * ROLL20_CELL_PX) / sourceImageWidth : 1,
+    scaleY: (sourceImageHeight && pageHeightSquares) ? (pageHeightSquares * ROLL20_CELL_PX) / sourceImageHeight : 1,
+    maxX: pageWidthSquares ? pageWidthSquares * ROLL20_CELL_PX : Infinity,
+    maxY: pageHeightSquares ? pageHeightSquares * ROLL20_CELL_PX : Infinity,
+  };
+}
+
+export interface DLOpeningDef { x: number; y: number; x0: number; y0: number; x1: number; y1: number }
+
+// Roll20 door/window objects: center at (x, -cy), handles are CENTER-RELATIVE offsets with y
+// negated (Roll20 inverts the y-axis).
+export function toDLOpening(o: Opening, scaleArgs: PageScaleArgs): DLOpeningDef {
+  const { scaleX, scaleY, maxX, maxY } = pageScale(scaleArgs);
+  const cx = clamp(o.center[0] * scaleX, 0, maxX);
+  const cy = clamp(o.center[1] * scaleY, 0, maxY);
+  const hw = (o.widthPx * scaleX) / 2;
+  const rad = (o.angleDeg * Math.PI) / 180;
+  const dx = Math.cos(rad) * hw;
+  const dy = Math.sin(rad) * hw;
+  return { x: cx, y: -cy, x0: -dx, y0: dy, x1: dx, y1: -dy };
+}
+
+// Scale wall centerlines to page pixels, cut gaps at the openings, adjust endpoints, and split long
+// runs into short editable chunks.
+export function prepareWallSegments(
+  walls: Wall[],
+  openings: Opening[],
+  scaleArgs: PageScaleArgs,
+  opts: { endpointInsetPx: number; cornerOverlapPx: number; cornerThresholdPx: number; maxSegmentPx: number },
+): Wall[] {
+  const { scaleX, scaleY, maxX, maxY } = pageScale(scaleArgs);
+  const scaled = walls.map((w) => ({
+    from: [clamp(w.from[0] * scaleX, 0, maxX), clamp(w.from[1] * scaleY, 0, maxY)] as Point,
+    to: [clamp(w.to[0] * scaleX, 0, maxX), clamp(w.to[1] * scaleY, 0, maxY)] as Point,
+    color: w.color,
+    category: w.category,
+  }));
+
+  // Convert openings to gap segments in page coords, then cut gaps with snap tolerance
+  const toGap = (o: Opening): { from: Point; to: Point } => {
+    const cx = o.center[0] * scaleX, cy = o.center[1] * scaleY;
+    const hw = (o.widthPx * scaleX) / 2;
+    const rad = (o.angleDeg * Math.PI) / 180;
+    return { from: [cx - Math.cos(rad) * hw, cy - Math.sin(rad) * hw] as Point,
+             to:   [cx + Math.cos(rad) * hw, cy + Math.sin(rad) * hw] as Point };
+  };
+  const gaps = openings.map(toGap);
+  const gapped = gaps.length > 0 ? cutGapsInWalls(scaled, gaps, 10) : scaled;
+  return processWalls(gapped, opts);
 }
 
 // ─── Image helpers ────────────────────────────────────────────────────────────
@@ -878,29 +942,12 @@ export function registerVisionTools(server: McpServer): void {
     },
     async ({ pageId, doors, windows, secretDoors, sourceImageWidth, sourceImageHeight, pageWidthSquares, pageHeightSquares }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
-      const ROLL20_CELL_PX = 70;
-      const scaleX = (sourceImageWidth && pageWidthSquares) ? (pageWidthSquares * ROLL20_CELL_PX) / sourceImageWidth : 1;
-      const scaleY = (sourceImageHeight && pageHeightSquares) ? (pageHeightSquares * ROLL20_CELL_PX) / sourceImageHeight : 1;
-      const maxX = pageWidthSquares ? pageWidthSquares * ROLL20_CELL_PX : Infinity;
-      const maxY = pageHeightSquares ? pageHeightSquares * ROLL20_CELL_PX : Infinity;
-      const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-
-      function toDLOpening(o: Opening): { x: number; y: number; x0: number; y0: number; x1: number; y1: number } {
-        const cx = clamp(o.center[0] * scaleX, 0, maxX);
-        const cy = clamp(o.center[1] * scaleY, 0, maxY);
-        const hw = (o.widthPx * scaleX) / 2;
-        const rad = (o.angleDeg * Math.PI) / 180;
-        const dx = Math.cos(rad) * hw;
-        const dy = Math.sin(rad) * hw;
-        // Roll20 door/window objects: center at (x, -cy), handles are CENTER-RELATIVE offsets
-        // with y negated (Roll20 inverts y-axis)
-        return { x: cx, y: -cy, x0: -dx, y0: dy, x1: dx, y1: -dy };
-      }
+      const scaleArgs = { sourceImageWidth, sourceImageHeight, pageWidthSquares, pageHeightSquares };
 
       async function placeDL(openings: Opening[], action: "createDLDoors" | "createDLWindows", color: string): Promise<number> {
         if (!openings.length) return 0;
         const key = action === "createDLDoors" ? "doors" : "windows";
-        const defs = openings.map((o) => ({ ...toDLOpening(o), color }));
+        const defs = openings.map((o) => ({ ...toDLOpening(o, scaleArgs), color }));
         const results = await roll20.relayCommand<{ id?: string; error?: string }[]>({
           action, pageId: activePage, [key]: defs,
         });
@@ -956,32 +1003,11 @@ export function registerVisionTools(server: McpServer): void {
     },
     async ({ walls, doors, windows, pageId, sourceImageWidth, sourceImageHeight, pageWidthSquares, pageHeightSquares, endpointInsetPx, cornerOverlapPx, cornerThresholdPx, maxSegmentPx, strokeColor }) => {
       const activePage = pageId ?? (await roll20.getCurrentPageId());
-      const ROLL20_CELL_PX = 70;
-      const scaleX = (sourceImageWidth && pageWidthSquares) ? (pageWidthSquares * ROLL20_CELL_PX) / sourceImageWidth : 1;
-      const scaleY = (sourceImageHeight && pageHeightSquares) ? (pageHeightSquares * ROLL20_CELL_PX) / sourceImageHeight : 1;
-      const maxX = pageWidthSquares ? pageWidthSquares * ROLL20_CELL_PX : Infinity;
-      const maxY = pageHeightSquares ? pageHeightSquares * ROLL20_CELL_PX : Infinity;
-      const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-      const scaleWalls = (ws: typeof walls) => ws.map((w) => ({
-        from: [clamp(w.from[0] * scaleX, 0, maxX), clamp(w.from[1] * scaleY, 0, maxY)] as Point,
-        to: [clamp(w.to[0] * scaleX, 0, maxX), clamp(w.to[1] * scaleY, 0, maxY)] as Point,
-        color: w.color,
-        category: w.category,
-      }));
-
-      // Convert openings to gap segments in page coords, then cut gaps with snap tolerance
-      const toGap = (o: Opening): { from: Point; to: Point } => {
-        const cx = o.center[0] * scaleX, cy = o.center[1] * scaleY;
-        const hw = (o.widthPx * scaleX) / 2;
-        const rad = (o.angleDeg * Math.PI) / 180;
-        return { from: [cx - Math.cos(rad) * hw, cy - Math.sin(rad) * hw] as Point,
-                 to:   [cx + Math.cos(rad) * hw, cy + Math.sin(rad) * hw] as Point };
-      };
-      const gaps = [...doors.map(toGap), ...windows.map(toGap)];
-      const scaled = scaleWalls(walls);
-      const gapped = gaps.length > 0 ? cutGapsInWalls(scaled, gaps, 10) : scaled;
-
-      const processed = processWalls(gapped, { endpointInsetPx, cornerOverlapPx, cornerThresholdPx, maxSegmentPx });
+      const processed = prepareWallSegments(
+        walls, [...doors, ...windows],
+        { sourceImageWidth, sourceImageHeight, pageWidthSquares, pageHeightSquares },
+        { endpointInsetPx, cornerOverlapPx, cornerThresholdPx, maxSegmentPx },
+      );
 
       const BATCH_SIZE = 20;
       let placed = 0;
@@ -1032,9 +1058,7 @@ export function registerVisionTools(server: McpServer): void {
     async ({ points, closed, pageId, sourceImageWidth, sourceImageHeight, pageWidthSquares, pageHeightSquares, strokeColor }) => {
       if (points.length < 2) throw new Error("Need at least 2 points");
       const activePage = pageId ?? (await roll20.getCurrentPageId());
-      const ROLL20_CELL_PX = 70;
-      const scaleX = (sourceImageWidth && pageWidthSquares) ? (pageWidthSquares * ROLL20_CELL_PX) / sourceImageWidth : 1;
-      const scaleY = (sourceImageHeight && pageHeightSquares) ? (pageHeightSquares * ROLL20_CELL_PX) / sourceImageHeight : 1;
+      const { scaleX, scaleY } = pageScale({ sourceImageWidth, sourceImageHeight, pageWidthSquares, pageHeightSquares });
       const scaledPoints = points.map(([x, y]) => [x * scaleX, y * scaleY] as Point);
 
       const result = await roll20.relayCommand<{ id?: string; error?: string; pointCount?: number }[]>({
