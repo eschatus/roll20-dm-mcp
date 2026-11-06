@@ -32,6 +32,31 @@ type SheetStamp = { sandbox: string | null; sheetName: string | null; beacon: bo
 const valtypeSchema = z.enum(["current", "max"]).optional()
   .describe("Which half of the field to touch: 'current' (default) or 'max'.");
 
+type SheetValue = string | number | boolean | { current?: string | number | boolean; max?: string | number };
+
+// The written fields that don't hold what was sent. Compared as strings: a sheet stores 18 and "18"
+// interchangeably. setSheetItem's own report can't be trusted for this (see the tool description).
+async function unlandedWrites(
+  charId: string, attributes: Record<string, SheetValue>, written: string[],
+): Promise<{ name: string; valtype: "current" | "max"; sent: unknown; holds: unknown }[]> {
+  const out: { name: string; valtype: "current" | "max"; sent: unknown; holds: unknown }[] = [];
+  for (const valtype of ["current", "max"] as const) {
+    const sent = Object.entries(attributes).flatMap(([name, v]) => {
+      const value = typeof v === "object" ? v[valtype] : valtype === "current" ? v : undefined;
+      const label = valtype === "current" ? name : `${name}:max`;
+      return value !== undefined && written.includes(label) ? [{ name, value }] : [];
+    });
+    if (sent.length === 0) continue;
+    const r = await roll20.relayCommand<{ values: Record<string, unknown> }>({
+      action: "getSheetItem", charId, names: sent.map((s) => s.name), valtype,
+    });
+    for (const { name, value } of sent) {
+      if (String(r.values[name] ?? "") !== String(value)) out.push({ name, valtype, sent: value, holds: r.values[name] ?? null });
+    }
+  }
+  return out;
+}
+
 export function registerSheetTools(server: McpServer): void {
   server.tool(
     "get_sheet_summary",
@@ -72,7 +97,7 @@ export function registerSheetTools(server: McpServer): void {
 
   server.tool(
     "set_sheet_item",
-    "Write character sheet fields the VERSION-AGNOSTIC way: on sandbox v1.0 this sets ordinary attributes, on v1.5 it also reaches Beacon computed properties and 'user.*' custom attributes. This is the tool set_character_attribute points you at when it refuses a write on a Beacon sheet. A value may be a scalar (sets 'current') or {current, max}. The write is STRICT by default — a property that is missing or read-only is reported as failed rather than reported as written, because Roll20's lenient mode resolves whether or not the write landed. If ANY field fails the result is an error (partial:true) that still lists which fields were written.",
+    "Write character sheet fields the VERSION-AGNOSTIC way: on sandbox v1.0 this sets ordinary attributes, on v1.5 it also reaches Beacon computed properties and 'user.*' custom attributes. This is the tool set_character_attribute points you at when it refuses a write on a Beacon sheet. A value may be a scalar (sets 'current') or {current, max}. Every write is read back: Roll20 can report a field with no stored value as written and keep nothing (seen live on an ogl5e Beacon sheet), so a field that doesn't hold the new value is reported under notLanded and the result is an error. A sheet that reformats a value will show there too; read the value before retrying. If ANY field fails the result is an error (partial:true) that still lists which fields were written.",
     {
       attributes: z.record(z.string(), z.union([
         z.string(), z.number(), z.boolean(),
@@ -99,6 +124,8 @@ export function registerSheetTools(server: McpServer): void {
         // structured result so they can see exactly which fields landed.
         return failJson({ charSheetId: charId, partial: true, ...r });
       }
+      const notLanded = await unlandedWrites(charId, attributes, r.written);
+      if (notLanded.length > 0) return failJson({ charSheetId: charId, notLanded, ...r });
       return json({ charSheetId: charId, ...r });
     }
   );

@@ -55,8 +55,11 @@ There is also a stdio combat server entry (`src/index-combat.ts`, `npm start` �
   naming what to refresh; harvesting belongs to the gem, where a human is watching one window.
 - **Relay version handshake:** `AI_RELAY_VERSION` (`mod-scripts/ai-relay.js`) and
   `EXPECTED_RELAY_VERSION` (`src/bridge/relay-version.ts`) are a hand-synced pair, locked by
-  `test/relay-version.test.ts` — bump BOTH when changing `ai-relay.js` in a way worth flagging to a
-  DM on a stale deploy. A mismatch warns once (never throws) and surfaces via `transport_status`.
+  `test/relay-version.test.ts` — **bump BOTH on every change to `ai-relay.js`, before anyone is asked
+  to paste it**, even mid-branch and unreleased: the version is the only proof of which copy a campaign
+  runs, so two different relays must never share one. `mod-scripts/relay-version.lock` pins the source
+  hash, and an edit without a new lock fails the test. A mismatch warns once (never throws) and surfaces
+  via `transport_status`.
 - `src/recon/*` are manual live scripts (real campaign), run with `tsx` — the smoke/soak layer.
   They are excluded from the prod build.
 
@@ -358,6 +361,18 @@ registry override (`sidekick: true`, `src/registry/characters.ts`) is needed to 
   (npcOnly / `entries[].hp` seeding) all read the same `sidekickNames` set
   (`registry.listSidekickNames()`) so a sidekick routes as an NPC everywhere HP/death routing is
   decided. See issue #132.
+
+**Sheet-carried PC HP (`set_pc_hp_source`):** a campaign can opt true PCs out of the tracked block and
+onto Roll20's own sheets, for a table whose players actually use them. It is per campaign
+(`pcSheetHp` in `campaigns.json`), not inferred from `bar1_link`: a Beyond20 table can have linked bars
+too. Every PC HP write goes through `adjustPcHp` in `src/tools/pcHp.ts`; never send the `adjustPcHp` relay
+action from a new call site, or that site will write the block on a sheet campaign. Built on
+`getSheetItem`/`setSheetItem`, so no relay action and no redeploy. A bad read refuses, never coerces,
+and there is no fallback to tracked. The token bar is still never written; a linked bar follows the
+write on its own (live, cos-test). **`setSheetItem`'s `written` is not evidence:** on a live Beacon
+sheet a field with no attribute record reports written and stores nothing, despite `allowThrow`, so
+every write is read back. `setAttrs` creates such a field. Status and limits:
+`docs/roll20-api-coverage.md` → "PC HP on Roll20 sheets".
 
 **Named values (#259):** `set_token_value`/`get_token_value` store semantics-free JSON on a token in
 a `%%VALS=<percent-encoded JSON>%%` gmnotes block, over direct RTDB (`src/bridge/token-values.ts`): no
