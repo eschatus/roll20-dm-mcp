@@ -121,8 +121,8 @@ moved to beyond-mcp with the code.)
   (rendered cell size is `70 * snapping_increment`), and `zorder`/`thumbnail`/`placement` are
   per-page content that must be RESET, never copied from the template page. The RTDB page carries
   only 16 fields — `scale_number`/`scale_units`/`showgrid` live on the MOD's page object, so
-  creation is RTDB then `setPageProps`. Walls use `pathv2` (re-anchors to the first point
-  regardless of passed x/y — pass first-point-as-center).
+  creation is RTDB then `setPageProps`. Walls use `pathv2`, whose x/y is the bbox CENTER of its
+  points, not the first vertex (see Map gotchas).
 - **Roll20 `path` objects silently drop unsupported properties.** They have no `name`, `gmnotes`,
   or working `fill_opacity` — `createObj`/`set` just discards the write, no error (bit us twice:
   #162, #164). Zone metadata therefore lives in **`state.GM_AI_Bridge.zones`**, not on the path
@@ -288,13 +288,16 @@ vision/wall tooling is maps-only.)
 3. `auto_place_dl_walls({walls, strokeColor})` — places DL `pathv2` walls.
 4. `decorate_openings({doors, windows, secretDoors})` — creates **native Roll20 DL door/window
    objects** (not map-layer rectangles): doors `#FF0000`, windows `#00FFFF`, secret doors `#9932CC`.
+   Replaces every opening on the page; a failed swap puts the prior ones back, or returns `prior` for `{ restore: prior }`.
 
 **Map gotchas:**
 - **Wall color:** `auto_place_dl_walls` and `place_polyline_walls` default `strokeColor` to blue
   `#0044FF` (project convention: blue walls, cyan windows (#00FFFF)); the relay's wall creators
   default to it too. They used to default to yellow `#FFFF00` — the source of yellow walls (#207);
   a yellow wall now is a regression, not a missed argument.
-- `pathv2` re-anchors to the first point regardless of passed x/y — build paths first-point-as-center.
+- **`pathv2` x/y is the bbox CENTER of its points, not the first vertex.** This line used to say the
+  opposite. `createWalls` centres its 2-point walls, and those lined up with the art by eye on cos-test
+  (2026-11-06, `replace_page_walls` restore). Polylines from `createPolylines` are not covered by that.
 - **Upload dedup:** `upload_and_place` reuses a stale art-library asset by filename — use a unique
   filename.
 - **NPC token HP digits are editor-only by Roll20's default** (#204): `bar1_num_permission` `""`

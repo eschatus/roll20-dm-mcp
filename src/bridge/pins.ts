@@ -2,7 +2,7 @@
 //
 // A pin is a plain RTDB node at `<storagePath>/pins/page/<pageId>/<pinId>` — the same
 // `…/page/<pageId>/…` shape as graphics, doors and windows — so the four pin tools read and write
-// it the way `getDoors`/`createDLDoors` already do, with no relay action and therefore no
+// it the way `getDoors` already does, with no relay action and therefore no
 // per-campaign Mod redeploy. Verified live on Three Families (#203): `push()` mints the id,
 // `update()` merges, `rtGet` reads back byte-identical, `x`/`y` are page pixels (70 per square),
 // and the page comes from the path — no `_pageid` in the payload.

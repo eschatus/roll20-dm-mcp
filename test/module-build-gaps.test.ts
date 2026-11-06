@@ -233,30 +233,3 @@ describe("dynamic_lighting_enabled reads", () => {
     expect(mapPageRow(base).dynamic_lighting_enabled).toBeUndefined();
   });
 });
-
-describe("createCharacter stamps charactersheetname", () => {
-  // The emulator keeps any property, so these prove the relay WRITES it, and nothing about whether
-  // Roll20 keeps it. See docs/roll20-api-coverage.md.
-  let emu: Roll20Emulator;
-  beforeEach(() => { emu = new Roll20Emulator(); emu.load(); });
-
-  const create = () => emu.relay<{ id: string }>({ action: "createCharacter", name: "Vex" }).id;
-
-  it("from Campaign().sheetName", () => {
-    emu.installSheetCarriers({ sheetName: "ogl5e" });
-    expect(emu.objectProp("character", create(), "charactersheetname")).toBe("ogl5e");
-  });
-
-  it("writes nothing on a sandbox with no sheetName, and the character is still made", () => {
-    const id = create();
-    expect(emu.objectProp("character", id, "charactersheetname")).toBe("");
-    expect(emu.objectProp("character", id, "name")).toBe("Vex");
-  });
-
-  it("keeps the character's other fields", () => {
-    emu.installSheetCarriers({ sheetName: "ogl5e" });
-    const id = emu.relay<{ id: string }>({ action: "createCharacter", name: "Vex", controlledby: "p1" }).id;
-    expect(emu.objectProp("character", id, "name")).toBe("Vex");
-    expect(emu.objectProp("character", id, "controlledby")).toBe("p1");
-  });
-});

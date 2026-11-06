@@ -883,45 +883,11 @@ async function tryDirectWrite(cmd: Record<string, unknown>): Promise<unknown | t
       // pathv2 UDL barriers via createObj("pathv2", { shape:"pol", points:JSON.stringify([...]) })).
       case "createWalls":
       case "createPolylines":
+      // createDLDoors and createDLWindows go through the Mod too: an RTDB-side record has no `id`,
+      // so it draws but cannot block or open (2026-10-11).
+      case "createDLDoors":
+      case "createDLWindows":
         return NOT_HANDLED;
-      case "createDLDoors": {
-        const doors = cmd.doors as Array<{ x: number; y: number; x0: number; y0: number; x1: number; y1: number; color?: string }> | undefined;
-        const pageId = cmd.pageId as string | undefined;
-        if (!Array.isArray(doors) || !doors.length || !pageId) return NOT_HANDLED;
-        const conn = await getConn();
-        const baseRef = ref(conn.db, `${conn.storagePath}/doors/page/${pageId}`);
-        const results = await Promise.all(doors.map(async (d) => {
-          const doorRef = push(baseRef);
-          await set(doorRef, stripUndefWrite({
-            pageid: pageId,
-            x: d.x, y: d.y,
-            path: { handle0: { x: d.x0, y: d.y0 }, handle1: { x: d.x1, y: d.y1 } },
-            color: d.color || "#FF0000",
-            isOpen: false, isLocked: false, isSecret: false,
-          }));
-          return { id: doorRef.key };
-        }));
-        return results;
-      }
-      case "createDLWindows": {
-        const windows = cmd.windows as Array<{ x: number; y: number; x0: number; y0: number; x1: number; y1: number; color?: string }> | undefined;
-        const pageId = cmd.pageId as string | undefined;
-        if (!Array.isArray(windows) || !windows.length || !pageId) return NOT_HANDLED;
-        const conn = await getConn();
-        const baseRef = ref(conn.db, `${conn.storagePath}/windows/page/${pageId}`);
-        const results = await Promise.all(windows.map(async (w) => {
-          const winRef = push(baseRef);
-          await set(winRef, stripUndefWrite({
-            pageid: pageId,
-            x: w.x, y: w.y,
-            path: { handle0: { x: w.x0, y: w.y0 }, handle1: { x: w.x1, y: w.y1 } },
-            color: w.color || "#00FFFF",
-            isOpen: false, isLocked: false, isSecret: false,
-          }));
-          return { id: winRef.key };
-        }));
-        return results;
-      }
       case "clearDLOpenings": {
         const pageId = cmd.pageId as string | undefined;
         if (!pageId) return NOT_HANDLED;
