@@ -130,7 +130,9 @@ lessons belong in this repo's `CLAUDE.md`, in a PR, not in the wiki.
   allowed, or denied with a rule name. **Never retry a denied call or route around it.** If the
   work needs that call, stop and ask.
 - **Stuck, or the decision is Adam's** (a release, a deploy, a live check, anything in "not
-  yours"): post one specific question on the issue, then add `clank-needs-human`, remove
-  `clank-working`, and assign `eschatus`. Comment first, assign last.
+  yours"): post one specific question on the issue, then add `clank-needs-human` and remove
+  `clank-working`. Comment first, label last, and assign nobody. SecondThoughts (comments
+  beginning `**SecondThoughts:**`) answers first and sends the question on to Adam when it must;
+  its answer settles anything inside this brief, and Adam's settles everything else.
 - Changing this brief, such as adding a live check, is a PR for Adam to review. Never
   improvise it in a wake.
