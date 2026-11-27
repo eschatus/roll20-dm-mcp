@@ -48,7 +48,7 @@ import { setupHarness, type Harness } from "./harness.js";
 import { Roll20Emulator } from "./roll20-emulator.js";
 import { registerMapTools } from "../src/tools/maps.js";
 import { registerBatchTools } from "../src/tools/batch.js";
-import { mapPageRow } from "../src/bridge/roll20-rt.js";
+import { mapPageRow, realPageNodes } from "../src/bridge/roll20-rt.js";
 
 type SetupResult = {
   pageId: string; widthSquares: number; heightSquares: number; scale: string; created: boolean;
@@ -231,6 +231,19 @@ describe("dynamic_lighting_enabled reads", () => {
       id: "p", name: "n", width: 1, height: 2, dynamic_lighting_enabled: false,
     });
     expect(mapPageRow(base).dynamic_lighting_enabled).toBeUndefined();
+  });
+
+  // #285: an open client leaves `pages/<id>` = {"thumbnail":""} behind and recreates it if deleted.
+  // listPages and rtCreatePage's template choice both read through realPageNodes.
+  it("skips ghost page nodes, so listing never hands out a nameless page or template", () => {
+    const real = { id: "p1", name: "Real", width: 10, height: 10, placement: 10 };
+    const pages = { ghost: { thumbnail: "" }, p1: real, nul: null, unnamed: { id: "x", width: 5 } };
+    const kept = realPageNodes(pages);
+    expect(kept).toEqual([real]);
+    expect(kept[0]).toBe(real); // the template rtCreatePage mirrors
+    expect(kept.map(mapPageRow).every((r) => typeof r.name === "string")).toBe(true);
+    expect(realPageNodes({ ghost: { thumbnail: "" } })).toEqual([]);
+    expect(realPageNodes(null)).toEqual([]);
   });
 });
 
