@@ -757,7 +757,7 @@ async function tryDirectRead(cmd: Record<string, unknown>): Promise<unknown | ty
       case "listPages": {
         const pages = await rtGet<Record<string, Record<string, unknown>>>("pages");
         if (!pages) throw new Error("listPages: no pages in RTDB → Mod fallback");
-        return Object.values(pages).map(mapPageRow);
+        return realPageNodes(pages).map(mapPageRow);
       }
       case "getTurnOrder": {
         const campaign = await rtGet<Record<string, unknown>>("campaign");
@@ -1213,6 +1213,16 @@ export async function rtStoragePath(): Promise<string> {
   return (await getConn()).storagePath;
 }
 
+// The real pages under an RTDB `pages` node (#285). An open client can leave a GHOST node behind,
+// `pages/<id>` holding only `{"thumbnail":""}`, and recreates it if it is deleted, so every reader
+// must skip it: a ghost has no name, which crashed the same-name checks (`p.name.toLowerCase()`)
+// and could become rtCreatePage's template. A page record always carries a string `name`.
+export function realPageNodes(pages: Record<string, Record<string, unknown> | null> | null | undefined): Record<string, unknown>[] {
+  return Object.values(pages ?? {}).filter(
+    (p): p is Record<string, unknown> => typeof p === "object" && p !== null && typeof p.name === "string",
+  );
+}
+
 // One `listPages` row off an RTDB `pages/<id>` node. dynamic_lighting_enabled is passed through
 // untouched (#277): a node without it stays undefined rather than reading as "off".
 export function mapPageRow(p: Record<string, unknown>): Record<string, unknown> {
@@ -1253,7 +1263,8 @@ export async function rtCreatePage(opts: {
   // Mirror an existing page: it is the only trustworthy source for the client-filled fields, and
   // guessing a minimal object is how you get a page that lists but will not open.
   const pages = await rtGet<Record<string, Record<string, unknown>>>("pages");
-  const template = Object.values(pages ?? {})[0];
+  const real = realPageNodes(pages);
+  const template = real[0];
   if (!template) throw new Error("rtCreatePage: campaign has no existing page to mirror a schema from");
 
   const page: Record<string, unknown> = {};
@@ -1264,7 +1275,7 @@ export async function rtCreatePage(opts: {
 
   // Per-page CONTENT must be reset, never inherited: zorder is the template's own object stacking
   // list, thumbnail is its map art, and placement is its slot in the page list.
-  const placements = Object.values(pages ?? {})
+  const placements = real
     .map((p) => Number(p?.placement))
     .filter((n) => Number.isFinite(n));
   page.zorder = "";
