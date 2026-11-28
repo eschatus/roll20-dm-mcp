@@ -128,17 +128,6 @@ describe("replacing", () => {
     expect(r.placed.secretDoors).toBe(1);
   });
 
-  // The direct branch of createDLDoors writes an id-less record that blocks nothing. The emulator
-  // can't see that branch, so assert the flag that keeps the command off it.
-  it("sends door and window creation to the Mod, not the direct RTDB branch", async () => {
-    const spy = vi.spyOn(h.emu, "relayAsync");
-    await call(NEW_CONTENT);
-    const cmds = spy.mock.calls.map(([cmd]) => cmd as Record<string, unknown>)
-      .filter((c) => c.action === "createDLDoors" || c.action === "createDLWindows");
-    expect(cmds).toHaveLength(2);
-    expect(cmds.every((c) => c.__forceMod === true)).toBe(true);
-  });
-
   it("requires walls, doors and windows together, so a forgotten array cannot wipe the doors", async () => {
     const { isError, text } = await call({ walls: NEW_CONTENT.walls });
     expect(isError).toBe(true);

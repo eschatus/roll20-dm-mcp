@@ -47,10 +47,10 @@ can be moved back to 1.0 by hand. `ACTIONS["ping"]` echoes `Campaign().sandboxVe
 surfaces them under `sandbox` — that is how you find out which one a campaign is on. A `sandbox` of
 `null` there means the *relay* is older than 2.7.0, not that the sandbox is old.
 
-Last analyzed: **2026-09-26** (docs re-read live; repo v2.5.0). Relay version string: `2.12.2`
+Last analyzed: **2026-09-26** (docs re-read live; repo v2.5.0). Relay version string: `2.12.3`
 (reported by the `ping` action, and echoed in the Mod console's load banner). **Deploying the relay is a manual, per-campaign
 paste** — `deploy_mod_script` and `npm run release:mod` are deleted; verify the *load* banner
-(`[GM_AI_Bridge] Relay script loaded (v2.12.2)`), not the save.
+(`[GM_AI_Bridge] Relay script loaded (v2.12.3)`), not the save.
 
 ---
 
@@ -134,20 +134,14 @@ desynced — its title and notes show in the hover tooltip instead.
 
 ### `charactersheetname` on API characters (#277)
 
-A character built through `createCharacter` was found with `charactersheetname` unset. Relay 2.12.0
-writes `Campaign().sheetName` there through `setSafe`, and writes nothing when the sandbox gives no
-`sheetName` (v1.0). **This is the safest reading, not a confirmed one.** The emulator stores any
-property, so its test proves only that the write is made. Three things are still unknown:
-
-- whether Roll20 keeps the property on an API write, or drops it the way `path` objects drop
-  unsupported properties;
-- whether a UI character's value is spelled like `Campaign().sheetName`. The one live reading of
-  `sheetName` in this repo is `ogl5e` on cos-test; the display names in the test fixtures are made up;
-- whether the property has anything to do with `setSheetItem` writes that vanish on fresh API
-  characters. That link is a guess.
-
-To settle the first two, in a throwaway campaign: create a character here and one in the Roll20 UI,
-then compare `characters/<id>/charactersheetname` on both over RTDB.
+A character built through `createCharacter` has no `charactersheetname`, while all 1,329 on cos-test do
+(`ogl5e`, or `dnd2024byroll20` on 36). The Mod cannot set it: relay 2.12.2 wrote it through `setSafe`, the
+write reported nothing wrong, and the property was still absent over RTDB 15 seconds later (2026-11-06).
+`create_character_stub` therefore writes `characters/<id>/charactersheetname` directly and reads it back
+(`src/bridge/sheet-stamp.ts`), using the `sheetName` from `ping`. A v1.0 sandbox has none, so nothing is
+written. A raw `createCharacter` relay action, in `batch_exec` or from a caller such as `r20mb`, stays
+unstamped. Whether the stamp has anything to do with `setSheetItem` writes that vanish on fresh API
+characters is still a guess.
 
 **Read/queryable but still NOT createObj-creatable:** `page`, `campaign`, `player`, `hand`,
 `jukeboxtrack`. `page`'s absence is what justifies `rtCreatePage` (#178) — the RTDB write is the
@@ -424,7 +418,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `createPath` / `createPaths` | (internal) | — | legacy path |
 | `createWalls` | auto_place_dl_walls, batch_import_maps, replace_page_walls | maps | creates native `pathv2` UDL barriers. Explicitly **not** direct-writable — Roll20's Firebase rules reject client writes to `pathv2/page/`, so this always goes through the Mod. |
 | `createPolylines` | place_polyline_walls, replace_page_walls (restore only) | maps | one multi-vertex path; Mod-only for the same reason |
-| `createDLDoors` / `createDLWindows` | decorate_openings, replace_page_walls | maps | native UDL door/window (create only); direct-write path, which `replace_page_walls` skips with `__forceMod` |
+| `createDLDoors` / `createDLWindows` | decorate_openings, replace_page_walls | maps | native UDL door/window (create only); through the Mod, so it needs someone in the game |
 | `clearDLOpenings` | decorate_openings, replace_page_walls | maps | delete doors+windows; direct-write path |
 | `getWalls` | get_walls, replace_page_walls | maps | reads `pathv2` barriers |
 | `getPaths` | get_paths | maps | path + optional graphic (direct-read path) |
@@ -464,7 +458,7 @@ Server column: **combat** = `roll20-dm` (HTTP, `src/server-combat.ts`); **maps**
 | `spawnFx` / `spawnFxBetweenPoints` | spawn_fx, spawn_fx_between_points | maps | explosions, beams, spell nova |
 | `toFront` / `toBack` | to_front, to_back | maps | z-order (all-the-way front/back) |
 | `toAbove` / `toBelow` | to_above, to_below | maps | z-order **relative** to another object. **Sandbox v1.5 only** — refuses on v1.0 naming the version and the `toFront`/`toBack` fallback. Both objects must share a page **and** a layer (z-order is page- and layer-local; either mismatch is refused rather than reported as an `ok:true` no-op). **Maps server only**, matching `to_front`/`to_back` — z-order is map-prep work; a combat-side registration is a follow-up if the table ever needs it live. |
-| `ping` | (health check) | — | reports relay version (2.12.2); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
+| `ping` | (health check) | — | reports relay version (2.12.3); drives the `EXPECTED_RELAY_VERSION` handshake surfaced by `transport_status` |
 | **event** `chat:message` | (passive) | — | buffers chat, parses `!dm`. Player `!`-commands are **forwarded, not answered** — `forwardChat` broadcasts them as an SSE `chat-message`; the gem decides what to do. |
 | **event** `change:campaign:turnorder` | (passive) | — | turn/round announcements |
 | **event** `add:graphic` | (passive) | — | auto-rolls initiative for NPC tokens dropped during combat |
@@ -505,9 +499,12 @@ Choices that come from how Roll20 stores these objects, not from anything the em
   action that rebuilds the same record, so it renders where it did under any reading of x,y.
   Sending a midpoint-anchored wall through `createPolylines` would shift it by half its length. A
   record matching neither stays on the page, under `kept`.
-- **Doors go through the Mod.** `__forceMod` skips the direct branch of `createDLDoors`, which writes
-  a record with no `id`. That record draws, but it blocks nothing and cannot be opened (live incident,
-  2026-10-11). `decorate_openings` still takes the direct branch.
+- **Doors go through the Mod.** `createDLDoors` and `createDLWindows` have no direct branch any more: it
+  wrote a record with no `id`, which draws but cannot block or open (the walls incident of 2026-10-11).
+  `decorate_openings` used it too, and left secret doors purple but not secret. Its clear is still a
+  direct RTDB write, so a create can fail after the clear has landed. It refuses first if the Mod does not
+  answer, and on a later failure puts the prior openings back, state included, and reads them back. If that
+  fails as well, its error carries them as `prior` for `{ pageId, restore: prior }`.
 - **Door state is a separate RTDB write.** `createDLDoors` hardcodes `isOpen`/`isLocked` to false in
   both branches and the Mod branch has no `isSecret`, so `isOpen`, `isLocked` and `isSecret` go through
   `rtUpdate` on `doors/page/<pageId>/<id>` after creation.
